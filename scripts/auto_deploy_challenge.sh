@@ -7,6 +7,7 @@ REMOTE="origin"
 LOG="/root/boot-auto-deploy.log"
 STATE="/root/boot-auto-deploy.last"
 LOCK="/root/boot-auto-deploy.lock"
+TIMER_MIGRATION_MARKER="/root/boot-auto-deploy.timer-v20.initialized"
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
@@ -85,6 +86,19 @@ if ! systemctl is-active --quiet learnerbot; then
   git reset --hard "$CURRENT" >/dev/null
   systemctl restart learnerbot || true
   exit 1
+fi
+
+# One-time migration from the original one-minute timer to 20 seconds.
+# Future MASTER Telegram changes persist because this block runs only once.
+if [[ ! -f "$TIMER_MIGRATION_MARKER" ]]; then
+  if ./.venv/bin/python -c 'from learnerbot.deploy_timer import ensure_default_20_seconds; print(ensure_default_20_seconds())' >>"$LOG" 2>&1; then
+    touch "$TIMER_MIGRATION_MARKER"
+    log "AUTO-DEPLOY TIMER: initial interval set to 20 seconds"
+    notify DEPLOYED "GitHub auto-deploy check interval is now 20 seconds. MASTER can change it from Telegram → ⏱ Auto-Deploy Timer."
+  else
+    log "WARN: could not migrate auto-deploy timer to 20 seconds"
+    notify FAILED "Code deployed, but changing the auto-deploy timer to 20 seconds failed. Existing timer remains in effect."
+  fi
 fi
 
 printf '%s' "$TARGET" > "$STATE"
