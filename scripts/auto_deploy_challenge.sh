@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="/root/multichain-learning-bot-v2.2-fast-direct-market"
+BRANCH="challenge-auto"
+REMOTE="origin"
+LOG="/root/boot-auto-deploy.log"
+STATE="/root/boot-auto-deploy.last"
+LOCK="/root/boot-auto-deploy.lock"
+
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+
+cd "$ROOT"
+
+log(){ printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
+
+# Never deploy with uncommitted tracked-code changes. Runtime/untracked data is ignored by Git.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  log "SKIP: local tracked changes present"
+  exit 0
+fi
+
+git fetch "$REMOTE" "$BRANCH" --quiet
+TARGET="$(git rev-parse "$REMOTE/$BRANCH")"
+CURRENT="$(git rev-parse HEAD)"
+LAST="$(cat "$STATE" 2>/dev/null || true)"
+
+if [[ "$TARGET" == "$CURRENT" || "$TARGET" == "$LAST" ]]; then
+  exit 0
+fi
+
+BACKUP="auto-deploy-backup-$(date +%Y%m%d-%H%M%S)-${CURRENT:0:8}"
+log "NEW: $TARGET (current $CURRENT); backup tag $BACKUP"
+git tag "$BACKUP" "$CURRENT"
+
+# Update code to exact approved challenge branch commit.
+git checkout -q "$BRANCH" 2>/dev/null || git checkout -q -b "$BRANCH" "$REMOTE/$BRANCH"
+git reset --hard "$TARGET" >/dev/null
+
+# Validation: syntax + targeted tests. Do not alter live CSV/data.
+if ! ./.venv/bin/python -m compileall -q learnerbot scripts; then
+  log "FAIL compile; rollback to $CURRENT"
+  git reset --hard "$CURRENT" >/dev/null
+  systemctl restart learnerbot || true
+  exit 1
+fi
+
+# Run the fastest meaningful regression set if present; otherwise all tests.
+TESTS=()
+for f in tests/test_v231_v3_router_deadline.py tests/test_v23_full_power.py tests/test_v233_dynamic_products.py; do
+  [[ -f "$f" ]] && TESTS+=("$f")
+done
+if [[ ${#TESTS[@]} -gt 0 ]]; then
+  if ! ./.venv/bin/python -m pytest -q "${TESTS[@]}"; then
+    log "FAIL tests; rollback to $CURRENT"
+    git reset --hard "$CURRENT" >/dev/null
+    systemctl restart learnerbot || true
+    exit 1
+  fi
+else
+  if ! ./.venv/bin/python -m pytest -q; then
+    log "FAIL tests; rollback to $CURRENT"
+    git reset --hard "$CURRENT" >/dev/null
+    systemctl restart learnerbot || true
+    exit 1
+  fi
+fi
+
+systemctl restart learnerbot
+sleep 5
+if ! systemctl is-active --quiet learnerbot; then
+  log "FAIL service restart; rollback to $CURRENT"
+  git reset --hard "$CURRENT" >/dev/null
+  systemctl restart learnerbot || true
+  exit 1
+fi
+
+printf '%s' "$TARGET" > "$STATE"
+log "DEPLOYED: $TARGET; learnerbot active"
