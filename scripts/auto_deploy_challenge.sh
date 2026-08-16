@@ -8,6 +8,8 @@ LOG="/root/boot-auto-deploy.log"
 STATE="/root/boot-auto-deploy.last"
 LOCK="/root/boot-auto-deploy.lock"
 TIMER_MIGRATION_MARKER="/root/boot-auto-deploy.timer-v5.initialized"
+PROFIT_CHALLENGE_MARKER="/root/boot-profit-challenge-5h-target001.started"
+PROFIT_CHALLENGE_UNIT="boot-profit-challenge.service"
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
@@ -86,6 +88,35 @@ if ! systemctl is-active --quiet learnerbot; then
   git reset --hard "$CURRENT" >/dev/null
   systemctl restart learnerbot || true
   exit 1
+fi
+
+# Start the operator-requested bounded live profit challenge exactly once.
+# The challenge does not raise capital/slippage or bypass final simulation/profit checks.
+if [[ ! -f "$PROFIT_CHALLENGE_MARKER" ]]; then
+  if systemctl is-active --quiet "$PROFIT_CHALLENGE_UNIT"; then
+    touch "$PROFIT_CHALLENGE_MARKER"
+    log "PROFIT CHALLENGE: already active; marker recorded"
+  else
+    systemctl reset-failed "$PROFIT_CHALLENGE_UNIT" 2>/dev/null || true
+    if systemd-run --quiet --unit=boot-profit-challenge \
+      --property=Type=simple \
+      --property="WorkingDirectory=$ROOT" \
+      "$ROOT/.venv/bin/python" "$ROOT/scripts/profit_challenge.py" \
+      --hours 5 --target-usd 0.01 --report-minutes 15; then
+      sleep 2
+      if systemctl is-active --quiet "$PROFIT_CHALLENGE_UNIT"; then
+        touch "$PROFIT_CHALLENGE_MARKER"
+        log "PROFIT CHALLENGE: started 5h target=0.01 USD"
+        notify STARTED "BOOT 5-hour profit challenge started. Target: at least $0.01 realised user net. Goal alert is enabled. Profit is not guaranteed and safety checks remain active."
+      else
+        log "WARN: profit challenge unit did not stay active"
+        notify FAILED "BOOT profit challenge could not stay active after startup. No safeguards were bypassed."
+      fi
+    else
+      log "WARN: systemd-run could not start profit challenge"
+      notify FAILED "BOOT profit challenge could not be started automatically."
+    fi
+  fi
 fi
 
 # Attempt the requested one-shot Telegram delivery test directly from the deploy
