@@ -47,7 +47,7 @@ def set_scoped(path,values,chain_id="*"):
         if k in seen:continue
         r={x:"" for x in fns}
         if scoped:r["chain_id"]=str(chain_id)
-        r["setting"]=k;r["value"]=str(v);r["description"]="Temporary 3-hour profit challenge tuning; safety gates unchanged";rs.append(r)
+        r["setting"]=k;r["value"]=str(v);r["description"]="Temporary bounded profit-challenge tuning; safety gates unchanged";rs.append(r)
     tmp=path.with_suffix(path.suffix+".challenge.tmp");path.parent.mkdir(parents=True,exist_ok=True)
     with tmp.open("w",encoding="utf-8",newline="") as f:
         w=csv.DictWriter(f,fieldnames=fns);w.writeheader();w.writerows([{x:r.get(x,"") for x in fns} for r in rs]);f.flush();os.fsync(f.fileno())
@@ -82,7 +82,7 @@ def send(app,text):
         z=send_to_chats(app.telegram_bot_token,cs,text);print(f"[challenge-telegram] sent={z.get('sent_chats',0)} failed={z.get('failed_chats',0)}",flush=True)
     except Exception as e:print(f"[challenge-telegram-error] {type(e).__name__}: {e}",flush=True)
 def prices(cache):
-    req=urllib.request.Request(PRICE_URL,headers={"User-Agent":"BOOT-profit-challenge/1.0"})
+    req=urllib.request.Request(PRICE_URL,headers={"User-Agent":"BOOT-profit-challenge/1.1"})
     try:
         with urllib.request.urlopen(req,timeout=10) as r:data=json.loads(r.read().decode())
         for k in ("ethereum","binancecoin","polygon-ecosystem-token","matic-network"):
@@ -135,7 +135,7 @@ def stage(elapsed):
     return x
 def progress(elapsed,duration,target,q,f,pr,sims,name):
     n,ok,reasons=sims;remaining=max(Decimal("0"),target-q["total_usd"])
-    L=["🎯 BOOT 3-HOUR PROFIT CHALLENGE",f"Stage: {name}",f"Elapsed: {elapsed//60}m / {duration//60}m",f"Realised user net: ${q['total_usd']:.6f}",f"Target: ${target:.4f} | remaining ${remaining:.6f}",f"Successful trades: {len(q['trades'])}",f"Fast scan: routes={f.get('routes','-')} eligible={f.get('eligible','-')} pass={f.get('duration_seconds','-')}s",f"Products: tracked={pr['tracked']} AUTO={pr['auto']} shadow={pr['shadow']} blocked={pr['blocked']}",f"Wallet simulations: {n}, passed={ok}"]
+    L=["🎯 BOOT PROFIT CHALLENGE",f"Stage: {name}",f"Elapsed: {elapsed//60}m / {duration//60}m",f"Realised user net: ${q['total_usd']:.6f}",f"Target: ${target:.4f} | remaining ${remaining:.6f}",f"Successful trades: {len(q['trades'])}",f"Fast scan: routes={f.get('routes','-')} eligible={f.get('eligible','-')} pass={f.get('duration_seconds','-')}s",f"Products: tracked={pr['tracked']} AUTO={pr['auto']} shadow={pr['shadow']} blocked={pr['blocked']}",f"Wallet simulations: {n}, passed={ok}"]
     if reasons:L+=["Top rejects:"]+[f"• {x}" for x in reasons]
     L+=["Safety unchanged: no loss-forcing, no slippage increase, no capital increase, final simulation/eth_call still required."]
     return "\n".join(L)
@@ -149,7 +149,7 @@ def run(hours,target,report_minutes,keep):
     signal.signal(signal.SIGINT,h);signal.signal(signal.SIGTERM,h)
     applied=None;last_report=0;last_count=0;window=start;pc={}
     try:
-        send(app,f"🚀 BOOT PROFIT CHALLENGE STARTED\nTarget realised user net: ${target}\nDeadline: {duration//60} minutes\nNo capital/slippage increase and no loss-forcing.")
+        send(app,f"🚀 BOOT PROFIT CHALLENGE STARTED\nTarget realised user net: ${target}\nMaximum duration: {duration//60} minutes\nGoal alert: ON\nNo capital/slippage increase and no loss-forcing. Profit is not guaranteed.")
         while int(time.time())<deadline and not stop["x"]:
             now=int(time.time());elapsed=now-start;_,name,vals=stage(elapsed)
             if name!=applied:
@@ -161,12 +161,12 @@ def run(hours,target,report_minutes,keep):
                     send(app,f"✅ CHALLENGE TRADE CONFIRMED\nChain: {str(tr.get('chain_slug') or '').upper()}\nRealised user net: {tr['user_net_base']} native ({ut})\nChallenge total: ${q['total_usd']:.6f}\nTX: {tr.get('tx_hash') or '-'}")
                 last_count=len(q["trades"])
             if q["total_usd"]>=target:
-                send(app,progress(elapsed,duration,target,q,f,pr,sim_summary(csv_dir,window),applied)+"\n\n🏁 TARGET ACHIEVED. Challenge stopping.");write_state(csv_dir,{"status":"TARGET_ACHIEVED","realised_user_net_usd":str(q["total_usd"]),"successful_trades":len(q["trades"]),"start_epoch":start,"end_epoch":now});return 0
+                send(app,progress(elapsed,duration,target,q,f,pr,sim_summary(csv_dir,window),applied)+"\n\n🏁 GOAL ACHIEVED — realised user net reached or exceeded the $0.01 target. Challenge stopping.");write_state(csv_dir,{"status":"TARGET_ACHIEVED","realised_user_net_usd":str(q["total_usd"]),"successful_trades":len(q["trades"]),"start_epoch":start,"end_epoch":now});return 0
             if not last_report or now-last_report>=report_minutes*60:
                 send(app,progress(elapsed,duration,target,q,f,pr,sim_summary(csv_dir,window),applied));last_report=now;window=now
             write_state(csv_dir,{"status":"RUNNING","target_usd":str(target),"realised_user_net_usd":str(q["total_usd"]),"successful_trades":len(q["trades"]),"stage":applied,"start_epoch":start,"deadline_epoch":deadline,"updated_epoch":now})
             time.sleep(20)
-        pc=prices(pc);q=pnl(csv_dir,start,pc);status="STOPPED" if stop["x"] else "DEADLINE";send(app,f"⏹ BOOT PROFIT CHALLENGE {status}\nRealised user net: ${q['total_usd']:.6f}\nTarget: ${target}\nSuccessful trades: {len(q['trades'])}\nNo profit target is guaranteed; safeguards were not bypassed.");return 2 if status=="DEADLINE" else 130
+        pc=prices(pc);q=pnl(csv_dir,start,pc);status="STOPPED" if stop["x"] else "DEADLINE";send(app,f"⏹ BOOT PROFIT CHALLENGE {status}\nRealised user net: ${q['total_usd']:.6f}\nTarget: ${target}\nSuccessful trades: {len(q['trades'])}\nThe target was not guaranteed; safeguards were not bypassed.");return 2 if status=="DEADLINE" else 130
     finally:
         if not keep:
             try:restore(sp,snap,"*");send(AppSettings.load(),"↩️ BOOT challenge temporary strategy settings restored.")
@@ -176,7 +176,7 @@ def restore_only():
     if not p.exists():print("No restore snapshot found.");return 1
     restore(Path(app.csv_dir)/"auto_trading_settings.csv",json.loads(p.read_text()),"*");send(app,"↩️ BOOT challenge settings restored from saved snapshot.");return 0
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument("--hours",type=Decimal,default=Decimal("3"));ap.add_argument("--target-usd",type=Decimal,default=Decimal("0.01"));ap.add_argument("--report-minutes",type=int,default=15);ap.add_argument("--keep-settings",action="store_true");ap.add_argument("--restore",action="store_true");a=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument("--hours",type=Decimal,default=Decimal("5"));ap.add_argument("--target-usd",type=Decimal,default=Decimal("0.01"));ap.add_argument("--report-minutes",type=int,default=15);ap.add_argument("--keep-settings",action="store_true");ap.add_argument("--restore",action="store_true");a=ap.parse_args()
     if a.restore:return restore_only()
     if a.hours<=0 or a.target_usd<=0:ap.error("hours and target must be positive")
     return run(a.hours,a.target_usd,max(1,a.report_minutes),a.keep_settings)
