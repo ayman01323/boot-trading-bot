@@ -14,10 +14,16 @@ flock -n 9 || exit 0
 cd "$ROOT"
 
 log(){ printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
+notify(){
+  if [[ -f scripts/telegram_deploy_notify.py ]]; then
+    ./.venv/bin/python scripts/telegram_deploy_notify.py "$@" >>"$LOG" 2>&1 || true
+  fi
+}
 
 # Never deploy with uncommitted tracked-code changes. Runtime/untracked data is ignored by Git.
 if ! git diff --quiet || ! git diff --cached --quiet; then
   log "SKIP: local tracked changes present"
+  notify FAILED "Automatic update skipped because local tracked-code changes are present."
   exit 0
 fi
 
@@ -32,6 +38,7 @@ fi
 
 BACKUP="auto-deploy-backup-$(date +%Y%m%d-%H%M%S)-${CURRENT:0:8}"
 log "NEW: $TARGET (current $CURRENT); backup tag $BACKUP"
+notify STARTED "New challenge-auto code detected: ${TARGET:0:12}. Validating before live restart."
 git tag "$BACKUP" "$CURRENT"
 
 # Update code to exact approved challenge branch commit.
@@ -41,6 +48,7 @@ git reset --hard "$TARGET" >/dev/null
 # Validation: syntax + targeted tests. Do not alter live CSV/data.
 if ! ./.venv/bin/python -m compileall -q learnerbot scripts; then
   log "FAIL compile; rollback to $CURRENT"
+  notify ROLLBACK "Compile validation failed for ${TARGET:0:12}; restoring ${CURRENT:0:12}."
   git reset --hard "$CURRENT" >/dev/null
   systemctl restart learnerbot || true
   exit 1
@@ -54,6 +62,7 @@ done
 if [[ ${#TESTS[@]} -gt 0 ]]; then
   if ! ./.venv/bin/python -m pytest -q "${TESTS[@]}"; then
     log "FAIL tests; rollback to $CURRENT"
+    notify ROLLBACK "Regression tests failed for ${TARGET:0:12}; restoring ${CURRENT:0:12}."
     git reset --hard "$CURRENT" >/dev/null
     systemctl restart learnerbot || true
     exit 1
@@ -61,6 +70,7 @@ if [[ ${#TESTS[@]} -gt 0 ]]; then
 else
   if ! ./.venv/bin/python -m pytest -q; then
     log "FAIL tests; rollback to $CURRENT"
+    notify ROLLBACK "Test suite failed for ${TARGET:0:12}; restoring ${CURRENT:0:12}."
     git reset --hard "$CURRENT" >/dev/null
     systemctl restart learnerbot || true
     exit 1
@@ -71,6 +81,7 @@ systemctl restart learnerbot
 sleep 5
 if ! systemctl is-active --quiet learnerbot; then
   log "FAIL service restart; rollback to $CURRENT"
+  notify ROLLBACK "learnerbot did not become active after ${TARGET:0:12}; restoring ${CURRENT:0:12}."
   git reset --hard "$CURRENT" >/dev/null
   systemctl restart learnerbot || true
   exit 1
@@ -78,3 +89,4 @@ fi
 
 printf '%s' "$TARGET" > "$STATE"
 log "DEPLOYED: $TARGET; learnerbot active"
+notify DEPLOYED "Commit ${TARGET:0:12} passed validation and learnerbot is active."
