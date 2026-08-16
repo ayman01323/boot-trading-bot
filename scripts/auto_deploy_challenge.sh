@@ -143,6 +143,17 @@ if [[ ! -f "$TIMER_MIGRATION_MARKER" ]]; then
   fi
 fi
 
+# Process one GitHub maintenance request through a strict allowlist. This is
+# deliberately not a remote shell: request.json can select only fixed actions
+# implemented in github_ops_runner.py, and no command strings are evaluated.
+if [[ -f scripts/github_ops_runner.py && -f ops/request.json ]]; then
+  if ./.venv/bin/python scripts/github_ops_runner.py >>"$LOG" 2>&1; then
+    log "GITHUB OPS: bounded maintenance request checked"
+  else
+    log "WARN: bounded GitHub maintenance request failed"
+  fi
+fi
+
 printf '%s' "$TARGET" > "$STATE"
 log "DEPLOYED: $TARGET; learnerbot active"
 notify DEPLOYED "Commit ${TARGET:0:12} passed validation and learnerbot is active."
