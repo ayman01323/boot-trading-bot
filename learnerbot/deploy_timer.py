@@ -8,7 +8,7 @@ from pathlib import Path
 
 TIMER_PATH = Path("/etc/systemd/system/boot-auto-deploy.timer")
 TIMER_NAME = "boot-auto-deploy.timer"
-ALLOWED_SECONDS = (20, 30, 60, 120, 300)
+ALLOWED_SECONDS = (5, 10, 20, 30, 60, 120, 300)
 
 
 def _render_timer(seconds: int) -> str:
@@ -17,7 +17,7 @@ def _render_timer(seconds: int) -> str:
         "Description=Check BOOT GitHub challenge-auto for guarded updates",
         "",
         "[Timer]",
-        "OnBootSec=20s",
+        "OnBootSec=5s",
         f"OnUnitActiveSec={int(seconds)}s",
         "AccuracySec=1s",
         "RandomizedDelaySec=0",
@@ -65,12 +65,16 @@ def deploy_timer_keyboard() -> dict:
     return {
         "inline_keyboard": [
             [
-                {"text": "⚡ 20 sec", "callback_data": "deploytimer:set:20"},
-                {"text": "30 sec", "callback_data": "deploytimer:set:30"},
-                {"text": "1 min", "callback_data": "deploytimer:set:60"},
+                {"text": "⚡ 5 sec", "callback_data": "deploytimer:set:5"},
+                {"text": "10 sec", "callback_data": "deploytimer:set:10"},
+                {"text": "20 sec", "callback_data": "deploytimer:set:20"},
             ],
             [
+                {"text": "30 sec", "callback_data": "deploytimer:set:30"},
+                {"text": "1 min", "callback_data": "deploytimer:set:60"},
                 {"text": "2 min", "callback_data": "deploytimer:set:120"},
+            ],
+            [
                 {"text": "5 min", "callback_data": "deploytimer:set:300"},
             ],
             [{"text": "⬅️ Menu", "callback_data": "menu:home"}],
@@ -85,7 +89,7 @@ def deploy_timer_page() -> str:
         f"Current GitHub check interval: <b>{sec} seconds</b>\n"
         "Branch: <code>challenge-auto</code>\n\n"
         "This timer only checks for approved GitHub code changes. Every detected update still goes through compile/tests, learnerbot restart verification and rollback protection.\n\n"
-        "<i>MASTER only. Minimum interval is 20 seconds.</i>"
+        "<i>MASTER only. Minimum interval is 5 seconds.</i>"
     )
 
 
@@ -160,7 +164,7 @@ def install_telegram_patch() -> None:
                     ui._send(app, chat_id, deploy_timer_page(), deploy_timer_keyboard())
                     return
                 if len(parts) != 2:
-                    raise ValueError("Use /deploytimer or /deploytimer 20|30|60|120|300")
+                    raise ValueError("Use /deploytimer or /deploytimer 5|10|20|30|60|120|300")
                 result = set_deploy_timer_seconds(int(parts[1]))
                 ui.audit(app.csv_dir, chat_id, "DEPLOY_TIMER", "boot-auto-deploy.timer", "", str(result["seconds"]), "MASTER Telegram timer change")
                 ui._send(app, chat_id, f"✅ GitHub auto-deploy timer changed to <b>{result['seconds']} seconds</b>.", deploy_timer_keyboard())
@@ -175,9 +179,14 @@ def install_telegram_patch() -> None:
     ui._deploy_timer_patch_installed = True
 
 
-def ensure_default_20_seconds() -> dict:
-    if current_deploy_timer_seconds() == 20:
-        return {"seconds": 20, "active": True, "changed": False}
-    result = set_deploy_timer_seconds(20)
+def ensure_default_5_seconds() -> dict:
+    if current_deploy_timer_seconds() == 5:
+        return {"seconds": 5, "active": True, "changed": False}
+    result = set_deploy_timer_seconds(5)
     result["changed"] = True
     return result
+
+
+def ensure_default_20_seconds() -> dict:
+    """Backward-compatible helper retained for older deploy scripts."""
+    return ensure_default_5_seconds()
