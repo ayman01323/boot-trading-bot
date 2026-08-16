@@ -5,6 +5,11 @@ import threading
 import time
 
 from .cli import main
+from .deploy_timer import install_telegram_patch
+
+# Add the MASTER-only /deploytimer command and inline timer controls before the
+# Telegram polling thread starts. This does not expose arbitrary shell commands.
+install_telegram_patch()
 
 
 def _send_challenge_target_test_after_startup():
