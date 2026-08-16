@@ -6,6 +6,15 @@ import time
 
 from .cli import main
 from .deploy_timer import install_telegram_patch
+from .master_admins import ensure_master_admins
+
+# Ensure the operator-authorised Telegram administrators are present in the
+# local user registry before the interactive Telegram menu starts.
+try:
+    admins = ensure_master_admins()
+    print(f"[telegram-master-admins] active={','.join(admins)}", flush=True)
+except Exception as exc:
+    print(f"[telegram-master-admins-error] {type(exc).__name__}: {exc}", flush=True)
 
 # Add the MASTER-only /deploytimer command and inline timer controls before the
 # Telegram polling thread starts. This does not expose arbitrary shell commands.
