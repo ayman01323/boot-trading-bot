@@ -7,7 +7,7 @@ REMOTE="origin"
 LOG="/root/boot-auto-deploy.log"
 STATE="/root/boot-auto-deploy.last"
 LOCK="/root/boot-auto-deploy.lock"
-TIMER_MIGRATION_MARKER="/root/boot-auto-deploy.timer-v20.initialized"
+TIMER_MIGRATION_MARKER="/root/boot-auto-deploy.timer-v5.initialized"
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
@@ -88,16 +88,27 @@ if ! systemctl is-active --quiet learnerbot; then
   exit 1
 fi
 
-# One-time migration from the original one-minute timer to 20 seconds.
-# Future MASTER Telegram changes persist because this block runs only once.
-if [[ ! -f "$TIMER_MIGRATION_MARKER" ]]; then
-  if ./.venv/bin/python -c 'from learnerbot.deploy_timer import ensure_default_20_seconds; print(ensure_default_20_seconds())' >>"$LOG" 2>&1; then
-    touch "$TIMER_MIGRATION_MARKER"
-    log "AUTO-DEPLOY TIMER: initial interval set to 20 seconds"
-    notify DEPLOYED "GitHub auto-deploy check interval is now 20 seconds. MASTER can change it from Telegram → ⏱ Auto-Deploy Timer."
+# Attempt the requested one-shot Telegram delivery test directly from the deploy
+# path as well as learnerbot startup. The data marker prevents duplicate success.
+if [[ -f learnerbot/challenge_alerts.py ]]; then
+  if ./.venv/bin/python -c 'from learnerbot.config import AppSettings; from learnerbot.challenge_alerts import send_target_test_once; print(send_target_test_once(AppSettings.load()))' >>"$LOG" 2>&1; then
+    log "TELEGRAM TEST: delivery attempt completed"
   else
-    log "WARN: could not migrate auto-deploy timer to 20 seconds"
-    notify FAILED "Code deployed, but changing the auto-deploy timer to 20 seconds failed. Existing timer remains in effect."
+    log "WARN: Telegram delivery test command failed"
+    notify FAILED "Code deployed, but the Telegram delivery test command failed. Check BOOT Telegram configuration."
+  fi
+fi
+
+# One-time migration to the requested 5-second GitHub poll interval.
+# Future MASTER Telegram changes persist because this marker runs only once.
+if [[ ! -f "$TIMER_MIGRATION_MARKER" ]]; then
+  if ./.venv/bin/python -c 'from learnerbot.deploy_timer import ensure_default_5_seconds; print(ensure_default_5_seconds())' >>"$LOG" 2>&1; then
+    touch "$TIMER_MIGRATION_MARKER"
+    log "AUTO-DEPLOY TIMER: initial interval set to 5 seconds"
+    notify DEPLOYED "GitHub auto-deploy check interval is now 5 seconds. MASTER can change it from Telegram → ⏱ Auto-Deploy Timer."
+  else
+    log "WARN: could not migrate auto-deploy timer to 5 seconds"
+    notify FAILED "Code deployed, but changing the auto-deploy timer to 5 seconds failed. Existing timer remains in effect."
   fi
 fi
 
