@@ -22,11 +22,7 @@ install_telegram_patch()
 
 
 def _send_challenge_target_test_after_startup():
-    """Send the one-shot Telegram delivery test shortly after learnerbot starts.
-
-    The delay avoids competing with initial Telegram/menu setup. The helper itself
-    is fail-closed and only marks success when all intended recipients receive it.
-    """
+    """Send the one-shot Telegram delivery test shortly after learnerbot starts."""
     time.sleep(8)
     try:
         from .config import AppSettings
@@ -37,10 +33,31 @@ def _send_challenge_target_test_after_startup():
         print(f"[challenge-target-test-error] {type(exc).__name__}: {exc}", flush=True)
 
 
+def _run_adaptive_challenge_controller():
+    """Run the bounded adaptive challenge controller inside the learnerbot service.
+
+    It only changes whitelisted discovery/search-breadth settings. It cannot alter
+    capital, slippage, minimum-profit, gas bidding, signing, or final simulation
+    safety gates. The controller exits automatically when the challenge ends.
+    """
+    time.sleep(12)
+    try:
+        from scripts.adaptive_strategy_controller import main as adaptive_main
+        rc = adaptive_main()
+        print(f"[adaptive-strategy-controller] exit={rc}", flush=True)
+    except Exception as exc:
+        print(f"[adaptive-strategy-controller-error] {type(exc).__name__}: {exc}", flush=True)
+
+
 if len(sys.argv) > 1 and sys.argv[1] == "run":
     threading.Thread(
         target=_send_challenge_target_test_after_startup,
         name="challenge-target-test",
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=_run_adaptive_challenge_controller,
+        name="adaptive-strategy-controller",
         daemon=True,
     ).start()
 
