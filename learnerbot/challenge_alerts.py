@@ -5,7 +5,7 @@ from pathlib import Path
 from .telegram import send_to_chats
 from .user_registry import all_users
 
-TEST_ALERT_VERSION = "hi-simo-test-v3"
+TEST_ALERT_VERSION = "simo-hi-helooo-test-v4"
 MIN_TARGET_TEST_RECIPIENTS = 3
 
 
@@ -29,7 +29,7 @@ def challenge_chat_ids(app) -> list[str]:
 
 
 def send_target_test_once(app) -> dict:
-    """Send a one-shot Hi Simo Telegram delivery test to all BOOT recipients."""
+    """Send a one-shot Telegram delivery test to all BOOT recipients."""
     marker = Path(app.data_dir) / f".{TEST_ALERT_VERSION}.sent"
     if marker.exists():
         return {"status": "ALREADY_SENT", "sent_chats": 0, "failed_chats": 0}
@@ -43,7 +43,7 @@ def send_target_test_once(app) -> dict:
             "⚠️ BOOT TELEGRAM TEST NOT COMPLETED\n"
             f"Configured/active Telegram recipients found: {len(recipients)}\n"
             f"Required for this installation: {MIN_TARGET_TEST_RECIPIENTS}\n"
-            "Hi Simo will be sent when all three recipients are available."
+            "SiMo Hi Helooo will be sent when all three recipients are available."
         )
         result = send_to_chats(app.telegram_bot_token, recipients, warning)
         return {
@@ -53,7 +53,7 @@ def send_target_test_once(app) -> dict:
             "failed_chats": int(result.get("failed_chats") or 0),
         }
 
-    result = send_to_chats(app.telegram_bot_token, recipients, "Hi Simo")
+    result = send_to_chats(app.telegram_bot_token, recipients, "SiMo Hi Helooo")
     sent = int(result.get("sent_chats") or 0)
     failed = int(result.get("failed_chats") or 0)
 
