@@ -1,0 +1,53 @@
+BOOT v2.3.3 — Dynamic AUTO Product Universe
+
+Purpose
+-------
+Expand the current V2/V3 market scanner beyond a tiny fixed seed list while keeping
+execution fail-closed. Products are learned automatically from the bot's verified
+V2 and V3 pool registries. No external token-list API is required.
+
+Risk levels
+-----------
+L1 CORE
+  Wrapped native assets and configured stablecoins. Highest priority.
+
+L2 LIQUID
+  Operator-configured liquid seeds and discovered products with multiple verified
+  pools, a wrapped-base connection and sufficient observation age.
+
+L3 STRICT / SHADOW
+  New or less-established discovered products. Very new products remain SHADOW.
+  Products with enough verified connectivity may become STRICT AUTO, but use a
+  tighter price-impact ceiling and still require wallet simulation and final eth_call.
+
+L4 QUARANTINE
+  Products under the execution-mismatch quarantine are excluded from scanning and AUTO.
+
+Files automatically maintained
+------------------------------
+CSVbot/auto/product_universe.csv
+CSVbot/auto/pool_registry.csv
+CSVbot/auto/v3_pool_registry.csv
+CSVbot/auto/execution_quarantine.csv
+CSVbot/auto/auto_trade_simulations.csv
+
+Telegram
+--------
+/products   Show current product universe, risk level and AUTO/SHADOW/BLOCK status.
+/power      Shows product totals alongside V2/V3/cross-DEX scanner status.
+
+Execution controls retained
+---------------------------
+* exact current quote
+* product risk/policy gate
+* price-impact/liquidity gate
+* wallet-specific simulation
+* gas-inclusive retained-profit test
+* final immediate eth_call preflight
+* bounded capital/allowance controls
+* execution-mismatch quarantine
+* cross-DEX remains SHADOW until an atomic multi-router executor is deployed
+
+The product classifier is not a claim that a token is safe or valuable. It is a local
+routing/risk prioritisation layer. Actual execution still fails closed if the current
+route cannot be reproduced safely and profitably for the user's wallet.

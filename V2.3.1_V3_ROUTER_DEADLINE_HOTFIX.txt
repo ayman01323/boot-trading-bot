@@ -1,0 +1,16 @@
+BOOT v2.3.1 V3 Router Deadline Hotfix
+
+Purpose
+- Fix PancakeSwap V3 SwapRouter exactInput ABI used by BOOT v2.3.
+- PancakeSwap V3 SwapRouter 0x1b81... on BSC uses ExactInputParams:
+  path, recipient, deadline, amountIn, amountOutMinimum.
+- BOOT v2.3 incorrectly used the four-field SwapRouter02-style tuple and therefore
+  wallet gas simulation reverted with empty revert data even when QuoterV2 succeeded.
+
+Safety
+- Only learnerbot/live_executor.py and V3 regression tests are changed.
+- data/, SQLite databases, wallet files and encryption keys are not copied or deleted.
+- Installer backs up changed files.
+- MASTER LIVE and MASTER AUTO are forced OFF before the service is restarted.
+- Re-enable them in Telegram only after /opportunities shows a V3 route with my_sim=true
+  (or a clear profit-based rejection rather than an ABI/execution revert).
