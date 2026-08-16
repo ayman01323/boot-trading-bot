@@ -108,6 +108,8 @@ def answer_callback_query(token: str, callback_query_id: str, text: str = "") ->
 def set_commands(token: str) -> None:
     commands = [
         {"command": "menu", "description": "Open main menu"},
+        {"command": "challenge", "description": "MASTER challenge control centre"},
+        {"command": "deploytimer", "description": "MASTER GitHub auto-deploy interval"},
         {"command": "join", "description": "Register Telegram ID under default fee plan"},
         {"command": "activate", "description": "Activate account with code"},
         {"command": "fees", "description": "Show my fee plan/status"},
