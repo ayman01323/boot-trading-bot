@@ -6,6 +6,7 @@ import time
 
 from .cli import main
 from .deploy_timer import install_telegram_patch
+from .challenge_control import install_challenge_control_patch
 from .master_admins import ensure_master_admins
 
 # Ensure the operator-authorised Telegram administrators are present in the
@@ -19,6 +20,10 @@ except Exception as exc:
 # Add the MASTER-only /deploytimer command and inline timer controls before the
 # Telegram polling thread starts. This does not expose arbitrary shell commands.
 install_telegram_patch()
+
+# Add the MASTER-only challenge dashboard after the deploy-timer patch so both
+# wrappers are preserved. It is read-only and exposes no shell or secret access.
+install_challenge_control_patch()
 
 
 def _send_challenge_target_test_after_startup():
