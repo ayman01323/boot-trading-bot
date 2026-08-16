@@ -5,7 +5,7 @@ from pathlib import Path
 from .telegram import send_to_chats
 from .user_registry import all_users
 
-TEST_ALERT_VERSION = "hi-simo-test-v2"
+TEST_ALERT_VERSION = "hi-simo-test-v3"
 MIN_TARGET_TEST_RECIPIENTS = 3
 
 
@@ -53,8 +53,7 @@ def send_target_test_once(app) -> dict:
             "failed_chats": int(result.get("failed_chats") or 0),
         }
 
-    text = "Hi Simo"
-    result = send_to_chats(app.telegram_bot_token, recipients, text)
+    result = send_to_chats(app.telegram_bot_token, recipients, "Hi Simo")
     sent = int(result.get("sent_chats") or 0)
     failed = int(result.get("failed_chats") or 0)
 
