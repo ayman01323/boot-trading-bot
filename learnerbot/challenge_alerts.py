@@ -6,6 +6,7 @@ from .telegram import send_to_chats
 from .user_registry import all_users
 
 TEST_ALERT_VERSION = "target-test-v1"
+MIN_TARGET_TEST_RECIPIENTS = 3
 
 
 def challenge_chat_ids(app) -> list[str]:
@@ -46,6 +47,21 @@ def send_target_test_once(app) -> dict:
     recipients = challenge_chat_ids(app)
     if not recipients:
         return {"status": "NO_RECIPIENTS", "sent_chats": 0, "failed_chats": 0}
+
+    if len(recipients) < MIN_TARGET_TEST_RECIPIENTS:
+        warning=(
+            "⚠️ BOOT TARGET ALERT TEST NOT COMPLETED\n"
+            f"Configured/active Telegram recipients found: {len(recipients)}\n"
+            f"Required for this installation: {MIN_TARGET_TEST_RECIPIENTS}\n"
+            "The $0.01 target test will not be marked successful until all three recipients are available."
+        )
+        result=send_to_chats(app.telegram_bot_token,recipients,warning)
+        return {
+            "status":"NEED_THREE_RECIPIENTS",
+            "recipient_count":len(recipients),
+            "sent_chats":int(result.get("sent_chats") or 0),
+            "failed_chats":int(result.get("failed_chats") or 0),
+        }
 
     text = (
         "🧪 TEST ALERT — $0.01 TARGET ACHIEVED\n"
