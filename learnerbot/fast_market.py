@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from .auto_trader import execute_best_live_opportunity
+from .challenge_alerts import send_target_test_once
 from .config import AppSettings, load_kv_scoped
 from .market_scanner import _atomic_rows, _rows, merge_live_opportunities
 from .full_power_scanner import scan_full_power_hot_routes
@@ -93,4 +94,14 @@ def start_fast_market_thread(app):
     global _started
     with _lock:
         if _started:return None
+        try:
+            test_result=send_target_test_once(app)
+            print(
+                f"[challenge-target-test] status={test_result.get('status')} "
+                f"recipients={test_result.get('recipient_count',0)} "
+                f"sent={test_result.get('sent_chats',0)} failed={test_result.get('failed_chats',0)}",
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"[challenge-target-test-error] {type(exc).__name__}: {exc}",flush=True)
         t=threading.Thread(target=_loop,args=(app,),name="fast-market-scanner",daemon=True);t.start();_started=True;return t
