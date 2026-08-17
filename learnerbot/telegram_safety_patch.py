@@ -4,7 +4,6 @@ from . import telegram as _tg
 
 if not getattr(_tg,"_boot_telegram_safety_installed",False):
     _original_json=_tg._json
-    _original_answer_callback_query=_tg.answer_callback_query
 
     def _safe_json(method:str,token:str,*,payload=None,params=None,timeout=20):
         try:
@@ -16,12 +15,11 @@ if not getattr(_tg,"_boot_telegram_safety_installed",False):
             raise RuntimeError(f"Telegram API {method} failed ({detail})") from None
 
     def _safe_answer_callback_query(token:str,callback_query_id:str,text:str="") -> None:
-        # Callback acknowledgements expire quickly. A stale/invalid acknowledgement
-        # must never cancel the action requested by the user.
-        try:
-            _original_answer_callback_query(token,callback_query_id,text)
-        except Exception:
-            return None
+        # BOOT intentionally does not call Telegram answerCallbackQuery.
+        # The acknowledgement is cosmetic only; the actual callback action is
+        # handled from getUpdates. Avoiding the extra API request eliminates
+        # stale-query HTTP 400 failures and keeps menu actions deterministic.
+        return None
 
     _tg._json=_safe_json
     _tg.answer_callback_query=_safe_answer_callback_query
