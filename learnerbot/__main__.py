@@ -28,5 +28,7 @@ from . import telegram_solana_visibility_patch  # noqa: F401
 from . import sibot_readiness_alert_patch  # noqa: F401
 # Keep decorative Telegram dividers short enough for iPhone/mobile widths.
 from . import telegram_mobile_divider_patch  # noqa: F401
+# Manage separate per-user Solana public wallets from Telegram (SHADOW identity/funding only).
+from . import telegram_solana_wallet_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
