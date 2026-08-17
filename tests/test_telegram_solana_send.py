@@ -69,7 +69,7 @@ def test_confirm_callback_broadcasts_only_after_explicit_confirm(monkeypatch):
     }
     monkeypatch.setattr(p._ui, "_auth", lambda app, x: True)
     monkeypatch.setattr(p, "_require_manual_transfer", lambda app, x, chat_type=None: ({"can_transfer": "true"}, {"wallet_id": "s1"}))
-    monkeypatch.setattr(p, "broadcast_native_transfer", lambda app, x, dest, lamports: called.append((x, dest, lamports)) or {"signature": "sig123", "status": "CONFIRMED"})
+    monkeypatch.setattr(p, "broadcast_native_transfer", lambda app, x, dest, lamports: called.append((str(x), dest, lamports)) or {"signature": "sig123", "status": "CONFIRMED"})
     monkeypatch.setattr(p, "_audit", lambda *args, **kwargs: None)
     monkeypatch.setattr(p._sol, "settings", lambda app: {"explorer_url": "https://solscan.io"})
     monkeypatch.setattr(p._ui, "_send", lambda app, x, text, keyboard=None: sent.append((text, keyboard)))
@@ -94,6 +94,7 @@ def test_cancel_never_broadcasts(monkeypatch):
     monkeypatch.setattr(p._ui, "_auth", lambda app, x: True)
     monkeypatch.setattr(p._ui, "_send", lambda *args, **kwargs: None)
     monkeypatch.setattr(p._tg, "answer_callback_query", lambda *args, **kwargs: None)
+    monkeypatch.setattr(p, "solwallet_keyboard", lambda app, tid: {"inline_keyboard": []})
     monkeypatch.setattr(p, "broadcast_native_transfer", lambda *args, **kwargs: pytest.fail("cancel must never broadcast"))
     app = SimpleNamespace(telegram_bot_token="t")
     cb = {
