@@ -1,0 +1,56 @@
+name: BOOT Server Operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Safe server operation
+        required: true
+        type: choice
+        default: status
+        options:
+          - status
+          - deploy_main
+          - restart_learnerbot
+          - wallet_balance
+      wallet:
+        description: 0x wallet address (wallet_balance only)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-vps-operations
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Status
+        if: inputs.operation == 'status'
+        run: sudo /usr/local/sbin/status-boot-trading-bot
+
+      - name: Deploy current main
+        if: inputs.operation == 'deploy_main'
+        run: sudo /usr/local/sbin/deploy-boot-trading-bot "${GITHUB_SHA}"
+
+      - name: Restart learnerbot
+        if: inputs.operation == 'restart_learnerbot'
+        run: sudo /usr/local/sbin/restart-boot-trading-bot
+
+      - name: Validate wallet input
+        if: inputs.operation == 'wallet_balance'
+        shell: bash
+        env:
+          WALLET: ${{ inputs.wallet }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$WALLET" =~ ^0x[0-9A-Fa-f]{40}$ ]]; then
+            echo 'wallet_balance requires a valid 0x EVM address' >&2
+            exit 2
+          fi
+          sudo /usr/local/sbin/check-boot-wallet "$WALLET"

@@ -1,0 +1,30 @@
+name: Deploy BOOT to VPS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-vps-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy exact main commit
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy through restricted root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/deploy-boot-trading-bot "${GITHUB_SHA}"
+
+      - name: Server status
+        if: always()
+        shell: bash
+        run: sudo /usr/local/sbin/status-boot-trading-bot
