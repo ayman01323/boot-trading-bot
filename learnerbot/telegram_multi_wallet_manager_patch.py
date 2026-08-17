@@ -44,7 +44,9 @@ def wallet_hub_page(app, tid):
     ]
     if sol:
         active = _solui._store(app).get_meta(tid)
+        signing = _solui._store(app).has_private_key(tid, active.get("wallet_id"))
         L.append(f"Active Solana: <b>{html.escape(active.get('label') or active.get('wallet_id') or '')}</b> <code>{html.escape(_short(active.get('address')))}</code>")
+        L.append(f"Solana signing authority: <b>{'🔐 READY' if signing else '👁 PUBLIC ONLY'}</b>")
     else:
         L.append("Active Solana: <b>none</b>")
     L += [
@@ -52,7 +54,9 @@ def wallet_hub_page(app, tid):
         "",
         "You may save multiple wallets of both types. Only one EVM wallet and one Solana wallet are active at a time.",
         "",
-        "🔐 Never send a seed phrase. EVM private-key import is accepted only in a private Telegram chat and the incoming secret message must be deleted before it is stored encrypted. Solana currently accepts public addresses only because Solana SiBot remains SHADOW-only.",
+        "🔐 <b>Private-key import is available for BOTH EVM and Solana.</b> Import is allowed only in a private Telegram chat. The incoming secret message must be deleted successfully before the key is persisted encrypted server-side. Seed phrases are not accepted.",
+        "",
+        "⚠️ An imported Solana signing key is stored for future LIVE capability, but Solana SiBot remains SHADOW-only until its transaction signing/broadcast engine is separately enabled.",
     ]
     return "\n".join(L)
 
@@ -88,7 +92,7 @@ def evmwallet_page(app, tid):
     L += [
         "<b>Add wallets</b>",
         "• <b>Create</b>: bot generates a new dedicated EVM wallet and encrypts its private key server-side.",
-        "• <b>Import</b>: send an existing EVM private key only after tapping Import; Telegram must delete that secret message before persistence.",
+        "• <b>Import Private Key</b>: tap the button below, then send the EVM private key in the next message. Telegram must delete that secret message before encrypted persistence.",
         "",
         "Existing commands still work: <code>/walletcreate</code>, <code>/walletimport</code>, <code>/walletuse</code>, <code>/walletremove</code>.",
     ]
@@ -98,7 +102,7 @@ def evmwallet_page(app, tid):
 def evmwallet_keyboard(app, tid):
     rows = [[
         {"text": "➕ Create EVM", "callback_data": "evmwallet:create"},
-        {"text": "📥 Import EVM", "callback_data": "evmwallet:import"},
+        {"text": "🔐 Import Private Key", "callback_data": "evmwallet:import"},
     ]]
     for r in _evm_store(app).list_wallets(tid):
         wid = str(r.get("wallet_id") or "")
@@ -156,7 +160,7 @@ def _handle_pending_import(app, m):
         _ui._send(
             app,
             tid,
-            f"✅ EVM wallet imported. Secret message deleted.\nID: <code>{html.escape(r['wallet_id'])}</code>\nAddress: <code>{html.escape(r['address'])}</code>",
+            f"✅ EVM wallet imported. Secret message deleted before encrypted persistence.\nID: <code>{html.escape(r['wallet_id'])}</code>\nAddress: <code>{html.escape(r['address'])}</code>",
             evmwallet_keyboard(app, tid),
         )
     except Exception as exc:
@@ -192,7 +196,7 @@ def _handle_callback(app, cb):
         elif data == "evmwallet:import":
             _ui.require_user(app.csv_dir, tid, active=False)
             _PENDING_EVM_IMPORT.add(str(tid))
-            _ui._send(app, tid, "📥 <b>Import EVM Wallet</b>\nSend the EVM private key in this <b>private chat only</b>. Telegram must delete the incoming key message before the bot will save it encrypted.\n\nDo not send a seed phrase. Send <code>cancel</code> to stop.")
+            _ui._send(app, tid, "🔐 <b>Import EVM Private Key</b>\nSend the EVM private key in this <b>private chat only</b>. Telegram must delete the incoming key message before the bot will save it encrypted.\n\nDo not send a seed phrase. Send <code>cancel</code> to stop.")
         elif data.startswith("evmwallet:use:"):
             wid = data.rsplit(":", 1)[-1]
             _evm_store(app).set_active(tid, wid)
