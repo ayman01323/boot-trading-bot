@@ -48,5 +48,7 @@ from . import telegram_live_reporting_patch  # noqa: F401
 from . import telegram_solana_send_patch  # noqa: F401
 # One-shot migration requested by the user: set Solana LIVE trade size and reserve to built-in hard minimums.
 from . import solana_minimum_settings_migration  # noqa: F401
+# Final presentation layer: show current USD equivalents beside asset/native values across Telegram pages.
+from . import telegram_usd_everywhere_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
