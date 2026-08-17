@@ -9,11 +9,22 @@ TARGETS = {
     "live_trade_sol": ("0.0005", "Real SOL amount per guarded Solana LIVE copied BUY"),
     "live_min_sol_reserve": ("0.01", "SOL that must remain untouched for fees and emergency exits"),
 }
+MARKER_NAME = ".solana_minimum_settings_20260817_applied"
 
 
 def apply() -> None:
     root = Path(__file__).resolve().parent.parent
     path = root / "CSVbot" / "solana_settings.csv"
+    marker = root / "data" / MARKER_NAME
+
+    if marker.exists():
+        print(
+            "[solana-min-settings] already_applied=true "
+            f"live_trade_sol={TARGETS['live_trade_sol'][0]} "
+            f"live_min_sol_reserve={TARGETS['live_min_sol_reserve'][0]}"
+        )
+        return
+
     headers = ["setting", "value", "description"]
     rows: list[dict] = []
 
@@ -56,11 +67,17 @@ def apply() -> None:
             os.fsync(f.fileno())
         os.replace(tmp, path)
 
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        "live_trade_sol=0.0005\nlive_min_sol_reserve=0.01\n",
+        encoding="utf-8",
+    )
+
     print(
         "[solana-min-settings] "
         f"live_trade_sol={TARGETS['live_trade_sol'][0]} "
         f"live_min_sol_reserve={TARGETS['live_min_sol_reserve'][0]} "
-        f"changed={changed}"
+        f"changed={changed} marker_created=true"
     )
 
 
