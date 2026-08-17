@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from . import analyser as _analyser
 from . import sibot as _sibot
+from . import solana_sibot as _sol
 from .config import load_addresses
 from .db import get_state, set_state
 from .profit import analyse_tx
 from .receipts import ingest_receipt
 
 _ORIGINAL_SIBOT_ENSURE = _sibot.ensure_settings
+_ORIGINAL_SOL_ENSURE = _sol.ensure_settings
 
 
 def _int(v, default):
@@ -39,8 +41,8 @@ def _candidate_pool(conn, settings, pool_size: int):
 def analyse_top_wallets(conn, rpc, settings, top: int = 20) -> dict:
     """Broad rotating profit research.
 
-    Bot score now decides research priority only.  The final Top-20 remains based on
-    measured P&L.  A large candidate pool is rotated in bounded batches so five
+    Bot score now decides research priority only. The final Top-20 remains based on
+    measured P&L. A large candidate pool is rotated in bounded batches so five
     chains do not attempt tens of thousands of receipt RPC calls every cycle.
     """
     general = settings.app.general()
@@ -108,7 +110,7 @@ def analyse_top_wallets(conn, rpc, settings, top: int = 20) -> dict:
 
 
 def ensure_settings(app):
-    """Increase the SiBot history universe without re-tightening existing user choices."""
+    """Increase the EVM SiBot history universe without re-tightening user choices."""
     path = _ORIGINAL_SIBOT_ENSURE(app)
     rows = _sibot._rows(path)
     changed = False
@@ -123,11 +125,28 @@ def ensure_settings(app):
     return path
 
 
+def solana_ensure_settings(app):
+    """Expand Solana history research to the same 500-wallet candidate ceiling."""
+    path = _ORIGINAL_SOL_ENSURE(app)
+    rows = _sibot._rows(path)
+    changed = False
+    for row in rows:
+        key = str(row.get("setting") or "").strip()
+        current = str(row.get("value") or "").strip()
+        if key == "candidate_limit" and current == "100":
+            row["value"] = "500"
+            changed = True
+    if changed:
+        _sibot._atomic_csv(path, rows, ["setting", "value", "description"])
+    return path
+
+
 def install():
     if getattr(_analyser, "_broad_profit_research_installed", False):
         return
     _analyser.analyse_top_wallets = analyse_top_wallets
     _sibot.ensure_settings = ensure_settings
+    _sol.ensure_settings = solana_ensure_settings
     _analyser._broad_profit_research_installed = True
 
 
