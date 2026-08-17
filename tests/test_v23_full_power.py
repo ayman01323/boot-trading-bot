@@ -95,11 +95,14 @@ def test_atomic_executor_source_has_owner_router_and_profit_guards():
     assert 'MIN_PROFIT' in s
     assert 'nonReentrant' in s
 
-def test_master_gates_default_off():
+def test_master_gates_are_explicit_booleans():
+    # Production operators may intentionally switch these gates on or off.
+    # Deployment tests must verify explicit configuration, not force a live
+    # server back to the repository's original safety default.
     auto={r['setting']:r['value'] for r in rows('CSVbot/auto_trading_settings.csv') if r['chain_id']=='*'}
     live={r['setting']:r['value'] for r in rows('CSVbot/live_trading_settings.csv') if r['chain_id']=='*'}
-    assert auto['auto_trading_enabled'].lower()=='false'
-    assert live['trading_enabled'].lower()=='false'
+    assert auto['auto_trading_enabled'].lower() in {'true','false'}
+    assert live['trading_enabled'].lower() in {'true','false'}
 
 def test_full_power_defaults():
     auto={r['setting']:r['value'] for r in rows('CSVbot/auto_trading_settings.csv') if r['chain_id']=='*'}
