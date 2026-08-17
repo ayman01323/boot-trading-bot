@@ -46,7 +46,5 @@ from . import telegram_solana_everywhere_compat_patch  # noqa: F401
 from . import telegram_live_reporting_patch  # noqa: F401
 # User-confirmed manual Solana wallet transfers (SOL amount or USD-equivalent SOL).
 from . import telegram_solana_send_patch  # noqa: F401
-# Temporary read-only public status probe for one Solana address; no secrets are read or logged.
-from . import runtime_css_live_probe  # noqa: F401
 from .cli import main
 raise SystemExit(main())
