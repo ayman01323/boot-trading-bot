@@ -18,5 +18,9 @@ from . import telegram_wallet_links_patch  # noqa: F401
 from . import sibot_intelligence_patch  # noqa: F401
 # Add Solana discovery/ranking/SHADOW monitoring and Telegram intelligence controls.
 from . import telegram_sibot_intelligence_patch  # noqa: F401
+# Broaden EVM and Solana profit research before the final Top-20 selection.
+from . import profit_research_expansion_patch  # noqa: F401
+# Send hourly Telegram capital/gas/opportunity-without-capital reminders.
+from . import hourly_capital_alert_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
