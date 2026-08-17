@@ -42,5 +42,7 @@ from . import telegram_solana_live_patch  # noqa: F401
 from . import telegram_solana_everywhere_patch  # noqa: F401
 # Final aliases + Capital/P&L integration after the visual/dashboard patches.
 from . import telegram_solana_everywhere_compat_patch  # noqa: F401
+# Final truth layer for hourly capital, LIVE states and combined EVM+Solana leaders/reports.
+from . import telegram_live_reporting_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
