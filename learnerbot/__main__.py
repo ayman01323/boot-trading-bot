@@ -24,5 +24,7 @@ from . import profit_research_expansion_patch  # noqa: F401
 from . import hourly_capital_alert_patch  # noqa: F401
 # Final UI guard: Solana must always be visible in Top-20/Leaders pickers.
 from . import telegram_solana_visibility_patch  # noqa: F401
+# Immediate leader BUY/SELL funding, gas and token-readiness alerts + hourly exit audit.
+from . import sibot_readiness_alert_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
