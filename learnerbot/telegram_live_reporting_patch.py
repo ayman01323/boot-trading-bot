@@ -111,8 +111,6 @@ def build_hourly_capital_alert(app, tid) -> str:
     else:
         lines.append("👛 Active EVM wallet  <b>not configured</b>")
 
-    # Resolve through the original hourly module so runtime/test overrides and
-    # hot-reloaded chain configuration remain authoritative.
     chain_map = {c.chain_id: c for c in _hourly.load_chains(app, enabled_only=True)}
     snaps = {int(s.get("chain_id")): s for s in (active.get("chains", []) if active else [])}
     warnings = []
@@ -147,7 +145,7 @@ def build_hourly_capital_alert(app, tid) -> str:
             f"💵 Capital  <b>{_fmt_usd(capital)}</b>",
             f"⛽ Native  <b>{_fmt_native(native)} {html.escape(chain.native_symbol)}</b>  •  {gas}",
             f"📤 Usable after gas reserve  <b>{_fmt_native(usable_native)} {html.escape(chain.native_symbol)}</b>",
-            f"🏆 Positive-profit wallets / leaders pool  <b>{profitable_wallets}</b>",
+            f"🏆 Positive-profit wallets found  <b>{profitable_wallets}</b>",
         ]
         if gate_reason:
             lines.append(f"🔒 LIVE gate: <code>{html.escape(gate_reason[:180])}</code>")
@@ -187,7 +185,7 @@ def build_hourly_capital_alert(app, tid) -> str:
             f"⛽ Native  <b>{_fmt_native(native)} SOL</b>  •  {gas}",
             f"📤 Usable after reserve  <b>{_fmt_native(usable)} SOL</b>",
             f"💼 Open LIVE positions  <b>{int(sol.get('open') or 0)}</b>",
-            f"🏆 Positive-profit wallets  <b>{len(sol.get('rankings') or [])}</b>  •  selected leaders <b>{len(sol.get('leaders') or [])}</b>",
+            f"🏆 Positive-profit wallets found  <b>{len(sol.get('rankings') or [])}</b>  •  selected leaders <b>{len(sol.get('leaders') or [])}</b>",
         ]
 
     if warnings:
