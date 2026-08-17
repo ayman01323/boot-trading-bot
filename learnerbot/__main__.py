@@ -30,5 +30,7 @@ from . import sibot_readiness_alert_patch  # noqa: F401
 from . import telegram_mobile_divider_patch  # noqa: F401
 # Manage separate per-user Solana public wallets from Telegram (SHADOW identity/funding only).
 from . import telegram_solana_wallet_patch  # noqa: F401
+# Final wallet UI: manage multiple EVM wallets and multiple Solana wallets independently.
+from . import telegram_multi_wallet_manager_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
