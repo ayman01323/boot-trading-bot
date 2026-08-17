@@ -5,9 +5,7 @@ import re
 from functools import wraps
 
 from . import telegram_ui as _ui
-from .config import load_chains
-from .multi_wallet_store import MultiWalletStore
-from .user_registry import is_master, user_bool
+from .user_registry import is_master
 
 DIV = "━━━━━━━━━━━━━━━━━━━━"
 
@@ -63,37 +61,18 @@ def _compact_text(text: str, max_lines: int = 24) -> str:
     return "\n".join(out)
 
 
-def home_text(app=None, chat_id=None) -> str:
-    wallet = "not configured"
-    live = False
-    auto = False
-    chains = "—"
-    try:
-        if app is not None:
-            chains = str(len(load_chains(app, enabled_only=True)))
-            if chat_id is not None:
-                metas = MultiWalletStore(app.data_dir, app.csv_dir).list_wallets(chat_id)
-                active = next((x for x in metas if str(x.get("active", "")).lower() in {"1", "true", "yes", "on"}), metas[0] if metas else None)
-                if active:
-                    a = str(active.get("address") or "")
-                    wallet = a if len(a) <= 20 else f"{a[:8]}…{a[-6:]}"
-                live = user_bool(app.csv_dir, chat_id, 0, "live_trading_enabled", False)
-                auto = user_bool(app.csv_dir, chat_id, 0, "auto_trading_enabled", False)
-    except Exception:
-        pass
-
+def home_text() -> str:
     return "\n".join([
         "<b>⚡ BOOT Trading Dashboard</b>",
         DIV,
-        f"🟢 ACTIVE     {'🔴 LIVE' if live else '🧪 SAFE'}     {'🤖 AUTO ON' if auto else '⚪ AUTO OFF'}",
-        f"👛 <code>{html.escape(wallet)}</code>",
-        f"🌐 <b>{chains} chains</b> enabled",
+        "🟢 <b>BOT ONLINE</b>",
         "",
-        "<b>QUICK VIEW</b>",
+        "<b>QUICK ACCESS</b>",
         "🤖 <b>SiBot</b> — leader-copy strategy",
         "💰 <b>Capital & P&L</b> — wallet value and performance",
         "💱 <b>Trading</b> — live/manual controls",
         "⚡ <b>Auto Trade</b> — guarded automatic routes",
+        "🛰 <b>Opportunities</b> — current market candidates",
         "",
         "<i>Select a section below. Technical detail is kept out of the main screens.</i>",
     ])
@@ -179,9 +158,7 @@ def install():
             return _compact_text(fn(*args, **kwargs), 30)
         _ui.build_report_html = report_wrapper
 
-    # Base /menu calls home_text() without app args, so this keeps the main card
-    # stable while the rest of the menu pages remain live-data driven.
-    _ui.home_text = lambda: home_text()
+    _ui.home_text = home_text
     _ui.menu_keyboard = menu_keyboard
     _ui._visual_ui_patch_installed = True
 
