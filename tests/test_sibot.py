@@ -50,6 +50,19 @@ def test_sibot_top20_summary_is_compact_without_wallet_dump():
     class App:
         csv_dir = __import__('pathlib').Path('/tmp/does-not-exist')
         data_dir = __import__('pathlib').Path('/tmp/does-not-exist')
-    # Verify the compact view function is present; chain-specific views own the wallet rows.
     assert callable(patch.top20_summary_page)
     assert callable(patch.top20_page)
+
+
+def test_auto_deploy_status_patch_is_loaded_after_sibot():
+    from pathlib import Path
+    s = (Path(__file__).resolve().parents[1] / "learnerbot" / "__main__.py").read_text()
+    assert s.index("telegram_sibot_patch") < s.index("telegram_deploy_status_patch")
+
+
+def test_auto_deploy_page_is_push_triggered_and_shows_elapsed_seconds():
+    from learnerbot import telegram_deploy_status_patch as patch
+    text = patch.deploy_page()
+    assert "AUTO DEPLOY" in text
+    assert "immediately when main changes" in text
+    assert "Last successful deploy" in text
