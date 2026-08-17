@@ -12,5 +12,7 @@ from . import telegram_deploy_status_patch  # noqa: F401
 from . import telegram_pending_command_patch  # noqa: F401
 # Apply the final compact visual presentation after all feature patches are installed.
 from . import telegram_visual_ui_patch  # noqa: F401
+# Make SiBot Top-20 and leader wallet addresses open the correct configured explorer.
+from . import telegram_wallet_links_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
