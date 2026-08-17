@@ -111,7 +111,9 @@ def build_hourly_capital_alert(app, tid) -> str:
     else:
         lines.append("👛 Active EVM wallet  <b>not configured</b>")
 
-    chain_map = {c.chain_id: c for c in load_chains(app, enabled_only=True)}
+    # Resolve through the original hourly module so runtime/test overrides and
+    # hot-reloaded chain configuration remain authoritative.
+    chain_map = {c.chain_id: c for c in _hourly.load_chains(app, enabled_only=True)}
     snaps = {int(s.get("chain_id")): s for s in (active.get("chains", []) if active else [])}
     warnings = []
     opportunity_without_capital = []
@@ -321,19 +323,12 @@ def solana_context_keyboard():
 
 
 def install():
-    # Hourly worker resolves this module global at send time, so replacing it here
-    # updates the next hourly message without changing the scheduling thread.
     _hourly.build_hourly_capital_alert = build_hourly_capital_alert
-
-    # telegram_sibot_patch handlers resolve these module globals at runtime.
     _tg.sibot_keyboard = sibot_keyboard
     _tg.main_page = main_page
     _tg.leaders_page = leaders_page
     _tg.report_text = report_text
     _tg.help_page = help_page
-
-    # Solana Top-20/Leaders detail pages must return to LIVE controls, not the old
-    # SHADOW-only keyboard left by the pre-LIVE intelligence layer.
     _intel.solana_keyboard = solana_context_keyboard
 
 
