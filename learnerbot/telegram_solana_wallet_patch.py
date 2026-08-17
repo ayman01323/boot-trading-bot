@@ -14,10 +14,11 @@ _PREV_HANDLE_UPDATE = _ui.handle_update
 _PREV_WALLET_PAGE = _ui.wallet_page
 _PREV_SET_COMMANDS = _ui.set_commands
 _PENDING_ADD: set[str] = set()
+_PENDING_IMPORT: set[str] = set()
 
 
 def _store(app):
-    return SolanaWalletStore(app.csv_dir)
+    return SolanaWalletStore(app.csv_dir, app.data_dir)
 
 
 def _short(a):
@@ -47,10 +48,12 @@ def wallet_page(app, chat_id):
     rows = store.list_wallets(chat_id)
     text += "\n\n<b>🟣 SOLANA WALLET</b>"
     if not rows:
-        text += "\nNo Solana wallet added yet.\nTap <b>🟣 Solana Wallets</b> below to add a public Solana address."
+        text += "\nNo Solana wallet added yet.\nTap <b>🟣 Solana Wallets</b> to add a public address or import an encrypted signing key."
     else:
         active = store.get_meta(chat_id)
+        signing = store.has_private_key(chat_id, active.get("wallet_id"))
         text += f"\nActive: <b>{html.escape(active.get('label') or active.get('wallet_id') or '')}</b> <code>{html.escape(_short(active.get('address')))}</code>"
+        text += f"\nSigning authority: <b>{'🔐 READY' if signing else '👁 PUBLIC ONLY'}</b>"
         text += f"\nSaved Solana wallets: <b>{len(rows)}</b>"
     return text
 
@@ -66,26 +69,49 @@ def solwallet_page(app, tid):
     _ui.require_user(app.csv_dir, tid, active=False)
     store = _store(app)
     rows = store.list_wallets(tid)
-    L = ["<b>🟣 SOLANA WALLETS</b>", "━━━━━━━━━━━━", "Solana uses a separate public address from your EVM <code>0x...</code> wallet.", ""]
+    L = [
+        "<b>🟣 SOLANA WALLETS</b>",
+        "━━━━━━━━━━━━",
+        "Solana uses a separate address/keypair from your EVM <code>0x...</code> wallet.",
+        "",
+    ]
     if not rows:
-        L += ["No Solana wallet added yet.", "", "Tap <b>➕ Add Solana Wallet</b> and send the public address only."]
+        L += ["No Solana wallet added yet.", "", "Add a public address for SHADOW monitoring, or import a private key to store signing authority encrypted for future LIVE use."]
     else:
         for r in rows:
             active = str(r.get("active") or "").lower() == "true"
+            signing = store.has_private_key(tid, r.get("wallet_id"))
             mark = "✅ ACTIVE" if active else "▫️"
+            mode = "🔐 SIGNING READY" if signing else "👁 PUBLIC ONLY"
             L.append(f"{mark} <b>{html.escape(r.get('label') or r.get('wallet_id') or '')}</b> — <code>{html.escape(r.get('wallet_id') or '')}</code>")
             L.append(f"<code>{html.escape(r.get('address') or '')}</code>")
+            L.append(mode)
             if active:
                 bal = _balance(app, r.get("address"))
                 if bal is not None:
                     L.append(f"Balance: <b>{bal:f} SOL</b>")
             L.append("")
-    L += ["<b>Commands</b>", "<code>/solwallet</code>", "<code>/solwalletadd ADDRESS</code>", "<code>/solwalletadd LABEL ADDRESS</code>", "<code>/solwalletuse s1234abcd</code>", "<code>/solwalletremove s1234abcd CONFIRM</code>", "", "🔐 <b>Security:</b> this screen accepts a public Solana address only. Do not send a seed phrase or Solana private key. Solana SiBot remains SHADOW-only."]
+    L += [
+        "<b>Commands</b>",
+        "<code>/solwallet</code>",
+        "<code>/solwalletadd ADDRESS</code>",
+        "<code>/solwalletadd LABEL ADDRESS</code>",
+        "<code>/solwalletimport</code> — secure private-key prompt",
+        "<code>/solwalletuse s1234abcd</code>",
+        "<code>/solwalletremove s1234abcd CONFIRM</code>",
+        "",
+        "🔐 <b>Private-key security:</b> import is allowed only in a private Telegram chat. The secret message must be deleted successfully before the keypair is validated and encrypted. Accepted formats are a standard 64-byte Solana keypair encoded in base58 or a JSON array of 64 byte values. Seed phrases are not accepted.",
+        "",
+        "⚠️ Storing signing authority does <b>not</b> enable Solana LIVE trading. SiBot remains SHADOW-only until the Solana transaction simulation/sign/broadcast controls are separately enabled.",
+    ]
     return "\n".join(L)
 
 
 def solwallet_keyboard(app, tid):
-    rows = [[{"text": "➕ Add Solana Wallet", "callback_data": "solwallet:add"}]]
+    rows = [[
+        {"text": "➕ Add Public Address", "callback_data": "solwallet:add"},
+        {"text": "🔐 Import Private Key", "callback_data": "solwallet:import"},
+    ]]
     for r in _store(app).list_wallets(tid):
         wid = r.get("wallet_id") or ""
         label = r.get("label") or wid
@@ -115,12 +141,58 @@ def _add(app, tid, address, label="Solana"):
     return r
 
 
+def _import_secret(app, tid, secret):
+    r = _store(app).save_private_key(tid, secret, label="Imported Solana", source="telegram-import")
+    try:
+        _ui.audit(app.csv_dir, tid, "SOLANA_WALLET_IMPORT", r["wallet_id"], "", r["address"], "incoming secret deleted before encrypted persistence")
+    except Exception:
+        pass
+    return r
+
+
+def _begin_import(app, tid, chat_type):
+    _ui.require_user(app.csv_dir, tid, active=False)
+    if str(chat_type or "") != "private":
+        raise SolanaWalletError("Solana private-key import is allowed only in a private Telegram chat")
+    _PENDING_ADD.discard(str(tid))
+    _PENDING_IMPORT.add(str(tid))
+    _ui._send(
+        app,
+        tid,
+        "🔐 <b>Import Solana Private Key</b>\nSend the private key in your <b>next message</b>.\n\nAccepted: base58 64-byte Solana keypair or JSON array of 64 bytes.\nSeed phrases are NOT accepted.\n\nThe bot will first delete your secret message. Only after Telegram confirms deletion will it validate and encrypt the keypair. Send <code>cancel</code> to stop.",
+    )
+
+
 def _handle_message(app, m):
     tid = (m.get("chat") or {}).get("id")
     if tid is None:
         return False
     text = str(m.get("text") or "").strip()
     key = str(tid)
+
+    if key in _PENDING_IMPORT:
+        if text.lower() in {"cancel", "/cancel"}:
+            _PENDING_IMPORT.discard(key)
+            _show(app, tid)
+            return True
+        try:
+            if (m.get("chat") or {}).get("type") != "private":
+                raise SolanaWalletError("Solana private-key import is allowed only in a private Telegram chat")
+            mid = m.get("message_id")
+            if not mid or not _tg.delete_message(app.telegram_bot_token, tid, mid):
+                raise SolanaWalletError("Telegram did not confirm deletion; Solana private key was NOT saved")
+            r = _import_secret(app, tid, text)
+            _PENDING_IMPORT.discard(key)
+            _ui._send(
+                app,
+                tid,
+                f"✅ Solana signing key imported. Secret message deleted before persistence.\nID: <code>{html.escape(r['wallet_id'])}</code>\nAddress: <code>{html.escape(r['address'])}</code>\nSigning authority: <b>🔐 READY</b>\n\n⚠️ Solana SiBot is still SHADOW-only; this does not enable LIVE trading.",
+                solwallet_keyboard(app, tid),
+            )
+        except Exception as exc:
+            _ui._send(app, tid, f"❌ {html.escape(str(exc))}\nIf Telegram already deleted the message, resend a valid 64-byte Solana keypair or <code>cancel</code>.")
+        return True
+
     if key in _PENDING_ADD and not text.startswith("/"):
         if text.lower() in {"cancel", "/cancel"}:
             _PENDING_ADD.discard(key)
@@ -133,11 +205,12 @@ def _handle_message(app, m):
         except Exception as exc:
             _ui._send(app, tid, f"❌ {html.escape(str(exc))}\nSend a valid Solana public address or <code>cancel</code>.")
         return True
+
     if not text.startswith("/"):
         return False
     parts = text.split()
     cmd = parts[0].split("@", 1)[0].lower()
-    if cmd not in {"/wallet", "/solwallet", "/solwalletadd", "/solwalletuse", "/solwalletremove", "/solwalletforget"}:
+    if cmd not in {"/wallet", "/solwallet", "/solwalletadd", "/solwalletimport", "/solwalletuse", "/solwalletremove", "/solwalletforget"}:
         return False
     if not _ui._auth(app, tid):
         return True
@@ -146,6 +219,10 @@ def _handle_message(app, m):
             _ui._send(app, tid, wallet_page(app, tid), wallet_keyboard())
         elif cmd == "/solwallet":
             _show(app, tid)
+        elif cmd == "/solwalletimport":
+            if len(parts) != 1:
+                raise SolanaWalletError("Use /solwalletimport with no key on the command line; the bot will securely prompt for the next message")
+            _begin_import(app, tid, (m.get("chat") or {}).get("type"))
         elif cmd == "/solwalletadd":
             _ui.require_user(app.csv_dir, tid, active=False)
             if len(parts) == 2:
@@ -160,12 +237,13 @@ def _handle_message(app, m):
             if len(parts) != 2:
                 raise SolanaWalletError("Use /solwalletuse WALLET_ID")
             r = _store(app).set_active(tid, parts[1])
-            _ui._send(app, tid, f"✅ Active Solana wallet: <b>{html.escape(r.get('label') or '')}</b>\n<code>{html.escape(r.get('address') or '')}</code>", solwallet_keyboard(app, tid))
+            signing = _store(app).has_private_key(tid, parts[1])
+            _ui._send(app, tid, f"✅ Active Solana wallet: <b>{html.escape(r.get('label') or '')}</b>\n<code>{html.escape(r.get('address') or '')}</code>\nSigning authority: <b>{'🔐 READY' if signing else '👁 PUBLIC ONLY'}</b>", solwallet_keyboard(app, tid))
         else:
             if len(parts) != 3 or parts[2].upper() != "CONFIRM":
                 raise SolanaWalletError("Use /solwalletremove WALLET_ID CONFIRM")
             _store(app).forget(tid, parts[1])
-            _ui._send(app, tid, "✅ Solana public wallet removed.", solwallet_keyboard(app, tid))
+            _ui._send(app, tid, "✅ Solana wallet removed. Any encrypted signing key for that wallet was deleted from the server store.", solwallet_keyboard(app, tid))
     except Exception as exc:
         _ui._send(app, tid, f"❌ {html.escape(str(exc))}", solwallet_keyboard(app, tid))
     return True
@@ -189,8 +267,11 @@ def _handle_callback(app, cb):
         elif data == "solwallet:open":
             _show(app, tid)
         elif data == "solwallet:add":
+            _PENDING_IMPORT.discard(str(tid))
             _PENDING_ADD.add(str(tid))
-            _ui._send(app, tid, "🟣 <b>Add Solana Wallet</b>\nSend the <b>public Solana address only</b>.\n\nDo not send a seed phrase or private key. Send <code>cancel</code> to stop.")
+            _ui._send(app, tid, "🟣 <b>Add Solana Public Wallet</b>\nSend the <b>public Solana address only</b>.\n\nSend <code>cancel</code> to stop.")
+        elif data == "solwallet:import":
+            _begin_import(app, tid, ((cb.get("message") or {}).get("chat") or {}).get("type"))
         elif data.startswith("solwallet:use:"):
             wid = data.rsplit(":", 1)[-1]
             _store(app).set_active(tid, wid)
@@ -201,8 +282,10 @@ def _handle_callback(app, cb):
             _show(app, tid)
         elif data.startswith("solwallet:remove:"):
             wid = data.rsplit(":", 1)[-1]
+            signing = _store(app).has_private_key(tid, wid)
+            detail = "The encrypted Solana signing key will also be deleted." if signing else "Only the saved public address will be removed."
             kb = {"inline_keyboard": [[{"text": "🗑 Confirm remove", "callback_data": f"solwallet:remove-confirm:{wid}"}], [{"text": "Cancel", "callback_data": "solwallet:open"}]]}
-            _ui._send(app, tid, f"Remove Solana wallet <code>{html.escape(wid)}</code>?\nOnly the saved public address will be removed.", kb)
+            _ui._send(app, tid, f"Remove Solana wallet <code>{html.escape(wid)}</code>?\n{html.escape(detail)}", kb)
     except Exception as exc:
         _ui._send(app, tid, f"❌ {html.escape(str(exc))}", solwallet_keyboard(app, tid))
     return True
@@ -222,8 +305,9 @@ def set_commands(token: str):
         commands = _tg._json("getMyCommands", token, payload={}, timeout=15) or []
         existing = {str(x.get("command") or "") for x in commands}
         extras = [
-            {"command": "solwallet", "description": "Manage my Solana public wallets"},
+            {"command": "solwallet", "description": "Manage my Solana wallets"},
             {"command": "solwalletadd", "description": "Add a Solana public address"},
+            {"command": "solwalletimport", "description": "Securely import a Solana private key"},
             {"command": "solwalletuse", "description": "Select active Solana wallet"},
         ]
         commands.extend(x for x in extras if x["command"] not in existing)
