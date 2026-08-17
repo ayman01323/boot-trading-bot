@@ -26,5 +26,7 @@ from . import hourly_capital_alert_patch  # noqa: F401
 from . import telegram_solana_visibility_patch  # noqa: F401
 # Immediate leader BUY/SELL funding, gas and token-readiness alerts + hourly exit audit.
 from . import sibot_readiness_alert_patch  # noqa: F401
+# Keep decorative Telegram dividers short enough for iPhone/mobile widths.
+from . import telegram_mobile_divider_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
