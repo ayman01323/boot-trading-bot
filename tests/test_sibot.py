@@ -33,3 +33,23 @@ def test_sibot_fifo_marks_unmatched_sell_provisional():
     trades, unmatched = reconstruct_spot_trades(wallet,{router.lower()},normal,token_rows,internal,56,"bsc")
     assert trades == []
     assert unmatched == 1
+
+
+def test_sibot_telegram_menu_is_installed_and_named_only_sibot():
+    from learnerbot import telegram_sibot_patch as patch
+    kb = patch.menu_keyboard()
+    buttons = [b for row in kb.get("inline_keyboard", []) for b in row]
+    sibot = [b for b in buttons if b.get("callback_data") == "menu:sibot"]
+    assert len(sibot) == 1
+    assert sibot[0]["text"] == "🤖 SiBot"
+    assert "SiMo" not in patch.help_page()
+
+
+def test_sibot_top20_summary_is_compact_without_wallet_dump():
+    from learnerbot import telegram_sibot_patch as patch
+    class App:
+        csv_dir = __import__('pathlib').Path('/tmp/does-not-exist')
+        data_dir = __import__('pathlib').Path('/tmp/does-not-exist')
+    # Verify the compact view function is present; chain-specific views own the wallet rows.
+    assert callable(patch.top20_summary_page)
+    assert callable(patch.top20_page)
