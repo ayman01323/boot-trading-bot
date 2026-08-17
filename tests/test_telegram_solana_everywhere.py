@@ -9,7 +9,7 @@ def _texts(kb):
     return [b.get("text", "") for row in kb.get("inline_keyboard", []) for b in row]
 
 
-def test_main_menu_labels_are_all_chain_aware():
+def test_user_menu_labels_are_all_chain_aware():
     texts = _texts(ui.menu_keyboard())
     assert "🤖 SiBot — EVM + SOL" in texts
     assert "💰 Capital & P&L — All" in texts
@@ -20,7 +20,22 @@ def test_main_menu_labels_are_all_chain_aware():
     assert "🧺 Products — All Chains" in texts
     assert "🔥 Full Power — All Chains" in texts
     assert "📡 Status — All Chains" in texts
+
+
+def test_master_aliases_are_all_chain_aware(monkeypatch):
+    monkeypatch.setattr(c, "_PREV_MENU", lambda app=None, chat_id=None: {"inline_keyboard": [
+        [{"text": "👥 Copy Top 20", "callback_data": "menu:copy20"}, {"text": "🚦 IN / OUT", "callback_data": "menu:signals"}],
+        [{"text": "💰 Profit Research", "callback_data": "menu:profit"}, {"text": "🏆 Rankings", "callback_data": "menu:rankings"}],
+        [{"text": "🔬 Behaviours", "callback_data": "menu:behaviours"}, {"text": "🧠 Strategies", "callback_data": "menu:strategies"}],
+        [{"text": "📊 Full Technical Report", "callback_data": "menu:report"}],
+    ]})
+    texts = _texts(c.menu_keyboard())
     assert "👥 Copy Top 20 — EVM + SOL" in texts
+    assert "🚦 Signals — EVM + SOL" in texts
+    assert "💰 Profit Research — All" in texts
+    assert "🏆 Rankings — All" in texts
+    assert "🔬 Behaviours — EVM + SOL" in texts
+    assert "🧠 Strategies — All" in texts
     assert "📊 Full Report — All Chains" in texts
 
 
