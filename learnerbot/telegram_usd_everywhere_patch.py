@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import re
 import time
 from decimal import Decimal
@@ -55,12 +54,9 @@ def _merge_price(target: dict[str, Decimal], symbol: str, price) -> None:
     if not symbol or p <= 0:
         return
     old = target.get(symbol)
-    # Zero means the asset is known but no reliable current USD price is available.
     if old is not None and old <= 0:
         target[symbol] = p
         return
-    # If the same symbol resolves to materially different markets, do not show
-    # a potentially wrong global USD conversion. Chain-specific maps still work.
     if old is not None and old > 0:
         diff = abs(p - old) / old
         if diff > Decimal("0.05"):
@@ -174,8 +170,6 @@ def annotate_text(app, text: str) -> str:
                 known = False
             if not known:
                 return match.group(0)
-            # Do not duplicate an existing nearby USD annotation. Match the
-            # actual annotation marker, not the letters USD inside USDC/USDT.
             tail = line[match.end(): match.end() + 40]
             if "$" in tail or "USD unavailable" in tail:
                 return match.group(0)
@@ -203,6 +197,7 @@ def _wrap_text(fn, *, app_index=0):
             return annotate_text(app, result)
         return result
     wrapped.__name__ = getattr(fn, "__name__", "usd_wrapped")
+    wrapped._usd_everywhere_wrapped = True
     return wrapped
 
 
@@ -210,7 +205,6 @@ def _install_attr(module, name):
     fn = getattr(module, name, None)
     if callable(fn) and not getattr(fn, "_usd_everywhere_wrapped", False):
         wrapped = _wrap_text(fn)
-        wrapped._usd_everywhere_wrapped = True
         setattr(module, name, wrapped)
         return wrapped
     return fn
@@ -226,13 +220,17 @@ def install():
     for name in ui_names:
         _install_attr(_ui, name)
 
-    for name in [
-        "main_page", "settings_page", "leaders_page", "top20_summary_page", "top20_page",
-        "positions_page", "report_text",
-    ]:
-        wrapped = _install_attr(_sibotui, name)
-        if wrapped and hasattr(_live, name):
-            setattr(_live, name, wrapped)
+    # The live-reporting module owns the final composed SiBot main/leaders/report
+    # functions. Wrap those final functions, then point telegram_sibot_patch at
+    # the same wrappers. Never replace them with an older pre-composition layer.
+    for name in ["main_page", "leaders_page", "report_text"]:
+        wrapped = _install_attr(_live, name)
+        if callable(wrapped):
+            setattr(_sibotui, name, wrapped)
+
+    # These SiBot pages are not superseded by telegram_live_reporting_patch.
+    for name in ["settings_page", "top20_summary_page", "top20_page", "positions_page"]:
+        _install_attr(_sibotui, name)
 
     for name in ["solana_page", "solana_positions_page"]:
         _install_attr(_sollive, name)
