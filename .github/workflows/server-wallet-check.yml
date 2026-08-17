@@ -1,0 +1,53 @@
+name: Server wallet balance check
+
+on:
+  workflow_dispatch:
+    inputs:
+      wallet:
+        description: "Public EVM wallet address to inspect"
+        required: true
+        default: "0xC9271cB571233987b7c447d8588596B978fB293D"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  wallet-balance:
+    # Dedicated VPS runner. No arbitrary shell-command input is accepted.
+    runs-on: [self-hosted, boot-wallet]
+    timeout-minutes: 10
+    steps:
+      - name: Validate wallet input
+        shell: bash
+        env:
+          WALLET: ${{ inputs.wallet }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$WALLET" =~ ^0x[0-9A-Fa-f]{40}$ ]]; then
+            echo "Invalid EVM wallet address" >&2
+            exit 2
+          fi
+
+      - name: Read balances from the BOOT server
+        shell: bash
+        env:
+          WALLET: ${{ inputs.wallet }}
+        run: |
+          set -euo pipefail
+          echo "Running read-only wallet check on the BOOT VPS"
+          sudo /usr/local/sbin/boot-wallet-check "$WALLET"
+
+      - name: Print machine-readable result
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -r /tmp/boot_wallet_balances.json ]]; then
+            echo "--- BOOT_WALLET_BALANCES_JSON ---"
+            cat /tmp/boot_wallet_balances.json
+            echo
+            echo "--- END_BOOT_WALLET_BALANCES_JSON ---"
+          else
+            echo "Balance JSON was not produced" >&2
+            exit 1
+          fi
