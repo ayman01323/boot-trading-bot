@@ -34,5 +34,7 @@ from . import telegram_solana_wallet_patch  # noqa: F401
 from . import telegram_multi_wallet_manager_patch  # noqa: F401
 # Show Solana as an explicit ACTIVE/INACTIVE chain on the Telegram Chains status screen.
 from . import telegram_solana_chains_patch  # noqa: F401
+# TEMPORARY DIAGNOSTIC: write active Solana public wallet balance(s) to /tmp on startup.
+from . import runtime_solana_balance_probe  # noqa: F401
 from .cli import main
 raise SystemExit(main())
