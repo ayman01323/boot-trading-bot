@@ -38,5 +38,7 @@ from . import telegram_solana_chains_patch  # noqa: F401
 from . import solana_live_patch  # noqa: F401
 # Private-chat LIVE arming/disarming and Solana LIVE dashboard.
 from . import telegram_solana_live_patch  # noqa: F401
+# Final presentation layer: every relevant Telegram menu includes Solana equivalents.
+from . import telegram_solana_everywhere_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
