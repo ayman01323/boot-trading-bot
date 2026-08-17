@@ -43,7 +43,6 @@ def solana_page(app, tid):
         wallet_line = f"🔐 Active wallet  <code>{html.escape(address[:8] + '…' + address[-6:])}</code> • {'SIGNING READY' if signing else 'PUBLIC ONLY'}"
         balance_line = f"💰 Balance  <b>{bal:.9f} SOL</b>" if bal is not None else "💰 Balance  <b>unavailable</b>"
     except Exception:
-        signing = False
         wallet_line = "🔐 Active wallet  <b>not configured</b>"
         balance_line = "💰 Balance  <b>unavailable</b>"
     return "\n".join([
@@ -64,8 +63,8 @@ def solana_page(app, tid):
     ])
 
 
-def solana_keyboard(app=None, tid=None):
-    enabled = bool(app is not None and tid is not None and live_enabled(app, tid))
+def solana_keyboard(app, tid):
+    enabled = live_enabled(app, tid)
     live_button = {"text": "🛑 Disable LIVE", "callback_data": "sibot:solana:live:off"} if enabled else {"text": "🚀 Enable LIVE", "callback_data": "sibot:solana:live:arm"}
     return {"inline_keyboard": [
         [live_button],
@@ -85,11 +84,11 @@ def solana_positions_page(app, tid):
         pnl = Decimal(str(p.get("unrealised_net_sol") or 0))
         icon = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
         mint = str(p.get("mint") or "")
-        L += ["", f"🪙 <code>{html.escape(mint[:8] + '…' + mint[-6:])}</code>", f"{icon} Estimated P&L <b>{pnl:+.6f} SOL</b> ({pct:+.2f}%)", f"TX entry: <code>{html.escape(str(p.get('exit_signature') or '')[:16])}</code>"]
+        L += ["", f"🪙 <code>{html.escape(mint[:8] + '…' + mint[-6:])}</code>", f"{icon} Estimated P&L <b>{pnl:+.6f} SOL</b> ({pct:+.2f}%)", f"Leader: <code>{html.escape(str(p.get('leader_wallet') or '')[:16])}…</code>"]
     return "\n".join(L)
 
 
-def _private_chat(update):
+def _chat(update):
     q = update.get("callback_query") or {}
     m = q.get("message") or {}
     c = m.get("chat") or {}
@@ -99,9 +98,20 @@ def _private_chat(update):
 def handle_update(app, update):
     q = update.get("callback_query") or {}
     data = str(q.get("data") or "")
+    private, tid, qid = _chat(update)
+
+    if data in {"sibot:solana", "sibot:solana:refresh", "sibot:solana:positions"} and tid:
+        if qid:
+            try:
+                answer_callback_query(app.telegram_bot_token, qid, "Refreshed" if data.endswith("refresh") else "")
+            except Exception:
+                pass
+        text = solana_positions_page(app, tid) if data.endswith("positions") else solana_page(app, tid)
+        send_message(app.telegram_bot_token, tid, text, parse_mode="HTML", reply_markup=solana_keyboard(app, tid))
+        return True
+
     if data not in {"sibot:solana:live:arm", "sibot:solana:live:confirm", "sibot:solana:live:off"}:
         return _PREV_HANDLE(app, update)
-    private, tid, qid = _private_chat(update)
     if not private or not tid:
         if qid:
             answer_callback_query(app.telegram_bot_token, qid, "Solana LIVE can only be changed in a private chat.")
@@ -133,14 +143,13 @@ def handle_update(app, update):
                 f"First-trade cap: <b>{trade} SOL</b>",
                 f"Untouched reserve: <b>{reserve} SOL</b>",
                 "Max simultaneous LIVE positions: <b>1</b>",
-                "Every entry/exit is simulated before Jupiter execution.",
+                "Every transaction must pass signed Solana simulation before Jupiter execution.",
                 "",
                 "Press <b>CONFIRM LIVE</b> only if you want the next qualifying leader signal to spend real SOL.",
             ])
             kb = {"inline_keyboard": [[{"text": "🚀 CONFIRM LIVE", "callback_data": "sibot:solana:live:confirm"}], [{"text": "Cancel", "callback_data": "sibot:solana"}]]}
             send_message(app.telegram_bot_token, tid, text, parse_mode="HTML", reply_markup=kb, protect_content=True)
             return True
-        # Second explicit Telegram action arms real execution and also turns on SiBot monitoring.
         set_user_setting(app.csv_dir, tid, "sibot_enabled", "true", chain_id="*", description="SiBot monitoring enabled")
         set_user_setting(app.csv_dir, tid, "solana_live_enabled", "true", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Solana real-money auto execution")
         answer_callback_query(app.telegram_bot_token, qid, "Solana LIVE armed")
@@ -161,8 +170,6 @@ def handle_update(app, update):
 
 def install():
     _intel.solana_page = solana_page
-    # Existing intelligence callback calls solana_keyboard() without args; wrap it through
-    # handle_update for LIVE controls, while refresh rendering is handled below.
     _intel.solana_positions_page = solana_positions_page
     _ui.handle_update = handle_update
 
