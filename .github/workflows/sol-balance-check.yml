@@ -1,0 +1,76 @@
+name: VPS Solana Balance Check
+
+on:
+  push:
+    branches: [agent/sol-balance-check]
+
+permissions:
+  contents: read
+
+jobs:
+  balance:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Query active Solana wallet balance from VPS
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv, json
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+
+          fallback = "5sdV3Rr2CV5uLZozZWwtpTSad31Hvi9FniYUAHCfEqbw"
+          root = Path("/root/multichain-learning-bot-v2.2-fast-direct-market")
+          wallet_paths = [
+              root / "CSVbot" / "auto" / "solana_user_wallets.csv",
+              root / "CSVbot" / "solana_user_wallets.csv",
+          ]
+          settings_path = root / "CSVbot" / "solana_settings.csv"
+
+          address = fallback
+          source = "known-address-fallback"
+          for path in wallet_paths:
+              try:
+                  if not path.exists():
+                      continue
+                  with path.open("r", encoding="utf-8-sig", newline="") as f:
+                      rows = list(csv.DictReader(f))
+                  enabled = [r for r in rows if str(r.get("enabled", "true")).lower() in {"1","true","yes","on"}]
+                  active = [r for r in enabled if str(r.get("active", "")).lower() == "true"]
+                  row = (active or enabled or [None])[0]
+                  if row and row.get("address"):
+                      address = row["address"].strip()
+                      source = f"runtime:{path}"
+                      break
+              except Exception as exc:
+                  print(f"RUNTIME_WALLET_READ_ERROR={type(exc).__name__}")
+
+          rpc = "https://api.mainnet-beta.solana.com"
+          try:
+              if settings_path.exists():
+                  with settings_path.open("r", encoding="utf-8-sig", newline="") as f:
+                      for row in csv.DictReader(f):
+                          if str(row.get("setting") or "").strip() == "rpc_url" and str(row.get("value") or "").strip():
+                              rpc = str(row["value"]).strip()
+                              break
+          except Exception as exc:
+              print(f"RUNTIME_RPC_READ_ERROR={type(exc).__name__}")
+
+          payload = json.dumps({
+              "jsonrpc":"2.0",
+              "id":1,
+              "method":"getBalance",
+              "params":[address,{"commitment":"confirmed"}],
+          }).encode()
+          req = Request(rpc, data=payload, headers={"Content-Type":"application/json"}, method="POST")
+          with urlopen(req, timeout=15) as r:
+              data = json.loads(r.read().decode())
+          if data.get("error"):
+              raise SystemExit(f"SOLANA_RPC_ERROR={data['error']}")
+          lamports = int((data.get("result") or {}).get("value") or 0)
+          print(f"SOLANA_WALLET_SOURCE={source}")
+          print(f"SOLANA_WALLET_ADDRESS={address}")
+          print(f"SOLANA_BALANCE_LAMPORTS={lamports}")
+          print(f"SOLANA_BALANCE_SOL={lamports/1_000_000_000:.9f}")
+          PY
