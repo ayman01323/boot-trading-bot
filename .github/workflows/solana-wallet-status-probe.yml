@@ -1,0 +1,71 @@
+name: Solana Wallet Status Probe
+
+on:
+  push:
+    branches:
+      - 'agent/check-solana-css-live'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Read exact Solana wallet status
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /root/multichain-learning-bot-v2.2-fast-direct-market
+          .venv/bin/python - <<'PY'
+          import csv
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          from learnerbot.solana_wallet_store import SolanaWalletStore
+          from learnerbot import solana_sibot as sol
+          from learnerbot.solana_live_patch import live_enabled
+          from learnerbot import sibot
+          from learnerbot.user_registry import get_user
+
+          TARGET = 'Cssadv71MpgtjCyAbc77ASq1TXGvKV8AKEQmYeFFBGxZ'
+          root = Path('/root/multichain-learning-bot-v2.2-fast-direct-market')
+          app = SimpleNamespace(csv_dir=root / 'CSVbot', data_dir=root / 'data')
+          store = SolanaWalletStore(app.csv_dir, app.data_dir)
+          path = app.csv_dir / 'auto' / 'solana_user_wallets.csv'
+          rows = []
+          if path.exists():
+              with path.open('r', encoding='utf-8-sig', newline='') as f:
+                  rows = [r for r in csv.DictReader(f) if str(r.get('address') or '').strip() == TARGET]
+
+          print(f'target={TARGET}')
+          print(f'found={bool(rows)}')
+          for row in rows:
+              tid = str(row.get('telegram_id') or '').strip()
+              wid = str(row.get('wallet_id') or '').strip()
+              enabled = str(row.get('enabled') or '').strip().lower() in {'1','true','yes','on'}
+              active = str(row.get('active') or '').strip().lower() == 'true' and enabled
+              signing = store.has_private_key(tid, wid)
+              live = bool(live_enabled(app, tid))
+              s = sibot.user_settings(app, tid, 0)
+              sibot_enabled = str(s.get('enabled') or '').strip().lower() in {'1','true','yes','on'}
+              user = get_user(app.csv_dir, tid) or {}
+              can_auto = str(user.get('can_auto_trade') or '').strip().lower() in {'1','true','yes','on'}
+              try:
+                  result = sol._rpc(app, 'getBalance', [TARGET, {'commitment': 'confirmed'}]) or {}
+                  lamports = int(result.get('value') or 0)
+              except Exception as exc:
+                  lamports = -1
+                  print(f'balance_error={type(exc).__name__}')
+              balance_sol = (lamports / 1_000_000_000) if lamports >= 0 else None
+              effective = active and signing and live and sibot_enabled
+              print(f'wallet_id={wid}')
+              print(f'active={active}')
+              print(f'signing_ready={signing}')
+              print(f'solana_live_enabled={live}')
+              print(f'sibot_enabled={sibot_enabled}')
+              print(f'can_auto_trade={can_auto}')
+              print(f'effective_live_copy_trading={effective}')
+              print(f'balance_sol={balance_sol if balance_sol is not None else "unknown"}')
+          PY
