@@ -8,5 +8,7 @@ from . import telegram_sibot_patch  # noqa: F401
 from . import telegram_deploy_status_patch  # noqa: F401
 # Slash commands must always bypass/cancel pending SiBot numeric prompts.
 from . import telegram_pending_command_patch  # noqa: F401
+# Apply the final compact visual presentation after all feature patches are installed.
+from . import telegram_visual_ui_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
