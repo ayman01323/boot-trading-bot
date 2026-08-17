@@ -1,4 +1,8 @@
+from decimal import Decimal
+
 from learnerbot import telegram_solana_everywhere_patch as p
+from learnerbot import telegram_solana_everywhere_compat_patch as c
+from learnerbot import telegram_ui as ui
 
 
 def _texts(kb):
@@ -6,9 +10,11 @@ def _texts(kb):
 
 
 def test_main_menu_labels_are_all_chain_aware():
-    kb = p.menu_keyboard()
-    texts = _texts(kb)
-    assert "💱 Live Trading — All Chains" in texts
+    texts = _texts(ui.menu_keyboard())
+    assert "🤖 SiBot — EVM + SOL" in texts
+    assert "💰 Capital & P&L — All" in texts
+    assert "🔐 Wallets — EVM + SOL" in texts
+    assert "💱 Trading — All Chains" in texts
     assert "⚡ Auto Trade — All Chains" in texts
     assert "🛰 Opportunities — All Chains" in texts
     assert "🧺 Products — All Chains" in texts
@@ -88,3 +94,17 @@ def test_global_research_pages_append_solana(monkeypatch):
 def test_control_keyboard_has_direct_solana_entry(monkeypatch):
     monkeypatch.setattr(p, "_PREV_CONTROL_KEYBOARD", lambda app: {"inline_keyboard": [[{"text": "⬅️ Menu", "callback_data": "menu:home"}]]})
     assert "🟣 Solana LIVE / AUTO" in _texts(p.control_keyboard(None))
+
+
+def test_capital_dashboard_appends_solana(monkeypatch):
+    monkeypatch.setattr(c, "_PREV_USER_DASH", lambda app, tid: "EVM CAPITAL")
+    monkeypatch.setattr(c, "_sol_capital", lambda app, tid: {
+        "address": "6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr",
+        "native": Decimal("0.08"), "open": 1, "token_exit": Decimal("0.01"),
+        "realised": Decimal("0.002"), "unrealised": Decimal("0.001"),
+        "total_sol": Decimal("0.09"), "usd": Decimal("18"), "price": Decimal("200"), "live": True,
+    })
+    text = c.user_dashboard_text(None, "1")
+    assert "SOLANA CAPITAL" in text
+    assert "0.090000000 SOL" in text
+    assert "LIVE <b>ARMED</b>" in text
