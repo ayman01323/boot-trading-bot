@@ -154,6 +154,18 @@ if [[ -f scripts/github_ops_runner.py && -f ops/request.json ]]; then
   fi
 fi
 
+# Publish a safe, read-only telemetry snapshot to the separate server-status
+# Git branch. This branch is not watched by the deployer, so it cannot create
+# a deployment loop. No private keys, secrets, wallet credentials or CSV data
+# are published; only health/challenge/aggregate telemetry is included.
+if [[ -f scripts/publish_server_status.py ]]; then
+  if ./.venv/bin/python scripts/publish_server_status.py >>"$LOG" 2>&1; then
+    log "SERVER STATUS: safe telemetry snapshot published"
+  else
+    log "WARN: server-status telemetry publish failed"
+  fi
+fi
+
 printf '%s' "$TARGET" > "$STATE"
 log "DEPLOYED: $TARGET; learnerbot active"
 notify DEPLOYED "Commit ${TARGET:0:12} passed validation and learnerbot is active."
