@@ -14,5 +14,9 @@ from . import telegram_pending_command_patch  # noqa: F401
 from . import telegram_visual_ui_patch  # noqa: F401
 # Make SiBot Top-20 and leader wallet addresses open the correct configured explorer.
 from . import telegram_wallet_links_patch  # noqa: F401
+# Add leader last-entry study, same-address EVM cross-chain intelligence and adaptive exits.
+from . import sibot_intelligence_patch  # noqa: F401
+# Add Solana discovery/ranking/SHADOW monitoring and Telegram intelligence controls.
+from . import telegram_sibot_intelligence_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
