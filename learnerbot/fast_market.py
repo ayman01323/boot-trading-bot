@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from .auto_trader import execute_best_live_opportunity
+from .cross_dex_executor import execute_best_cross_dex_opportunity
 from .config import AppSettings, load_kv_scoped
 from .market_scanner import _atomic_rows, _rows, merge_live_opportunities
 from .full_power_scanner import scan_full_power_hot_routes
@@ -41,8 +42,9 @@ def _notify_auto_event(app, ev):
 def run_fast_market_pass(app):
     """Run one independent current-market pass and return a compact status dict.
 
-    The function is deliberately separate from the thread loop so the full fast path
-    can be unit-tested without sleeping or starting systemd/Telegram.
+    Same-router V2/V3 execution remains in auto_trader. Cross-DEX V2 candidates are
+    handled by the separately gated atomic executor path; shadow rows never become
+    sequential EOA swaps.
     """
     ctxs=[];started=time.monotonic()
     try:
@@ -51,7 +53,14 @@ def run_fast_market_pass(app):
         learned_rows=_rows(Path(app.csv_dir)/"auto"/"learned_route_opportunities.csv")
         opp_path,live_rows=merge_live_opportunities(app,learned_rows,market_rows)
         eligible=sum(1 for r in live_rows if str(r.get("enabled") or "").lower()=="true")
+
         events=execute_best_live_opportunity(app,live_rows)
+        # Cross-DEX scanner rows deliberately remain enabled=false. The dedicated
+        # executor independently requires cross_dex_live_enabled, a configured
+        # on-chain executor, caller/router whitelists, wallet allowance, adaptive
+        # profitability and final eth_call before private submission.
+        events.extend(execute_best_cross_dex_opportunity(app,market_rows))
+
         for ev in events:_notify_auto_event(app,ev)
         duration=time.monotonic()-started
         result={"updated_epoch":int(time.time()),"duration_seconds":f"{duration:.3f}","routes":len(market_rows),
