@@ -38,5 +38,7 @@ from . import telegram_solana_chains_patch  # noqa: F401
 from . import solana_live_patch  # noqa: F401
 # Private-chat LIVE arming/disarming and Solana LIVE dashboard.
 from . import telegram_solana_live_patch  # noqa: F401
+# Temporary read-only startup report of effective LIVE/ARMED booleans.
+from . import runtime_live_status_probe  # noqa: F401
 from .cli import main
 raise SystemExit(main())
