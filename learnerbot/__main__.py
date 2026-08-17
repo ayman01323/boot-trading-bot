@@ -46,5 +46,7 @@ from . import telegram_solana_everywhere_compat_patch  # noqa: F401
 from . import telegram_live_reporting_patch  # noqa: F401
 # User-confirmed manual Solana wallet transfers (SOL amount or USD-equivalent SOL).
 from . import telegram_solana_send_patch  # noqa: F401
+# One-shot migration requested by the user: set Solana LIVE trade size and reserve to built-in hard minimums.
+from . import solana_minimum_settings_migration  # noqa: F401
 from .cli import main
 raise SystemExit(main())
