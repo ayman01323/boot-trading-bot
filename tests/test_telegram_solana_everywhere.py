@@ -2,15 +2,21 @@ from decimal import Decimal
 
 from learnerbot import telegram_solana_everywhere_patch as p
 from learnerbot import telegram_solana_everywhere_compat_patch as c
-from learnerbot import telegram_ui as ui
 
 
 def _texts(kb):
     return [b.get("text", "") for row in kb.get("inline_keyboard", []) for b in row]
 
 
-def test_user_menu_labels_are_all_chain_aware():
-    texts = _texts(ui.menu_keyboard())
+def test_user_menu_labels_are_all_chain_aware(monkeypatch):
+    monkeypatch.setattr(c, "_PREV_MENU", lambda app=None, chat_id=None: {"inline_keyboard": [
+        [{"text": "🤖 SiBot", "callback_data": "menu:sibot"}, {"text": "💰 Capital & P&L", "callback_data": "menu:capital"}],
+        [{"text": "🔐 Wallets", "callback_data": "menu:wallet"}, {"text": "💱 Trading", "callback_data": "menu:trading"}],
+        [{"text": "⚡ Auto Trade", "callback_data": "menu:auto"}, {"text": "🛰 Opportunities", "callback_data": "menu:opportunities"}],
+        [{"text": "🧺 Products", "callback_data": "menu:products"}, {"text": "🔥 Full Power", "callback_data": "menu:power"}],
+        [{"text": "📡 Status", "callback_data": "menu:status"}],
+    ]})
+    texts = _texts(c.menu_keyboard())
     assert "🤖 SiBot — EVM + SOL" in texts
     assert "💰 Capital & P&L — All" in texts
     assert "🔐 Wallets — EVM + SOL" in texts
