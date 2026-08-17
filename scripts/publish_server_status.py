@@ -4,10 +4,10 @@ from __future__ import annotations
 import csv
 import json
 import os
+import sqlite3
 import subprocess
-import tempfile
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from learnerbot.config import AppSettings
@@ -71,6 +71,127 @@ def fnum(value, default=0.0) -> float:
         return float(value)
     except Exception:
         return float(default)
+
+
+def profitable_wallets(hours: int = 10) -> dict:
+    """Aggregate recent positive profit evidence across all chain DBs.
+
+    'proven' means proof_quality begins with PROVEN. We publish only public wallet
+    addresses and aggregate evidence; no keys, RPC URLs, tokens or private config.
+    """
+    cutoff = int(time.time()) - max(1, int(hours)) * 3600
+    by_wallet: dict[str, dict] = {}
+    db_errors: list[str] = []
+    evidence_rows = 0
+    proven_rows = 0
+
+    for db_path in sorted((ROOT / 'data').glob('*.sqlite3')):
+        chain = db_path.stem
+        try:
+            conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=15)
+            conn.row_factory = sqlite3.Row
+            try:
+                found = conn.execute(
+                    """
+                    SELECT wallet, net_base, net_usd, proof_quality, classification,
+                           base_symbol, created_at, tx_hash
+                    FROM profit_evidence
+                    WHERE created_at >= ? AND COALESCE(net_base, 0) > 0
+                    ORDER BY created_at DESC
+                    """,
+                    (cutoff,),
+                ).fetchall()
+            finally:
+                conn.close()
+        except Exception as exc:
+            db_errors.append(f'{chain}:{type(exc).__name__}')
+            continue
+
+        for r in found:
+            evidence_rows += 1
+            wallet = str(r['wallet'] or '').lower().strip()
+            if not wallet:
+                continue
+            quality = str(r['proof_quality'] or '')
+            is_proven = quality.upper().startswith('PROVEN')
+            if is_proven:
+                proven_rows += 1
+            rec = by_wallet.setdefault(wallet, {
+                'wallet': wallet,
+                'chains': set(),
+                'positive_evidence_count': 0,
+                'proven_positive_count': 0,
+                'total_net_base': 0.0,
+                'total_net_usd': 0.0,
+                'proven_net_base': 0.0,
+                'proven_net_usd': 0.0,
+                'latest_epoch': 0,
+                'base_symbols': set(),
+                'classifications': Counter(),
+                'proof_qualities': Counter(),
+            })
+            rec['chains'].add(chain)
+            rec['positive_evidence_count'] += 1
+            nb = fnum(r['net_base'])
+            nu = fnum(r['net_usd'])
+            rec['total_net_base'] += nb
+            rec['total_net_usd'] += nu
+            if is_proven:
+                rec['proven_positive_count'] += 1
+                rec['proven_net_base'] += nb
+                rec['proven_net_usd'] += nu
+            rec['latest_epoch'] = max(rec['latest_epoch'], int(fnum(r['created_at'])))
+            if r['base_symbol']:
+                rec['base_symbols'].add(str(r['base_symbol']))
+            if r['classification']:
+                rec['classifications'][str(r['classification'])] += 1
+            if quality:
+                rec['proof_qualities'][quality] += 1
+
+    out = []
+    for rec in by_wallet.values():
+        out.append({
+            'wallet': rec['wallet'],
+            'chains': sorted(rec['chains']),
+            'positive_evidence_count': rec['positive_evidence_count'],
+            'proven_positive_count': rec['proven_positive_count'],
+            'total_net_base': rec['total_net_base'],
+            'total_net_usd': rec['total_net_usd'],
+            'proven_net_base': rec['proven_net_base'],
+            'proven_net_usd': rec['proven_net_usd'],
+            'latest_epoch': rec['latest_epoch'],
+            'base_symbols': sorted(rec['base_symbols']),
+            'top_classifications': [
+                {'name': name, 'count': count}
+                for name, count in rec['classifications'].most_common(3)
+            ],
+            'proof_qualities': [
+                {'name': name, 'count': count}
+                for name, count in rec['proof_qualities'].most_common(4)
+            ],
+        })
+
+    # Put genuinely proven profit first; broader positive evidence follows.
+    out.sort(
+        key=lambda x: (
+            x['proven_positive_count'] > 0,
+            x['proven_net_usd'],
+            x['proven_net_base'],
+            x['positive_evidence_count'],
+            x['latest_epoch'],
+        ),
+        reverse=True,
+    )
+    return {
+        'hours': hours,
+        'cutoff_epoch': cutoff,
+        'wallets_with_positive_evidence': len(out),
+        'wallets_with_proven_positive_evidence': sum(1 for x in out if x['proven_positive_count'] > 0),
+        'positive_evidence_rows': evidence_rows,
+        'proven_positive_rows': proven_rows,
+        'top_wallets': out[:50],
+        'db_errors': db_errors[:10],
+    }
 
 
 def telemetry(app: AppSettings) -> dict:
@@ -163,6 +284,7 @@ def telemetry(app: AppSettings) -> dict:
             'eligible': len(enabled),
             'best': best,
         },
+        'profitable_wallets_10h': profitable_wallets(10),
         'disk_free_kb': disk_free_kb,
     }
 
