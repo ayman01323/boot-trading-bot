@@ -1,0 +1,37 @@
+name: BOOT Python Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - 'agent/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt pytest
+      - name: Compile Python
+        run: python -m compileall -q learnerbot scripts tests
+      - name: SiBot strategy tests
+        run: pytest -q tests/test_sibot.py
+      - name: Legacy full suite when runtime CSV fixtures are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f CSVbot/chains.csv && -f CSVbot/auto_trading_settings.csv && -f CSVbot/live_trading_settings.csv && -f CSVbot/dex_registry.csv ]]; then
+            pytest -q
+          else
+            echo 'Skipping legacy config-bound tests: runtime CSVbot fixtures are not stored in this GitHub checkout.'
+          fi
