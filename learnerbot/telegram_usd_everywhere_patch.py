@@ -55,6 +55,10 @@ def _merge_price(target: dict[str, Decimal], symbol: str, price) -> None:
     if not symbol or p <= 0:
         return
     old = target.get(symbol)
+    # Zero means the asset is known but no reliable current USD price is available.
+    if old is not None and old <= 0:
+        target[symbol] = p
+        return
     # If the same symbol resolves to materially different markets, do not show
     # a potentially wrong global USD conversion. Chain-specific maps still work.
     if old is not None and old > 0:
@@ -63,6 +67,12 @@ def _merge_price(target: dict[str, Decimal], symbol: str, price) -> None:
             target.pop(symbol, None)
             return
     target[symbol] = p
+
+
+def _known_unpriced(target: dict[str, Decimal], symbol: str) -> None:
+    symbol = str(symbol or "").upper().strip()
+    if symbol and symbol not in target:
+        target[symbol] = Decimal(0)
 
 
 def _price_maps(app):
@@ -77,6 +87,8 @@ def _price_maps(app):
 
     for c in chains:
         m: dict[str, Decimal] = {s: Decimal(1) for s in _STABLE}
+        _known_unpriced(m, c.native_symbol)
+        _known_unpriced(m, c.wrapped_base_symbol)
         np = native.get(c.slug)
         if np is not None:
             _merge_price(m, c.native_symbol, np)
@@ -91,6 +103,7 @@ def _price_maps(app):
             for item in catalog:
                 sym = str(item.get("symbol") or "").upper()
                 addr = str(item.get("address") or "").lower()
+                _known_unpriced(m, sym)
                 p = token_prices.get(addr)
                 if p is None and addr == wrapped:
                     p = np
@@ -109,6 +122,7 @@ def _price_maps(app):
     except Exception:
         sp = None
     sol_map = {s: Decimal(1) for s in _STABLE}
+    _known_unpriced(sol_map, "SOL")
     if sp is not None:
         _merge_price(sol_map, "SOL", sp)
         _merge_price(global_map, "SOL", sp)
@@ -127,8 +141,6 @@ def _line_chain_key(line: str, chains) -> str | None:
     for c in chains:
         slug = str(c.slug or "").lower()
         name = str(c.name or "").lower()
-        # Prefer explicit slug/name mentions. Word boundaries avoid accidental
-        # matches such as 'base' inside a longer identifier.
         if slug and re.search(rf"(?<![a-z0-9]){re.escape(slug)}(?![a-z0-9])", plain):
             return slug
         if name and name != slug and name in plain:
@@ -151,17 +163,28 @@ def annotate_text(app, text: str) -> str:
 
         def repl(match):
             symbol = str(match.group("symbol") or "").upper()
-            price = local.get(symbol) or global_map.get(symbol)
-            if price is None:
+            if symbol in local:
+                price = local[symbol]
+                known = True
+            elif symbol in global_map:
+                price = global_map[symbol]
+                known = True
+            else:
+                price = None
+                known = False
+            if not known:
                 return match.group(0)
-            # Do not duplicate an existing nearby USD annotation.
-            tail = line[match.end(): match.end() + 34]
-            if "$" in tail or "USD" in tail.upper():
+            # Do not duplicate an existing nearby USD annotation. Match the
+            # actual annotation marker, not the letters USD inside USDC/USDT.
+            tail = line[match.end(): match.end() + 40]
+            if "$" in tail or "USD unavailable" in tail:
                 return match.group(0)
-            amount = _dec(str(match.group("amount") or "0").replace(",", ""))
-            usd = amount * price
             rate = match.group("rate") or ""
             base = f"{match.group('amount')} {match.group('symbol')}"
+            if price is None or _dec(price) <= 0:
+                return f"{base} (USD unavailable){rate}"
+            amount = _dec(str(match.group("amount") or "0").replace(",", ""))
+            usd = amount * _dec(price)
             return f"{base} (≈ {_fmt_usd(usd)}){rate}"
 
         out.append(_NUM_SYMBOL.sub(repl, line))
@@ -194,7 +217,6 @@ def _install_attr(module, name):
 
 
 def install():
-    # Main menu pages / reports. These cover both user and master callbacks.
     ui_names = [
         "chains_page", "wallets_page", "profit_page", "rankings_page", "behaviours_page",
         "copy20_page", "signals_page", "strategies_page", "control_page", "status_page",
@@ -204,17 +226,14 @@ def install():
     for name in ui_names:
         _install_attr(_ui, name)
 
-    # SiBot screens with native-denominated profit, entries and positions.
     for name in [
         "main_page", "settings_page", "leaders_page", "top20_summary_page", "top20_page",
         "positions_page", "report_text",
     ]:
         wrapped = _install_attr(_sibotui, name)
-        # Later reporting patch calls these module globals directly.
         if wrapped and hasattr(_live, name):
             setattr(_live, name, wrapped)
 
-    # Dedicated Solana pages and wallet screens.
     for name in ["solana_page", "solana_positions_page"]:
         _install_attr(_sollive, name)
     for name in ["solana_top20_page", "solana_leaders_page"]:
@@ -224,17 +243,8 @@ def install():
     _install_attr(_multi, "wallet_hub_page")
     _install_attr(_multi, "evmwallet_page")
 
-    # Capital dashboards already calculate per-asset USD prices. This final pass
-    # puts those USD equivalents beside the corresponding rendered asset amount.
     _install_attr(_dash, "user_dashboard_text")
     _install_attr(_dash, "master_dashboard_text")
-
-    # Ensure telegram_ui references the latest wrapped functions after all prior
-    # patch layers have composed.
-    for name in ui_names:
-        fn = getattr(_ui, name, None)
-        if callable(fn):
-            setattr(_ui, name, fn)
 
 
 install()
