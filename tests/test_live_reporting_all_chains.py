@@ -6,7 +6,7 @@ from learnerbot import telegram_live_reporting_patch as p
 
 def test_hourly_includes_solana_wallet_capital_live_and_evm_state(monkeypatch):
     chain = SimpleNamespace(chain_id=1, name="Ethereum", native_symbol="ETH")
-    monkeypatch.setattr(p, "load_chains", lambda app, enabled_only=True: [chain])
+    monkeypatch.setattr(p._hourly, "load_chains", lambda app, enabled_only=True: [chain])
     monkeypatch.setattr(p._hourly, "user_dashboard_data", lambda app, tid: {
         "capital_usd": Decimal("100"),
         "wallets": [{
@@ -37,7 +37,7 @@ def test_hourly_includes_solana_wallet_capital_live_and_evm_state(monkeypatch):
     assert "Ethereum" in text and "LIVE AUTO" in text
     assert "Wallet trading state  <b>LIVE</b>" in text
     assert "Active Solana wallet" in text
-    assert "5sdV3Rr2…HCfEqbw" in text
+    assert "5sdV3Rr2…CfEqbw" in text
     assert "LIVE AUTO ARMED" in text
     assert "0.09 SOL" in text
     assert "selected leaders <b>1</b>" in text
