@@ -6,5 +6,7 @@ from . import telegram_dashboard_patch  # noqa: F401
 from . import telegram_sibot_patch  # noqa: F401
 # Restore the MASTER Auto Deploy status/timer menu after SiBot wraps the base menu.
 from . import telegram_deploy_status_patch  # noqa: F401
+# Slash commands must always bypass/cancel pending SiBot numeric prompts.
+from . import telegram_pending_command_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
