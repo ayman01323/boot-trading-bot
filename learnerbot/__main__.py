@@ -78,6 +78,8 @@ from . import solana_trade_diagnostics_patch  # noqa: F401
 from . import telegram_account_roles_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
 from . import telegram_command_scope_patch  # noqa: F401
+# Final USER-only presentation guard: keep the non-MASTER /menu short after all compatibility layers.
+from . import telegram_user_menu_compact_patch  # noqa: F401
 # One-shot greeting requested for Telegram user 461513364; does not alter account/trading settings.
 from . import telegram_hi_keefek_patch  # noqa: F401
 from .cli import main
