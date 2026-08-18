@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS live_position_created_token_accounts(
   created_at INTEGER NOT NULL,
   closed_at INTEGER,
   close_signature TEXT,
+  pending_signature TEXT,
   reclaimed_lamports TEXT NOT NULL DEFAULT '0',
   PRIMARY KEY(position_id,account_pubkey)
 );
@@ -46,6 +47,14 @@ _PREV_INSERT = _live._insert_live_position
 
 def _ensure_schema(conn):
     conn.executescript(_RECLAIM_SCHEMA)
+    # Existing installations may have the earlier table without pending_signature.
+    try:
+        columns = {str(r[1]) for r in conn.execute("PRAGMA table_info(live_position_created_token_accounts)").fetchall()}
+        if "pending_signature" not in columns:
+            conn.execute("ALTER TABLE live_position_created_token_accounts ADD COLUMN pending_signature TEXT")
+            conn.commit()
+    except Exception:
+        pass
 
 
 def _token_accounts(executor, mint):
@@ -163,6 +172,88 @@ def _confirm_signature(app, signature, timeout_seconds=12):
     return False
 
 
+def _wallet_delta_from_transaction(app, signature, address):
+    """Return the signing wallet's confirmed lamport delta for one transaction."""
+    try:
+        tx = _sol._rpc(
+            app,
+            "getTransaction",
+            [
+                str(signature),
+                {
+                    "encoding": "jsonParsed",
+                    "commitment": "confirmed",
+                    "maxSupportedTransactionVersion": 0,
+                },
+            ],
+        ) or {}
+        meta = tx.get("meta") or {}
+        message = ((tx.get("transaction") or {}).get("message") or {})
+        keys = message.get("accountKeys") or []
+        pre = meta.get("preBalances") or []
+        post = meta.get("postBalances") or []
+        for index, item in enumerate(keys):
+            pubkey = str(item.get("pubkey") if isinstance(item, dict) else item)
+            if pubkey == str(address) and index < len(pre) and index < len(post):
+                return int(post[index]) - int(pre[index])
+    except Exception:
+        return None
+    return None
+
+
+def _shares(rows, total):
+    """Allocate one real aggregate wallet refund across audit rows without duplication."""
+    accounts = [str(r.get("account_pubkey") or "") for r in rows if r.get("account_pubkey")]
+    if not accounts:
+        return {}
+    total = max(0, int(total))
+    weights = {
+        str(r.get("account_pubkey")): max(0, int(r.get("entry_lamports") or 0))
+        for r in rows if r.get("account_pubkey")
+    }
+    denom = sum(weights.values())
+    if denom <= 0:
+        out = {a: 0 for a in accounts}
+        out[accounts[0]] = total
+        return out
+    out = {a: total * weights.get(a, 0) // denom for a in accounts}
+    remainder = total - sum(out.values())
+    if remainder:
+        out[accounts[0]] += remainder
+    return out
+
+
+def _mark_reconciled(app, position_id, signature, rows, total):
+    now = int(time.time())
+    allocation = _shares(rows, total)
+    with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
+        _ensure_schema(conn)
+        for row in rows:
+            account = str(row.get("account_pubkey") or "")
+            if not account:
+                continue
+            conn.execute(
+                """UPDATE live_position_created_token_accounts
+                   SET closed_at=?,close_signature=?,pending_signature=NULL,reclaimed_lamports=?
+                   WHERE position_id=? AND account_pubkey=? AND closed_at IS NULL""",
+                (now, str(signature), str(allocation.get(account, 0)), str(position_id), account),
+            )
+        conn.commit()
+
+
+def _set_pending(app, position_id, signature, accounts):
+    with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
+        _ensure_schema(conn)
+        for account in accounts:
+            conn.execute(
+                """UPDATE live_position_created_token_accounts
+                   SET pending_signature=?
+                   WHERE position_id=? AND account_pubkey=? AND closed_at IS NULL""",
+                (str(signature), str(position_id), str(account)),
+            )
+        conn.commit()
+
+
 def _close_created_empty_accounts(executor, position_id, mint):
     """Close only bot-created, still-empty accounts and return proven wallet refund."""
     tracked = _tracked_accounts(executor.app, position_id)
@@ -176,22 +267,41 @@ def _close_created_empty_accounts(executor, position_id, mint):
     if current is None:
         return {"reclaimed_lamports": 0, "signature": "", "accounts": []}
 
+    # First reconcile a prior close transaction that may have landed after its
+    # original status poll timed out. The on-chain transaction's wallet delta is
+    # authoritative and prevents the refund from disappearing from realised P&L.
+    pending_groups = {}
+    for row in tracked:
+        pubkey = str(row.get("account_pubkey") or "")
+        if pubkey in current:
+            continue
+        pending = str(row.get("pending_signature") or "")
+        if pending:
+            pending_groups.setdefault(pending, []).append(row)
+    recovered_total = 0
+    recovered_signature = ""
+    recovered_accounts = []
+    for signature, rows in pending_groups.items():
+        delta = _wallet_delta_from_transaction(executor.app, signature, executor.address)
+        if delta is None:
+            continue
+        amount = max(0, int(delta))
+        _mark_reconciled(executor.app, position_id, signature, rows, amount)
+        recovered_total += amount
+        recovered_signature = signature
+        recovered_accounts.extend(str(r.get("account_pubkey") or "") for r in rows)
+
+    tracked = _tracked_accounts(executor.app, position_id)
     eligible = []
     for row in tracked:
         pubkey = str(row.get("account_pubkey") or "")
         live = current.get(pubkey)
-        # If the SELL itself already closed the account, its rent refund is already
-        # part of the SELL wallet delta. Mark it reconciled without double counting.
+        # If the SELL itself already closed an account and there is no pending
+        # bot-created close tx, its refund is already part of the SELL wallet delta.
         if live is None:
-            with _sol._DB_LOCK, closing(_sol.connect(executor.app)) as conn:
-                _ensure_schema(conn)
-                conn.execute(
-                    """UPDATE live_position_created_token_accounts
-                       SET closed_at=?,close_signature='IN_SWAP',reclaimed_lamports='0'
-                       WHERE position_id=? AND account_pubkey=? AND closed_at IS NULL""",
-                    (int(time.time()), str(position_id), pubkey),
-                )
-                conn.commit()
+            if row.get("pending_signature"):
+                continue
+            _mark_reconciled(executor.app, position_id, "IN_SWAP", [row], 0)
             continue
         if int(live.get("amount") or 0) != 0:
             continue
@@ -203,7 +313,11 @@ def _close_created_empty_accounts(executor, position_id, mint):
         eligible.append((row, live))
 
     if not eligible:
-        return {"reclaimed_lamports": 0, "signature": "", "accounts": []}
+        return {
+            "reclaimed_lamports": recovered_total,
+            "signature": recovered_signature,
+            "accounts": recovered_accounts,
+        }
 
     before = executor.native_balance_lamports()
     kp = Keypair.from_bytes(bytes(executor.keypair))
@@ -219,6 +333,7 @@ def _close_created_empty_accounts(executor, position_id, mint):
 
     instructions = []
     accounts = []
+    rows_for_tx = []
     for row, live in eligible[:4]:
         account = Pubkey.from_string(str(row["account_pubkey"]))
         program = Pubkey.from_string(str(live["program_id"]))
@@ -234,6 +349,7 @@ def _close_created_empty_accounts(executor, position_id, mint):
             )
         )
         accounts.append(str(row["account_pubkey"]))
+        rows_for_tx.append(row)
 
     message = MessageV0.try_compile(owner, instructions, [], blockhash)
     tx = VersionedTransaction(message, [kp])
@@ -251,23 +367,36 @@ def _close_created_empty_accounts(executor, position_id, mint):
             },
         ],
     ) or "")
-    if not signature or not _confirm_signature(executor.app, signature):
-        return {"reclaimed_lamports": 0, "signature": signature, "accounts": []}
+    if not signature:
+        return {
+            "reclaimed_lamports": recovered_total,
+            "signature": recovered_signature,
+            "accounts": recovered_accounts,
+        }
 
-    after = executor.native_balance_lamports()
-    reclaimed = max(0, int(after) - int(before))
-    now = int(time.time())
-    with _sol._DB_LOCK, closing(_sol.connect(executor.app)) as conn:
-        _ensure_schema(conn)
-        for account in accounts:
-            conn.execute(
-                """UPDATE live_position_created_token_accounts
-                   SET closed_at=?,close_signature=?,reclaimed_lamports=?
-                   WHERE position_id=? AND account_pubkey=? AND closed_at IS NULL""",
-                (now, signature, str(reclaimed), str(position_id), account),
-            )
-        conn.commit()
-    return {"reclaimed_lamports": reclaimed, "signature": signature, "accounts": accounts}
+    _set_pending(executor.app, position_id, signature, accounts)
+    confirmed = _confirm_signature(executor.app, signature)
+    delta_from_tx = _wallet_delta_from_transaction(executor.app, signature, executor.address)
+    if confirmed or delta_from_tx is not None:
+        if delta_from_tx is not None:
+            reclaimed = max(0, int(delta_from_tx))
+        else:
+            after = executor.native_balance_lamports()
+            reclaimed = max(0, int(after) - int(before))
+        _mark_reconciled(executor.app, position_id, signature, rows_for_tx, reclaimed)
+        return {
+            "reclaimed_lamports": recovered_total + reclaimed,
+            "signature": signature,
+            "accounts": recovered_accounts + accounts,
+        }
+
+    # Leave pending_signature in place. A later worker pass will reconcile the
+    # actual transaction from chain history instead of guessing or double-closing.
+    return {
+        "reclaimed_lamports": recovered_total,
+        "signature": signature,
+        "accounts": recovered_accounts,
+    }
 
 
 def _close_bound_live_with_reclaim(app, tid, position, fraction: Decimal, reason: str):
@@ -310,7 +439,6 @@ def _close_bound_live_with_reclaim(app, tid, position, fraction: Decimal, reason
                 str(position.get("mint") or ""),
             )
         except Exception as exc:
-            # A reclaim failure must never turn a successful SELL into a failed exit.
             print("[solana-token-reclaim]", type(exc).__name__, exc)
 
     reclaimed_sol = Decimal(int(reclaim.get("reclaimed_lamports") or 0)) / Decimal(1_000_000_000)
@@ -377,7 +505,7 @@ def install():
     _exec.SolanaLiveExecutor._token_account_reclaim_patch = True
     print(
         "[solana-token-reclaim] bot_created_only=true zero_balance_only=true "
-        "refund_in_realised_pnl=true"
+        "late_confirmation_reconcile=true"
     )
 
 
