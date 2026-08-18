@@ -9,6 +9,17 @@ TARGETS = {
     "leaders_per_user": "3",
     "min_closed_trades": "10",
     "min_win_rate_pct": "55",
+    "require_complete_history": "false",
+    "min_profit_factor": "1.5",
+    "recent_trade_window": "20",
+    "min_recent_win_rate_pct": "55",
+    "min_recent_profit_factor": "1.10",
+    "max_leader_drawdown_pct": "20",
+    "min_copied_trades_for_guard": "3",
+    "min_copied_win_rate_pct": "40",
+    "min_copied_profit_factor": "1.0",
+    "max_consecutive_copied_losses": "3",
+    "leader_suspend_minutes": "360",
     "max_signal_age_seconds": "20",
     "max_roundtrip_loss_pct": "2",
     "max_entry_deterioration_pct": "1.5",
@@ -66,7 +77,7 @@ def apply():
         os.replace(tmp, path)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"applied={int(time.time())}\n", encoding="utf-8")
-    print(f"[solana-quality] changed={changed} leaders=3 min_trades=10 min_win=55 roundtrip=2 entry=1.5")
+    print("[solana-quality] changed=%s leaders=3 min_trades=10 min_win=55 pf=1.5 max_dd=20 roundtrip=2 entry=1.5" % changed)
 
 
 try:
