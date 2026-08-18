@@ -62,12 +62,45 @@ def test_partial_sell_keeps_full_rent_with_remaining_position(monkeypatch, tmp_p
 
     result = accounting._close_live_rent_aware(app, "123", position, Decimal("0.5"), "PARTIAL")
     assert result["closed"] is False
+    assert result["gross_swap_output_sol"] == Decimal("0.000300000")
+    assert result["wallet_cashflow_sol"] == Decimal("0.000300000")
     assert result["net_sol"] == Decimal("0.00005000")
     assert called == []
     with sol.connect(app) as conn:
         row = conn.execute("SELECT token_amount_raw,entry_cost_sol FROM positions WHERE position_id='p1'").fetchone()
     assert int(row["token_amount_raw"]) == 50
     assert Decimal(row["entry_cost_sol"]) == Decimal("0.00209440")
+
+
+def test_negative_wallet_cashflow_never_becomes_negative_gross_swap_output(monkeypatch, tmp_path):
+    app = _app(tmp_path)
+    _insert_open(app)
+    with sol.connect(app) as conn:
+        position = dict(conn.execute("SELECT * FROM positions WHERE position_id='p1'").fetchone())
+
+    notifications = []
+
+    class Executor:
+        address = "ABCDEFGH1234567890"
+        def sell(self, mint, raw):
+            return {
+                "signature": "sell-negative-cashflow",
+                "wallet_delta_lamports": -17_518,
+                "totalOutputAmount": "2_482",
+            }
+
+    monkeypatch.setattr(accounting._binding, "_resolve_executor", lambda *args: (Executor(), 100))
+    monkeypatch.setattr(accounting, "_rent_principal_sol", lambda app, pid: Decimal("0.0018444"))
+    monkeypatch.setattr(accounting._live, "_notify", lambda app, tid, text: notifications.append(text))
+
+    result = accounting._close_live_rent_aware(app, "123", position, Decimal("0.5"), "PARTIAL")
+    assert result["gross_swap_output_sol"] == Decimal("0.000002482")
+    assert result["wallet_cashflow_sol"] == Decimal("-0.000017518")
+    assert result["net_sol"] < 0
+    assert notifications
+    assert "Gross swap output: <b>0.000002482 SOL</b>" in notifications[0]
+    assert "Wallet cashflow after transaction: <b>-0.000017518 SOL</b>" in notifications[0]
+    assert "Swap wallet proceeds" not in notifications[0]
 
 
 def test_full_sell_cash_reconciles_rent_exactly_once(monkeypatch, tmp_path):
