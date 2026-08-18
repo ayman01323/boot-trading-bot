@@ -4,6 +4,7 @@ from . import sibot as _sibot
 from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import solana_emergency_loss_halt_migration  # noqa: F401
 from . import solana_entry_capacity_reconcile_patch as _capacity
+from . import solana_execution_efficiency_patch as _efficiency
 from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_cursor_reliability_patch as _cursor
@@ -29,9 +30,26 @@ from . import profit_control_master_summary_patch as _profit_master_summary
 
 def install():
     checks = {
+        # Final monitored exits remain protected by the landed-invalid circuit.
         "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
         "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,
-        "solana_rent_close_inner": _rent._close_live_rent_aware is _exit_circuit._PREV_CLOSE,
+        # The circuit's immutable inner close is now the rent-aware P&L + receipt
+        # wrapper.  It may never be replaced by the older unguarded close path.
+        "solana_exit_inner_efficiency": _exit_circuit._PREV_CLOSE is _efficiency.close_live_with_receipt_pnl,
+        "solana_rent_close_efficiency": _rent._close_live_rent_aware is _efficiency.close_live_with_receipt_pnl,
+        "solana_execution_efficiency_stack": _efficiency.execution_efficiency_stack_intact(),
+        "solana_order_fee_guard": _exec.SolanaLiveExecutor._order is _efficiency.order_with_economic_caps,
+        # Economic balance validation stays outermost around the cost/atomic
+        # execution layer for both ordinary swaps and exits.
+        "solana_swap_validation": _exec.SolanaLiveExecutor.swap is _validation._swap_amounts_authoritative,
+        "solana_swap_efficiency_inner": _validation._PREV_SWAP is _efficiency.swap_with_cost_receipt,
+        "solana_sell_validation": _exec.SolanaLiveExecutor.sell is _validation._sell_with_token_reconciliation,
+        "solana_sell_atomic_inner": _validation._PREV_SELL is _efficiency.sell_with_atomic_account_close,
+        # BUY balance reconciliation remains outermost, with the signed reserve
+        # simulation guard immediately beneath it.
+        "solana_buy_validation": _exec.SolanaLiveExecutor.buy is _validation._buy_with_token_reconciliation,
+        "solana_buy_reserve_inner": _validation._PREV_BUY is _reserve._buy_with_simulated_reserve,
+        "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
         "solana_monitor_positions": _sol.monitor_positions is _live.monitor_positions,
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
@@ -40,9 +58,6 @@ def install():
         "solana_preflight": _sol._validate_shadow_entry is _preflight.validate_entry_cached,
         "solana_economic_gate": _live._economic_entry_gate is _overhead._economic_entry_gate_reconciled,
         "solana_capacity": _live._open_live_count is _capacity._verified_open_live_count,
-        "solana_swap_validation": _exec.SolanaLiveExecutor.swap is _validation._swap_amounts_authoritative,
-        "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
-        "solana_buy": _exec.SolanaLiveExecutor.buy is _reserve._buy_with_simulated_reserve,
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
