@@ -66,5 +66,7 @@ from . import telegram_solana_quality_settings_patch  # noqa: F401
 from . import telegram_usd_everywhere_patch  # noqa: F401
 # Master-controlled Polygon-only AUTO focus; never changes LIVE/ARMED/signing gates.
 from . import polygon_focus_patch  # noqa: F401
+# Final wallet/capital truth layer: every EVM chain remains visible with USD, gas reserve and LIVE/AUTO readiness.
+from . import telegram_capital_readiness_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
