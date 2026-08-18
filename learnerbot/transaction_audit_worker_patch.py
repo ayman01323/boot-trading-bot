@@ -8,9 +8,11 @@ import requests
 
 from .config import AppSettings
 from . import telegram_ui as _ui
-from .transaction_audit import AUDIT_INTERVAL_SECONDS, run_transaction_audit
+from .transaction_audit import run_transaction_audit
+from .hourly_gpt_strategy_review import run_hourly_gpt_review
 from .user_registry import all_users
 
+HOURLY_INTERVAL_SECONDS = 60 * 60
 _PREV_START_MENU_THREAD = _ui.start_menu_thread
 _STARTED = False
 _LOCK = threading.Lock()
@@ -44,11 +46,11 @@ def send_audit_document(app, chat_id: str, zip_path: str, summary: dict) -> None
     if not path.exists():
         return
     caption = (
-        "📦 2-hour all-ID transaction audit\n"
+        "📦 1-hour all-ID transaction audit\n"
         f"Users: {summary.get('registered_users', 0)} • Wallets: {summary.get('enabled_wallets', 0)}\n"
         f"Solana tx: {summary.get('solana_transactions', 0)} • EVM rows: {summary.get('evm_event_rows', 0)}\n"
         f"Collection errors: {summary.get('collection_errors', 0)}\n"
-        "Upload this ZIP to ChatGPT to review realised results and update the trading strategy."
+        "GPT analysis runs automatically on the server. Live strategy promotion still requires explicit approval."
     )
     url = f"https://api.telegram.org/bot{token}/sendDocument"
     with path.open("rb") as fh:
@@ -69,10 +71,57 @@ def send_audit_document(app, chat_id: str, zip_path: str, summary: dict) -> None
         raise RuntimeError(f"Telegram sendDocument failed: {payload}")
 
 
+def send_gpt_review_message(app, chat_id: str, result: dict) -> None:
+    token = str(getattr(app, "telegram_bot_token", "") or "").strip()
+    if not token:
+        return
+    if not result.get("ok"):
+        text = (
+            "⚠️ Hourly GPT audit review failed\n"
+            f"{str(result.get('error') or 'unknown error')[:900]}\n"
+            "Transaction audit was still saved. No live trading settings were changed."
+        )
+    else:
+        review = result.get("review") or {}
+        findings = review.get("findings") or []
+        lines = [
+            "🧠 Hourly GPT trading-bot review",
+            f"Status: {review.get('status', 'UNKNOWN')}",
+            f"Action: {review.get('recommended_action', 'KEEP_CURRENT_LIVE_SETTINGS')}",
+            str(review.get("executive_summary") or "")[:1200],
+            "",
+            "Top findings:",
+        ]
+        for finding in findings[:5]:
+            lines.append(
+                "• [%s/%s] %s" % (
+                    finding.get("severity", ""),
+                    finding.get("category", ""),
+                    str(finding.get("interpretation") or finding.get("evidence") or "")[:450],
+                )
+            )
+        lines += [
+            "",
+            "Candidate mode: SHADOW_ONLY",
+            "LIVE promotion: explicit human approval required.",
+        ]
+        text = "\n".join(lines)
+    response = requests.post(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        json={
+            "chat_id": str(chat_id),
+            "text": text[:3900],
+            "protect_content": True,
+            "disable_notification": True,
+            "link_preview_options": {"is_disabled": True},
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
 def _audit_loop(seed_app):
-    # Start the first audit shortly after a service restart so deployment itself
-    # can be used to trigger an immediate collection. Subsequent runs remain on
-    # the normal two-hour cadence.
+    # Start shortly after restart; thereafter collect/analyse once per hour.
     time.sleep(10)
     while True:
         started = time.time()
@@ -80,10 +129,13 @@ def _audit_loop(seed_app):
             app = AppSettings.load()
         except Exception:
             app = seed_app
+
+        summary = None
+        gpt_result = None
         try:
-            summary = run_transaction_audit(app, hours=2.0)
+            summary = run_transaction_audit(app, hours=1.0)
             print(
-                "[transaction-audit] users=%s wallets=%s solana=%s evm=%s errors=%s zip=%s"
+                "[transaction-audit] hourly users=%s wallets=%s solana=%s evm=%s errors=%s zip=%s"
                 % (
                     summary.get("registered_users", 0),
                     summary.get("enabled_wallets", 0),
@@ -93,16 +145,42 @@ def _audit_loop(seed_app):
                     summary.get("latest_zip", ""),
                 )
             )
+        except Exception as exc:
+            print("[transaction-audit] ERROR", type(exc).__name__, str(exc)[:500])
+
+        if summary is not None:
+            try:
+                gpt_result = run_hourly_gpt_review(app, summary["latest_zip"])
+                print(
+                    "[hourly-gpt-review] ok=%s mode=%s report=%s"
+                    % (
+                        gpt_result.get("ok"),
+                        gpt_result.get("mode"),
+                        gpt_result.get("latest_report", ""),
+                    )
+                )
+            except Exception as exc:
+                gpt_result = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "mode": "SHADOW_ONLY",
+                    "live_auto_deploy": False,
+                }
+                print("[hourly-gpt-review] ERROR", type(exc).__name__, str(exc)[:500])
+
             for tid in _master_chat_ids(app):
                 try:
                     send_audit_document(app, tid, summary["latest_zip"], summary)
                 except Exception as exc:
                     print("[transaction-audit-telegram]", tid, type(exc).__name__, str(exc)[:300])
-        except Exception as exc:
-            print("[transaction-audit] ERROR", type(exc).__name__, str(exc)[:500])
+                if gpt_result is not None:
+                    try:
+                        send_gpt_review_message(app, tid, gpt_result)
+                    except Exception as exc:
+                        print("[hourly-gpt-review-telegram]", tid, type(exc).__name__, str(exc)[:300])
 
         elapsed = max(0.0, time.time() - started)
-        sleep_for = max(60.0, float(AUDIT_INTERVAL_SECONDS) - elapsed)
+        sleep_for = max(60.0, float(HOURLY_INTERVAL_SECONDS) - elapsed)
         time.sleep(sleep_for)
 
 
@@ -116,9 +194,9 @@ def start_menu_thread_with_transaction_audit(app):
                 target=_audit_loop,
                 args=(app,),
                 daemon=True,
-                name="all-user-transaction-audit",
+                name="all-user-hourly-audit-and-gpt-review",
             ).start()
-            print("[transaction-audit] scheduled every 2 hours; MASTER ZIP delivery enabled")
+            print("[transaction-audit] scheduled hourly; GPT shadow review + MASTER delivery enabled")
     return result
 
 
