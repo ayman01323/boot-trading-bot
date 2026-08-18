@@ -16,9 +16,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 # The production service/deployer intentionally runs the bot from .venv. A shell
 # command such as ``python3 scripts/...`` may otherwise use the system interpreter
-# and miss required packages (for example cryptography). If the production venv
-# exists, transparently re-exec this script with the exact same Python runtime the
-# service uses. The environment marker prevents any accidental re-exec loop.
+# and miss required packages. Transparently re-exec with the production Python.
 _VENV_PYTHON = _REPO_ROOT / ".venv" / "bin" / "python"
 if (
     _VENV_PYTHON.exists()
@@ -34,23 +32,35 @@ if (
     )
 
 from learnerbot.config import AppSettings
+from learnerbot.hourly_gpt_strategy_review import run_hourly_gpt_review
 from learnerbot.transaction_audit import run_transaction_audit
-from learnerbot.transaction_audit_worker_patch import _master_chat_ids, send_audit_document
+from learnerbot.transaction_audit_worker_patch import (
+    _master_chat_ids,
+    send_audit_document,
+    send_gpt_review_message,
+)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export public on-chain transactions and bot execution data for every registered Telegram ID/wallet.")
-    parser.add_argument("--hours", type=float, default=2.0, help="Lookback window before the built-in 15-minute overlap (default: 2 hours)")
-    parser.add_argument("--send-telegram", action="store_true", help="Send resulting ZIP to active MASTER Telegram account(s)")
+    parser = argparse.ArgumentParser(description="Run the all-user hourly transaction audit and GPT shadow review.")
+    parser.add_argument("--hours", type=float, default=1.0, help="Lookback window before the built-in 15-minute overlap (default: 1 hour)")
+    parser.add_argument("--send-telegram", action="store_true", help="Send audit ZIP and GPT review status to active MASTER Telegram account(s)")
+    parser.add_argument("--skip-gpt", action="store_true", help="Collect the audit only; do not call the OpenAI API")
     args = parser.parse_args()
 
     app = AppSettings.load()
     result = run_transaction_audit(app, hours=max(0.25, args.hours))
+    gpt_result = None if args.skip_gpt else run_hourly_gpt_review(app, result["latest_zip"])
+
     if args.send_telegram:
         for tid in _master_chat_ids(app):
             send_audit_document(app, tid, result["latest_zip"], result)
-    print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
+            if gpt_result is not None:
+                send_gpt_review_message(app, tid, gpt_result)
+
+    payload = {"audit": result, "gpt_review": gpt_result}
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    return 0 if (gpt_result is None or gpt_result.get("ok")) else 3
 
 
 if __name__ == "__main__":
