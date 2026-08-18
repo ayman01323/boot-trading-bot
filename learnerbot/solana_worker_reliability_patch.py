@@ -159,6 +159,7 @@ def _history_worker(app):
 
 def _leader_worker(app):
     last_position = 0
+    last_rent_retry = 0
     while True:
         cfg = _sol.settings(app)
         if _sol._bool(cfg.get("enabled"), True):
@@ -179,6 +180,15 @@ def _leader_worker(app):
                     errors.append(f"positions {type(exc).__name__}: {exc}")
                     print("[sibot-solana-positions]", type(exc).__name__, exc)
                 last_position = now
+            if now - last_rent_retry >= 60:
+                hook = getattr(_sol, "retry_pending_rent_reclaims", None)
+                if callable(hook):
+                    try:
+                        hook(app, limit=5)
+                    except Exception as exc:
+                        errors.append(f"rent {type(exc).__name__}: {exc}")
+                        print("[sibot-solana-rent-retry]", type(exc).__name__, exc)
+                last_rent_retry = now
             _mark(app, "leader", ok=ok, error=" | ".join(errors))
         time.sleep(max(3, _sol._int(cfg.get("leader_poll_seconds"), 5)))
 
