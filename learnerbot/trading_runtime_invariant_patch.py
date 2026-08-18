@@ -24,6 +24,7 @@ from . import transaction_audit_worker_patch as _audit_worker
 from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from . import profit_control_loop_patch as _profit_control
 from . import profit_control_audit_export_patch  # noqa: F401
+from . import profit_control_master_summary_patch as _profit_master_summary
 
 
 def install():
@@ -47,7 +48,8 @@ def install():
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
         "profit_control_settings": _sol.settings is _profit_control.settings_with_profit_control,
         "profit_control_leader_gate": _profit_guard._copied_ok is _profit_control.copied_ok_with_profit_control,
-        "profit_control_hourly_loop": _audit_worker.run_hourly_gpt_review is _profit_control.run_hourly_gpt_review_with_control,
+        "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
+        "profit_control_master_summary": _audit_worker.run_hourly_gpt_review is _profit_master_summary.run_hourly_review_with_master_control_summary,
     }
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
