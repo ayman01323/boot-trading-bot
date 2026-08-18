@@ -5,7 +5,8 @@ import sys
 def test_final_runtime_hooks_match_audited_stack():
     # Import the execution stack in the same relevant order as learnerbot.__main__:
     # wallet binding -> rent tracking/accounting -> signed reserve guard -> economic
-    # efficiency -> capped legacy fallback -> liquidity guard -> validation -> circuit.
+    # efficiency -> capped legacy fallback -> liquidity guard -> validation -> circuit
+    # -> hourly control loop -> final profit-first LIVE policy.
     script = r'''
 from learnerbot import sibot as sibot
 from learnerbot import solana_live_patch as live
@@ -31,6 +32,8 @@ from learnerbot import solana_exit_circuit_breaker_patch as exit_circuit
 from learnerbot import transaction_audit_worker_patch as audit_worker
 from learnerbot import telegram_ui as telegram_ui
 from learnerbot import trading_runtime_invariant_patch  # noqa
+from learnerbot import profit_control_loop_patch as profit_control
+from learnerbot import solana_profit_first_live_correction_patch as profit_first
 from learnerbot import solana_live_executor as executor
 from learnerbot import solana_sibot as sol
 
@@ -63,6 +66,10 @@ assert live._open_live_count is capacity._verified_open_live_count
 assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
 assert sibot.poll_leader_blocks is evm.poll_leader_blocks_reliable
 assert telegram_ui.start_menu_thread is audit_worker.start_menu_thread_with_transaction_audit
+
+assert profit_first._PREV_SETTINGS is profit_control.settings_with_profit_control
+assert sol.settings is profit_first.settings_profit_first_live
+assert sol.process_leader_event is profit_first.process_leader_event_profit_first
 print("AUDITED_TRADING_RUNTIME_COMPOSITION_OK")
 '''
     result = subprocess.run(
