@@ -90,6 +90,16 @@ from . import telegram_676_solana_low_capital_migration  # noqa: F401
 from . import solana_overhead_gate_correction_patch  # noqa: F401
 # Before enforcing the LIVE position cap, quarantine only positions proven empty across all registered wallets.
 from . import solana_entry_capacity_reconcile_patch  # noqa: F401
+# Preflight must price the same router universe that the single-signer LIVE executor can execute.
+from . import solana_quote_execution_consistency_patch  # noqa: F401
+# Share the exact same fresh preflight result across users so one leader signal does not multiply Jupiter load.
+from . import solana_preflight_cache_patch  # noqa: F401
+# Do not let old pre-rent-reconciliation P&L poison future copied-leader selection.
+from . import solana_profit_accounting_epoch_patch  # noqa: F401
+# Retry transient RPC failures, never skip a failed finalized slot, and decouple fresh discovery from history backfill.
+from . import solana_worker_reliability_patch  # noqa: F401
+# On a full exit, reclaim only zero-balance token accounts proven to have been created by this bot's BUY.
+from . import solana_token_account_reclaim_patch  # noqa: F401
 # Final Solana SELL presentation: 💚 profit, ❤️ loss, 🍉 break-even on realised net P&L.
 from . import solana_sell_pnl_emoji_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
