@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from . import sibot as _sibot
 from . import sibot_evm_worker_reliability_patch as _evm_reliability
+from . import solana_emergency_loss_halt_migration  # noqa: F401
 from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_validation_patch as _validation
+from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_cursor_reliability_patch as _cursor
 from . import solana_live_executor as _exec
 from . import solana_live_patch as _live
@@ -21,8 +23,9 @@ from . import solana_worker_reliability_patch as _workers
 
 def install():
     checks = {
-        "solana_close": _live._close_live is _rent._close_live_rent_aware,
-        "solana_bound_close": _binding._close_bound_live is _rent._close_live_rent_aware,
+        "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
+        "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,
+        "solana_rent_close": _rent._close_live_rent_aware is _exit_circuit.close_live_guarded,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
         "solana_monitor_positions": _sol.monitor_positions is _live.monitor_positions,
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
