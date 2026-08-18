@@ -30,11 +30,10 @@ def poll_leader_blocks_reliable(app, chain) -> list[dict]:
             block = w3.eth.get_block(bn, full_transactions=True)
             ts = int(block.get("timestamp") or time.time())
         except Exception as exc:
-            # Stop at the first unavailable block and retry it next pass. Advancing
-            # beyond it would permanently lose any leader transaction in that block.
             print(f"[sibot-monitor:{chain.slug}:block]", bn, type(exc).__name__, str(exc)[:180])
             break
-        processed = bn
+
+        block_ok = True
         for tx in block.get("transactions", []):
             frm = str(tx.get("from") or "").lower()
             to = str(tx.get("to") or "").lower()
@@ -46,10 +45,14 @@ def poll_leader_blocks_reliable(app, chain) -> list[dict]:
                     continue
                 events.extend(_sibot._record_event(app, chain, frm, tx, receipt, ts, w3=w3))
             except Exception as exc:
-                # Receipt/classification uncertainty is not allowed to make the
-                # block disappear. Leave the event absent but retain diagnostics.
+                # Retry the entire block next pass. Already inserted events are
+                # idempotent, so this is safer than losing a leader transaction.
+                block_ok = False
                 print(f"[sibot-monitor:{chain.slug}:tx]", type(exc).__name__, str(exc)[:180])
-                continue
+                break
+        if not block_ok:
+            break
+        processed = bn
 
     if processed > last:
         with closing(_sibot.connect(app)) as conn:
@@ -61,7 +64,7 @@ def poll_leader_blocks_reliable(app, chain) -> list[dict]:
 
 def install():
     _sibot.poll_leader_blocks = poll_leader_blocks_reliable
-    print("[sibot-evm-reliability] failed_block_retry=true cursor_no_skip=true")
+    print("[sibot-evm-reliability] failed_block_or_receipt_retry=true cursor_no_skip=true")
 
 
 install()
