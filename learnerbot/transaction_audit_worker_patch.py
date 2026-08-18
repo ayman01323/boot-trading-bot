@@ -70,9 +70,10 @@ def send_audit_document(app, chat_id: str, zip_path: str, summary: dict) -> None
 
 
 def _audit_loop(seed_app):
-    # Allow the service and trading workers to settle before the first potentially
-    # heavy public-history collection. After that, run every two hours.
-    time.sleep(60)
+    # Start the first audit shortly after a service restart so deployment itself
+    # can be used to trigger an immediate collection. Subsequent runs remain on
+    # the normal two-hour cadence.
+    time.sleep(10)
     while True:
         started = time.time()
         try:
