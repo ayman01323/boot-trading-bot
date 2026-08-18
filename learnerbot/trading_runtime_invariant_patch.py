@@ -31,6 +31,10 @@ from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from . import profit_control_loop_patch as _profit_control
 from . import profit_control_audit_export_patch  # noqa: F401
 from . import profit_control_master_summary_patch as _profit_master_summary
+# Final outer policy: hard profitability floors cannot be relaxed by old CSVs or
+# hourly profiles, and leader SELLs are attempted immediately rather than waiting
+# for the copied position to deteriorate to the old loss cap.
+from . import solana_profit_first_live_correction_patch as _profit_first_live
 
 
 def install():
@@ -69,7 +73,11 @@ def install():
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
-        "profit_control_settings": _sol.settings is _profit_control.settings_with_profit_control,
+        # The hourly control-loop settings wrapper is preserved as the inner policy,
+        # but the final effective settings are the stricter profit-first floors.
+        "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
+        "profit_first_live_settings": _sol.settings is _profit_first_live.settings_profit_first_live,
+        "profit_first_leader_sell": _sol.process_leader_event is _profit_first_live.process_leader_event_profit_first,
         "profit_control_leader_gate": _profit_guard._copied_ok is _profit_control.copied_ok_with_profit_control,
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
         "profit_control_master_summary": _audit_worker.run_hourly_gpt_review is _profit_master_summary.run_hourly_review_with_master_control_summary,
