@@ -8,8 +8,13 @@ from . import solana_sibot as _sol
 from . import solana_profit_guard_patch as _guard
 from . import solana_partial_sell_profit_guard_patch as _partial_guard
 
-# Final BUY-side profitability gate.  A leader can have a positive PF yet still
+VMV_MINT = "CABUWcNoMGNgwnjssLzRWjuRcRDyz5N9NagyRiG9pump"
+
+# Final BUY-side profitability gate. A leader can have a positive PF yet still
 # have returns too small for a 0.0005 SOL follower after fixed Solana costs.
+# VMV is an explicit operator-requested allowlist exception to this leader-edge
+# filter only; it still traverses the existing freshness, entry-deterioration,
+# fee, liquidity, slippage, simulation, reserve and position safety gates.
 _sol.DEFAULTS.update({
     "live_min_leader_median_return_pct": (
         "5.0",
@@ -26,6 +31,14 @@ _sol.DEFAULTS.update({
     "live_quarantine_after_first_copied_loss_minutes": (
         "360",
         "Quarantine a leader after the first realised losing LIVE copy",
+    ),
+    "live_vmv_allowlist_enabled": (
+        "true",
+        "Allow VMV BUY signals to bypass only the leader median-return edge gate; all execution safety gates remain enforced",
+    ),
+    "live_vmv_mint": (
+        VMV_MINT,
+        "Operator-approved VMV Solana mint",
     ),
 })
 
@@ -65,7 +78,6 @@ def leader_return_edge(app, wallet: str, cfg: dict) -> dict:
         if cost <= 0:
             continue
         pct = net * Decimal(100) / cost
-        # Bound pathological reconstruction artefacts without hiding genuine losses.
         returns.append(max(Decimal("-95"), min(Decimal("500"), pct)))
 
     recent = returns[-recent_n:]
@@ -123,12 +135,27 @@ def copied_ok_quarantine_first_loss(app, tid, wallet, cfg):
     return _PREV_COPIED_OK(app, tid, wallet, cfg)
 
 
+def _vmv_edge_exception(cfg: dict, event: dict) -> bool:
+    if not _sol._bool(cfg.get("live_vmv_allowlist_enabled"), True):
+        return False
+    configured_mint = str(cfg.get("live_vmv_mint") or VMV_MINT).strip()
+    event_mint = str((event or {}).get("mint") or "").strip()
+    return bool(configured_mint and event_mint == configured_mint)
+
+
 def process_leader_event_positive_edge(app, event: dict):
-    """Reject LIVE BUY signals whose leader history cannot clear follower costs."""
+    """Reject weak-edge LIVE BUYs, except the explicit VMV allowlist mint."""
     if str((event or {}).get("action") or "").upper() != "BUY":
         return _PREV_PROCESS(app, event)
 
     cfg = _sol.settings(app)
+
+    # VMV is made trade-eligible at this layer only. The inner LIVE handler still
+    # requires a selected leader, fresh signal, safe entry deterioration, funding,
+    # reserve, signed simulation, fee cap, measurable price impact and slippage.
+    if _vmv_edge_exception(cfg, event):
+        return _PREV_PROCESS(app, event)
+
     wallet = str((event or {}).get("leader_wallet") or "")
     if not wallet:
         return [{"action": "REJECT", "reason": "leader wallet missing from BUY signal"}]
@@ -153,7 +180,7 @@ def install():
     _sol._positive_edge_entry_gate_installed = True
     print(
         "[solana-positive-edge-entry] historical_median>=5% recent_median>=4% "
-        "first_copied_loss_quarantine=6h"
+        "first_copied_loss_quarantine=6h vmv_edge_exception=true"
     )
 
 
