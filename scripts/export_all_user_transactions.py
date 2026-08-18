@@ -3,16 +3,35 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 # When this file is executed directly, Python places ``scripts/`` rather than the
 # repository root on sys.path. Add the project root explicitly so the sibling
-# ``learnerbot`` package resolves from an ordinary VPS shell invocation such as:
-#   python3 scripts/export_all_user_transactions.py --hours 2 --send-telegram
+# ``learnerbot`` package resolves from an ordinary VPS shell invocation.
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+# The production service/deployer intentionally runs the bot from .venv. A shell
+# command such as ``python3 scripts/...`` may otherwise use the system interpreter
+# and miss required packages (for example cryptography). If the production venv
+# exists, transparently re-exec this script with the exact same Python runtime the
+# service uses. The environment marker prevents any accidental re-exec loop.
+_VENV_PYTHON = _REPO_ROOT / ".venv" / "bin" / "python"
+if (
+    _VENV_PYTHON.exists()
+    and os.environ.get("BOOT_AUDIT_VENV_REEXEC") != "1"
+    and Path(sys.executable).resolve() != _VENV_PYTHON.resolve()
+):
+    env = dict(os.environ)
+    env["BOOT_AUDIT_VENV_REEXEC"] = "1"
+    os.execve(
+        str(_VENV_PYTHON),
+        [str(_VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]],
+        env,
+    )
 
 from learnerbot.config import AppSettings
 from learnerbot.transaction_audit import run_transaction_audit
