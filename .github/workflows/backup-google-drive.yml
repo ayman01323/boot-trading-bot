@@ -1,0 +1,159 @@
+name: Backup BOOT to Google Drive
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/backup-google-drive.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: boot-vps-google-drive-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Encrypted full VPS bot backup
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 60
+    steps:
+      - name: Mark backup pending
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d '{"state":"pending","context":"server/google-drive-backup","description":"Preparing encrypted VPS backup"}' >/dev/null
+
+      - name: Create and upload encrypted backup
+        id: backup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE="/root/multichain-learning-bot-v2.2-fast-direct-market"
+          CONFIG="/root/.config/rclone/rclone.conf"
+          RECOVERY="/root/.config/rclone/BOOT-BACKUP-RECOVERY.txt"
+          DEST="botbackup:full-server-backups"
+          STAMP="$(date -u +%Y-%m-%d_%H-%M-%SZ)"
+          ARCHIVE="/tmp/boot-trading-bot-${STAMP}.tar.gz"
+          CHECKSUM="${ARCHIVE}.sha256"
+          SERVICE="learnerbot.service"
+          STOPPED=0
+
+          cleanup() {
+            rc=$?
+            if [ "$STOPPED" -eq 1 ]; then
+              sudo -n systemctl start "$SERVICE" || true
+            fi
+            if [ "$rc" -eq 0 ]; then
+              rm -f "$ARCHIVE" "$CHECKSUM"
+            fi
+            exit "$rc"
+          }
+          trap cleanup EXIT
+
+          command -v rclone >/dev/null 2>&1 || { echo "rclone is not installed" >&2; exit 20; }
+          command -v openssl >/dev/null 2>&1 || { echo "openssl is not installed" >&2; exit 21; }
+          sudo -n test -d "$SOURCE" || { echo "Bot source folder not found: $SOURCE" >&2; exit 22; }
+          sudo -n test -f "$CONFIG" || { echo "Missing rclone config: $CONFIG" >&2; echo "Copy your Windows rclone.conf to /root/.config/rclone/rclone.conf first." >&2; exit 23; }
+
+          REMOTES="$(sudo -n rclone --config "$CONFIG" listremotes)"
+          printf '%s\n' "$REMOTES"
+          grep -qx 'gdrive:' <<<"$REMOTES" || { echo "Server rclone config does not contain gdrive:" >&2; exit 24; }
+
+          if ! grep -qx 'botbackup:' <<<"$REMOTES"; then
+            echo "Creating encrypted botbackup: remote over gdrive:BOOT-BACKUPS"
+            PASS1="$(openssl rand -hex 32)"
+            PASS2="$(openssl rand -hex 32)"
+            sudo -n rclone --config "$CONFIG" config create botbackup crypt \
+              --obscure \
+              remote gdrive:BOOT-BACKUPS \
+              filename_encryption standard \
+              directory_name_encryption true \
+              password "$PASS1" \
+              password2 "$PASS2"
+
+            umask 077
+            REC_TMP="$(mktemp)"
+            cat > "$REC_TMP" <<EOF
+BOOT Google Drive encrypted backup recovery information
+Created UTC: $STAMP
+
+Rclone crypt remote: botbackup:
+Underlying remote: gdrive:BOOT-BACKUPS
+filename_encryption: standard
+directory_name_encryption: true
+password: $PASS1
+password2: $PASS2
+
+IMPORTANT: Download this file from the VPS with WinSCP and store it offline.
+Without these values (or the rclone.conf that contains them), the encrypted backup cannot be decrypted after loss of the VPS.
+EOF
+            sudo -n install -m 600 "$REC_TMP" "$RECOVERY"
+            rm -f "$REC_TMP"
+            unset PASS1 PASS2
+            echo "Created root-only recovery file: $RECOVERY"
+          else
+            echo "Encrypted botbackup: remote already exists; reusing it."
+          fi
+
+          sudo -n rclone --config "$CONFIG" lsd botbackup: >/dev/null
+
+          echo "Stopping $SERVICE for a consistent archive"
+          sudo -n systemctl stop "$SERVICE"
+          STOPPED=1
+
+          sudo -n tar -C /root -czf "$ARCHIVE" multichain-learning-bot-v2.2-fast-direct-market
+          sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
+          sha256sum "$ARCHIVE" > "$CHECKSUM"
+          SIZE="$(stat -c%s "$ARCHIVE")"
+          echo "Archive: $ARCHIVE"
+          echo "Bytes: $SIZE"
+
+          echo "Restarting $SERVICE before upload"
+          sudo -n systemctl start "$SERVICE"
+          STOPPED=0
+          sudo -n systemctl is-active --quiet "$SERVICE"
+
+          rclone --config "$CONFIG" copyto "$ARCHIVE" "$DEST/$(basename "$ARCHIVE")" --progress
+          rclone --config "$CONFIG" copyto "$CHECKSUM" "$DEST/$(basename "$CHECKSUM")" --progress
+
+          REMOTE_SIZE="$(rclone --config "$CONFIG" lsjson "$DEST/$(basename "$ARCHIVE")" --stat | python3 -c 'import json,sys; print(json.load(sys.stdin)["Size"])')"
+          test "$REMOTE_SIZE" = "$SIZE"
+
+          echo "Backup verified: $DEST/$(basename "$ARCHIVE")"
+          echo "backup_name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
+
+      - name: Report backup result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
+        run: |
+          set -euo pipefail
+          if [ "$JOB_STATUS" = "success" ]; then
+            STATE="success"
+            DESC="Encrypted Google Drive backup verified"
+          else
+            STATE="failure"
+            DESC="Google Drive backup failed; inspect workflow log"
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"server/google-drive-backup\",\"description\":\"$DESC\"}" >/dev/null
+          echo "$DESC ${BACKUP_NAME:-}"
