@@ -6,6 +6,7 @@ from decimal import Decimal
 from . import solana_sibot as _sol
 from . import telegram_sibot_intelligence_patch as _intel
 from . import telegram_ui as _ui
+from .solana_execution_fault_counter_patch import reset_fault_count
 from .solana_live_patch import live_enabled
 from .solana_wallet_store import SolanaWalletStore
 from .telegram import answer_callback_query, send_message
@@ -55,6 +56,7 @@ def solana_page(app, tid):
         f"🛡 Untouched reserve  <b>{html.escape(str(cfg.get('live_min_sol_reserve','.02')))} SOL</b>",
         f"1️⃣ Max LIVE positions  <b>{html.escape(str(cfg.get('live_max_positions','1')))}</b>",
         "🧪 Signed transaction simulation  <b>REQUIRED</b>",
+        "🧯 Landed-invalid circuit breaker  <b>2 faults → LIVE OFF</b>",
         "",
         f"👀 Candidates  <b>{s['candidates']}</b> • 📈 Top-20  <b>{len(rows)}</b> • 🏆 Leaders  <b>{len(leaders)}</b>",
         f"💼 Open LIVE positions  <b>{len(positions)}</b>",
@@ -144,16 +146,20 @@ def handle_update(app, update):
                 f"Untouched reserve: <b>{reserve} SOL</b>",
                 "Max simultaneous LIVE positions: <b>1</b>",
                 "Every transaction must pass signed Solana simulation before Jupiter execution.",
+                "A landed transaction with no valid economic output counts as a safety fault; two faults automatically disable LIVE.",
                 "",
-                "Press <b>CONFIRM LIVE</b> only if you want the next qualifying leader signal to spend real SOL.",
+                "Press <b>CONFIRM LIVE</b> only after investigating any previous automatic safety shutdown.",
             ])
             kb = {"inline_keyboard": [[{"text": "🚀 CONFIRM LIVE", "callback_data": "sibot:solana:live:confirm"}], [{"text": "Cancel", "callback_data": "sibot:solana"}]]}
             send_message(app.telegram_bot_token, tid, text, parse_mode="HTML", reply_markup=kb, protect_content=True)
             return True
+        # Only an explicit private-chat CONFIRM clears the persistent landed-fault
+        # counter. Service restarts and one-shot startup migrations do not clear it.
+        reset_fault_count(app, tid)
         set_user_setting(app.csv_dir, tid, "sibot_enabled", "true", chain_id="*", description="SiBot monitoring enabled")
         set_user_setting(app.csv_dir, tid, "solana_live_enabled", "true", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Solana real-money auto execution")
         answer_callback_query(app.telegram_bot_token, qid, "Solana LIVE armed")
-        send_message(app.telegram_bot_token, tid, "🚀 <b>Solana LIVE is ARMED.</b>\nThe next qualifying fresh leader BUY may execute with real SOL under the canary limits.", parse_mode="HTML", reply_markup=solana_keyboard(app, tid), protect_content=True)
+        send_message(app.telegram_bot_token, tid, "🚀 <b>Solana LIVE is ARMED.</b>\nThe landed-execution fault counter has been reset by your explicit confirmation. The next qualifying fresh leader BUY may execute with real SOL under the safety limits.", parse_mode="HTML", reply_markup=solana_keyboard(app, tid), protect_content=True)
         return True
     except Exception as exc:
         if qid:
