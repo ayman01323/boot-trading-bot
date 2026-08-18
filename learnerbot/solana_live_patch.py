@@ -8,7 +8,7 @@ from decimal import Decimal
 from . import solana_sibot as _sol
 from .solana_live_executor import SolanaLiveError, SolanaLiveExecutor, SolanaLivePostExecutionError
 from .telegram import send_message
-from .user_registry import all_users, set_user_setting, user_bool
+from .user_registry import all_users, set_user_setting, user_bool, user_setting
 
 # LIVE execution defaults. These controls deliberately fail closed around landed
 # transactions whose economic result cannot be proved.
@@ -50,6 +50,31 @@ CREATE INDEX IF NOT EXISTS idx_sol_live_attempts_status ON live_execution_attemp
 
 def live_enabled(app, telegram_id) -> bool:
     return user_bool(app.csv_dir, telegram_id, _sol.SOLANA_CHAIN_ID, "solana_live_enabled", False)
+
+
+def live_limits(app, telegram_id, cfg=None):
+    """Return the effective per-user LIVE trade amount and untouched SOL reserve.
+
+    Platform defaults remain authoritative unless a user-specific override exists.
+    A user override may reduce the reserve for low-capital canary trading, but never
+    below 0.005 SOL. Trade size remains bounded to 0.0005-0.005 SOL.
+    """
+    cfg = dict(cfg or _sol.settings(app))
+    base_trade = _sol._dec(cfg.get("live_trade_sol"), ".005")
+    base_reserve = _sol._dec(cfg.get("live_min_sol_reserve"), ".02")
+    trade_override = user_setting(
+        app.csv_dir, telegram_id, _sol.SOLANA_CHAIN_ID, "solana_live_trade_sol", None
+    )
+    reserve_override = user_setting(
+        app.csv_dir, telegram_id, _sol.SOLANA_CHAIN_ID, "solana_live_min_reserve_sol", None
+    )
+    requested_trade = _sol._dec(trade_override, base_trade) if trade_override is not None else base_trade
+    trade = min(Decimal("0.005"), max(Decimal("0.0005"), requested_trade))
+    if reserve_override is None:
+        reserve = max(Decimal("0.01"), base_reserve)
+    else:
+        reserve = max(Decimal("0.005"), _sol._dec(reserve_override, base_reserve))
+    return trade, reserve
 
 
 def _notify(app, tid, text):
@@ -297,8 +322,7 @@ def process_leader_event(app, event: dict):
             if _open_live_count(app, tid) >= max_positions or _sol._open_position(app, tid, event["mint"]):
                 actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LIVE position limit/already held"})
                 continue
-            allocation = min(Decimal("0.005"), max(Decimal("0.0005"), _sol._dec(cfg.get("live_trade_sol"), ".005")))
-            reserve = max(Decimal("0.01"), _sol._dec(cfg.get("live_min_sol_reserve"), ".02"))
+            allocation, reserve = live_limits(app, tid, cfg)
             try:
                 ok, reason, _ = _sol._validate_shadow_entry(app, event, allocation, cfg)
                 if not ok:
