@@ -7,7 +7,7 @@ from . import solana_sibot as _sol
 from . import telegram_sibot_intelligence_patch as _intel
 from . import telegram_ui as _ui
 from .solana_execution_fault_counter_patch import reset_fault_count
-from .solana_live_patch import live_enabled
+from .solana_live_patch import live_enabled, live_limits
 from .solana_wallet_store import SolanaWalletStore
 from .telegram import answer_callback_query, send_message
 from .user_registry import require_user, set_user_setting
@@ -30,6 +30,7 @@ def _balance(app, address):
 
 def solana_page(app, tid):
     cfg = _sol.settings(app)
+    trade, reserve = live_limits(app, tid, cfg)
     s = _sol.status(app)
     rows = _sol.ranking_rows(app, tid)
     leaders = _sol.leader_rows(app, tid)
@@ -52,8 +53,9 @@ def solana_page(app, tid):
         wallet_line,
         balance_line,
         "",
-        f"🚀 Trade size  <b>{html.escape(str(cfg.get('live_trade_sol','.005')))} SOL</b>",
-        f"🛡 Untouched reserve  <b>{html.escape(str(cfg.get('live_min_sol_reserve','.02')))} SOL</b>",
+        f"🚀 Trade size  <b>{trade} SOL</b>",
+        f"🛡 Untouched reserve  <b>{reserve} SOL</b>",
+        f"💳 Minimum wallet funding  <b>{trade + reserve} SOL</b>",
         f"1️⃣ Max LIVE positions  <b>{html.escape(str(cfg.get('live_max_positions','1')))}</b>",
         "🧪 Signed transaction simulation  <b>REQUIRED</b>",
         "🧯 Landed-invalid circuit breaker  <b>2 faults → LIVE OFF</b>",
@@ -132,8 +134,7 @@ def handle_update(app, update):
         if not store.has_private_key(tid, meta.get("wallet_id")):
             raise ValueError("Active Solana wallet is not SIGNING READY. Import its private key first.")
         cfg = _sol.settings(app)
-        trade = min(Decimal("0.005"), max(Decimal("0.0005"), Decimal(str(cfg.get("live_trade_sol") or ".005"))))
-        reserve = max(Decimal("0.01"), Decimal(str(cfg.get("live_min_sol_reserve") or ".02")))
+        trade, reserve = live_limits(app, tid, cfg)
         bal = _balance(app, meta.get("address"))
         if bal is None or bal < trade + reserve:
             raise ValueError(f"Need at least {trade + reserve:.6f} SOL in the active wallet before LIVE can be armed")
@@ -144,6 +145,7 @@ def handle_update(app, update):
                 "This enables real-money automatic swaps from the active Solana signing wallet.",
                 f"First-trade cap: <b>{trade} SOL</b>",
                 f"Untouched reserve: <b>{reserve} SOL</b>",
+                f"Minimum wallet funding: <b>{trade + reserve} SOL</b>",
                 "Max simultaneous LIVE positions: <b>1</b>",
                 "Every transaction must pass signed Solana simulation before Jupiter execution.",
                 "A landed transaction with no valid economic output counts as a safety fault; two faults automatically disable LIVE.",
