@@ -70,6 +70,8 @@ from . import telegram_sibot_quality_settings_patch  # noqa: F401
 from . import telegram_solana_quality_settings_patch  # noqa: F401
 # Final presentation layer: show current USD equivalents beside asset/native values across Telegram pages.
 from . import telegram_usd_everywhere_patch  # noqa: F401
+# Apply the same USD presentation to confirmed EVM/Solana BUY and SELL notifications.
+from . import telegram_order_usd_patch  # noqa: F401
 # Master-controlled Polygon-only AUTO focus; never changes LIVE/ARMED/signing gates.
 from . import polygon_focus_patch  # noqa: F401
 # Final wallet/capital truth layer: every EVM chain remains visible with USD, gas reserve and LIVE/AUTO readiness.
