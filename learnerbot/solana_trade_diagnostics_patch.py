@@ -65,12 +65,43 @@ def process_leader_event(app, event: dict):
     return actions
 
 
+def _state_snapshot(conn, worker):
+    def integer(key):
+        try:
+            return int(_sol._state(conn, key, 0) or 0)
+        except Exception:
+            return 0
+    return {
+        "last_run": integer(f"worker:{worker}:last_run"),
+        "last_success": integer(f"worker:{worker}:last_success"),
+        "last_error": str(_sol._state(conn, f"worker:{worker}:last_error", "") or ""),
+    }
+
+
 def activity_summary(app, tid, hours=24):
     _ensure_table(app)
     since = int(time.time()) - max(1, int(hours)) * 3600
     with closing(_sol.connect(app)) as conn:
-        leaders = int(conn.execute("SELECT COUNT(*) n FROM leaders WHERE telegram_id=?", (str(tid),)).fetchone()["n"])
-        events = int(conn.execute("SELECT COUNT(*) n FROM leader_events WHERE created_at>=?", (since,)).fetchone()["n"])
+        leaders = int(conn.execute(
+            "SELECT COUNT(*) n FROM leaders WHERE telegram_id=?", (str(tid),)
+        ).fetchone()["n"])
+        events = int(conn.execute(
+            """SELECT COUNT(*) n FROM leader_events e
+               WHERE e.created_at>=?
+                 AND EXISTS(
+                   SELECT 1 FROM leaders l
+                   WHERE l.telegram_id=? AND l.wallet=e.leader_wallet
+                 )""",
+            (since, str(tid)),
+        ).fetchone()["n"])
+        last_event = int(conn.execute(
+            """SELECT COALESCE(MAX(e.created_at),0) ts FROM leader_events e
+               WHERE EXISTS(
+                   SELECT 1 FROM leaders l
+                   WHERE l.telegram_id=? AND l.wallet=e.leader_wallet
+               )""",
+            (str(tid),),
+        ).fetchone()["ts"] or 0)
         open_positions = [dict(r) for r in conn.execute(
             """SELECT position_id,leader_wallet,mint,entry_cost_sol,entry_ts,unrealised_pct,leader_exit_pending
                FROM positions WHERE telegram_id=? AND status='OPEN' AND mode='LIVE' ORDER BY entry_ts""",
@@ -81,13 +112,32 @@ def activity_summary(app, tid, hours=24):
                WHERE telegram_id=? AND ts>=? ORDER BY ts DESC LIMIT 100""",
             (str(tid), since),
         ).fetchall()]
+        workers = {name: _state_snapshot(conn, name) for name in ("discovery", "history", "leader")}
+        history_errors = int(conn.execute(
+            "SELECT COUNT(*) n FROM history_status WHERE TRIM(COALESCE(error,''))<>''"
+        ).fetchone()["n"])
     counts = Counter(str(r.get("decision") or "UNKNOWN") for r in rows)
+    try:
+        engine_enabled = _sol._sibot._bool(
+            _sol._sibot.user_settings(app, tid, 0).get("enabled"), False
+        )
+    except Exception:
+        engine_enabled = False
+    try:
+        live_enabled = bool(_liveui.live_enabled(app, tid))
+    except Exception:
+        live_enabled = False
     return {
         "leaders": leaders,
         "events": events,
+        "last_event": last_event,
         "open_positions": open_positions,
         "rows": rows,
         "counts": counts,
+        "workers": workers,
+        "history_errors": history_errors,
+        "engine_enabled": engine_enabled,
+        "live_enabled": live_enabled,
     }
 
 
@@ -104,6 +154,17 @@ def _short(v):
     return v if len(v) <= 18 else f"{v[:8]}…{v[-6:]}"
 
 
+def _age(ts):
+    if not ts:
+        return "not yet"
+    seconds = max(0, int(time.time()) - int(ts))
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    return f"{seconds // 3600}h ago"
+
+
 def solana_page(app, tid):
     base = _PREV_PAGE(app, tid)
     try:
@@ -112,13 +173,37 @@ def solana_page(app, tid):
         decisions = sum(counts.values())
         cfg = _sol.settings(app)
         max_positions = max(1, min(5, _sol._int(cfg.get("live_max_positions"), 1)))
+        discovery_age = max(0, int(time.time()) - int(s["workers"]["discovery"]["last_success"] or 0)) if s["workers"]["discovery"]["last_success"] else None
+        leader_age = max(0, int(time.time()) - int(s["workers"]["leader"]["last_success"] or 0)) if s["workers"]["leader"]["last_success"] else None
         lines = [
             "",
             "<b>🧭 SOLANA ACTIVITY — LAST 24H</b>",
+            f"Engine: {'🟢 SiBot ON' if s['engine_enabled'] else '🔴 SiBot OFF'}  •  {'🟢 LIVE ON' if s['live_enabled'] else '🔴 LIVE OFF'}",
+            "Workers: "
+            f"discovery <b>{html.escape(_age(s['workers']['discovery']['last_success']))}</b>  •  "
+            f"leader <b>{html.escape(_age(s['workers']['leader']['last_success']))}</b>  •  "
+            f"history <b>{html.escape(_age(s['workers']['history']['last_success']))}</b>",
             f"Selected leaders: <b>{s['leaders']}</b>  •  observed selected-leader events: <b>{s['events']}</b>",
+            f"Last selected-leader event: <b>{html.escape(_age(s['last_event']))}</b>",
             f"Open LIVE positions: <b>{len(s['open_positions'])}/{max_positions}</b>",
             f"LIVE decisions recorded: <b>{decisions}</b>  •  BUY <b>{counts.get('BUY',0)}</b>  •  SELL <b>{counts.get('SELL',0)}</b>  •  REJECT <b>{counts.get('REJECT',0)}</b>  •  SKIP <b>{counts.get('SKIP',0)}</b>",
         ]
+        if not s["engine_enabled"]:
+            lines.append("⚠️ Main SiBot engine is OFF for this account; Solana LIVE cannot receive new copied entries.")
+        if not s["live_enabled"]:
+            lines.append("⚠️ Solana LIVE is OFF for this account.")
+        discovery_limit = max(60, _sol._int(cfg.get("discovery_interval_seconds"), 15) * 6)
+        leader_limit = max(30, _sol._int(cfg.get("leader_poll_seconds"), 5) * 8)
+        if discovery_age is not None and discovery_age > discovery_limit:
+            lines.append("⚠️ Solana discovery heartbeat is stale.")
+        if leader_age is not None and leader_age > leader_limit:
+            lines.append("⚠️ Solana leader/position heartbeat is stale.")
+        for worker in ("discovery", "leader", "history"):
+            error = str(s["workers"][worker].get("last_error") or "").strip()
+            if error:
+                lines.append(f"⚠️ {worker} last error: <code>{html.escape(error[:180])}</code>")
+        if s["history_errors"]:
+            lines.append(f"ℹ️ Wallet histories currently carrying an error: <b>{s['history_errors']}</b>")
         if s["open_positions"]:
             lines.append("<b>Current open LIVE mints</b>")
             for p in s["open_positions"][:5]:
@@ -129,7 +214,7 @@ def solana_page(app, tid):
         if s["leaders"] == 0:
             lines.append("⚠️ No selected Solana leaders: ranking/quality selection is the current bottleneck.")
         elif s["events"] == 0:
-            lines.append("ℹ️ Leaders are selected, but no fresh classified swap from them was observed in this window.")
+            lines.append("ℹ️ Leaders are selected, but no fresh classified swap from those selected leaders was observed in this window.")
         recent = s["rows"][:5]
         if recent:
             lines.append("<b>Recent decisions</b>")
