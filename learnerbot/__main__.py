@@ -96,6 +96,8 @@ from . import solana_quote_execution_consistency_patch  # noqa: F401
 from . import solana_preflight_cache_patch  # noqa: F401
 # Do not let old pre-rent-reconciliation P&L poison future copied-leader selection.
 from . import solana_profit_accounting_epoch_patch  # noqa: F401
+# EVM leader monitoring must retry an uncertain block/receipt rather than permanently skipping it.
+from . import sibot_evm_worker_reliability_patch  # noqa: F401
 # Retry transient RPC failures, never skip a failed finalized slot, and decouple fresh discovery from history backfill.
 from . import solana_worker_reliability_patch  # noqa: F401
 # On a full exit, reclaim only zero-balance token accounts proven to have been created by this bot's BUY.
