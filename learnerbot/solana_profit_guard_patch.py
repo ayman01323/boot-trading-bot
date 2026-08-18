@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import time
-from collections import defaultdict
 from contextlib import closing
 from decimal import Decimal
 
@@ -160,35 +159,41 @@ def refresh_rankings(app, telegram_id=None):
     users = [u for u in _sol.all_users(app.csv_dir, enabled_only=True) if str(u.get("status") or "").upper()=="ACTIVE"]
     if telegram_id is not None:
         users = [u for u in users if str(u.get("telegram_id")) == str(telegram_id)]
-    metrics = {}
     qualified = []
     for a in top:
         wallet = str(a.get("wallet") or "")
         m = quality_metrics(app, wallet, cfg)
-        metrics[wallet] = m
         if _historical_ok(m, cfg):
             qualified.append((a, m))
     qualified.sort(key=lambda x: (x[1]["profit_factor"], x[1]["net"], x[1]["win_rate"], -x[1]["drawdown_pct"]), reverse=True)
     leaders_n = max(1, min(10, _i(cfg.get("leaders_per_user"), 3)))
     now = int(time.time())
+
+    # Evaluate copied-performance and cooldown rules before opening the leader
+    # replacement write transaction. This prevents a nested SQLite write lock.
+    selected = {}
+    for u in users:
+        tid = str(u.get("telegram_id") or "")
+        choices = []
+        for a,m in qualified:
+            wallet = str(a.get("wallet") or "")
+            if _copied_ok(app, tid, wallet, cfg):
+                choices.append((wallet, m))
+            if len(choices) >= leaders_n:
+                break
+        selected[tid] = choices
+
     with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
         for u in users:
             tid = str(u.get("telegram_id") or "")
             old = {str(r["wallet"]): int(r["selected_at"] or now) for r in conn.execute("SELECT wallet,selected_at FROM leaders WHERE telegram_id=?", (tid,)).fetchall()}
             conn.execute("DELETE FROM leaders WHERE telegram_id=?", (tid,))
-            rank = 0
-            for a,m in qualified:
-                wallet = str(a.get("wallet") or "")
-                if not _copied_ok(app, tid, wallet, cfg):
-                    continue
-                rank += 1
+            for rank,(wallet,m) in enumerate(selected.get(tid, []), 1):
                 conn.execute(
                     "INSERT INTO leaders(telegram_id,rank,wallet,net_profit_sol,win_rate,closed_trades,selected_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                     (tid, rank, wallet, str(m["net"]), float(m["win_rate"]), int(m["closed"]), old.get(wallet, now), now),
                 )
-                if rank >= leaders_n:
-                    break
-            conn.commit()
+        conn.commit()
     _sol.export_csv(app)
     return top
 
