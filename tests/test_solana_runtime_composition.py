@@ -24,6 +24,8 @@ from learnerbot import solana_refundable_rent_accounting_patch as rent
 from learnerbot import solana_simulated_reserve_guard_patch as reserve
 from learnerbot import solana_sell_pnl_emoji_patch  # noqa
 from learnerbot import solana_exit_circuit_breaker_patch as exit_circuit
+from learnerbot import transaction_audit_worker_patch as audit_worker
+from learnerbot import telegram_ui as telegram_ui
 from learnerbot import trading_runtime_invariant_patch  # noqa
 from learnerbot import solana_live_executor as executor
 from learnerbot import solana_sibot as sol
@@ -44,6 +46,7 @@ assert executor.SolanaLiveExecutor._simulate is reserve._simulate_with_wallet_sn
 assert executor.SolanaLiveExecutor.buy is reserve._buy_with_simulated_reserve
 assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
 assert sibot.poll_leader_blocks is evm.poll_leader_blocks_reliable
+assert telegram_ui.start_menu_thread is audit_worker.start_menu_thread_with_transaction_audit
 print("AUDITED_TRADING_RUNTIME_COMPOSITION_OK")
 '''
     result = subprocess.run(
