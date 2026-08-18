@@ -32,35 +32,40 @@ if (
     )
 
 from learnerbot.config import AppSettings
-from learnerbot.hourly_gpt_strategy_review import run_hourly_gpt_review
 from learnerbot.transaction_audit import run_transaction_audit
-from learnerbot.transaction_audit_worker_patch import (
-    _master_chat_ids,
-    send_audit_document,
-    send_gpt_review_message,
-)
+from learnerbot import transaction_audit_worker_patch as _worker
+from learnerbot import hourly_gpt_live_engine_wording_patch  # noqa: F401
+from learnerbot import profit_control_loop_patch as _control
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the all-user hourly transaction audit and GPT shadow review.")
+    parser = argparse.ArgumentParser(description="Run the all-user hourly transaction audit, GPT review and deterministic profit control loop.")
     parser.add_argument("--hours", type=float, default=1.0, help="Lookback window before the built-in 15-minute overlap (default: 1 hour)")
-    parser.add_argument("--send-telegram", action="store_true", help="Send audit ZIP and GPT review status to active MASTER Telegram account(s)")
-    parser.add_argument("--skip-gpt", action="store_true", help="Collect the audit only; do not call the OpenAI API")
+    parser.add_argument("--send-telegram", action="store_true", help="Send audit ZIP, GPT review and control-loop status to active MASTER Telegram account(s)")
+    parser.add_argument("--skip-gpt", action="store_true", help="Collect the audit and run the deterministic control loop without calling the OpenAI API")
     args = parser.parse_args()
 
     app = AppSettings.load()
     result = run_transaction_audit(app, hours=max(0.25, args.hours))
-    gpt_result = None if args.skip_gpt else run_hourly_gpt_review(app, result["latest_zip"])
+    if args.skip_gpt:
+        gpt_result = {
+            "ok": False,
+            "error": "GPT skipped by operator",
+            "control_loop": _control.run_profit_control_loop(app, None),
+        }
+    else:
+        # profit_control_loop_patch wraps this worker function, so manual and
+        # scheduled hourly runs execute the identical GPT + deterministic loop.
+        gpt_result = _worker.run_hourly_gpt_review(app, result["latest_zip"])
 
     if args.send_telegram:
-        for tid in _master_chat_ids(app):
-            send_audit_document(app, tid, result["latest_zip"], result)
-            if gpt_result is not None:
-                send_gpt_review_message(app, tid, gpt_result)
+        for tid in _worker._master_chat_ids(app):
+            _worker.send_audit_document(app, tid, result["latest_zip"], result)
+            _worker.send_gpt_review_message(app, tid, gpt_result)
 
     payload = {"audit": result, "gpt_review": gpt_result}
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
-    return 0 if (gpt_result is None or gpt_result.get("ok")) else 3
+    return 0 if (args.skip_gpt or gpt_result.get("ok")) else 3
 
 
 if __name__ == "__main__":
