@@ -1,0 +1,54 @@
+name: Install rclone on BOOT VPS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/install-rclone-vps.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-vps-rclone-install
+  cancel-in-progress: false
+
+jobs:
+  install:
+    name: Install and verify rclone
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Install rclone if missing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Runner user: $(id -un)"
+          echo "Kernel: $(uname -srmo)"
+
+          if command -v rclone >/dev/null 2>&1; then
+            echo "rclone is already installed"
+            rclone version
+            exit 0
+          fi
+
+          installer="$(mktemp)"
+          trap 'rm -f "$installer"' EXIT
+          curl -fsSL https://rclone.org/install.sh -o "$installer"
+
+          if [ "$(id -u)" -eq 0 ]; then
+            bash "$installer"
+          else
+            sudo -n bash "$installer"
+          fi
+
+          command -v rclone
+          rclone version
+
+      - name: Show config location
+        shell: bash
+        run: |
+          set -euo pipefail
+          rclone config file
