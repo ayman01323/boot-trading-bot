@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+from learnerbot import solana_sell_pnl_emoji_patch as sell_pnl
 from learnerbot import telegram_order_usd_patch as order_usd
 
 
@@ -26,6 +27,29 @@ def test_solana_buy_and_sell_notifications_show_usd(monkeypatch):
     assert "0.005 SOL (≈ $1.00)" in buy
     assert "0.006 SOL (≈ $1.20)" in sell
     assert "+0.001 SOL (≈ $0.20)" in sell
+
+
+def test_solana_sell_pnl_emojis_follow_realised_result():
+    profit = sell_pnl.decorate_sell_pnl(
+        "✅ <b>Solana LIVE SELL confirmed</b>\nNet on sold portion: <b>+0.001000000 SOL</b>"
+    )
+    loss = sell_pnl.decorate_sell_pnl(
+        "✅ <b>Solana LIVE SELL confirmed</b>\nNet on sold portion: <b>-0.001000000 SOL</b>"
+    )
+    break_even = sell_pnl.decorate_sell_pnl(
+        "✅ <b>Solana LIVE SELL confirmed</b>\nNet on sold portion: <b>+0.000000000 SOL</b>"
+    )
+
+    assert "Realised net P&L: 💚 <b>+0.001000000 SOL</b>" in profit
+    assert "Realised net P&L: ❤️ <b>-0.001000000 SOL</b>" in loss
+    assert "Realised net P&L: 🍉 <b>+0.000000000 SOL</b>" in break_even
+
+
+def test_solana_sell_pnl_near_zero_matches_displayed_break_even():
+    text = sell_pnl.decorate_sell_pnl(
+        "✅ <b>Solana LIVE SELL confirmed</b>\nNet on sold portion: <b>+0.0000000004 SOL</b>"
+    )
+    assert "🍉" in text
 
 
 def test_evm_buy_and_exit_notifications_show_usd(monkeypatch):
