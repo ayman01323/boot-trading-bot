@@ -14,3 +14,7 @@ jobs:
     steps:
       - name: Read-only BOOT status
         run: sudo /usr/local/sbin/status-boot-trading-bot
+      - name: Read Telegram account startup audit
+        shell: bash
+        run: |
+          journalctl -u learnerbot.service --since '10 minutes ago' --no-pager 2>/dev/null | grep -E '\[telegram-account\]|\[telegram-roles\]|\[telegram-command-scope\]' || true
