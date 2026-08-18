@@ -80,6 +80,14 @@ def test_direct_export_script_resolves_repo_package():
     assert "--send-telegram" in result.stdout
 
 
+def test_direct_export_script_prefers_production_venv():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts" / "export_all_user_transactions.py").read_text(encoding="utf-8")
+    assert '".venv" / "bin" / "python"' in script
+    assert "BOOT_AUDIT_VENV_REEXEC" in script
+    assert "os.execve" in script
+
+
 def test_run_transaction_audit_builds_zip_and_cumulative(monkeypatch, tmp_path):
     app = _app(tmp_path)
     app.data_dir.mkdir(parents=True)
@@ -110,6 +118,7 @@ def test_run_transaction_audit_builds_zip_and_cumulative(monkeypatch, tmp_path):
         assert "evm_transactions.csv" in names
         assert "wallet_inventory.csv" in names
         assert "summary.json" in names
+        assert "cumulative_all_transactions.csv" in names
         summary = json.loads(zf.read("summary.json"))
         assert "private keys" in summary["privacy"].lower()
 
