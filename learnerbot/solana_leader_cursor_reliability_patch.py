@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from contextlib import closing
 
 from . import solana_sibot as _sol
@@ -14,7 +15,58 @@ def _retryable_reason(text: str) -> bool:
     ))
 
 
+def _leader_signatures(app, wallet: str, limit=50):
+    """Low-latency selected-leader feed.
+
+    Research/history remains finalized in solana_sibot. Copy execution is allowed
+    to observe confirmed transactions so the 30-second freshness gate is not
+    consumed waiting for finalization.
+    """
+    opts = {
+        "commitment": "confirmed",
+        "limit": max(1, min(100, int(limit))),
+    }
+    return _sol._rpc(app, "getSignaturesForAddress", [str(wallet), opts]) or []
+
+
+def _leader_transaction(app, signature: str):
+    return _sol._rpc(app, "getTransaction", [
+        str(signature),
+        {
+            "commitment": "confirmed",
+            "maxSupportedTransactionVersion": 0,
+            "encoding": "jsonParsed",
+        },
+    ])
+
+
+def _has_open_position_for_leader(app, wallet: str) -> bool:
+    with closing(_sol.connect(app)) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM positions WHERE leader_wallet=? AND status='OPEN' LIMIT 1",
+            (str(wallet),),
+        ).fetchone()
+    return bool(row)
+
+
+def _can_fast_forward_stale_row(app, wallet: str, row: dict, cfg: dict) -> bool:
+    """Skip an already-untradeable old signature only when no exit can depend on it."""
+    try:
+        block_time = int(row.get("blockTime") or 0)
+    except Exception:
+        block_time = 0
+    if block_time <= 0:
+        return False
+    max_age = max(1, _sol._int(cfg.get("max_signal_age_seconds"), 30))
+    # A small grace window prevents a borderline signal being discarded before
+    # normal classification. Once older than this it cannot pass the entry gate.
+    if int(time.time()) - block_time <= max_age + 5:
+        return False
+    return not _has_open_position_for_leader(app, wallet)
+
+
 def monitor_leaders_reliable(app):
+    cfg = _sol.settings(app)
     with closing(_sol.connect(app)) as conn:
         leaders = [str(r["wallet"]) for r in conn.execute(
             "SELECT DISTINCT wallet FROM leaders"
@@ -22,7 +74,7 @@ def monitor_leaders_reliable(app):
     events = []
     for wallet in leaders:
         try:
-            rows = _sol._get_signatures(app, wallet, 50)
+            rows = _leader_signatures(app, wallet, 50)
         except Exception:
             continue
         if not rows:
@@ -31,6 +83,8 @@ def monitor_leaders_reliable(app):
             key = f"leader_last_signature:{wallet}"
             last = _sol._state(conn, key, "") or ""
             if not last:
+                # Start at the newest confirmed signature. Never copy historical
+                # activity merely because the service was just restarted.
                 _sol._set_state(conn, key, str(rows[0].get("signature") or ""))
                 continue
 
@@ -49,8 +103,17 @@ def monitor_leaders_reliable(app):
             if row.get("err") is not None:
                 processed_signature = sig
                 continue
+
+            # If this signature is already too old ever to become a fresh BUY and
+            # this leader has no open copied position that could need an old SELL,
+            # advance without a costly getTransaction call. This prevents a stale
+            # backlog from delaying the next genuinely fresh signal.
+            if _can_fast_forward_stale_row(app, wallet, row, cfg):
+                processed_signature = sig
+                continue
+
             try:
-                tx = _sol._get_transaction(app, sig)
+                tx = _leader_transaction(app, sig)
                 if not tx:
                     break
                 event = _sol.classify_swap(tx, wallet)
@@ -74,7 +137,10 @@ def monitor_leaders_reliable(app):
                         break
                 processed_signature = sig
             except Exception as exc:
-                print("[sibot-solana-leader-signature]", wallet[:10], sig[:10], type(exc).__name__, str(exc)[:180])
+                print(
+                    "[sibot-solana-leader-signature]",
+                    wallet[:10], sig[:10], type(exc).__name__, str(exc)[:180],
+                )
                 break
 
         if processed_signature != last:
@@ -85,7 +151,11 @@ def monitor_leaders_reliable(app):
 
 def install():
     _sol.monitor_leaders = monitor_leaders_reliable
-    print("[solana-leader-cursor] processed_signature_checkpoint=true transient_preflight_retry=true")
+    print(
+        "[solana-leader-cursor] confirmed_fast_lane=true "
+        "processed_signature_checkpoint=true stale_backlog_fast_forward=true "
+        "transient_preflight_retry=true"
+    )
 
 
 install()
