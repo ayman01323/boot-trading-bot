@@ -43,6 +43,27 @@ def test_balanced_frequency_restores_pre_tightening_style_without_live_gate_chan
     assert forbidden.isdisjoint(targets)
 
 
+def test_live_latency_priority_reduces_monitor_delay_without_weakening_entry_rules():
+    targets = _literal_assignment(
+        ROOT / "learnerbot" / "solana_live_latency_settings_migration.py", "TARGETS"
+    )
+    assert targets == {
+        "leader_poll_seconds": "2",
+        "rpc_delay_seconds": "0.50",
+    }
+    for forbidden in (
+        "max_signal_age_seconds",
+        "max_roundtrip_loss_pct",
+        "max_entry_deterioration_pct",
+        "stop_loss_pct",
+        "take_profit_pct",
+        "solana_live_enabled",
+        "live_trade_sol",
+        "live_min_sol_reserve",
+    ):
+        assert forbidden not in targets
+
+
 def test_balanced_frequency_keeps_exit_protection():
     targets = _literal_assignment(ROOT / "learnerbot" / "solana_frequency_settings_migration.py", "TARGETS")
     assert targets["stop_loss_pct"] == "10"
