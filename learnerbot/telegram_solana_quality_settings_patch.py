@@ -18,6 +18,7 @@ def solana_page(app, tid):
         f"Closed trades <b>{html.escape(str(cfg.get('min_closed_trades','10')))}+</b>  •  win <b>{html.escape(str(cfg.get('min_win_rate_pct','55')))}%+</b>",
         f"Profit factor <b>{html.escape(str(cfg.get('min_profit_factor','1.5')))}x+</b>  •  max drawdown <b>{html.escape(str(cfg.get('max_leader_drawdown_pct','20')))}%</b>",
         f"Recent {html.escape(str(cfg.get('recent_trade_window','20')))}: win <b>{html.escape(str(cfg.get('min_recent_win_rate_pct','55')))}%+</b>  •  PF <b>{html.escape(str(cfg.get('min_recent_profit_factor','1.10')))}x+</b>",
+        f"Leader activity preference: qualified wallets active within <b>{html.escape(str(cfg.get('leader_recent_activity_hours','6')))}h</b> first",
         f"Complete history: <b>{'REQUIRED' if _sol._bool(cfg.get('require_complete_history'),True) else 'optional'}</b>",
         "",
         "<b>🎯 SOLANA ENTRY / EXIT QUALITY</b>",
