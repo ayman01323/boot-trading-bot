@@ -58,6 +58,8 @@ from . import solana_minimum_settings_migration  # noqa: F401
 from . import solana_quality_settings_migration  # noqa: F401
 # Expose the expanded quality/profit controls in the existing SiBot settings callbacks.
 from . import telegram_sibot_quality_settings_patch  # noqa: F401
+# Show the Solana PF/drawdown/recent-performance gates on the dedicated Solana LIVE page.
+from . import telegram_solana_quality_settings_patch  # noqa: F401
 # Final presentation layer: show current USD equivalents beside asset/native values across Telegram pages.
 from . import telegram_usd_everywhere_patch  # noqa: F401
 from .cli import main
