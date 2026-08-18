@@ -110,13 +110,13 @@ from . import solana_refundable_rent_accounting_patch  # noqa: F401
 from . import solana_simulated_reserve_guard_patch  # noqa: F401
 # Final Solana SELL presentation: 💚 profit, ❤️ loss, 🍉 break-even on realised net P&L.
 from . import solana_sell_pnl_emoji_patch  # noqa: F401
-# Refuse startup if any later import has displaced an audited trading hook.
-from . import trading_runtime_invariant_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
 from . import telegram_command_scope_patch  # noqa: F401
 # Final USER-only presentation guard: keep the non-MASTER /menu short after all compatibility layers.
 from . import telegram_user_menu_compact_patch  # noqa: F401
 # One-shot greeting requested for Telegram user 461513364; does not alter account/trading settings.
 from . import telegram_hi_keefek_patch  # noqa: F401
+# This is deliberately the final import before CLI: refuse startup if any feature or presentation layer displaced an audited trading hook.
+from . import trading_runtime_invariant_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
