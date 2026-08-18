@@ -5,10 +5,7 @@ from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import solana_emergency_loss_halt_migration  # noqa: F401
 from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_efficiency_patch as _efficiency
-# Must be installed before economic validation so validation remains the outer
-# token-balance proof around both atomic and capped legacy SELL execution.
 from . import solana_atomic_close_fallback_patch as _atomic_fallback
-# Unknown route liquidity is never interpreted as zero impact.
 from . import solana_liquidity_fail_closed_patch as _liquidity_guard
 from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
@@ -31,24 +28,15 @@ from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from . import profit_control_loop_patch as _profit_control
 from . import profit_control_audit_export_patch  # noqa: F401
 from . import profit_control_master_summary_patch as _profit_master_summary
-# Hard profitability floors cannot be relaxed by old CSVs/hourly profiles; full
-# leader SELLs are immediate risk-control events.
 from . import solana_profit_first_live_correction_patch as _profit_first_live
-# Partial leader SELLs are optional profit-taking only: they must already be net
-# profitable for our copied position and large enough to justify their own fee.
 from . import solana_partial_sell_profit_guard_patch as _partial_sell_guard
-# Final BUY-side gate: require the leader's typical percentage edge to clear the
-# follower's fixed costs, and quarantine a leader after its first copied LIVE loss.
 from . import solana_positive_edge_entry_gate_patch as _positive_edge
 
 
 def install():
     checks = {
-        # Final monitored exits remain protected by the landed-invalid circuit.
         "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
         "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,
-        # The circuit's immutable inner close is now the rent-aware P&L + receipt
-        # wrapper. It may never be replaced by the older unguarded close path.
         "solana_exit_inner_efficiency": _exit_circuit._PREV_CLOSE is _efficiency.close_live_with_receipt_pnl,
         "solana_rent_close_efficiency": _rent._close_live_rent_aware is _efficiency.close_live_with_receipt_pnl,
         "solana_execution_efficiency_stack": _efficiency.execution_efficiency_stack_intact(),
@@ -56,14 +44,10 @@ def install():
         "solana_liquidity_fail_closed": _efficiency._validate_order is _liquidity_guard.validate_order_fail_closed_on_unknown_liquidity,
         "solana_atomic_legacy_fallback": _efficiency.sell_with_atomic_account_close is _atomic_fallback.sell_with_atomic_or_capped_legacy_fallback,
         "solana_atomic_build_rfq_excluded": _efficiency._build_atomic_swap is _atomic_fallback.build_atomic_swap_excluding_rfq,
-        # Economic balance validation stays outermost around the cost/atomic
-        # execution layer for both ordinary swaps and exits.
         "solana_swap_validation": _exec.SolanaLiveExecutor.swap is _validation._swap_amounts_authoritative,
         "solana_swap_efficiency_inner": _validation._PREV_SWAP is _efficiency.swap_with_cost_receipt,
         "solana_sell_validation": _exec.SolanaLiveExecutor.sell is _validation._sell_with_token_reconciliation,
         "solana_sell_atomic_inner": _validation._PREV_SELL is _atomic_fallback.sell_with_atomic_or_capped_legacy_fallback,
-        # BUY balance reconciliation remains outermost, with the signed reserve
-        # simulation guard immediately beneath it.
         "solana_buy_validation": _exec.SolanaLiveExecutor.buy is _validation._buy_with_token_reconciliation,
         "solana_buy_reserve_inner": _validation._PREV_BUY is _reserve._buy_with_simulated_reserve,
         "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
@@ -78,16 +62,13 @@ def install():
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
-        # The hourly control-loop settings wrapper is preserved as the inner policy,
-        # but the final effective settings are the stricter profit-first floors.
         "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
         "profit_first_live_settings": _sol.settings is _profit_first_live.settings_profit_first_live,
-        # Full SELL processing remains immediate underneath the partial-profit layer.
         "profit_first_full_sell_inner": _partial_sell_guard._PREV_PROCESS is _profit_first_live.process_leader_event_profit_first,
-        # Partial SELL handling remains underneath the final BUY-side edge gate.
         "partial_sell_guard_inner": _positive_edge._PREV_PROCESS is _partial_sell_guard.process_leader_event_partial_profit_guard,
+        "partial_sell_hard_profit_floor": str(_partial_sell_guard._HARD_MIN_PARTIAL_NET_PCT) == "3.0",
+        "partial_sell_low_capital_floor": str(_partial_sell_guard._HARD_MIN_POSITION_ECONOMIC_VALUE_SOL) == "0.002",
         "positive_edge_entry_gate": _sol.process_leader_event is _positive_edge.process_leader_event_positive_edge,
-        # Profit-control copied-performance logic remains inside the stricter first-loss quarantine.
         "profit_control_leader_gate_inner": _positive_edge._PREV_COPIED_OK is _profit_control.copied_ok_with_profit_control,
         "positive_edge_first_loss_quarantine": _profit_guard._copied_ok is _positive_edge.copied_ok_quarantine_first_loss,
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
