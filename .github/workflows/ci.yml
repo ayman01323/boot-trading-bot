@@ -25,14 +25,48 @@ jobs:
       - run: pip install -r requirements.txt pytest
       - name: Compile Python
         run: python -m compileall -q learnerbot scripts tests
+      - name: Solana LIVE safety regression tests
+        run: |
+          pytest -x -vv \
+            tests/test_solana_live_canary.py \
+            tests/test_solana_execution_safety.py \
+            tests/test_solana_execution_validation.py \
+            tests/test_solana_position_wallet_binding.py \
+            tests/test_solana_low_capital_limits.py
       - name: SiBot and Telegram UI tests
-        run: pytest -q tests/test_sibot.py tests/test_sibot_pending_commands.py tests/test_telegram_visual_ui.py tests/test_sibot_reasonable_top20.py tests/test_telegram_wallet_links.py tests/test_sibot_intelligence_solana.py tests/test_profit_research_hourly_capital.py tests/test_telegram_solana_visibility.py tests/test_sibot_readiness_alerts.py tests/test_telegram_mobile_divider.py tests/test_solana_wallet_telegram.py tests/test_telegram_multi_wallet_manager.py tests/test_telegram_solana_chains.py tests/test_solana_live_canary.py tests/test_solana_execution_safety.py tests/test_solana_execution_validation.py tests/test_solana_position_wallet_binding.py tests/test_solana_low_capital_limits.py tests/test_telegram_solana_everywhere.py tests/test_live_reporting_all_chains.py tests/test_telegram_solana_send.py tests/test_telegram_usd_everywhere.py tests/test_telegram_order_usd.py tests/test_sibot_profit_guard.py tests/test_solana_profit_guard.py tests/test_polygon_focus.py tests/test_telegram_capital_readiness.py tests/test_solana_balanced_frequency.py tests/test_telegram_roles_and_command_scope.py tests/test_telegram_user_menu_compact.py
+        run: |
+          pytest -x -vv \
+            tests/test_sibot.py \
+            tests/test_sibot_pending_commands.py \
+            tests/test_telegram_visual_ui.py \
+            tests/test_sibot_reasonable_top20.py \
+            tests/test_telegram_wallet_links.py \
+            tests/test_sibot_intelligence_solana.py \
+            tests/test_profit_research_hourly_capital.py \
+            tests/test_telegram_solana_visibility.py \
+            tests/test_sibot_readiness_alerts.py \
+            tests/test_telegram_mobile_divider.py \
+            tests/test_solana_wallet_telegram.py \
+            tests/test_telegram_multi_wallet_manager.py \
+            tests/test_telegram_solana_chains.py \
+            tests/test_telegram_solana_everywhere.py \
+            tests/test_live_reporting_all_chains.py \
+            tests/test_telegram_solana_send.py \
+            tests/test_telegram_usd_everywhere.py \
+            tests/test_telegram_order_usd.py \
+            tests/test_sibot_profit_guard.py \
+            tests/test_solana_profit_guard.py \
+            tests/test_polygon_focus.py \
+            tests/test_telegram_capital_readiness.py \
+            tests/test_solana_balanced_frequency.py \
+            tests/test_telegram_roles_and_command_scope.py \
+            tests/test_telegram_user_menu_compact.py
       - name: Legacy full suite when runtime CSV fixtures are present
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f CSVbot/chains.csv && -f CSVbot/auto_trading_settings.csv && -f CSVbot/live_trading_settings.csv && -f CSVbot/dex_registry.csv ]]; then
-            pytest -q
+            pytest -x -vv
           else
             echo 'Skipping legacy config-bound tests: runtime CSVbot fixtures are not stored in this GitHub checkout.'
           fi
