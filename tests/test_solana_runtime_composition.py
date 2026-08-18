@@ -23,12 +23,14 @@ from learnerbot import solana_token_account_reclaim_patch  # noqa
 from learnerbot import solana_refundable_rent_accounting_patch as rent
 from learnerbot import solana_simulated_reserve_guard_patch as reserve
 from learnerbot import solana_sell_pnl_emoji_patch  # noqa
+from learnerbot import solana_exit_circuit_breaker_patch as exit_circuit
 from learnerbot import trading_runtime_invariant_patch  # noqa
 from learnerbot import solana_live_executor as executor
 from learnerbot import solana_sibot as sol
 
-assert live._close_live is rent._close_live_rent_aware
-assert binding._close_bound_live is rent._close_live_rent_aware
+assert live._close_live is exit_circuit.close_live_guarded
+assert binding._close_bound_live is exit_circuit.close_live_guarded
+assert rent._close_live_rent_aware is exit_circuit.close_live_guarded
 assert sol.evaluate_position is rent.evaluate_position_economic
 assert sol.monitor_positions is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
