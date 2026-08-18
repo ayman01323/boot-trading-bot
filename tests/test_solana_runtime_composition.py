@@ -9,7 +9,7 @@ from learnerbot import solana_live_patch as live
 from learnerbot import solana_execution_fault_counter_patch  # noqa
 from learnerbot import solana_position_wallet_binding_patch as binding
 from learnerbot import solana_profit_guard_patch as guard
-from learnerbot import solana_execution_validation_patch  # noqa
+from learnerbot import solana_execution_validation_patch as validation
 from learnerbot import solana_final_runtime_guard_patch  # noqa
 from learnerbot import solana_overhead_gate_correction_patch as overhead
 from learnerbot import solana_entry_capacity_reconcile_patch as capacity
@@ -30,12 +30,14 @@ from learnerbot import solana_sibot as sol
 assert live._close_live is rent._close_live_rent_aware
 assert binding._close_bound_live is rent._close_live_rent_aware
 assert sol.evaluate_position is rent.evaluate_position_economic
+assert sol.monitor_positions is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
 assert sol.start_workers is workers.start_workers_reliable
 assert sol.jupiter_quote is quote.jupiter_quote_executable
 assert sol._validate_shadow_entry is preflight.validate_entry_cached
 assert live._economic_entry_gate is overhead._economic_entry_gate_reconciled
 assert live._open_live_count is capacity._verified_open_live_count
+assert executor.SolanaLiveExecutor.swap is validation._swap_amounts_authoritative
 assert executor.SolanaLiveExecutor._simulate is reserve._simulate_with_wallet_snapshot
 assert executor.SolanaLiveExecutor.buy is reserve._buy_with_simulated_reserve
 assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
