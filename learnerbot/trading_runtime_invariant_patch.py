@@ -8,6 +8,8 @@ from . import solana_execution_efficiency_patch as _efficiency
 # Must be installed before economic validation so validation remains the outer
 # token-balance proof around both atomic and capped legacy SELL execution.
 from . import solana_atomic_close_fallback_patch as _atomic_fallback
+# Unknown route liquidity is never interpreted as zero impact.
+from . import solana_liquidity_fail_closed_patch as _liquidity_guard
 from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_cursor_reliability_patch as _cursor
@@ -42,6 +44,7 @@ def install():
         "solana_rent_close_efficiency": _rent._close_live_rent_aware is _efficiency.close_live_with_receipt_pnl,
         "solana_execution_efficiency_stack": _efficiency.execution_efficiency_stack_intact(),
         "solana_order_fee_guard": _exec.SolanaLiveExecutor._order is _efficiency.order_with_economic_caps,
+        "solana_liquidity_fail_closed": _efficiency._validate_order is _liquidity_guard.validate_order_fail_closed_on_unknown_liquidity,
         "solana_atomic_legacy_fallback": _efficiency.sell_with_atomic_account_close is _atomic_fallback.sell_with_atomic_or_capped_legacy_fallback,
         "solana_atomic_build_rfq_excluded": _efficiency._build_atomic_swap is _atomic_fallback.build_atomic_swap_excluding_rfq,
         # Economic balance validation stays outermost around the cost/atomic
