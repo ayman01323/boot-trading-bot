@@ -37,16 +37,39 @@ def _pf(profit: Decimal, loss: Decimal) -> Decimal:
     return Decimal("99") if profit > 0 else Decimal(0)
 
 
+def _rent_tracking_exists(conn) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_position_created_token_accounts'"
+        ).fetchone()
+        return bool(row)
+    except Exception:
+        return False
+
+
 def _copied_metrics_corrected(app, tid, wallet):
     cutoff = _epoch(app)
     with closing(_sol.connect(app)) as conn:
-        rows = [dict(r) for r in conn.execute(
-            """SELECT realised_net_sol,closed_at FROM positions
-               WHERE telegram_id=? AND leader_wallet=? AND status='CLOSED' AND mode='LIVE'
-                 AND closed_at>=?
-               ORDER BY closed_at DESC LIMIT 50""",
-            (str(tid), str(wallet), int(cutoff)),
-        ).fetchall()]
+        if _rent_tracking_exists(conn):
+            rows = [dict(r) for r in conn.execute(
+                """SELECT p.realised_net_sol,p.closed_at FROM positions p
+                   WHERE p.telegram_id=? AND p.leader_wallet=? AND p.status='CLOSED' AND p.mode='LIVE'
+                     AND p.closed_at>=?
+                     AND NOT EXISTS(
+                       SELECT 1 FROM live_position_created_token_accounts a
+                       WHERE a.position_id=p.position_id AND a.closed_at IS NULL
+                     )
+                   ORDER BY p.closed_at DESC LIMIT 50""",
+                (str(tid), str(wallet), int(cutoff)),
+            ).fetchall()]
+        else:
+            rows = [dict(r) for r in conn.execute(
+                """SELECT realised_net_sol,closed_at FROM positions
+                   WHERE telegram_id=? AND leader_wallet=? AND status='CLOSED' AND mode='LIVE'
+                     AND closed_at>=?
+                   ORDER BY closed_at DESC LIMIT 50""",
+                (str(tid), str(wallet), int(cutoff)),
+            ).fetchall()]
     vals = [(_sol._dec(r.get("realised_net_sol"), 0), int(r.get("closed_at") or 0)) for r in rows]
     profit = sum((n for n, _ in vals if n > 0), Decimal(0))
     loss = sum((-n for n, _ in vals if n < 0), Decimal(0))
@@ -87,7 +110,10 @@ def install():
         return
     _guard._copied_metrics = _copied_metrics_corrected
     _guard._corrected_accounting_epoch_installed = True
-    print("[solana-profit-epoch] corrected_pnl_only=true historical_rows_preserved=true")
+    print(
+        "[solana-profit-epoch] corrected_pnl_only=true historical_rows_preserved=true "
+        "pending_rent_excluded=true"
+    )
 
 
 # Cleanup needs a real app/data directory, so it is called lazily by the first
