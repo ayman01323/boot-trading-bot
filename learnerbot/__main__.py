@@ -22,8 +22,6 @@ from . import telegram_sibot_intelligence_patch  # noqa: F401
 from . import profit_research_expansion_patch  # noqa: F401
 # Stop the older Top-20 compatibility layer from re-relaxing leader quality defaults.
 from . import sibot_quality_compat_patch  # noqa: F401
-# Quality-first leader selection, copied-performance checks, dynamic sizing and circuit breakers.
-from . import sibot_profit_guard_patch  # noqa: F401
 # Send hourly Telegram capital/gas/opportunity-without-capital reminders.
 from . import hourly_capital_alert_patch  # noqa: F401
 # Final UI guard: Solana must always be visible in Top-20/Leaders pickers.
@@ -42,6 +40,9 @@ from . import telegram_solana_chains_patch  # noqa: F401
 from . import solana_live_patch  # noqa: F401
 # Private-chat LIVE arming/disarming and Solana LIVE dashboard.
 from . import telegram_solana_live_patch  # noqa: F401
+# Quality-first leader selection, copied-performance checks, dynamic sizing and circuit breakers.
+# Installed here so the existing Solana LIVE import order is preserved.
+from . import sibot_profit_guard_patch  # noqa: F401
 # Every relevant Telegram page includes the correct Solana equivalent.
 from . import telegram_solana_everywhere_patch  # noqa: F401
 # Final aliases + Capital/P&L integration after the visual/dashboard patches.
