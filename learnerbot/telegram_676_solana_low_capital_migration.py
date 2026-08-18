@@ -4,6 +4,9 @@ import time
 from pathlib import Path
 
 from . import cli as _cli
+# Install the general execution-validation correction and clear this account's
+# historical false missing-swapEvents fault counter before applying low-capital limits.
+from . import telegram_676_clear_false_swap_event_faults_migration  # noqa: F401
 from .user_registry import set_user_setting
 
 TARGET_TELEGRAM_ID = "6760898817"
