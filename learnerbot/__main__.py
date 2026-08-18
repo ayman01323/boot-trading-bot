@@ -88,6 +88,8 @@ from . import telegram_676_full_live_migration  # noqa: F401
 from . import telegram_676_solana_low_capital_migration  # noqa: F401
 # Do not let unreconciled/refundable Solana account funding block subsequent LIVE entries platform-wide.
 from . import solana_overhead_gate_correction_patch  # noqa: F401
+# Before enforcing the LIVE position cap, quarantine only positions proven empty across all registered wallets.
+from . import solana_entry_capacity_reconcile_patch  # noqa: F401
 # Final Solana SELL presentation: 💚 profit, ❤️ loss, 🍉 break-even on realised net P&L.
 from . import solana_sell_pnl_emoji_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
