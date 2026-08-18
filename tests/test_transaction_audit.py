@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +63,21 @@ def test_direction_classification():
     assert audit._evm_direction(addr, "0xabc", "0xdef") == "OUT"
     assert audit._evm_direction(addr, "0xdef", "0xABC") == "IN"
     assert audit._evm_direction(addr, "0xabc", "0xABC") == "SELF"
+
+
+def test_direct_export_script_resolves_repo_package():
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "export_all_user_transactions.py"
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    assert "--send-telegram" in result.stdout
 
 
 def test_run_transaction_audit_builds_zip_and_cumulative(monkeypatch, tmp_path):
