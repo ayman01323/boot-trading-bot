@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import time
+from pathlib import Path
+
+from . import cli as _cli
+from .user_registry import set_user_setting
+
+TARGET_TELEGRAM_ID = "6760898817"
+MARKER = ".telegram_6760898817_solana_low_capital_20260818_v1"
+_PREV_APP = _cli._app
+
+
+def _apply(app) -> None:
+    marker = Path(app.data_dir) / MARKER
+    if marker.exists():
+        return
+
+    set_user_setting(
+        app.csv_dir,
+        TARGET_TELEGRAM_ID,
+        "solana_live_trade_sol",
+        "0.0005",
+        chain_id=-101,
+        description="Per-user low-capital Solana LIVE trade size",
+    )
+    set_user_setting(
+        app.csv_dir,
+        TARGET_TELEGRAM_ID,
+        "solana_live_min_reserve_sol",
+        "0.005",
+        chain_id=-101,
+        description="Per-user low-capital Solana untouched reserve",
+    )
+
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        "\n".join([
+            f"applied_epoch={int(time.time())}",
+            f"telegram_id={TARGET_TELEGRAM_ID}",
+            "solana_live_trade_sol=0.0005",
+            "solana_live_min_reserve_sol=0.005",
+            "minimum_wallet_funding_sol=0.0055",
+            "simulation_required=true",
+            "economic_overhead_gate_unchanged=true",
+            "landed_fault_circuit_breaker_unchanged=true",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    print(
+        "[telegram-676-solana-low-capital] tid=6760898817 "
+        "trade=0.0005 reserve=0.005 minimum_funding=0.0055"
+    )
+
+
+def _app_with_676_low_capital():
+    app = _PREV_APP()
+    try:
+        _apply(app)
+    except Exception as exc:
+        print(f"[telegram-676-solana-low-capital] ERROR {type(exc).__name__}: {exc}")
+    return app
+
+
+_cli._app = _app_with_676_low_capital
