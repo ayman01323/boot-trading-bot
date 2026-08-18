@@ -56,8 +56,10 @@ from . import telegram_live_reporting_patch  # noqa: F401
 from . import telegram_solana_send_patch  # noqa: F401
 # One-shot migration requested by the user: set Solana LIVE trade size and reserve to built-in hard minimums.
 from . import solana_minimum_settings_migration  # noqa: F401
-# One-shot quality preset for Solana leader/entry/exit controls; preserves the 0.0005 SOL LIVE minimum size.
+# Earlier quality preset; the balanced-frequency preset below intentionally relaxes only opportunity-selection thresholds.
 from . import solana_quality_settings_migration  # noqa: F401
+# Restore a balanced Solana opportunity rate while preserving LIVE/simulation/reserve safeguards.
+from . import solana_frequency_settings_migration  # noqa: F401
 # Expose the expanded quality/profit controls in the existing SiBot settings callbacks.
 from . import telegram_sibot_quality_settings_patch  # noqa: F401
 # Show the Solana PF/drawdown/recent-performance gates on the dedicated Solana LIVE page.
@@ -68,5 +70,7 @@ from . import telegram_usd_everywhere_patch  # noqa: F401
 from . import polygon_focus_patch  # noqa: F401
 # Final wallet/capital truth layer: every EVM chain remains visible with USD, gas reserve and LIVE/AUTO readiness.
 from . import telegram_capital_readiness_patch  # noqa: F401
+# Final Solana activity truth layer: record BUY/SELL/SKIP/REJECT decisions and show why no trade occurred.
+from . import solana_trade_diagnostics_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
