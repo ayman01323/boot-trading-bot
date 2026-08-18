@@ -25,7 +25,7 @@ def install():
     checks = {
         "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
         "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,
-        "solana_rent_close": _rent._close_live_rent_aware is _exit_circuit.close_live_guarded,
+        "solana_rent_close_inner": _rent._close_live_rent_aware is _exit_circuit._PREV_CLOSE,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
         "solana_monitor_positions": _sol.monitor_positions is _live.monitor_positions,
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
