@@ -30,7 +30,7 @@ from learnerbot import solana_sibot as sol
 
 assert live._close_live is exit_circuit.close_live_guarded
 assert binding._close_bound_live is exit_circuit.close_live_guarded
-assert rent._close_live_rent_aware is exit_circuit.close_live_guarded
+assert rent._close_live_rent_aware is exit_circuit._PREV_CLOSE
 assert sol.evaluate_position is rent.evaluate_position_economic
 assert sol.monitor_positions is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
