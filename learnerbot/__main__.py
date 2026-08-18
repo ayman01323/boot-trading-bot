@@ -86,6 +86,8 @@ from . import telegram_account_roles_patch  # noqa: F401
 from . import telegram_676_full_live_migration  # noqa: F401
 # Per-user low-capital Solana canary: 0.0005 SOL trade + 0.005 SOL reserve for 6760898817 only.
 from . import telegram_676_solana_low_capital_migration  # noqa: F401
+# Do not let unreconciled/refundable Solana account funding block subsequent LIVE entries platform-wide.
+from . import solana_overhead_gate_correction_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
 from . import telegram_command_scope_patch  # noqa: F401
 # Final USER-only presentation guard: keep the non-MASTER /menu short after all compatibility layers.
