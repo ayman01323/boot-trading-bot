@@ -90,3 +90,29 @@ def test_profit_guard_migration_skips_lightweight_app_without_data_dir():
             assert path.exists()
             assert not hasattr(app,"data_dir")
     ''')
+
+
+def test_profit_guard_serializes_concurrent_settings_initialization():
+    _run(r'''
+        import tempfile
+        import threading
+        from pathlib import Path
+        from types import SimpleNamespace
+        from learnerbot import sibot_profit_guard_patch as guard
+        from learnerbot import sibot_profit_guard_runtime_compat_patch  # noqa: F401
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td)
+            app=SimpleNamespace(csv_dir=root/"CSVbot",data_dir=root/"data")
+            errors=[]
+            def work():
+                try:
+                    for _ in range(5):
+                        guard._sibot.ensure_settings(app)
+                except Exception as exc:
+                    errors.append(exc)
+            threads=[threading.Thread(target=work) for _ in range(8)]
+            [t.start() for t in threads]
+            [t.join() for t in threads]
+            assert not errors, errors
+            assert (app.csv_dir/"sibot_settings.csv").exists()
+    ''')
