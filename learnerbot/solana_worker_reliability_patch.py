@@ -74,12 +74,9 @@ def discover_recent_blocks_reliable(app) -> int:
                 "maxSupportedTransactionVersion": 0,
             }])
         except Exception as exc:
-            # Do not skip this slot forever. Stop this pass and retry it next pass.
             print("[sibot-solana-discovery-slot]", slot, type(exc).__name__, str(exc)[:180])
             break
 
-        # A null block can be a skipped slot; the successful RPC means it is safe
-        # to advance the cursor past it.
         processed = slot
         if not block:
             continue
@@ -160,6 +157,32 @@ def _history_worker(app):
         time.sleep(delay)
 
 
+def _leader_worker(app):
+    last_position = 0
+    while True:
+        cfg = _sol.settings(app)
+        if _sol._bool(cfg.get("enabled"), True):
+            ok = True
+            errors = []
+            try:
+                _sol.monitor_leaders(app)
+            except Exception as exc:
+                ok = False
+                errors.append(f"leaders {type(exc).__name__}: {exc}")
+                print("[sibot-solana-leaders]", type(exc).__name__, exc)
+            now = int(time.time())
+            if now - last_position >= max(10, _sol._int(cfg.get("position_poll_seconds"), 15)):
+                try:
+                    _sol.monitor_positions(app)
+                except Exception as exc:
+                    ok = False
+                    errors.append(f"positions {type(exc).__name__}: {exc}")
+                    print("[sibot-solana-positions]", type(exc).__name__, exc)
+                last_position = now
+            _mark(app, "leader", ok=ok, error=" | ".join(errors))
+        time.sleep(max(3, _sol._int(cfg.get("leader_poll_seconds"), 5)))
+
+
 def start_workers_reliable(app):
     with _sol._WORKER_LOCK:
         if _sol._WORKER_STARTED:
@@ -174,10 +197,10 @@ def start_workers_reliable(app):
         target=_history_worker, args=(app,), daemon=True, name="sibot-solana-history"
     ).start()
     threading.Thread(
-        target=_sol._leader_worker, args=(app,), daemon=True, name="sibot-solana-leaders"
+        target=_leader_worker, args=(app,), daemon=True, name="sibot-solana-leaders"
     ).start()
     print(
-        "[sibot-solana] retry-safe discovery + independent history backfill + leader monitoring started"
+        "[sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started"
     )
 
 
@@ -185,7 +208,10 @@ def install():
     _sol._rpc = rpc_with_retry
     _sol.discover_recent_blocks = discover_recent_blocks_reliable
     _sol.start_workers = start_workers_reliable
-    print("[solana-worker-reliability] rpc_retries=true no_slot_skip=true history_independent=true")
+    print(
+        "[solana-worker-reliability] rpc_retries=true no_slot_skip=true "
+        "history_independent=true leader_heartbeat=true"
+    )
 
 
 install()
