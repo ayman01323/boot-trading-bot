@@ -1,0 +1,17 @@
+name: Profit Guards Deploy Verify
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-status:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy exact tested main commit
+        run: sudo /usr/local/sbin/deploy-boot-trading-bot "5469a15ca90719c4187abe4dfc6d8b68662d6058"
+      - name: Server status
+        run: sudo /usr/local/sbin/status-boot-trading-bot
