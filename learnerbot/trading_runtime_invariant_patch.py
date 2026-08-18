@@ -3,6 +3,7 @@ from __future__ import annotations
 from . import sibot as _sibot
 from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import solana_entry_capacity_reconcile_patch as _capacity
+from . import solana_execution_validation_patch as _validation
 from . import solana_leader_cursor_reliability_patch as _cursor
 from . import solana_live_executor as _exec
 from . import solana_live_patch as _live
@@ -23,12 +24,14 @@ def install():
         "solana_close": _live._close_live is _rent._close_live_rent_aware,
         "solana_bound_close": _binding._close_bound_live is _rent._close_live_rent_aware,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
+        "solana_monitor_positions": _sol.monitor_positions is _live.monitor_positions,
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
         "solana_workers": _sol.start_workers is _workers.start_workers_reliable,
         "solana_quote": _sol.jupiter_quote is _quote.jupiter_quote_executable,
         "solana_preflight": _sol._validate_shadow_entry is _preflight.validate_entry_cached,
         "solana_economic_gate": _live._economic_entry_gate is _overhead._economic_entry_gate_reconciled,
         "solana_capacity": _live._open_live_count is _capacity._verified_open_live_count,
+        "solana_swap_validation": _exec.SolanaLiveExecutor.swap is _validation._swap_amounts_authoritative,
         "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
         "solana_buy": _exec.SolanaLiveExecutor.buy is _reserve._buy_with_simulated_reserve,
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
