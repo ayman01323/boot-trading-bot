@@ -19,6 +19,8 @@ from . import solana_refundable_rent_accounting_patch as _rent
 from . import solana_simulated_reserve_guard_patch as _reserve
 from . import solana_sibot as _sol
 from . import solana_worker_reliability_patch as _workers
+from . import telegram_ui as _telegram_ui
+from . import transaction_audit_worker_patch as _audit_worker
 
 
 def install():
@@ -39,6 +41,7 @@ def install():
         "solana_buy": _exec.SolanaLiveExecutor.buy is _reserve._buy_with_simulated_reserve,
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
+        "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
     }
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
