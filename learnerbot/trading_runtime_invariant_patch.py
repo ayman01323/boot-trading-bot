@@ -5,6 +5,9 @@ from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import solana_emergency_loss_halt_migration  # noqa: F401
 from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_efficiency_patch as _efficiency
+# Must be installed before economic validation so validation remains the outer
+# token-balance proof around both atomic and capped legacy SELL execution.
+from . import solana_atomic_close_fallback_patch as _atomic_fallback
 from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_cursor_reliability_patch as _cursor
@@ -34,17 +37,19 @@ def install():
         "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
         "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,
         # The circuit's immutable inner close is now the rent-aware P&L + receipt
-        # wrapper.  It may never be replaced by the older unguarded close path.
+        # wrapper. It may never be replaced by the older unguarded close path.
         "solana_exit_inner_efficiency": _exit_circuit._PREV_CLOSE is _efficiency.close_live_with_receipt_pnl,
         "solana_rent_close_efficiency": _rent._close_live_rent_aware is _efficiency.close_live_with_receipt_pnl,
         "solana_execution_efficiency_stack": _efficiency.execution_efficiency_stack_intact(),
         "solana_order_fee_guard": _exec.SolanaLiveExecutor._order is _efficiency.order_with_economic_caps,
+        "solana_atomic_legacy_fallback": _efficiency.sell_with_atomic_account_close is _atomic_fallback.sell_with_atomic_or_capped_legacy_fallback,
+        "solana_atomic_build_rfq_excluded": _efficiency._build_atomic_swap is _atomic_fallback.build_atomic_swap_excluding_rfq,
         # Economic balance validation stays outermost around the cost/atomic
         # execution layer for both ordinary swaps and exits.
         "solana_swap_validation": _exec.SolanaLiveExecutor.swap is _validation._swap_amounts_authoritative,
         "solana_swap_efficiency_inner": _validation._PREV_SWAP is _efficiency.swap_with_cost_receipt,
         "solana_sell_validation": _exec.SolanaLiveExecutor.sell is _validation._sell_with_token_reconciliation,
-        "solana_sell_atomic_inner": _validation._PREV_SELL is _efficiency.sell_with_atomic_account_close,
+        "solana_sell_atomic_inner": _validation._PREV_SELL is _atomic_fallback.sell_with_atomic_or_capped_legacy_fallback,
         # BUY balance reconciliation remains outermost, with the signed reserve
         # simulation guard immediately beneath it.
         "solana_buy_validation": _exec.SolanaLiveExecutor.buy is _validation._buy_with_token_reconciliation,
