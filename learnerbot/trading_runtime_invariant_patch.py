@@ -31,10 +31,12 @@ from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from . import profit_control_loop_patch as _profit_control
 from . import profit_control_audit_export_patch  # noqa: F401
 from . import profit_control_master_summary_patch as _profit_master_summary
-# Final outer policy: hard profitability floors cannot be relaxed by old CSVs or
-# hourly profiles, and leader SELLs are attempted immediately rather than waiting
-# for the copied position to deteriorate to the old loss cap.
+# Hard profitability floors cannot be relaxed by old CSVs/hourly profiles; full
+# leader SELLs are immediate risk-control events.
 from . import solana_profit_first_live_correction_patch as _profit_first_live
+# Partial leader SELLs are optional profit-taking only: they must already be net
+# profitable for our copied position and large enough to justify their own fee.
+from . import solana_partial_sell_profit_guard_patch as _partial_sell_guard
 
 
 def install():
@@ -77,7 +79,10 @@ def install():
         # but the final effective settings are the stricter profit-first floors.
         "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
         "profit_first_live_settings": _sol.settings is _profit_first_live.settings_profit_first_live,
-        "profit_first_leader_sell": _sol.process_leader_event is _profit_first_live.process_leader_event_profit_first,
+        # Full SELL processing remains the inner risk-control path; the final public
+        # event handler adds the partial-sell profitability/fee-size gate.
+        "profit_first_full_sell_inner": _partial_sell_guard._PREV_PROCESS is _profit_first_live.process_leader_event_profit_first,
+        "partial_sell_profit_guard": _sol.process_leader_event is _partial_sell_guard.process_leader_event_partial_profit_guard,
         "profit_control_leader_gate": _profit_guard._copied_ok is _profit_control.copied_ok_with_profit_control,
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
         "profit_control_master_summary": _audit_worker.run_hourly_gpt_review is _profit_master_summary.run_hourly_review_with_master_control_summary,
