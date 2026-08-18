@@ -7,15 +7,23 @@ from . import solana_execution_efficiency_patch as _efficiency
 from . import solana_live_executor as _exec
 from . import solana_live_patch as _live
 from . import solana_profit_first_live_correction_patch as _profit_first
+from . import solana_refundable_rent_accounting_patch as _rent
 from . import solana_sibot as _sol
 
 # Full leader exits remain immediate risk-control events. A PARTIAL leader sell is
-# different: it is optional profit-taking and must not realise a negative follower
-# slice merely because the leader entered earlier at a better price.
+# optional profit-taking and must never be used where fixed Solana costs dominate
+# the follower slice. Low-capital positions therefore HOLD partial leader exits.
+_HARD_MIN_PARTIAL_NET_PCT = Decimal("3.0")
+_HARD_MIN_POSITION_ECONOMIC_VALUE_SOL = Decimal("0.002")
+
 _sol.DEFAULTS.update({
     "live_min_partial_exit_net_pct": (
-        "1.0",
+        "3.0",
         "Minimum economically reconciled net profit percent required before copying a leader partial SELL",
+    ),
+    "live_min_position_economic_value_for_partial_sell_sol": (
+        "0.002",
+        "Minimum non-rent economic position value before any leader partial SELL is allowed",
     ),
 })
 
@@ -27,15 +35,20 @@ def _d(value, default="0") -> Decimal:
 
 
 def minimum_economic_partial_value_lamports(cfg: dict) -> int:
-    """Minimum partial proceeds whose base fee fits inside the configured fee ratio.
-
-    At a 1.2% fee ratio and a 5,000-lamport base fee, a partial exit must be worth
-    at least 416,667 lamports (~0.000416667 SOL) before it can be economical even
-    with zero priority fee. Smaller partials are held for a later profitable/full exit.
-    """
+    """Minimum partial proceeds whose base fee fits inside the configured fee ratio."""
     ratio_pct = max(Decimal("0.01"), _d(cfg.get("live_max_fee_ratio_pct"), "1.2"))
     value = Decimal(_efficiency.DEFAULT_BASE_FEE_LAMPORTS) * Decimal(100) / ratio_pct
     return int(value.to_integral_value(rounding=ROUND_CEILING))
+
+
+def position_economic_value_sol(app, position: dict) -> Decimal:
+    """Return actual trading principal, excluding refundable token-account rent."""
+    cash_cost = max(Decimal(0), _d((position or {}).get("entry_cost_sol"), 0))
+    try:
+        rent = max(Decimal(0), _rent._rent_principal_sol(app, (position or {}).get("position_id")))
+    except Exception:
+        rent = Decimal(0)
+    return max(Decimal(0), cash_cost - rent)
 
 
 def _partial_skip(tid: str, position: dict, reason: str, *, net_pct=None, proceeds_lamports=None) -> dict:
@@ -63,7 +76,15 @@ def process_leader_event_partial_profit_guard(app, event: dict):
     if not _sol._bool(cfg.get("mirror_partial_sells"), True):
         return []
 
-    minimum_net_pct = max(Decimal("0"), _d(cfg.get("live_min_partial_exit_net_pct"), "1.0"))
+    # Hard floors deliberately cannot be relaxed by CSV or the hourly optimiser.
+    minimum_net_pct = max(
+        _HARD_MIN_PARTIAL_NET_PCT,
+        max(Decimal("0"), _d(cfg.get("live_min_partial_exit_net_pct"), "3.0")),
+    )
+    minimum_position_value = max(
+        _HARD_MIN_POSITION_ECONOMIC_VALUE_SOL,
+        max(Decimal("0"), _d(cfg.get("live_min_position_economic_value_for_partial_sell_sol"), "0.002")),
+    )
     minimum_value_lamports = minimum_economic_partial_value_lamports(cfg)
     fraction = max(Decimal("0.0001"), min(Decimal(1), _d(sell_pct, 100) / Decimal(100)))
     actions = []
@@ -85,8 +106,18 @@ def process_leader_event_partial_profit_guard(app, event: dict):
             ).fetchall()]
 
         for position in positions:
+            economic_position_value = position_economic_value_sol(app, position)
+            if economic_position_value < minimum_position_value:
+                actions.append(_partial_skip(
+                    tid,
+                    position,
+                    f"low-capital HOLD: economic position value {economic_position_value:.9f} SOL is below "
+                    f"partial-exit floor {minimum_position_value:.9f} SOL",
+                ))
+                continue
+
             # Use the same rent-aware/economic valuation as LIVE monitoring. If we
-            # cannot prove the partial slice is profitable, fail closed and hold it.
+            # cannot prove the partial slice is sufficiently profitable, fail closed.
             try:
                 valuation = dict(_sol.evaluate_position(app, position, fraction) or {})
                 net_pct = _d(valuation.get("net_pct"), "-999")
@@ -120,9 +151,6 @@ def process_leader_event_partial_profit_guard(app, event: dict):
                 ))
                 continue
 
-            # Only now consume the durable leader-signature attempt. A skipped
-            # partial never submits a chain transaction and never converts the
-            # position into EXIT_PENDING.
             claimed, attempt_key = _live._claim_attempt(app, tid, event)
             if not claimed:
                 actions.append({
@@ -135,6 +163,7 @@ def process_leader_event_partial_profit_guard(app, event: dict):
             reason = "SOLANA_LEADER_PARTIAL_SELL_PROFIT_GATED"
             try:
                 result = _live._close_live(app, tid, position, fraction, reason)
+                realised_net = _d(result.get("net_sol"), 0)
                 _live._update_attempt(app, attempt_key, "EXECUTED", result.get("trade"))
                 actions.append({
                     "telegram_id": tid,
@@ -142,8 +171,9 @@ def process_leader_event_partial_profit_guard(app, event: dict):
                     "position_id": position.get("position_id"),
                     "signature": result.get("signature"),
                     "reason": reason,
-                    "net_sol": str(result.get("net_sol") or ""),
+                    "net_sol": str(realised_net),
                     "pretrade_net_pct": str(net_pct),
+                    "posttrade_result": "PROFIT" if realised_net > 0 else "NON_PROFIT",
                 })
             except _exec.SolanaLivePostExecutionError as exc:
                 _live._update_attempt(app, attempt_key, "LANDED_INVALID_OUTPUT", exc.result, str(exc))
@@ -155,10 +185,6 @@ def process_leader_event_partial_profit_guard(app, event: dict):
                     "signature": exc.signature,
                 })
             except Exception as exc:
-                # A partial sale is optional. If congestion/liquidity/fee protection
-                # blocks it, hold the position rather than flagging the whole trade
-                # for a forced exit. A later full leader SELL still executes through
-                # the immediate risk-control path.
                 _live._update_attempt(app, attempt_key, "FAILED_NO_RETRY", None, str(exc))
                 actions.append(_partial_skip(
                     tid,
@@ -178,7 +204,7 @@ def install():
     _sol._partial_sell_profit_guard_installed = True
     print(
         "[solana-partial-sell-profit-guard] full_exit=immediate "
-        "partial_exit=net_profit_and_fee_size_gated min_net=1%"
+        "partial_exit=disabled_below_0.002_sol_and_profit_gated min_net=3%"
     )
 
 
