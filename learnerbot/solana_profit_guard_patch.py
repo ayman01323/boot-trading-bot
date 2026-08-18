@@ -14,6 +14,7 @@ _SOL_QUALITY_DEFAULTS = {
     "min_recent_win_rate_pct": ("55", "Minimum recent Solana positive-trade percentage"),
     "min_recent_profit_factor": ("1.10", "Minimum recent Solana profit factor"),
     "max_leader_drawdown_pct": ("20", "Maximum reconstructed Solana leader equity drawdown"),
+    "leader_recent_activity_hours": ("6", "Prefer otherwise-qualified Solana leaders observed trading within this many hours"),
     "min_copied_trades_for_guard": ("3", "Minimum closed LIVE copies before copied-performance gate applies"),
     "min_copied_win_rate_pct": ("40", "Minimum actual Solana LIVE copied win rate"),
     "min_copied_profit_factor": ("1.0", "Minimum actual Solana LIVE copied profit factor"),
@@ -63,6 +64,7 @@ def quality_metrics(app, wallet, cfg):
             (str(wallet), cutoff),
         ).fetchall()]
         hs = conn.execute("SELECT truncated,error FROM history_status WHERE wallet=?", (str(wallet),)).fetchone()
+        candidate = conn.execute("SELECT last_seen FROM candidates WHERE wallet=?", (str(wallet),)).fetchone()
     def stats(values):
         profit = sum((_d(r["net_sol"]) for r in values if _d(r["net_sol"]) > 0), Decimal(0))
         loss = sum((-_d(r["net_sol"]) for r in values if _d(r["net_sol"]) < 0), Decimal(0))
@@ -74,12 +76,15 @@ def quality_metrics(app, wallet, cfg):
             "profit_factor": _pf(profit, loss),
         }
     all_s = stats(rows); recent = stats(rows[-recent_n:])
+    trade_last = max((int(r.get("sell_ts") or 0) for r in rows), default=0)
+    candidate_last = int(candidate["last_seen"] or 0) if candidate else 0
     all_s.update({
         "drawdown_pct": _drawdown(rows),
         "recent_closed": recent["closed"],
         "recent_win_rate": recent["win_rate"],
         "recent_profit_factor": recent["profit_factor"],
         "history_complete": bool(hs and not int(hs["truncated"] or 0) and not str(hs["error"] or "").strip()),
+        "last_activity_ts": max(trade_last, candidate_last),
     })
     return all_s
 
@@ -165,12 +170,27 @@ def refresh_rankings(app, telegram_id=None):
         m = quality_metrics(app, wallet, cfg)
         if _historical_ok(m, cfg):
             qualified.append((a, m))
-    qualified.sort(key=lambda x: (x[1]["profit_factor"], x[1]["net"], x[1]["win_rate"], -x[1]["drawdown_pct"]), reverse=True)
-    leaders_n = max(1, min(10, _i(cfg.get("leaders_per_user"), 3)))
-    now = int(time.time())
 
-    # Evaluate copied-performance and cooldown rules before opening the leader
-    # replacement write transaction. This prevents a nested SQLite write lock.
+    # Profitability remains mandatory. Within that qualified pool, prefer wallets
+    # observed trading recently so leader slots are less likely to be occupied by
+    # excellent but currently inactive wallets. If there are not enough recently
+    # active wallets, older qualified leaders still fill the remaining slots.
+    now = int(time.time())
+    activity_hours = max(1, min(168, _i(cfg.get("leader_recent_activity_hours"), 6)))
+    activity_cutoff = now - activity_hours * 3600
+    qualified.sort(
+        key=lambda x: (
+            1 if int(x[1].get("last_activity_ts") or 0) >= activity_cutoff else 0,
+            x[1]["profit_factor"],
+            x[1]["net"],
+            x[1]["win_rate"],
+            -x[1]["drawdown_pct"],
+            int(x[1].get("last_activity_ts") or 0),
+        ),
+        reverse=True,
+    )
+    leaders_n = max(1, min(10, _i(cfg.get("leaders_per_user"), 3)))
+
     selected = {}
     for u in users:
         tid = str(u.get("telegram_id") or "")
