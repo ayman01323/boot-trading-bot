@@ -33,7 +33,7 @@ def _arm_full_live(app) -> None:
         join_user(app.csv_dir, TARGET_TELEGRAM_ID, "MASTER")
         row = get_user(app.csv_dir, TARGET_TELEGRAM_ID)
 
-    # This change is deliberately scoped to this one Telegram account.  It does
+    # This change is deliberately scoped to this one Telegram account. It does
     # not alter the platform-wide emergency AUTO/LIVE gates or any other user.
     updates = {
         "role": "MASTER",
@@ -48,7 +48,7 @@ def _arm_full_live(app) -> None:
         updates["fee_plan_id"] = "MASTER"
     update_user(app.csv_dir, TARGET_TELEGRAM_ID, **updates)
 
-    # Global account defaults.  ARMED is required by the direct AUTO executor;
+    # Global account defaults. ARMED is required by the direct AUTO executor;
     # SiBot has its own enable/auto switches.
     global_settings = {
         "auto_trading_enabled": ("true", "User automatic execution enabled"),
@@ -58,11 +58,11 @@ def _arm_full_live(app) -> None:
         "sibot_auto_trade_enabled": ("true", "SiBot real-money copy execution enabled"),
     }
     for setting, (value, description) in global_settings.items():
-        _set(setting, value, chain_id="*", description=description)
+        _set(app, setting, value, chain_id="*", description=description)
 
-    # Existing chain-specific OFF rows override global settings.  Explicitly arm
+    # Existing chain-specific OFF rows override global settings. Explicitly arm
     # every configured EVM chain so stale per-chain overrides cannot keep this
-    # account in SHADOW/OFF.  Platform gates, route approval, simulation, profit,
+    # account in SHADOW/OFF. Platform gates, route approval, simulation, profit,
     # gas, cooldown, capital and signing checks remain mandatory at execution.
     evm_chain_ids = []
     for chain in load_chains(app, enabled_only=False):
@@ -70,16 +70,17 @@ def _arm_full_live(app) -> None:
             continue
         cid = int(chain.chain_id)
         evm_chain_ids.append(cid)
-        _set("auto_trading_enabled", "true", chain_id=cid, description="User automatic execution enabled")
-        _set("live_trading_enabled", "true", chain_id=cid, description="User real-money signing enabled")
-        _set("recommendation_mode", "ARMED", chain_id=cid, description="User execution mode explicitly armed")
-        _set("sibot_enabled", "true", chain_id=cid, description="SiBot monitoring enabled")
-        _set("sibot_auto_trade_enabled", "true", chain_id=cid, description="SiBot real-money copy execution enabled")
+        _set(app, "auto_trading_enabled", "true", chain_id=cid, description="User automatic execution enabled")
+        _set(app, "live_trading_enabled", "true", chain_id=cid, description="User real-money signing enabled")
+        _set(app, "recommendation_mode", "ARMED", chain_id=cid, description="User execution mode explicitly armed")
+        _set(app, "sibot_enabled", "true", chain_id=cid, description="SiBot monitoring enabled")
+        _set(app, "sibot_auto_trade_enabled", "true", chain_id=cid, description="SiBot real-money copy execution enabled")
 
-    # Solana LIVE is a separate per-user gate.  This authorises real execution,
+    # Solana LIVE is a separate per-user gate. This authorises real execution,
     # while the executor still requires a signing-ready wallet, sufficient SOL,
     # reserve, qualifying leader signal and successful transaction simulation.
     _set(
+        app,
         "solana_live_enabled",
         "true",
         chain_id=-101,
