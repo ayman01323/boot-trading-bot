@@ -47,7 +47,6 @@ def _record(app, event: dict, action: dict):
                 str(event.get("mint") or ""), decision, reason,
             ),
         )
-        # Keep bounded history.
         conn.execute("DELETE FROM live_decisions WHERE ts < ?", (int(time.time()) - 14 * 86400,))
         conn.commit()
     print(
@@ -72,13 +71,24 @@ def activity_summary(app, tid, hours=24):
     with closing(_sol.connect(app)) as conn:
         leaders = int(conn.execute("SELECT COUNT(*) n FROM leaders WHERE telegram_id=?", (str(tid),)).fetchone()["n"])
         events = int(conn.execute("SELECT COUNT(*) n FROM leader_events WHERE created_at>=?", (since,)).fetchone()["n"])
+        open_positions = [dict(r) for r in conn.execute(
+            """SELECT position_id,leader_wallet,mint,entry_cost_sol,entry_ts,unrealised_pct,leader_exit_pending
+               FROM positions WHERE telegram_id=? AND status='OPEN' AND mode='LIVE' ORDER BY entry_ts""",
+            (str(tid),),
+        ).fetchall()]
         rows = [dict(r) for r in conn.execute(
             """SELECT ts,event_action,decision,reason,mint FROM live_decisions
                WHERE telegram_id=? AND ts>=? ORDER BY ts DESC LIMIT 100""",
             (str(tid), since),
         ).fetchall()]
     counts = Counter(str(r.get("decision") or "UNKNOWN") for r in rows)
-    return {"leaders": leaders, "events": events, "rows": rows, "counts": counts}
+    return {
+        "leaders": leaders,
+        "events": events,
+        "open_positions": open_positions,
+        "rows": rows,
+        "counts": counts,
+    }
 
 
 def _reason_text(row):
@@ -89,18 +99,33 @@ def _reason_text(row):
     return f"{d}: {reason[:140]}"
 
 
+def _short(v):
+    v = str(v or "")
+    return v if len(v) <= 18 else f"{v[:8]}…{v[-6:]}"
+
+
 def solana_page(app, tid):
     base = _PREV_PAGE(app, tid)
     try:
         s = activity_summary(app, tid, 24)
         counts = s["counts"]
         decisions = sum(counts.values())
+        cfg = _sol.settings(app)
+        max_positions = max(1, min(5, _sol._int(cfg.get("live_max_positions"), 1)))
         lines = [
             "",
             "<b>🧭 SOLANA ACTIVITY — LAST 24H</b>",
             f"Selected leaders: <b>{s['leaders']}</b>  •  observed selected-leader events: <b>{s['events']}</b>",
+            f"Open LIVE positions: <b>{len(s['open_positions'])}/{max_positions}</b>",
             f"LIVE decisions recorded: <b>{decisions}</b>  •  BUY <b>{counts.get('BUY',0)}</b>  •  SELL <b>{counts.get('SELL',0)}</b>  •  REJECT <b>{counts.get('REJECT',0)}</b>  •  SKIP <b>{counts.get('SKIP',0)}</b>",
         ]
+        if s["open_positions"]:
+            lines.append("<b>Current open LIVE mints</b>")
+            for p in s["open_positions"][:5]:
+                pending = " • leader exit pending" if int(p.get("leader_exit_pending") or 0) else ""
+                lines.append(
+                    f"• <code>{html.escape(_short(p.get('mint')))}</code> • entry <b>{html.escape(str(p.get('entry_cost_sol') or '0'))} SOL</b> • P&amp;L <b>{float(p.get('unrealised_pct') or 0):+.2f}%</b>{pending}"
+                )
         if s["leaders"] == 0:
             lines.append("⚠️ No selected Solana leaders: ranking/quality selection is the current bottleneck.")
         elif s["events"] == 0:
