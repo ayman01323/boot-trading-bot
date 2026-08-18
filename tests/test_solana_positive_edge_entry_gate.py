@@ -75,6 +75,46 @@ def test_buy_with_large_edge_delegates_to_existing_live_handler(monkeypatch):
     assert gate.process_leader_event_positive_edge(app, event) is expected
 
 
+def test_vmv_buy_bypasses_only_leader_median_edge_gate(monkeypatch):
+    app = SimpleNamespace()
+    event = {"action": "BUY", "leader_wallet": "leader", "mint": gate.VMV_MINT}
+    monkeypatch.setattr(
+        gate._sol,
+        "settings",
+        lambda app: {"live_vmv_allowlist_enabled": "true", "live_vmv_mint": gate.VMV_MINT},
+    )
+    monkeypatch.setattr(
+        gate,
+        "_edge_ok",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("VMV must bypass only the median-return gate")),
+    )
+    expected = [{"action": "BUY", "source": "inner-live-safety-handler"}]
+    monkeypatch.setattr(gate, "_PREV_PROCESS", lambda app, event: expected)
+    assert gate.process_leader_event_positive_edge(app, event) is expected
+
+
+def test_vmv_exception_can_be_disabled(monkeypatch):
+    app = SimpleNamespace()
+    event = {"action": "BUY", "leader_wallet": "leader", "mint": gate.VMV_MINT}
+    monkeypatch.setattr(
+        gate._sol,
+        "settings",
+        lambda app: {"live_vmv_allowlist_enabled": "false", "live_vmv_mint": gate.VMV_MINT},
+    )
+    monkeypatch.setattr(
+        gate,
+        "_edge_ok",
+        lambda app, wallet, cfg: (
+            False,
+            "leader median return 1.000% is below LIVE edge floor 5.000%",
+            {"median_return_pct": gate.Decimal("1"), "recent_median_return_pct": gate.Decimal("1")},
+        ),
+    )
+    actions = gate.process_leader_event_positive_edge(app, event)
+    assert actions[0]["action"] == "REJECT"
+    assert actions[0]["reason"].startswith("POSITIVE_EDGE_GATE:")
+
+
 def test_first_realised_copied_loss_quarantines_leader(monkeypatch):
     now = 2_000_000
     monkeypatch.setattr(gate.time, "time", lambda: now)
