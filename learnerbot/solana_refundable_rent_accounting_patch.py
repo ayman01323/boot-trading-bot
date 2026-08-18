@@ -55,20 +55,26 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
     old_economic_cost = max(Decimal(0), old_cash_cost - rent_principal)
 
     trade = executor.sell(position["mint"], sell_raw)
-    out_lamports = int(trade.get("totalOutputAmount") or trade.get("outputAmountResult") or 0)
+    out_lamports = max(0, int(trade.get("totalOutputAmount") or trade.get("outputAmountResult") or 0))
+    gross_swap_output = Decimal(out_lamports) / Decimal(1_000_000_000)
+
+    # Keep gross router output separate from actual wallet cashflow.  A swap output
+    # cannot be negative; a negative wallet delta means execution fees/other tx-level
+    # costs exceeded the SOL delivered to the wallet and must be shown as cashflow,
+    # not mislabeled as negative "swap proceeds".
     delta_raw = trade.get("wallet_delta_lamports")
+    delta_known = delta_raw is not None
     try:
-        delta = int(delta_raw) if delta_raw is not None else 0
+        delta = int(delta_raw) if delta_known else 0
     except Exception:
+        delta_known = False
         delta = 0
+
     cfg = _sol.settings(app)
-    if delta > 0:
-        swap_proceeds = Decimal(delta) / Decimal(1_000_000_000)
+    if delta_known:
+        wallet_cashflow = Decimal(delta) / Decimal(1_000_000_000)
     else:
-        swap_proceeds = (
-            Decimal(out_lamports) / Decimal(1_000_000_000)
-            - _sol._dec(cfg.get("estimated_exit_fee_sol"), ".00002")
-        )
+        wallet_cashflow = gross_swap_output - _sol._dec(cfg.get("estimated_exit_fee_sol"), ".00002")
 
     remaining = max(0, old_raw - sell_raw)
     closed = remaining <= max(1, int(old_raw * .001)) or f >= Decimal("0.999")
@@ -86,21 +92,20 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
 
     reclaimed_sol = Decimal(int(reclaim.get("reclaimed_lamports") or 0)) / Decimal(1_000_000_000)
     if closed:
-        # Full cash reconciliation: the original cash cost includes rent principal,
-        # and the actual sell/reclaim wallet inflows offset it exactly once.
-        proceeds = swap_proceeds + reclaimed_sol
+        # For managed/non-atomic exits, a separately reclaimed account is added once.
+        # Atomic exits already include rent in wallet_delta and normally report no
+        # second reclaim here, avoiding double counting.
+        proceeds = wallet_cashflow + reclaimed_sol
         net = proceeds - old_cash_cost
         remaining_cost = Decimal(0)
     else:
         # A partial sell does not consume or refund the fixed token-account rent.
-        # Allocate only economic trading cost to the sold token fraction and keep
-        # the full refundable rent principal attached to the remaining position.
         sold_fraction = Decimal(sell_raw) / Decimal(old_raw)
         economic_cost_sold = old_economic_cost * sold_fraction
-        net = swap_proceeds - economic_cost_sold
+        net = wallet_cashflow - economic_cost_sold
         remaining_economic_cost = max(Decimal(0), old_economic_cost - economic_cost_sold)
         remaining_cost = remaining_economic_cost + rent_principal
-        proceeds = swap_proceeds
+        proceeds = wallet_cashflow
 
     realised = _sol._dec(position.get("realised_net_sol"), 0) + net
     now = int(time.time())
@@ -124,9 +129,7 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         )
         conn.commit()
 
-    reclaim_line = (
-        f"Rent reclaimed: <b>{reclaimed_sol:.9f} SOL</b>\n" if reclaimed_sol > 0 else ""
-    )
+    reclaim_line = f"Rent reclaimed: <b>{reclaimed_sol:.9f} SOL</b>\n" if reclaimed_sol > 0 else ""
     partial_line = (
         f"Refundable rent still reserved: <b>{rent_principal:.9f} SOL</b>\n"
         if not closed and rent_principal > 0 else ""
@@ -137,13 +140,16 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         f"✅ <b>Solana LIVE SELL confirmed</b>\n"
         f"Reason: <code>{reason}</code>\n"
         f"Wallet: <code>{executor.address[:8]}…{executor.address[-6:]}</code>\n"
-        f"Swap wallet proceeds: <b>{swap_proceeds:.9f} SOL</b>\n"
+        f"Gross swap output: <b>{gross_swap_output:.9f} SOL</b>\n"
+        f"Wallet cashflow after transaction: <b>{wallet_cashflow:+.9f} SOL</b>\n"
         f"{reclaim_line}{partial_line}"
         f"Realised net P&L: <b>{net:+.9f} SOL</b>\n"
         f"TX: <code>{sig}</code>"
         + (f"\nRent reclaim TX: <code>{reclaim.get('signature')}</code>" if reclaim.get("signature") else ""),
     )
     trade = dict(trade or {})
+    trade["gross_swap_output_lamports"] = int(out_lamports)
+    trade["wallet_cashflow_lamports"] = int(delta) if delta_known else int((wallet_cashflow * Decimal(1_000_000_000)).to_integral_value())
     trade["rent_reclaimed_lamports"] = int(reclaim.get("reclaimed_lamports") or 0)
     trade["rent_reclaim_signature"] = str(reclaim.get("signature") or "")
     return {
@@ -152,6 +158,8 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         "signature": sig,
         "reason": reason,
         "trade": trade,
+        "gross_swap_output_sol": gross_swap_output,
+        "wallet_cashflow_sol": wallet_cashflow,
         "rent_reclaimed_sol": reclaimed_sol,
         "refundable_rent_sol": rent_principal,
     }
@@ -214,7 +222,7 @@ def install():
     _sol.retry_pending_rent_reclaims = retry_pending_rent_reclaims
     print(
         "[solana-rent-accounting] open_pnl_excludes_refundable_rent=true "
-        "partial_keeps_rent=true full_cash_reconciles=true"
+        "partial_keeps_rent=true gross_output_separate_from_wallet_cashflow=true"
     )
 
 
