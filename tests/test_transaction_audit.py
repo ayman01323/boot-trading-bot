@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import subprocess
 import sys
@@ -7,6 +9,9 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from learnerbot import hourly_gpt_strategy_review as gpt_review
 from learnerbot import transaction_audit as audit
 from learnerbot import transaction_audit_worker_patch as worker
 
@@ -54,8 +59,8 @@ def _row():
     }
 
 
-def test_audit_interval_is_exactly_two_hours():
-    assert audit.AUDIT_INTERVAL_SECONDS == 7200
+def test_worker_interval_is_exactly_one_hour():
+    assert worker.HOURLY_INTERVAL_SECONDS == 3600
 
 
 def test_direction_classification():
@@ -103,9 +108,10 @@ def test_run_transaction_audit_builds_zip_and_cumulative(monkeypatch, tmp_path):
     monkeypatch.setattr(audit, "_export_db_tables", lambda app, run_dir, since: [])
     monkeypatch.setattr(audit, "_copy_strategy_snapshot", lambda app, run_dir: [])
 
-    result = audit.run_transaction_audit(app, hours=2)
+    result = audit.run_transaction_audit(app, hours=1)
     latest = Path(result["latest_zip"])
     assert latest.exists()
+    assert result["requested_hours"] == 1.0
     assert result["registered_users"] == 1
     assert result["enabled_wallets"] == 1
     assert result["solana_transactions"] == 1
@@ -121,6 +127,97 @@ def test_run_transaction_audit_builds_zip_and_cumulative(monkeypatch, tmp_path):
         assert "cumulative_all_transactions.csv" in names
         summary = json.loads(zf.read("summary.json"))
         assert "private keys" in summary["privacy"].lower()
+
+
+def _make_review_zip(tmp_path: Path) -> Path:
+    path = tmp_path / "audit.zip"
+    headers = list(_row().keys())
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=headers)
+    writer.writeheader()
+    writer.writerow(_row())
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("all_transactions.csv", buf.getvalue())
+        zf.writestr("collection_errors.csv", "telegram_id,wallet,chain,stage,error\n")
+        zf.writestr("summary.json", json.dumps({
+            "requested_hours": 1.0,
+            "window_start_utc": "2026-08-18 20:00:00 UTC",
+            "registered_users": 1,
+            "enabled_wallets": 1,
+            "collection_errors": 0,
+            "cumulative_rows": 1,
+        }))
+    return path
+
+
+def test_gpt_metrics_anonymise_ids_and_omit_wallet_address(tmp_path):
+    metrics = gpt_review.build_review_metrics(_make_review_zip(tmp_path))
+    encoded = json.dumps(metrics)
+    assert "WalletAddress" not in encoded
+    assert '"123"' not in encoded
+    assert "user_" in encoded
+
+
+def test_gpt_review_requires_shadow_only_human_approval():
+    valid = {
+        "do_not_auto_deploy_live": True,
+        "shadow_candidate": {
+            "mode": "SHADOW_ONLY",
+            "live_promotion_requires_human_approval": True,
+        },
+    }
+    gpt_review._validate_review(valid)
+    invalid = {
+        "do_not_auto_deploy_live": False,
+        "shadow_candidate": {
+            "mode": "LIVE",
+            "live_promotion_requires_human_approval": False,
+        },
+    }
+    with pytest.raises(RuntimeError):
+        gpt_review._validate_review(invalid)
+
+
+def test_gpt_request_uses_store_false_and_structured_schema(monkeypatch):
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            review = {
+                "status": "WATCH",
+                "executive_summary": "Operational review only.",
+                "findings": [],
+                "shadow_candidate": {
+                    "mode": "SHADOW_ONLY",
+                    "hypothesis": "Observe execution reliability.",
+                    "experiments": [],
+                    "live_promotion_requires_human_approval": True,
+                },
+                "recommended_action": "RUN_SHADOW_EXPERIMENTS",
+                "do_not_auto_deploy_live": True,
+            }
+            return {
+                "id": "resp_test",
+                "model": "gpt-test",
+                "status": "completed",
+                "output": [{"type": "message", "content": [{"type": "output_text", "text": json.dumps(review)}]}],
+            }
+
+    def fake_post(url, headers, json, timeout):
+        captured.update({"url": url, "headers": headers, "body": json, "timeout": timeout})
+        return Response()
+
+    monkeypatch.setattr(gpt_review.requests, "post", fake_post)
+    review, meta = gpt_review.request_gpt_review({"transaction_rows": 1}, api_key="test-key", model="gpt-test")
+    assert captured["body"]["store"] is False
+    assert captured["body"]["text"]["format"]["type"] == "json_schema"
+    assert captured["body"]["text"]["format"]["strict"] is True
+    assert review["shadow_candidate"]["mode"] == "SHADOW_ONLY"
+    assert review["do_not_auto_deploy_live"] is True
+    assert meta["response_id"] == "resp_test"
 
 
 def test_master_delivery_targets_only_active_masters(monkeypatch, tmp_path):
