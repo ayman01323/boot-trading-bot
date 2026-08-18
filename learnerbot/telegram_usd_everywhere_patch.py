@@ -37,12 +37,11 @@ def _dec(v, default="0") -> Decimal:
 def _fmt_usd(v: Decimal) -> str:
     v = _dec(v)
     a = abs(v)
-    if a >= Decimal("1000"):
-        return f"${v:,.2f}"
-    if a >= Decimal("1"):
-        return f"${v:,.2f}"
+    # Normal currency values are always shown with cents.  This is important for
+    # order notifications: $0.20 must not be rendered as the ambiguous-looking
+    # $0.2.  Sub-cent values retain extra precision so tiny fees/P&L remain visible.
     if a >= Decimal("0.01"):
-        return f"${v:,.4f}".rstrip("0").rstrip(".")
+        return f"${v:,.2f}"
     if a == 0:
         return "$0.00"
     return f"${v:,.6f}".rstrip("0").rstrip(".")
