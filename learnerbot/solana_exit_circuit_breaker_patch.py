@@ -66,9 +66,6 @@ def _open_circuit(app, tid, position, exc):
         )
         conn.commit()
 
-    # One landed-invalid monitored exit is enough to stop further LIVE submissions
-    # for this user. Re-arming the account does not clear the position circuit; the
-    # affected position must first be reconciled explicitly.
     set_user_setting(
         app.csv_dir,
         str(tid),
@@ -103,12 +100,13 @@ def close_live_guarded(app, tid, position, fraction, reason):
 
 
 def install():
-    _rent._close_live_rent_aware = close_live_guarded
+    # Keep the rent-accounting implementation itself immutable. The circuit is the
+    # outer public guard used by both monitored LIVE and wallet-bound exit paths.
     _binding._close_bound_live = close_live_guarded
     _live._close_live = close_live_guarded
     print(
         "[solana-exit-circuit] first_landed_invalid_disables_live=true "
-        "position_retry_block=true"
+        "position_retry_block=true rent_accounting_inner=true"
     )
 
 
