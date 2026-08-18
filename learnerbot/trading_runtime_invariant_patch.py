@@ -23,6 +23,7 @@ from . import telegram_ui as _telegram_ui
 from . import transaction_audit_worker_patch as _audit_worker
 from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from . import profit_control_loop_patch as _profit_control
+from . import profit_control_audit_export_patch  # noqa: F401
 
 
 def install():
