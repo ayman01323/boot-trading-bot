@@ -16,6 +16,13 @@ MASTER_ONLY = {
     "strategies", "report", "autodeploy",
 }
 
+# The blue Telegram command sheet is navigation, not the feature surface.
+# ACTIVE normal users use /menu and then the compact inline dashboard. Other
+# handlers remain callable when typed manually; they are merely hidden here.
+ACTIVE_USER_VISIBLE = ("menu",)
+ONBOARDING_VISIBLE = ("menu", "join", "activate", "fees")
+DEFAULT_VISIBLE = ("menu", "join", "activate")
+
 
 def _csv_dir() -> Path:
     return Path(__file__).resolve().parents[1] / "CSVbot"
@@ -33,35 +40,56 @@ def _dedupe(commands):
     return out
 
 
+def _visible(commands, names):
+    by_name = {x["command"]: x for x in _dedupe(commands)}
+    defaults = {
+        "menu": "Open main menu",
+        "join": "Register Telegram ID",
+        "activate": "Activate account with code",
+        "fees": "Show fee plan/status",
+    }
+    out = []
+    for name in names:
+        row = by_name.get(name)
+        if row is None:
+            row = {"command": name, "description": defaults[name]}
+        out.append(row)
+    return out
+
+
 def set_commands(token: str):
-    # Let every earlier feature patch contribute its commands first, then scope
-    # the final union by role. This keeps SiBot/user commands while removing
-    # MASTER commands from the normal blue Telegram command icon.
+    # Let every earlier feature patch contribute its commands first. MASTER
+    # retains that full union. The normal-user blue menu is intentionally much
+    # smaller than the command handlers available to the user.
     _PREV_SET_COMMANDS(token)
     current = _dedupe(_tg._json("getMyCommands", token, payload={}, timeout=15) or [])
     if not any(x["command"] == "autodeploy" for x in current):
         current.append({"command": "autodeploy", "description": "MASTER deployment status"})
 
-    user_commands = [
+    non_master_commands = [
         x for x in current
         if x["command"] not in MASTER_ONLY and "MASTER" not in x["description"].upper()
     ]
+    active_user_commands = _visible(non_master_commands, ACTIVE_USER_VISIBLE)
+    onboarding_commands = _visible(non_master_commands, ONBOARDING_VISIBLE)
+    default_commands = _visible(non_master_commands, DEFAULT_VISIBLE)
     master_commands = _dedupe(current)
 
-    # Safe default for any chat not explicitly known to the registry.
+    # Unknown/unregistered private chats need only onboarding commands.
     _tg._json(
         "setMyCommands", token,
-        payload={"commands": user_commands, "scope": {"type": "default"}},
+        payload={"commands": default_commands, "scope": {"type": "default"}},
         timeout=15,
     )
     _tg._json(
         "setMyCommands", token,
-        payload={"commands": user_commands, "scope": {"type": "all_private_chats"}},
+        payload={"commands": default_commands, "scope": {"type": "all_private_chats"}},
         timeout=15,
     )
 
     masters = 0
-    users = 0
+    active_users = 0
+    onboarding_users = 0
     for row in all_users(_csv_dir()):
         tid = str(row.get("telegram_id") or "").strip()
         if not tid or not tid.lstrip("-").isdigit():
@@ -70,7 +98,15 @@ def set_commands(token: str):
         if status == "SUSPENDED":
             continue
         is_master = str(row.get("role") or "USER").upper() == "MASTER"
-        scoped = master_commands if is_master else user_commands
+        if is_master:
+            scoped = master_commands
+            masters += 1
+        elif status == "ACTIVE":
+            scoped = active_user_commands
+            active_users += 1
+        else:
+            scoped = onboarding_commands
+            onboarding_users += 1
         _tg._json(
             "setMyCommands", token,
             payload={
@@ -79,14 +115,12 @@ def set_commands(token: str):
             },
             timeout=15,
         )
-        if is_master:
-            masters += 1
-        else:
-            users += 1
 
     print(
-        f"[telegram-command-scope] user_commands={len(user_commands)} "
-        f"master_commands={len(master_commands)} masters={masters} users={users}"
+        f"[telegram-command-scope] active_user_commands={len(active_user_commands)} "
+        f"onboarding_commands={len(onboarding_commands)} "
+        f"master_commands={len(master_commands)} masters={masters} "
+        f"active_users={active_users} onboarding_users={onboarding_users}"
     )
 
 
