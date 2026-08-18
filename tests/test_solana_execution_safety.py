@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from learnerbot import solana_execution_fault_counter_patch as faults
 from learnerbot import solana_live_executor as live_exec
 from learnerbot import solana_live_patch as live
 from learnerbot import solana_sibot as sol
@@ -119,13 +120,18 @@ def test_second_landed_invalid_execution_disables_solana_live(tmp_path):
             },
             "no output",
         )
-        disabled = live._record_execution_fault(app, "123", cfg, "no output")
+        disabled = faults.record_execution_fault(app, "123", cfg, "no output")
         if index == 1:
             assert disabled is False
+            assert faults.fault_count(app, "123") == 1
             assert user_bool(app.csv_dir, "123", sol.SOLANA_CHAIN_ID, "solana_live_enabled", False) is True
         else:
             assert disabled is True
+            assert faults.fault_count(app, "123") == 2
             assert user_bool(app.csv_dir, "123", sol.SOLANA_CHAIN_ID, "solana_live_enabled", True) is False
+
+    faults.reset_fault_count(app, "123")
+    assert faults.fault_count(app, "123") == 0
 
 
 def test_live_position_uses_actual_wallet_spend_not_fixed_fee(tmp_path):
