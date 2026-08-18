@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from . import sibot as _sibot
+from . import sibot_evm_worker_reliability_patch as _evm_reliability
+from . import solana_entry_capacity_reconcile_patch as _capacity
+from . import solana_leader_cursor_reliability_patch as _cursor
+from . import solana_live_executor as _exec
+from . import solana_live_patch as _live
+from . import solana_overhead_gate_correction_patch as _overhead
+from . import solana_position_wallet_binding_patch as _binding
+from . import solana_preflight_cache_patch as _preflight
+from . import solana_profit_accounting_epoch_patch as _epoch
+from . import solana_profit_guard_patch as _profit_guard
+from . import solana_quote_execution_consistency_patch as _quote
+from . import solana_refundable_rent_accounting_patch as _rent
+from . import solana_simulated_reserve_guard_patch as _reserve
+from . import solana_sibot as _sol
+from . import solana_worker_reliability_patch as _workers
+
+
+def install():
+    checks = {
+        "solana_close": _live._close_live is _rent._close_live_rent_aware,
+        "solana_bound_close": _binding._close_bound_live is _rent._close_live_rent_aware,
+        "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
+        "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
+        "solana_workers": _sol.start_workers is _workers.start_workers_reliable,
+        "solana_quote": _sol.jupiter_quote is _quote.jupiter_quote_executable,
+        "solana_preflight": _sol._validate_shadow_entry is _preflight.validate_entry_cached,
+        "solana_economic_gate": _live._economic_entry_gate is _overhead._economic_entry_gate_reconciled,
+        "solana_capacity": _live._open_live_count is _capacity._verified_open_live_count,
+        "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
+        "solana_buy": _exec.SolanaLiveExecutor.buy is _reserve._buy_with_simulated_reserve,
+        "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
+        "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        raise RuntimeError("Audited trading runtime invariant failed: " + ", ".join(failed))
+    print("[trading-runtime-invariant] OK audited_hooks=%d" % len(checks))
+
+
+install()
