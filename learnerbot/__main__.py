@@ -64,6 +64,8 @@ from . import solana_minimum_settings_migration  # noqa: F401
 from . import solana_quality_settings_migration  # noqa: F401
 # Restore a balanced Solana opportunity rate while preserving LIVE/simulation/reserve safeguards.
 from . import solana_frequency_settings_migration  # noqa: F401
+# Prioritise real-time selected-leader monitoring over non-urgent history backfill without weakening the 30s entry freshness gate.
+from . import solana_live_latency_settings_migration  # noqa: F401
 # Allow a second distinct guarded Solana LIVE position; same-mint repeat buys remain blocked.
 from . import solana_position_capacity_migration  # noqa: F401
 # Expose the expanded quality/profit controls in the existing SiBot settings callbacks.
