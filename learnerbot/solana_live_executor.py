@@ -11,13 +11,29 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 from . import solana_sibot as _sol
-from .solana_wallet_store import SolanaWalletError, SolanaWalletStore
+from .solana_wallet_store import SolanaWalletStore
 
 JUPITER_BASE = "https://api.jup.ag/swap/v2"
 
 
 class SolanaLiveError(RuntimeError):
     pass
+
+
+class SolanaLivePostExecutionError(SolanaLiveError):
+    """A transaction landed/reported success but failed economic-result validation."""
+
+    def __init__(self, message: str, result: dict | None = None):
+        super().__init__(message)
+        self.result = dict(result or {})
+        self.signature = str(self.result.get("signature") or "")
+
+
+def _amount_int(value, default=0) -> int:
+    try:
+        return int(str(value))
+    except Exception:
+        return int(default)
 
 
 def sign_versioned_transaction(raw_transaction: bytes, keypair_bytes: bytes) -> bytes:
@@ -55,7 +71,7 @@ class SolanaLiveExecutor:
         self.keypair = self.store.keypair_bytes(self.telegram_id, self.meta.get("wallet_id"))
 
     def _headers(self, json_body=False):
-        headers = {"User-Agent": "BOOT-SiBot-Solana-LIVE/1.0"}
+        headers = {"User-Agent": "BOOT-SiBot-Solana-LIVE/1.1"}
         if json_body:
             headers["Content-Type"] = "application/json"
         api_key = os.getenv("JUPITER_API_KEY", "").strip()
@@ -101,6 +117,12 @@ class SolanaLiveExecutor:
             raise SolanaLiveError("JupiterZ/RFQ is disabled for the LIVE canary path")
         if not order.get("requestId"):
             raise SolanaLiveError("Jupiter order returned no requestId")
+        # Reject an explicitly zero quote before signing/broadcasting. Missing fields
+        # are tolerated because Jupiter response shapes can evolve; post-execute
+        # validation below remains mandatory.
+        for key in ("outAmount", "outputAmount", "estimatedOutputAmount"):
+            if key in order and _amount_int(order.get(key), 0) <= 0:
+                raise SolanaLiveError(f"Jupiter order has non-positive {key}")
         return order
 
     def _simulate(self, signed_b64: str) -> dict:
@@ -116,6 +138,9 @@ class SolanaLiveExecutor:
         return value
 
     def swap(self, input_mint: str, output_mint: str, amount_raw: int) -> dict:
+        # A pre-execution wallet snapshot is mandatory. This lets the caller account
+        # for the real SOL cash movement rather than a tiny fixed fee estimate.
+        wallet_before = self.native_balance_lamports()
         order = self._order(input_mint, output_mint, amount_raw)
         try:
             raw = base64.b64decode(order["transaction"], validate=True)
@@ -134,7 +159,47 @@ class SolanaLiveExecutor:
             raise SolanaLiveError(f"Jupiter execute failed: code={result.get('code')} {result.get('error') or result.get('status')}")
         if not result.get("signature"):
             raise SolanaLiveError("Jupiter reported success without a transaction signature")
-        return {**result, "order": order, "simulation": simulation}
+
+        # Best-effort confirmed post-execution snapshot. A successful swap can still
+        # be recorded if the second balance RPC is temporarily unavailable; the
+        # result carries wallet_balance_reconciled=False and the P&L layer falls back
+        # conservatively rather than losing the position record.
+        wallet_after = None
+        try:
+            wallet_after = self.native_balance_lamports()
+        except Exception:
+            wallet_after = None
+        wallet_delta = None if wallet_after is None else int(wallet_after) - int(wallet_before)
+        combined = {
+            **result,
+            "order": order,
+            "simulation": simulation,
+            "wallet_before_lamports": int(wallet_before),
+            "wallet_after_lamports": wallet_after,
+            "wallet_delta_lamports": wallet_delta,
+            "wallet_balance_reconciled": wallet_after is not None,
+        }
+
+        cfg = _sol.settings(self.app)
+        require_output = _sol._bool(cfg.get("live_require_execute_output"), True)
+        require_events = _sol._bool(cfg.get("live_require_swap_events"), True)
+        input_result = _amount_int(result.get("totalInputAmount") or result.get("inputAmountResult"), 0)
+        output_result = _amount_int(result.get("totalOutputAmount") or result.get("outputAmountResult"), 0)
+        swap_events = result.get("swapEvents") or []
+
+        problems = []
+        if require_output and input_result <= 0:
+            problems.append("non-positive executed input")
+        if require_output and output_result <= 0:
+            problems.append("non-positive executed output")
+        if require_events and not swap_events:
+            problems.append("missing swapEvents")
+        if problems:
+            raise SolanaLivePostExecutionError(
+                "Jupiter transaction reported Success but failed economic validation: " + ", ".join(problems),
+                combined,
+            )
+        return combined
 
     def buy(self, output_mint: str, amount_sol: Decimal, reserve_sol: Decimal) -> dict:
         amount_sol = Decimal(str(amount_sol))
