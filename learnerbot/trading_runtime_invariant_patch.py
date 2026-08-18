@@ -22,6 +22,7 @@ from . import solana_worker_reliability_patch as _workers
 from . import telegram_ui as _telegram_ui
 from . import transaction_audit_worker_patch as _audit_worker
 from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
+from . import profit_control_loop_patch as _profit_control
 
 
 def install():
@@ -43,6 +44,9 @@ def install():
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
+        "profit_control_settings": _sol.settings is _profit_control.settings_with_profit_control,
+        "profit_control_leader_gate": _profit_guard._copied_ok is _profit_control.copied_ok_with_profit_control,
+        "profit_control_hourly_loop": _audit_worker.run_hourly_gpt_review is _profit_control.run_hourly_gpt_review_with_control,
     }
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
