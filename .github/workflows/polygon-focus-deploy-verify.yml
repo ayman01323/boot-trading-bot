@@ -1,0 +1,17 @@
+name: Polygon Focus Deploy Verify
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-status:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy exact tested main commit
+        run: sudo /usr/local/sbin/deploy-boot-trading-bot "b168b22f480b0f143e5c15036e83e3c4cccc7a84"
+      - name: Server status
+        run: sudo /usr/local/sbin/status-boot-trading-bot
