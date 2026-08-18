@@ -30,8 +30,6 @@ def test_balanced_frequency_restores_pre_tightening_style_without_live_gate_chan
     assert targets["candidate_limit"] == "150"
     assert targets["leader_poll_seconds"] == "4"
 
-    # The frequency preset must not arm LIVE, change signing authority, or change
-    # the separately user-requested 0.0005 SOL / 0.01 SOL wallet-capital controls.
     forbidden = {
         "solana_live_enabled",
         "live_trading_enabled",
@@ -57,11 +55,27 @@ def test_balanced_frequency_keeps_exit_protection():
     assert targets["mirror_partial_sells"] == "true"
 
 
+def test_two_position_capacity_changes_only_position_count():
+    source = (ROOT / "learnerbot" / "solana_position_capacity_migration.py").read_text(encoding="utf-8")
+    assert '"live_max_positions"' in source
+    assert 'row["value"] = "2"' in source
+    for forbidden in (
+        "solana_live_enabled",
+        "live_trade_sol",
+        "live_min_sol_reserve",
+        "private_key",
+        "recommendation_mode",
+    ):
+        assert forbidden not in source
+
+
 def test_diagnostics_patch_records_reasons_and_exposes_activity_summary():
     source = (ROOT / "learnerbot" / "solana_trade_diagnostics_patch.py").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS live_decisions" in source
     assert "_sol.process_leader_event = process_leader_event" in source
     assert "SOLANA ACTIVITY — LAST 24H" in source
+    assert "Open LIVE positions:" in source
+    assert "Current open LIVE mints" in source
     for decision in ("BUY", "SELL", "REJECT", "SKIP"):
         assert decision in source
     assert "reason" in source
