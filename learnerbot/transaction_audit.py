@@ -8,7 +8,6 @@ import sqlite3
 import time
 import zipfile
 from collections import defaultdict
-from contextlib import closing
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -24,6 +23,7 @@ from . import solana_sibot as _sol
 ETHERSCAN_V2 = "https://api.etherscan.io/v2/api"
 AUDIT_INTERVAL_SECONDS = 2 * 60 * 60
 AUDIT_OVERLAP_SECONDS = 15 * 60
+SOLANA_AUDIT_RPC_DELAY_SECONDS = 0.35
 MAX_SOLANA_SIGNATURES_PER_WALLET = 2000
 MAX_ETHERSCAN_ROWS_PER_KIND = 1000
 RETENTION_RUNS = 84  # seven days at 12 runs/day
@@ -264,6 +264,11 @@ def collect_solana(app, wallets: list[dict], since_epoch: int):
                         "chain": "solana", "stage": "getTransaction",
                         "error": f"{type(exc).__name__}: {exc}",
                     })
+                finally:
+                    # The trading leader feed has priority over this audit. A small
+                    # per-transaction delay prevents the two-hour history read from
+                    # competing aggressively for the same public Solana RPC.
+                    time.sleep(SOLANA_AUDIT_RPC_DELAY_SECONDS)
         except Exception as exc:
             errors.append({
                 "telegram_id": wallet.get("telegram_id"), "wallet": address,
@@ -513,6 +518,7 @@ def run_transaction_audit(app, *, hours: float = 2.0):
     db_exports = _export_db_tables(app, run_dir, since)
     strategy_files = _copy_strategy_snapshot(app, run_dir)
     cumulative_path, cumulative_rows = _update_cumulative(root, all_rows)
+    shutil.copy2(cumulative_path, run_dir / "cumulative_all_transactions.csv")
 
     by_source = defaultdict(int)
     by_user = defaultdict(int)
@@ -541,6 +547,7 @@ def run_transaction_audit(app, *, hours: float = 2.0):
         "strategy_snapshot_files": strategy_files,
         "cumulative_ledger": str(cumulative_path),
         "cumulative_rows": cumulative_rows,
+        "solana_audit_rpc_delay_seconds": SOLANA_AUDIT_RPC_DELAY_SECONDS,
         "privacy": "No private keys, seed phrases, encrypted key material or passwords are included.",
     }
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
