@@ -74,5 +74,9 @@ from . import polygon_focus_patch  # noqa: F401
 from . import telegram_capital_readiness_patch  # noqa: F401
 # Final Solana activity truth layer: record BUY/SELL/SKIP/REJECT decisions and show why no trade occurred.
 from . import solana_trade_diagnostics_patch  # noqa: F401
+# Establish the requested Telegram roles only; never mirror or copy trading settings between accounts.
+from . import telegram_account_roles_patch  # noqa: F401
+# Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
+from . import telegram_command_scope_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
