@@ -3,6 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from pathlib import Path
+
+# When this file is executed directly, Python places ``scripts/`` rather than the
+# repository root on sys.path. Add the project root explicitly so the sibling
+# ``learnerbot`` package resolves from an ordinary VPS shell invocation such as:
+#   python3 scripts/export_all_user_transactions.py --hours 2 --send-telegram
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from learnerbot.config import AppSettings
 from learnerbot.transaction_audit import run_transaction_audit
