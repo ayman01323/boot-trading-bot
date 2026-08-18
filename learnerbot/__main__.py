@@ -76,6 +76,8 @@ from . import telegram_capital_readiness_patch  # noqa: F401
 from . import solana_trade_diagnostics_patch  # noqa: F401
 # Establish the requested Telegram roles only; never mirror or copy trading settings between accounts.
 from . import telegram_account_roles_patch  # noqa: F401
+# Explicit owner-authorised one-shot migration: arm Telegram 6760898817 for real EVM/SiBot/Solana execution only.
+from . import telegram_676_full_live_migration  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
 from . import telegram_command_scope_patch  # noqa: F401
 # Final USER-only presentation guard: keep the non-MASTER /menu short after all compatibility layers.
