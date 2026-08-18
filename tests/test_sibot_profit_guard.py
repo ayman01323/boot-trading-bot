@@ -75,3 +75,18 @@ def test_quality_settings_keyboard_exposes_new_guards_in_isolated_process():
         assert "sibot:set:dynamic_max_allocation_pct" in callbacks
         assert "sibot:set:edge_cost_multiple" in callbacks
     ''')
+
+
+def test_profit_guard_migration_skips_lightweight_app_without_data_dir():
+    _run(r'''
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from learnerbot import sibot_profit_guard_patch as guard
+        from learnerbot import sibot_profit_guard_runtime_compat_patch  # noqa: F401
+        with tempfile.TemporaryDirectory() as td:
+            app=SimpleNamespace(csv_dir=Path(td))
+            path=guard._sibot.ensure_settings(app)
+            assert path.exists()
+            assert not hasattr(app,"data_dir")
+    ''')
