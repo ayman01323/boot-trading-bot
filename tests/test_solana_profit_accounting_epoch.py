@@ -38,6 +38,41 @@ def test_pre_epoch_losses_do_not_poison_corrected_guard(monkeypatch, tmp_path):
     assert metrics["consecutive_losses"] == 0
 
 
+def test_pending_rent_reclaim_is_not_learned_as_loss(tmp_path):
+    app = _app(tmp_path)
+    with sol.connect(app) as conn:
+        sol._set_state(conn, epoch._EPOCH_STATE_KEY, 100)
+        conn.executescript(
+            """CREATE TABLE IF NOT EXISTS live_position_created_token_accounts(
+                 position_id TEXT NOT NULL,
+                 account_pubkey TEXT NOT NULL,
+                 program_id TEXT NOT NULL,
+                 entry_lamports TEXT NOT NULL DEFAULT '0',
+                 created_at INTEGER NOT NULL,
+                 closed_at INTEGER,
+                 close_signature TEXT,
+                 reclaimed_lamports TEXT NOT NULL DEFAULT '0',
+                 PRIMARY KEY(position_id,account_pubkey)
+               );"""
+        )
+        conn.commit()
+    _closed(app, "pending", 110, Decimal("-0.0018"))
+    _closed(app, "settledwin", 120, Decimal("0.0002"))
+    with sol.connect(app) as conn:
+        conn.execute(
+            """INSERT INTO live_position_created_token_accounts(
+                 position_id,account_pubkey,program_id,entry_lamports,created_at,closed_at
+               ) VALUES(?,?,?,?,?,NULL)""",
+            ("pending", "ata", "TokenProgram", "1844400", 100),
+        )
+        conn.commit()
+
+    metrics = epoch._copied_metrics_corrected(app, "123", "leader")
+    assert metrics["closed"] == 1
+    assert metrics["win_rate"] == Decimal("100")
+    assert metrics["profit_factor"] == Decimal("99")
+
+
 def test_old_suspend_state_is_cleared_once(tmp_path):
     app = _app(tmp_path)
     key = "sol_profit_guard_suspend:123:leader"
