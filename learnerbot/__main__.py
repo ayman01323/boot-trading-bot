@@ -42,6 +42,8 @@ from . import solana_live_patch  # noqa: F401
 from . import telegram_solana_live_patch  # noqa: F401
 # Quality-first EVM leader selection, copied-performance checks, dynamic sizing and circuit breakers.
 from . import sibot_profit_guard_patch  # noqa: F401
+# Lightweight report/test app objects do not run one-shot runtime migrations.
+from . import sibot_profit_guard_runtime_compat_patch  # noqa: F401
 # Apply profit-factor, drawdown, recent-performance and copied-performance gates to Solana leaders too.
 from . import solana_profit_guard_patch  # noqa: F401
 # Every relevant Telegram page includes the correct Solana equivalent.
