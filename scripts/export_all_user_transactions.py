@@ -36,12 +36,13 @@ from learnerbot.transaction_audit import run_transaction_audit
 from learnerbot import transaction_audit_worker_patch as _worker
 from learnerbot import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from learnerbot import profit_control_loop_patch as _control
+from learnerbot import profit_control_master_summary_patch as _master_summary
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run the all-user hourly transaction audit, GPT review and deterministic profit control loop.")
     parser.add_argument("--hours", type=float, default=1.0, help="Lookback window before the built-in 15-minute overlap (default: 1 hour)")
-    parser.add_argument("--send-telegram", action="store_true", help="Send audit ZIP, GPT review and control-loop status to active MASTER Telegram account(s)")
+    parser.add_argument("--send-telegram", action="store_true", help="Also send audit ZIP and GPT review to active MASTER Telegram account(s); the control update summary is always sent after an update")
     parser.add_argument("--skip-gpt", action="store_true", help="Collect the audit and run the deterministic control loop without calling the OpenAI API")
     args = parser.parse_args()
 
@@ -53,9 +54,12 @@ def main():
             "error": "GPT skipped by operator",
             "control_loop": _control.run_profit_control_loop(app, None),
         }
+        # A control update happened even though GPT was skipped, so preserve the
+        # same owner requirement: every ACTIVE MASTER receives its summary.
+        gpt_result["master_control_summary_errors"] = _master_summary.send_control_update_to_all_masters(app, gpt_result)
     else:
-        # profit_control_loop_patch wraps this worker function, so manual and
-        # scheduled hourly runs execute the identical GPT + deterministic loop.
+        # The final worker wrapper executes GPT + deterministic control and then
+        # sends a dedicated control-update summary to every ACTIVE MASTER.
         gpt_result = _worker.run_hourly_gpt_review(app, result["latest_zip"])
 
     if args.send_telegram:
