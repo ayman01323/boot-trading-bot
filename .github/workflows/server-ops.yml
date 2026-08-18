@@ -38,6 +38,10 @@ jobs:
         if: inputs.operation == 'deploy_main'
         run: sudo /usr/local/sbin/deploy-boot-trading-bot "${GITHUB_SHA}"
 
+      - name: Status after deploy attempt
+        if: always() && inputs.operation == 'deploy_main'
+        run: sudo /usr/local/sbin/status-boot-trading-bot
+
       - name: Restart learnerbot
         if: inputs.operation == 'restart_learnerbot'
         run: sudo /usr/local/sbin/restart-boot-trading-bot
