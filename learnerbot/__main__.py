@@ -38,6 +38,8 @@ from . import telegram_multi_wallet_manager_patch  # noqa: F401
 from . import telegram_solana_chains_patch  # noqa: F401
 # Replace new Solana SHADOW entries with guarded LIVE Jupiter execution.
 from . import solana_live_patch  # noqa: F401
+# Count every landed-invalid LIVE transaction at user level, including monitor exits.
+from . import solana_execution_fault_counter_patch  # noqa: F401
 # Private-chat LIVE arming/disarming and Solana LIVE dashboard.
 from . import telegram_solana_live_patch  # noqa: F401
 # Quality-first EVM leader selection, copied-performance checks, dynamic sizing and circuit breakers.
