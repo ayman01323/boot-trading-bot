@@ -21,6 +21,7 @@ from . import solana_sibot as _sol
 from . import solana_worker_reliability_patch as _workers
 from . import telegram_ui as _telegram_ui
 from . import transaction_audit_worker_patch as _audit_worker
+from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 
 
 def install():
