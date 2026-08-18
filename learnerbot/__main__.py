@@ -20,6 +20,8 @@ from . import sibot_intelligence_patch  # noqa: F401
 from . import telegram_sibot_intelligence_patch  # noqa: F401
 # Broaden EVM and Solana profit research before the final Top-20 selection.
 from . import profit_research_expansion_patch  # noqa: F401
+# Stop the older Top-20 compatibility layer from re-relaxing leader quality defaults.
+from . import sibot_quality_compat_patch  # noqa: F401
 # Quality-first leader selection, copied-performance checks, dynamic sizing and circuit breakers.
 from . import sibot_profit_guard_patch  # noqa: F401
 # Send hourly Telegram capital/gas/opportunity-without-capital reminders.
