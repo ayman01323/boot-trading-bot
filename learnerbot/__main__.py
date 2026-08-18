@@ -110,6 +110,8 @@ from . import solana_token_account_reclaim_patch  # noqa: F401
 from . import solana_refundable_rent_accounting_patch  # noqa: F401
 # Require signed BUY simulation to prove the wallet still retains its configured emergency reserve.
 from . import solana_simulated_reserve_guard_patch  # noqa: F401
+# Hard-cap fees/tips and price impact; full exits atomically sell + reclaim proven token-account rent.
+from . import solana_execution_efficiency_patch  # noqa: F401
 # Final Solana SELL presentation: 💚 profit, ❤️ loss, 🍉 break-even on realised net P&L.
 from . import solana_sell_pnl_emoji_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
