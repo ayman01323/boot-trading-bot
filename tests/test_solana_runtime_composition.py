@@ -5,7 +5,7 @@ import sys
 def test_final_runtime_hooks_match_audited_stack():
     # Import the execution stack in the same relevant order as learnerbot.__main__:
     # wallet binding -> rent tracking/accounting -> signed reserve guard -> economic
-    # efficiency -> capped legacy fallback -> authoritative validation -> exit circuit.
+    # efficiency -> capped legacy fallback -> liquidity guard -> validation -> circuit.
     script = r'''
 from learnerbot import sibot as sibot
 from learnerbot import solana_live_patch as live
@@ -25,6 +25,7 @@ from learnerbot import solana_refundable_rent_accounting_patch as rent
 from learnerbot import solana_simulated_reserve_guard_patch as reserve
 from learnerbot import solana_execution_efficiency_patch as efficiency
 from learnerbot import solana_atomic_close_fallback_patch as atomic_fallback
+from learnerbot import solana_liquidity_fail_closed_patch as liquidity_guard
 from learnerbot import solana_execution_validation_patch as validation
 from learnerbot import solana_exit_circuit_breaker_patch as exit_circuit
 from learnerbot import transaction_audit_worker_patch as audit_worker
@@ -39,6 +40,7 @@ assert exit_circuit._PREV_CLOSE is efficiency.close_live_with_receipt_pnl
 assert rent._close_live_rent_aware is efficiency.close_live_with_receipt_pnl
 assert efficiency.execution_efficiency_stack_intact()
 assert executor.SolanaLiveExecutor._order is efficiency.order_with_economic_caps
+assert efficiency._validate_order is liquidity_guard.validate_order_fail_closed_on_unknown_liquidity
 assert efficiency.sell_with_atomic_account_close is atomic_fallback.sell_with_atomic_or_capped_legacy_fallback
 assert efficiency._build_atomic_swap is atomic_fallback.build_atomic_swap_excluding_rfq
 
