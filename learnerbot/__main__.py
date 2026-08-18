@@ -100,10 +100,14 @@ from . import solana_profit_accounting_epoch_patch  # noqa: F401
 from . import sibot_evm_worker_reliability_patch  # noqa: F401
 # Retry transient RPC failures, never skip a failed finalized slot, and decouple fresh discovery from history backfill.
 from . import solana_worker_reliability_patch  # noqa: F401
+# Advance each selected Solana leader cursor only through signatures actually fetched/processed.
+from . import solana_leader_cursor_reliability_patch  # noqa: F401
 # On a full exit, reclaim only zero-balance token accounts proven to have been created by this bot's BUY.
 from . import solana_token_account_reclaim_patch  # noqa: F401
 # Exclude refundable token-account rent from open loss signals and keep it attached through partial exits.
 from . import solana_refundable_rent_accounting_patch  # noqa: F401
+# Require signed BUY simulation to prove the wallet still retains its configured emergency reserve.
+from . import solana_simulated_reserve_guard_patch  # noqa: F401
 # Final Solana SELL presentation: 💚 profit, ❤️ loss, 🍉 break-even on realised net P&L.
 from . import solana_sell_pnl_emoji_patch  # noqa: F401
 # Final Telegram command scope: USER chats never receive MASTER slash commands in the blue command menu.
