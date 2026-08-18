@@ -144,3 +144,43 @@ def test_partial_exit_does_not_attempt_account_reclaim(monkeypatch, tmp_path):
     result = reclaim._close_bound_live_with_reclaim(app, "123", position, Decimal("0.5"), "PARTIAL")
     assert result["closed"] is False
     assert called == []
+
+
+def test_late_confirmed_rent_close_is_reconciled_from_chain_delta(monkeypatch, tmp_path):
+    app = _app(tmp_path)
+    with sol.connect(app) as conn:
+        reclaim._ensure_schema(conn)
+        conn.execute(
+            """INSERT INTO live_position_created_token_accounts(
+                 position_id,account_pubkey,program_id,entry_lamports,created_at,pending_signature
+               ) VALUES(?,?,?,?,?,?)""",
+            ("p1", "ata", TOKEN_PROGRAM, "1844400", 1, "renttx"),
+        )
+        conn.commit()
+
+    executor = SimpleNamespace(app=app, address="wallet")
+    monkeypatch.setattr(reclaim, "_token_accounts", lambda *args: {})
+    monkeypatch.setattr(reclaim, "_wallet_delta_from_transaction", lambda *args: 1_839_400)
+
+    result = reclaim._close_created_empty_accounts(executor, "p1", "mint")
+    assert result["reclaimed_lamports"] == 1_839_400
+    assert result["signature"] == "renttx"
+    with sol.connect(app) as conn:
+        row = conn.execute(
+            """SELECT closed_at,close_signature,pending_signature,reclaimed_lamports
+               FROM live_position_created_token_accounts WHERE position_id='p1' AND account_pubkey='ata'"""
+        ).fetchone()
+    assert row["closed_at"] is not None
+    assert row["close_signature"] == "renttx"
+    assert row["pending_signature"] is None
+    assert int(row["reclaimed_lamports"]) == 1_839_400
+
+
+def test_multi_account_audit_shares_sum_to_real_wallet_refund():
+    rows = [
+        {"account_pubkey": "a", "entry_lamports": "100"},
+        {"account_pubkey": "b", "entry_lamports": "300"},
+    ]
+    shares = reclaim._shares(rows, 397)
+    assert shares["a"] + shares["b"] == 397
+    assert shares["b"] > shares["a"]
