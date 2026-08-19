@@ -1,0 +1,45 @@
+name: Build AI Workspace ZIP
+
+on:
+  push:
+    branches:
+      - ai/workspace-20260819-1322
+    paths:
+      - '.github/workflows/build-ai-workspace-zip.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out isolated AI workspace
+        uses: actions/checkout@v4
+        with:
+          ref: ai/workspace-20260819-1322
+          fetch-depth: 0
+
+      - name: Build tracked-files-only ZIP snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP='boot-trading-bot-ai-workspace-20260819-1322.zip'
+          rm -f "$ZIP"
+          git ls-files -z | xargs -0 zip -q "$ZIP"
+          unzip -t "$ZIP" >/dev/null
+          sha256sum "$ZIP" > "${ZIP}.sha256"
+          echo "Created $ZIP"
+          du -h "$ZIP"
+
+      - name: Commit ZIP to isolated workspace branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'ai-workspace-snapshot-bot'
+          git config user.email 'ai-workspace-snapshot-bot@users.noreply.github.com'
+          git add -f boot-trading-bot-ai-workspace-20260819-1322.zip boot-trading-bot-ai-workspace-20260819-1322.zip.sha256
+          git commit -m 'Create frozen AI workspace ZIP snapshot'
+          git push origin HEAD:ai/workspace-20260819-1322
