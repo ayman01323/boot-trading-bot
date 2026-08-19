@@ -7,19 +7,23 @@ from decimal import Decimal
 
 from . import solana_sibot as _sol
 
+_HARD_COPIED_PROFIT_FACTOR = Decimal("1.50")
+_HARD_COPIED_WIN_RATE_PCT = Decimal("50")
+_HARD_MIN_COPIED_TRADES = 2
+
 _SOL_QUALITY_DEFAULTS = {
     "require_complete_history": ("true", "Require non-truncated reconstructed Solana history for LIVE leaders"),
-    "min_profit_factor": ("1.5", "Minimum historical SOL gross-profit/gross-loss ratio for leaders"),
+    "min_profit_factor": ("1.75", "Minimum historical SOL gross-profit/gross-loss ratio for leaders"),
     "recent_trade_window": ("20", "Recent Solana closed trades used for regime-change checks"),
-    "min_recent_win_rate_pct": ("55", "Minimum recent Solana positive-trade percentage"),
-    "min_recent_profit_factor": ("1.10", "Minimum recent Solana profit factor"),
+    "min_recent_win_rate_pct": ("65", "Minimum recent Solana positive-trade percentage"),
+    "min_recent_profit_factor": ("1.50", "Minimum recent Solana profit factor"),
     "max_leader_drawdown_pct": ("20", "Maximum reconstructed Solana leader equity drawdown"),
     "leader_recent_activity_hours": ("6", "Prefer otherwise-qualified Solana leaders observed trading within this many hours"),
-    "min_copied_trades_for_guard": ("3", "Minimum closed LIVE copies before copied-performance gate applies"),
-    "min_copied_win_rate_pct": ("40", "Minimum actual Solana LIVE copied win rate"),
-    "min_copied_profit_factor": ("1.0", "Minimum actual Solana LIVE copied profit factor"),
-    "max_consecutive_copied_losses": ("3", "Consecutive Solana LIVE copied losses before leader cooldown"),
-    "leader_suspend_minutes": ("360", "Solana leader cooldown after copied loss streak"),
+    "min_copied_trades_for_guard": ("2", "Minimum closed LIVE copies before copied-performance amount gate applies"),
+    "min_copied_win_rate_pct": ("50", "Minimum actual Solana LIVE copied win rate"),
+    "min_copied_profit_factor": ("1.50", "Minimum actual copied gross-profit/gross-loss amount ratio"),
+    "max_consecutive_copied_losses": ("2", "Consecutive Solana LIVE copied losses before leader cooldown"),
+    "leader_suspend_minutes": ("1440", "Solana leader cooldown after copied loss streak"),
 }
 _sol.DEFAULTS.update(_SOL_QUALITY_DEFAULTS)
 _PREV_REFRESH = _sol.refresh_rankings
@@ -94,15 +98,15 @@ def _historical_ok(m, cfg):
         return False
     if int(m.get("closed") or 0) < max(1, _i(cfg.get("min_closed_trades"), 10)):
         return False
-    if _d(m.get("win_rate")) < _d(cfg.get("min_win_rate_pct"), 55):
+    if _d(m.get("win_rate")) < _d(cfg.get("min_win_rate_pct"), 65):
         return False
-    if _d(m.get("profit_factor")) < _d(cfg.get("min_profit_factor"), "1.5"):
+    if _d(m.get("profit_factor")) < _d(cfg.get("min_profit_factor"), "1.75"):
         return False
     if _d(m.get("drawdown_pct")) > _d(cfg.get("max_leader_drawdown_pct"), 20):
         return False
-    if _d(m.get("recent_win_rate")) < _d(cfg.get("min_recent_win_rate_pct"), 55):
+    if _d(m.get("recent_win_rate")) < _d(cfg.get("min_recent_win_rate_pct"), 65):
         return False
-    if _d(m.get("recent_profit_factor")) < _d(cfg.get("min_recent_profit_factor"), "1.10"):
+    if _d(m.get("recent_profit_factor")) < _d(cfg.get("min_recent_profit_factor"), "1.50"):
         return False
     return _d(m.get("net")) > 0
 
@@ -116,7 +120,8 @@ def _copied_metrics(app, tid, wallet):
             (str(tid), str(wallet)),
         ).fetchall()]
     vals = [(_d(r.get("realised_net_sol"), 0), int(r.get("closed_at") or 0)) for r in rows]
-    profit = sum((n for n,_ in vals if n > 0), Decimal(0)); loss = sum((-n for n,_ in vals if n < 0), Decimal(0))
+    profit = sum((n for n,_ in vals if n > 0), Decimal(0))
+    loss = sum((-n for n,_ in vals if n < 0), Decimal(0))
     wins = sum(1 for n,_ in vals if n > 0); closed = len(vals)
     streak = 0
     for n,_ in vals:
@@ -124,6 +129,11 @@ def _copied_metrics(app, tid, wallet):
         else: break
     return {
         "closed": closed,
+        "wins": wins,
+        "losses": closed - wins,
+        "gross_profit_sol": profit,
+        "gross_loss_sol": loss,
+        "net_sol": profit - loss,
         "win_rate": Decimal(wins*100)/Decimal(closed) if closed else Decimal(0),
         "profit_factor": _pf(profit, loss),
         "consecutive_losses": streak,
@@ -142,16 +152,24 @@ def _copied_ok(app, tid, wallet, cfg):
         until = int(state.get("until") or 0); seen = int(state.get("latest_closed_at") or 0)
         if now < until:
             return False
-        limit = max(1, _i(cfg.get("max_consecutive_copied_losses"), 3)); latest = int(m.get("latest_closed_at") or 0)
+        limit = max(1, _i(cfg.get("max_consecutive_copied_losses"), 2)); latest = int(m.get("latest_closed_at") or 0)
         if m["consecutive_losses"] >= limit and latest and latest != seen:
-            until = now + max(5, _i(cfg.get("leader_suspend_minutes"), 360))*60
+            until = now + max(1440, _i(cfg.get("leader_suspend_minutes"), 1440))*60
             _sol._set_state(conn, key, json.dumps({"until":until,"latest_closed_at":latest}))
             return False
-    min_copied = max(1, _i(cfg.get("min_copied_trades_for_guard"), 3))
+
+    min_copied = max(_HARD_MIN_COPIED_TRADES, max(1, _i(cfg.get("min_copied_trades_for_guard"), 2)))
     if m["closed"] >= min_copied:
-        if m["win_rate"] < _d(cfg.get("min_copied_win_rate_pct"), 40):
+        min_win = max(_HARD_COPIED_WIN_RATE_PCT, _d(cfg.get("min_copied_win_rate_pct"), 50))
+        min_pf = max(_HARD_COPIED_PROFIT_FACTOR, _d(cfg.get("min_copied_profit_factor"), "1.50"))
+        if m["win_rate"] < min_win:
             return False
-        if m["profit_factor"] < _d(cfg.get("min_copied_profit_factor"), 1):
+        # Amount is primary: copied gross profit must exceed copied gross loss by
+        # the configured safety factor. This permits fewer but larger winners while
+        # rejecting a strategy whose win count looks acceptable but loses more SOL.
+        if m["gross_profit_sol"] <= m["gross_loss_sol"] * min_pf:
+            return False
+        if m["net_sol"] <= 0 or m["profit_factor"] < min_pf:
             return False
     return True
 
