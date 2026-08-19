@@ -11,6 +11,7 @@ AGENT_PROVIDERS = {"gpt", "gemini", "copilot"}
 SEVERITIES = {"P0", "P1", "P2", "P3"}
 DISPOSITIONS = {"ACCEPT", "REJECT", "DEFER"}
 MASTER_STATUSES = {"NO_ACTION", "DRAFT_FIX", "HUMAN_REVIEW_REQUIRED"}
+RISK_CLASSES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 PROTECTED_PATH_PATTERNS = (
     re.compile(r"(^|/)\.env($|\.)", re.I),
     re.compile(r"(^|/)(id_rsa|.*private.*key.*|.*seed.*|.*mnemonic.*)$", re.I),
@@ -106,6 +107,10 @@ def validate_master_decision(decision: dict, *, source_commit: str | None = None
             raise ValueError("master decision row must be an object")
         if str(row.get("disposition") or "") not in DISPOSITIONS:
             raise ValueError("invalid disposition")
+        if str(row.get("severity") or "") not in SEVERITIES:
+            raise ValueError("invalid severity")
+        if str(row.get("risk_class") or "") not in RISK_CLASSES:
+            raise ValueError("invalid risk_class")
         confidence = _num(row.get("confidence"), -1)
         if confidence < 0 or confidence > 1:
             raise ValueError("master decision confidence must be 0..1")
@@ -125,8 +130,9 @@ def enforce_master_policy(decision: dict) -> dict:
     """Apply a deterministic policy after GPT synthesis.
 
     GPT may propose a disposition, but this function independently decides whether an
-    accepted item is eligible for automated implementation. P0 findings, protected-file
-    changes, low confidence, and single-agent non-deterministic claims are never acted on.
+    accepted item is eligible for automated implementation. P0 findings, HIGH/CRITICAL
+    risk changes, protected-file changes, low confidence, and weakly corroborated claims
+    are never acted on automatically.
     """
     validate_master_decision(decision)
     gated_rows: list[dict] = []
@@ -136,10 +142,12 @@ def enforce_master_policy(decision: dict) -> dict:
         row = dict(raw)
         requested = str(row.get("disposition") or "DEFER")
         severity = str(row.get("severity") or "P3")
+        risk_class = str(row.get("risk_class") or "HIGH")
         confidence = _num(row.get("confidence"), 0)
         agents = sorted({str(a).lower() for a in (row.get("supporting_agents") or []) if str(a).lower() in AGENT_PROVIDERS})
         deterministic = bool(row.get("deterministic_evidence"))
         allowed_files = [_clean_path(p) for p in (row.get("allowed_files") or []) if _clean_path(p)]
+        required_tests = [str(t).strip() for t in (row.get("required_tests") or []) if str(t).strip()]
         reasons: list[str] = []
 
         eligible = requested == "ACCEPT"
@@ -147,12 +155,19 @@ def enforce_master_policy(decision: dict) -> dict:
             eligible = False
             human_required = True
             reasons.append("P0 requires human review")
+        if risk_class in {"HIGH", "CRITICAL"}:
+            eligible = False
+            human_required = True
+            reasons.append(f"{risk_class} risk requires human review")
         if confidence < 0.85:
             eligible = False
             reasons.append("confidence below 0.85")
         if len(agents) < 2 and not deterministic:
             eligible = False
             reasons.append("requires two independent agents or deterministic evidence")
+        if deterministic and not required_tests:
+            eligible = False
+            reasons.append("deterministic claim requires an explicit verification test")
         if any(protected_path(path) for path in allowed_files):
             eligible = False
             human_required = True
@@ -160,11 +175,15 @@ def enforce_master_policy(decision: dict) -> dict:
         if not allowed_files and requested == "ACCEPT":
             eligible = False
             reasons.append("accepted fix has no bounded allowed_files scope")
+        if not required_tests and requested == "ACCEPT":
+            eligible = False
+            reasons.append("accepted fix has no required verification tests")
 
         row["policy_eligible"] = bool(eligible)
         row["policy_reasons"] = reasons or (["policy requirements satisfied"] if eligible else ["not accepted by GPT"])
         row["supporting_agents"] = agents
         row["allowed_files"] = allowed_files
+        row["required_tests"] = required_tests
         gated_rows.append(row)
         if eligible:
             accepted += 1
@@ -175,8 +194,11 @@ def enforce_master_policy(decision: dict) -> dict:
         "minimum_confidence": 0.85,
         "minimum_independent_agents": 2,
         "deterministic_evidence_can_substitute_for_second_agent": True,
+        "deterministic_evidence_requires_explicit_test": True,
         "p0_auto_implementation": False,
+        "high_or_critical_risk_auto_implementation": False,
         "protected_paths_auto_implementation": False,
+        "required_tests_mandatory_for_accepted_fix": True,
     }
     out["implementation_allowed"] = accepted > 0 and not human_required
     out["policy_accepted_count"] = accepted
