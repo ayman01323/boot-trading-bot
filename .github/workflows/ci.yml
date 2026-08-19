@@ -23,19 +23,17 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt pytest
-      - name: Verify GitHub to Gemini API
+      - name: Verify optional GitHub to Gemini API secret
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "Missing GEMINI_API_KEY"
-            exit 2
+            echo "GEMINI_API_KEY is not configured; skipping optional Gemini connectivity precheck"
+            exit 0
           fi
           echo "GEMINI_API_KEY is set"
 
-      - name: Compile Python
-        run: python -m compileall -q learnerbot scripts tests
       - name: Compile Python
         run: python -m compileall -q learnerbot scripts tests
       - name: Module import and production-order startup sweep
@@ -59,6 +57,7 @@ jobs:
             tests/test_solana_refundable_rent_accounting.py \
             tests/test_solana_simulated_reserve_guard.py \
             tests/test_solana_execution_efficiency.py \
+            tests/test_solana_jupiter_order_recovery.py \
             tests/test_solana_atomic_close_fallback.py \
             tests/test_solana_liquidity_fail_closed.py \
             tests/test_solana_profit_first_live_correction.py \
