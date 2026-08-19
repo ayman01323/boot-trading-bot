@@ -3,6 +3,8 @@ name: Deploy BOOT to VPS
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,8 +17,14 @@ concurrency:
 jobs:
   probe:
     name: Record deployment request
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.head_ref == 'agent/deploy-current-main' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 3
+    env:
+      TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
     steps:
       - name: Publish waiting-for-runner marker
         shell: bash
@@ -25,7 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/boot-deploy-probe.txt <<EOF
-          requested_sha=${GITHUB_SHA}
+          requested_sha=${TARGET_SHA}
           state=waiting_for_self_hosted_runner
           run_id=${GITHUB_RUN_ID}
           utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -55,16 +63,22 @@ PY
 
   deploy:
     name: Deploy exact main commit
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.head_ref == 'agent/deploy-current-main' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     needs: probe
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
+    env:
+      TARGET_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
     steps:
       - name: Deploy through restricted root wrapper
         id: deploy
         shell: bash
         run: |
           set +e
-          sudo /usr/local/sbin/deploy-boot-trading-bot "${GITHUB_SHA}" 2>&1 | tee /tmp/boot-deploy-output.txt
+          sudo /usr/local/sbin/deploy-boot-trading-bot "${TARGET_SHA}" 2>&1 | tee /tmp/boot-deploy-output.txt
           code=${PIPESTATUS[0]}
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit "$code"
@@ -86,7 +100,7 @@ PY
         run: |
           set -euo pipefail
           {
-            echo "requested_sha=${GITHUB_SHA}"
+            echo "requested_sha=${TARGET_SHA}"
             echo "deploy_outcome=${DEPLOY_OUTCOME:-unknown}"
             echo "deploy_exit=${DEPLOY_EXIT:-unknown}"
             echo "run_id=${GITHUB_RUN_ID}"
@@ -132,7 +146,7 @@ PY
         run: |
           set -euo pipefail
           cat > /tmp/boot-deploy-probe.txt <<EOF
-          requested_sha=${GITHUB_SHA}
+          requested_sha=${TARGET_SHA}
           state=self_hosted_runner_finished
           deploy_outcome=${DEPLOY_OUTCOME:-unknown}
           deploy_exit=${DEPLOY_EXIT:-unknown}
