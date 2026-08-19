@@ -1,0 +1,405 @@
+name: Weekly Three-Agent Full-Bot Bug Audit
+
+on:
+  schedule:
+    - cron: "15 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: weekly-three-agent-full-bot-bug-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Freeze main, audit with GPT and Gemini, assign Copilot
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Check out exact current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Record frozen source commit
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "Frozen weekly audit source: ${sha}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install audit tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest @google/gemini-cli@latest
+          codex --version
+          gemini --version
+
+      - name: Run deterministic compile and full pytest baseline
+        id: baseline_tests
+        shell: bash
+        run: |
+          set +e
+          python -m compileall -q learnerbot scripts tests > /tmp/weekly_compile.log 2>&1
+          compile_rc=$?
+          timeout 25m pytest -q > /tmp/weekly_pytest.log 2>&1
+          pytest_rc=$?
+          set -e
+          echo "compile_rc=${compile_rc}" >> "$GITHUB_OUTPUT"
+          echo "pytest_rc=${pytest_rc}" >> "$GITHUB_OUTPUT"
+          echo "Compile return code: ${compile_rc}"
+          echo "Pytest return code: ${pytest_rc}"
+
+      - name: Build deterministic audit context
+        shell: bash
+        env:
+          COMPILE_RC: ${{ steps.baseline_tests.outputs.compile_rc }}
+          PYTEST_RC: ${{ steps.baseline_tests.outputs.pytest_rc }}
+        run: |
+          set -euo pipefail
+          mkdir -p .weekly_audit
+          python scripts/weekly_bug_audit_baseline.py \
+            --root . \
+            --output .weekly_audit/baseline.json \
+            --compile-log /tmp/weekly_compile.log \
+            --pytest-log /tmp/weekly_pytest.log \
+            --compile-rc "$COMPILE_RC" \
+            --pytest-rc "$PYTEST_RC"
+
+      - name: Prepare common independent-audit prompt
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          cat > .weekly_audit/common_prompt.txt <<'PROMPT'
+          You are one of three INDEPENDENT weekly engineering auditors of a multi-chain automated trading bot.
+          Audit the ENTIRE checked-out repository at the exact source commit named below. Inspect code, workflows,
+          tests, configuration loaders, EVM and Solana execution paths, accounting/P&L, concurrency, databases,
+          retries/timeouts, Telegram/operator permissions, Strategy Lab/shadow systems, safety/circuit breakers,
+          deployment interactions, and failure handling. Read .weekly_audit/baseline.json first, then inspect the
+          repository deeply rather than stopping at the first issue.
+
+          Objective: find real software bugs, unsafe inconsistencies, data-corruption risks, execution/accounting
+          defects, race conditions, error-handling defects, test gaps and operational regressions. Do not tune a
+          trading strategy merely because recent profit is disappointing. Do not recommend named-asset trades.
+
+          Evidence rules:
+          - Every finding must cite concrete repository file(s) and preferably line/symbol/detail.
+          - Distinguish a proven defect from a hypothesis.
+          - Do not invent runtime facts that are absent from the repository/baseline.
+          - Duplicate symptoms sharing one root cause should be one finding.
+          - Prefer fewer high-quality findings over speculative volume.
+          - P0 = immediate capital/security/data-integrity catastrophe; P1 = serious correctness/safety defect;
+            P2 = material bug/reliability defect; P3 = lower-risk bug/test/maintainability issue.
+
+          This phase is REPORT ONLY. Do not change tracked repository files, deploy, trade, alter settings, edit
+          secrets, modify signing/wallet material, change capital, or weaken any safety gate.
+
+          Your JSON report MUST use this exact shape:
+          {
+            "schema_version": 1,
+            "provider": "PROVIDER_NAME",
+            "source_commit": "SOURCE_COMMIT",
+            "scope": "FULL_REPOSITORY_BUG_AUDIT",
+            "status": "CLEAN|ISSUES_FOUND|INCOMPLETE",
+            "summary": "concise summary",
+            "findings": [
+              {
+                "id": "stable short id",
+                "severity": "P0|P1|P2|P3",
+                "category": "CORRECTNESS|SAFETY|EXECUTION|ACCOUNTING|CONCURRENCY|DATA|NETWORK|CONFIG|SECURITY|TESTS|PERFORMANCE|MAINTAINABILITY",
+                "title": "...",
+                "evidence": [{"file":"path","line":0,"symbol":"optional","detail":"what in the code proves/suggests this"}],
+                "impact": "...",
+                "root_cause": "...",
+                "corrective_action": "bounded corrective action",
+                "tests_required": ["specific tests/checks"],
+                "confidence": 0.0,
+                "deterministic_evidence": false
+              }
+            ],
+            "refusals_or_limits": ["anything you deliberately could not verify"],
+            "report_only": true,
+            "no_live_changes": true
+          }
+          PROMPT
+          sed -i "s/SOURCE_COMMIT/${SOURCE_SHA}/g" .weekly_audit/common_prompt.txt
+
+      - name: GPT independent full-repository audit
+        id: gpt
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo "OPENAI_API_KEY missing" >&2
+            exit 2
+          fi
+          cp .weekly_audit/common_prompt.txt /tmp/gpt_prompt.txt
+          sed -i 's/PROVIDER_NAME/gpt/g' /tmp/gpt_prompt.txt
+          cat >> /tmp/gpt_prompt.txt <<'PROMPT'
+
+          Use your repository tools to inspect the full codebase. When finished, create exactly:
+          - .weekly_audit/gpt.json containing ONLY the JSON object matching the contract above.
+          - .weekly_audit/gpt.md containing a human-readable version of the same findings.
+          Do not alter any tracked file. Do not commit, push, open a PR, or implement fixes in this phase.
+          PROMPT
+          model_args=()
+          if [[ -n "${OPENAI_WEEKLY_AUDIT_MODEL:-}" ]]; then
+            model_args=(-m "$OPENAI_WEEKLY_AUDIT_MODEL")
+          fi
+          codex exec --sandbox workspace-write --ask-for-approval never --ephemeral "${model_args[@]}" - < /tmp/gpt_prompt.txt
+          test -f .weekly_audit/gpt.json
+          python -m learnerbot.weekly_bug_audit_contract validate-agent \
+            --input .weekly_audit/gpt.json --provider gpt --source-commit "$SOURCE_SHA" > /dev/null
+          python - <<'PY'
+          import subprocess, sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_audit/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('GPT report-only audit changed files outside .weekly_audit:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
+          PY
+
+      - name: Recover safely if GPT audit was incomplete
+        if: steps.gpt.outcome != 'success'
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          git restore --source=HEAD --staged --worktree . || true
+          git clean -fd -e .weekly_audit/ || true
+          python - <<'PY'
+          import json, os
+          p={
+            "schema_version":1,"provider":"gpt","source_commit":os.environ["SOURCE_SHA"],
+            "scope":"FULL_REPOSITORY_BUG_AUDIT","status":"INCOMPLETE",
+            "summary":"GPT weekly audit did not complete successfully.","findings":[],
+            "refusals_or_limits":["The GPT audit workflow step failed; inspect GitHub Actions logs."],
+            "report_only":True,"no_live_changes":True,
+          }
+          open('.weekly_audit/gpt.json','w',encoding='utf-8').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          open('.weekly_audit/gpt.md','w',encoding='utf-8').write('# GPT weekly audit\n\nINCOMPLETE — inspect the workflow log.\n')
+          PY
+
+      - name: Gemini independent full-repository audit
+        id: gemini
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_AUDIT_MODEL: ${{ vars.GEMINI_AUDIT_MODEL || 'pro' }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo "GEMINI_API_KEY missing" >&2
+            exit 2
+          fi
+          cp .weekly_audit/common_prompt.txt /tmp/gemini_prompt.txt
+          sed -i 's/PROVIDER_NAME/gemini/g' /tmp/gemini_prompt.txt
+          cat >> /tmp/gemini_prompt.txt <<'PROMPT'
+
+          Inspect the full repository using read-only tools. Do not edit any file. Your FINAL response must contain
+          exactly one machine-readable report between these markers and no other JSON object:
+          WEEKLY_AUDIT_JSON_BEGIN
+          { ...the required JSON object... }
+          WEEKLY_AUDIT_JSON_END
+          PROMPT
+          gemini --approval-mode plan --skip-trust --model "$GEMINI_AUDIT_MODEL" --output-format text \
+            -p "$(cat /tmp/gemini_prompt.txt)" > .weekly_audit/gemini_stdout.txt
+          python -m learnerbot.weekly_bug_audit_contract extract-agent \
+            --input .weekly_audit/gemini_stdout.txt \
+            --output .weekly_audit/gemini.json \
+            --provider gemini \
+            --source-commit "$SOURCE_SHA"
+          python - <<'PY'
+          import json, subprocess, sys
+          r=json.load(open('.weekly_audit/gemini.json',encoding='utf-8'))
+          lines=['# Gemini weekly audit','',r.get('summary','')]
+          for f in r.get('findings') or []:
+              lines += ['',f"## {f.get('severity')} — {f.get('title')}",f.get('impact',''),f"Corrective action: {f.get('corrective_action','')}"]
+          open('.weekly_audit/gemini.md','w',encoding='utf-8').write('\n'.join(lines)+'\n')
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_audit/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('Gemini report-only audit changed files outside .weekly_audit:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
+          PY
+
+      - name: Recover safely if Gemini audit was incomplete
+        if: steps.gemini.outcome != 'success'
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          git restore --source=HEAD --staged --worktree . || true
+          git clean -fd -e .weekly_audit/ || true
+          python - <<'PY'
+          import json, os
+          p={
+            "schema_version":1,"provider":"gemini","source_commit":os.environ["SOURCE_SHA"],
+            "scope":"FULL_REPOSITORY_BUG_AUDIT","status":"INCOMPLETE",
+            "summary":"Gemini weekly audit did not complete successfully.","findings":[],
+            "refusals_or_limits":["The Gemini audit workflow step failed; inspect GitHub Actions logs."],
+            "report_only":True,"no_live_changes":True,
+          }
+          open('.weekly_audit/gemini.json','w',encoding='utf-8').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          open('.weekly_audit/gemini.md','w',encoding='utf-8').write('# Gemini weekly audit\n\nINCOMPLETE — inspect the workflow log.\n')
+          PY
+
+      - name: Verify report-only workspace boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import subprocess, sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_audit/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('Unexpected repository changes remain after audits:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(1)
+          PY
+
+      - name: Create or reuse Copilot report-only audit issue
+        id: copilot
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SHORT_SHA: ${{ steps.source.outputs.short }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Weekly Copilot full-bot bug audit ${SHORT_SHA}"
+          existing="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number,state --jq '.[0].number // empty')"
+          if [[ -n "$existing" ]]; then
+            issue="$existing"
+            state="$(gh issue view "$issue" --json state --jq '.state')"
+            if [[ "$state" == "CLOSED" ]]; then gh issue reopen "$issue"; fi
+            gh issue edit "$issue" --add-assignee "@copilot"
+            echo "Reused and assigned issue #${issue} to Copilot."
+          else
+            cat > /tmp/copilot-issue.md <<EOF
+          # Weekly independent Copilot full-bot bug audit
+
+          Audit frozen source commit: \`${SOURCE_SHA}\` on \`main\`.
+
+          This is the THIRD independent report in the weekly GPT + Gemini + Copilot audit. Inspect the ENTIRE repository,
+          including EVM/Solana execution, accounting/P&L, database and concurrency behavior, retries/timeouts, Telegram and
+          permissions, Strategy Lab/shadow systems, GitHub workflows/deployment interactions, configuration and tests.
+
+          **REPORT ONLY. Do not implement fixes or alter functional code.** You may run read-only diagnostics/tests.
+          Create a PR from \`main\` containing exactly these two new report files and no other changes:
+
+          - \`.ai/weekly/copilot/${SOURCE_SHA}.json\`
+          - \`.ai/weekly/copilot/${SOURCE_SHA}.md\`
+
+          The JSON must use \`provider=copilot\`, \`source_commit=${SOURCE_SHA}\`,
+          \`scope=FULL_REPOSITORY_BUG_AUDIT\`, \`report_only=true\`, \`no_live_changes=true\`.
+
+          Each finding needs: \`id\`, \`severity\` (P0-P3), \`category\`, \`title\`, non-empty file evidence,
+          \`impact\`, \`root_cause\`, bounded \`corrective_action\`, \`tests_required\`, confidence 0..1, and
+          \`deterministic_evidence\`. Prefer concrete reproducible bugs over speculative volume.
+
+          Never trade, deploy, edit secrets/signing/wallet material, change capital, or weaken safety controls.
+          EOF
+            url="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md --assignee "@copilot")"
+            issue="${url##*/}"
+            echo "Created and assigned issue #${issue} to Copilot."
+          fi
+          echo "number=${issue}" >> "$GITHUB_OUTPUT"
+
+      - name: Record Copilot kickoff status
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          ISSUE_NUMBER: ${{ steps.copilot.outputs.number }}
+          COPILOT_OUTCOME: ${{ steps.copilot.outcome }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          issue=os.environ.get('ISSUE_NUMBER','').strip()
+          outcome=os.environ.get('COPILOT_OUTCOME','failure')
+          p={
+            "source_commit":os.environ['SOURCE_SHA'],
+            "issue_number":int(issue) if issue.isdigit() else None,
+            "assignment_outcome":outcome,
+            "expected_report_path":".ai/weekly/copilot/"+os.environ['SOURCE_SHA']+".json",
+            "stage":"WAITING_FOR_COPILOT_REPORT_PR" if outcome=='success' else "COPILOT_ASSIGNMENT_NEEDS_ATTENTION",
+          }
+          open('.weekly_audit/copilot_assignment.json','w',encoding='utf-8').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish weekly baseline and first two reports to ai-reviews
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "weekly-ai-audit-bot"
+          git config user.email "weekly-ai-audit-bot@users.noreply.github.com"
+          rm -rf /tmp/weekly-ai-reviews
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          git worktree add --detach /tmp/weekly-ai-reviews origin/ai-reviews
+          dest="/tmp/weekly-ai-reviews/weekly/runs/${SOURCE_SHA}"
+          mkdir -p "$dest" /tmp/weekly-ai-reviews/weekly
+          cp .weekly_audit/baseline.json "$dest/baseline.json"
+          cp .weekly_audit/gpt.json "$dest/gpt.json"
+          cp .weekly_audit/gpt.md "$dest/gpt.md"
+          cp .weekly_audit/gemini.json "$dest/gemini.json"
+          cp .weekly_audit/gemini.md "$dest/gemini.md"
+          cp .weekly_audit/copilot_assignment.json "$dest/copilot_assignment.json"
+          printf '%s\n' "$SOURCE_SHA" > /tmp/weekly-ai-reviews/weekly/latest_source_commit.txt
+          printf '%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > /tmp/weekly-ai-reviews/weekly/latest_kickoff_utc.txt
+          cd /tmp/weekly-ai-reviews
+          git add weekly
+          if ! git diff --cached --quiet; then
+            git commit -m "Weekly GPT Gemini bug audit ${SOURCE_SHA:0:12}"
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Clean temporary audit files
+        if: always()
+        run: rm -rf .weekly_audit /tmp/weekly-ai-reviews /tmp/gpt_prompt.txt /tmp/gemini_prompt.txt /tmp/copilot-issue.md

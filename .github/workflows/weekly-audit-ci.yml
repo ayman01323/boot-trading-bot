@@ -1,0 +1,68 @@
+name: Weekly AI Audit Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/weekly-three-agent-bug-audit.yml'
+      - '.github/workflows/weekly-gpt-corrective-action.yml'
+      - '.github/workflows/weekly-audit-ci.yml'
+      - '.github/copilot-instructions.md'
+      - 'learnerbot/weekly_bug_audit_contract.py'
+      - 'scripts/weekly_bug_audit_baseline.py'
+      - 'tests/test_weekly_bug_audit_contract.py'
+      - 'docs/WEEKLY_THREE_AGENT_BUG_AUDIT.md'
+  push:
+    branches:
+      - 'release/weekly-three-agent-bug-audit'
+    paths:
+      - '.github/workflows/weekly-three-agent-bug-audit.yml'
+      - '.github/workflows/weekly-gpt-corrective-action.yml'
+      - '.github/workflows/weekly-audit-ci.yml'
+      - 'learnerbot/weekly_bug_audit_contract.py'
+      - 'scripts/weekly_bug_audit_baseline.py'
+      - 'tests/test_weekly_bug_audit_contract.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pytest
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Compile weekly audit modules
+        run: |
+          python -m py_compile \
+            learnerbot/weekly_bug_audit_contract.py \
+            scripts/weekly_bug_audit_baseline.py \
+            tests/test_weekly_bug_audit_contract.py
+      - name: Run weekly audit policy tests
+        run: pytest -x -vv tests/test_weekly_bug_audit_contract.py
+      - name: Dry-run deterministic repository baseline
+        shell: bash
+        run: |
+          : > /tmp/compile.log
+          : > /tmp/pytest.log
+          python scripts/weekly_bug_audit_baseline.py \
+            --root . \
+            --output /tmp/weekly-baseline.json \
+            --compile-log /tmp/compile.log \
+            --pytest-log /tmp/pytest.log \
+            --compile-rc 0 \
+            --pytest-rc 0
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/weekly-baseline.json',encoding='utf-8'))
+          assert p['scope']=='FULL_REPOSITORY_BUG_AUDIT_BASELINE'
+          assert p['tracked_file_count'] > 0
+          assert p['source_commit']
+          assert p['privacy']['tracked_files_only'] is True
+          print('WEEKLY_AUDIT_BASELINE_OK')
+          PY
