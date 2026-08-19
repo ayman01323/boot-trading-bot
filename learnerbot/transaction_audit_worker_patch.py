@@ -10,6 +10,7 @@ from .config import AppSettings
 from . import telegram_ui as _ui
 from .transaction_audit import run_transaction_audit
 from .hourly_gpt_strategy_review import run_hourly_gpt_review
+from .loss_forensics_github_export import publish_loss_forensics
 from .user_registry import all_users
 
 HOURLY_INTERVAL_SECONDS = 60 * 60
@@ -167,6 +168,22 @@ def _audit_loop(seed_app):
                     "live_auto_deploy": False,
                 }
                 print("[hourly-gpt-review] ERROR", type(exc).__name__, str(exc)[:500])
+
+            # Best-effort private API bridge. A publishing failure is operational
+            # telemetry only and must never interrupt exits, entries or Telegram.
+            try:
+                forensic = publish_loss_forensics(app, summary["latest_zip"], gpt_result)
+                print(
+                    "[loss-forensics] ok=%s branch=%s file=%s error=%s"
+                    % (
+                        forensic.get("ok"),
+                        forensic.get("branch", ""),
+                        forensic.get("file", ""),
+                        str(forensic.get("error") or "")[:300],
+                    )
+                )
+            except Exception as exc:
+                print("[loss-forensics] ERROR", type(exc).__name__, str(exc)[:300])
 
             for tid in _master_chat_ids(app):
                 try:
