@@ -44,16 +44,16 @@ jobs:
           encoded="$(base64 -w0 /tmp/boot-deploy-probe.txt)"
           if [[ -n "$existing_sha" ]]; then
             payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
-import json,sys
-print(json.dumps({"message":"Update VPS deployment probe","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
-PY
-)"
+          import json,sys
+          print(json.dumps({"message":"Update VPS deployment probe","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
           else
             payload="$(python3 - "$encoded" <<'PY'
-import json,sys
-print(json.dumps({"message":"Create VPS deployment probe","content":sys.argv[1],"branch":"server-diagnostics"}))
-PY
-)"
+          import json,sys
+          print(json.dumps({"message":"Create VPS deployment probe","content":sys.argv[1],"branch":"server-diagnostics"}))
+          PY
+          )"
           fi
           curl -fsS -X PUT \
             -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -88,7 +88,105 @@ PY
         if: always()
         shell: bash
         run: |
+          set +e
           sudo /usr/local/sbin/status-boot-trading-bot 2>&1 | tee /tmp/boot-server-status.txt
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Build and publish machine-readable deployment attestation
+        id: attestation
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          DEPLOY_EXIT: ${{ steps.deploy.outputs.exit_code }}
+          STATUS_EXIT: ${{ steps.status.outputs.exit_code }}
+        run: |
+          set +e
+          repo_path="$(sudo env EXPECTED_SHA="${TARGET_SHA}" bash -c '
+            candidate=""
+            while IFS= read -r gitdir; do
+              repo="${gitdir%/.git}"
+              origin="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
+              case "$origin" in *ayman01323/boot-trading-bot*) ;; *) continue ;; esac
+              candidate="$repo"
+              head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
+              if [[ "$head" == "$EXPECTED_SHA" ]]; then
+                printf "%s\n" "$repo"
+                exit 0
+              fi
+            done < <(find /root /opt /srv -maxdepth 5 -type d -name .git 2>/dev/null)
+            [[ -n "$candidate" ]] && printf "%s\n" "$candidate"
+          ' | head -n1)"
+
+          if [[ -n "$repo_path" && -f "$repo_path/scripts/vps_deploy_attestation.py" ]]; then
+            sudo python3 "$repo_path/scripts/vps_deploy_attestation.py" \
+              --repo "$repo_path" \
+              --expected-sha "$TARGET_SHA" \
+              --status-log /tmp/boot-server-status.txt \
+              --output /tmp/boot-deploy-attestation.json
+            attest_rc=$?
+            sudo chmod 0644 /tmp/boot-deploy-attestation.json || true
+          else
+            attest_rc=3
+            python3 - <<PY > /tmp/boot-deploy-attestation.json
+          import json,time
+          print(json.dumps({
+            "schema_version":1,
+            "generated_at":int(time.time()),
+            "expected_sha":"${TARGET_SHA}",
+            "deployed_sha":"",
+            "sha_match":False,
+            "service_status_ok":False,
+            "ai_master_commands_code_ok":False,
+            "telegram_command_verification":{"attempted":False,"verified":False,"detail":"production repository path or attestation script not found"},
+            "deployment_attested":False,
+          },indent=2,sort_keys=True))
+          PY
+          fi
+
+          python3 - <<PY
+          import json
+          p='/tmp/boot-deploy-attestation.json'
+          d=json.load(open(p,encoding='utf-8'))
+          d.update({
+            'workflow_run_id':'${GITHUB_RUN_ID}',
+            'workflow_event':'${GITHUB_EVENT_NAME}',
+            'deploy_outcome':'${DEPLOY_OUTCOME:-unknown}',
+            'deploy_exit':'${DEPLOY_EXIT:-}',
+            'status_exit':'${STATUS_EXIT:-}',
+            'attestation_exit':int('${attest_rc:-3}'),
+          })
+          open(p,'w',encoding='utf-8').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-deploy-attestation.json"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/boot-deploy-attestation.json)"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Update VPS deployment attestation","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Create VPS deployment attestation","content":sys.argv[1],"branch":"server-diagnostics"}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" -d "$payload" >/dev/null
+          echo "attestation_exit=${attest_rc}" >> "$GITHUB_OUTPUT"
+          cat /tmp/boot-deploy-attestation.json
+          exit 0
 
       - name: Publish private deployment diagnostic
         if: always()
@@ -119,16 +217,16 @@ PY
           encoded="$(base64 -w0 /tmp/boot-deploy-diagnostic.txt)"
           if [[ -n "$existing_sha" ]]; then
             payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
-import json,sys
-print(json.dumps({"message":"Update VPS deployment diagnostic","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
-PY
-)"
+          import json,sys
+          print(json.dumps({"message":"Update VPS deployment diagnostic","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
           else
             payload="$(python3 - "$encoded" <<'PY'
-import json,sys
-print(json.dumps({"message":"Create VPS deployment diagnostic","content":sys.argv[1],"branch":"server-diagnostics"}))
-PY
-)"
+          import json,sys
+          print(json.dumps({"message":"Create VPS deployment diagnostic","content":sys.argv[1],"branch":"server-diagnostics"}))
+          PY
+          )"
           fi
           curl -fsS -X PUT \
             -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -158,10 +256,10 @@ PY
           existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
           encoded="$(base64 -w0 /tmp/boot-deploy-probe.txt)"
           payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
-import json,sys
-print(json.dumps({"message":"Finish VPS deployment probe","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
-PY
-)"
+          import json,sys
+          print(json.dumps({"message":"Finish VPS deployment probe","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
           curl -fsS -X PUT \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H 'Accept: application/vnd.github+json' \
