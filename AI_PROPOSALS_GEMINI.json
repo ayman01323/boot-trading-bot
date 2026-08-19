@@ -1,0 +1,98 @@
+{
+  "code_findings": [
+    {
+      "area": "solana_partial_sell_profit_guard_patch.py",
+      "downside_risk": "May incur base fees on small recovered amounts, but prevents holding a full bag to a -10% stop loss.",
+      "evidence": "if net_pct < minimum_net_pct: actions.append(_partial_skip(...))",
+      "proposed_change": "Bypass the minimum_net_pct check if the position is currently at a loss and the leader is executing a partial sell to de-risk, subject to a minimum recovered capital threshold.",
+      "severity": "HIGH",
+      "test_required": true
+    },
+    {
+      "area": "solana_execution_efficiency_patch.py",
+      "downside_risk": "Higher execution costs per trade, which must be offset by a higher landing rate of profitable trades.",
+      "evidence": "\"live_max_jito_tip_lamports\": (\"1000\", \"Hard maximum explicit Jito tip when enabled\")",
+      "proposed_change": "Increase the default Jito tip cap or implement a dynamic tip scaling based on a percentage of the expected gross profit (e.g., up to 10% of expected edge).",
+      "severity": "HIGH",
+      "test_required": true
+    },
+    {
+      "area": "solana_live_executor.py",
+      "downside_risk": "Increased complexity in the execution pipeline and potential event loop management issues.",
+      "evidence": "r = requests.get(f\"{JUPITER_BASE}/order\", params=params, headers=self._headers(), timeout=30)",
+      "proposed_change": "Refactor to use asynchronous HTTP clients to prevent blocking the main thread during Jupiter API degradation.",
+      "severity": "MEDIUM",
+      "test_required": true
+    }
+  ],
+  "executive_summary": "The frozen snapshot demonstrates a highly defensive, safety-first architecture with robust circuit breakers, execution reconciliation, and strict economic profit controls (e.g., 1.30 Profit Factor requirement). However, the over-optimization for avoiding fixed costs has introduced structural weaknesses. Specifically, the 'Partial Sell Profit Guard' forces the bot to hold losing positions when a leader attempts to de-risk, exposing the portfolio to maximum stop-loss hits. Additionally, synchronous blocking HTTP calls to the Jupiter API with 30-second timeouts and severely restricted Jito tips (1000 lamports) will cause high-latency execution and dropped transactions during network congestion, directly degrading durable realized NET P&L.",
+  "model": "gemini-3.1-pro-preview",
+  "must_not_change": [
+    "solana_execution_validation_patch.py: The requirement to reconcile on-chain transaction metadata before retrying ambiguous Jupiter successes.",
+    "profit_control_amount_objective_patch.py: The 1.30 minimum Profit Factor requirement for strategy success.",
+    "solana_position_wallet_binding_patch.py: The strict binding of a position to its entry wallet to prevent cross-wallet contamination.",
+    "solana_exit_circuit_breaker_patch.py: The quarantine mechanism for landed-invalid or reconciling exits."
+  ],
+  "new_hypotheses": [
+    {
+      "costs": "Increased priority fee expenditure per transaction.",
+      "data_required": "Preflight expected gross profit, Jito tip amounts, transaction landing success rates, and realized slippage.",
+      "entry_logic": "Calculate expected gross profit in lamports during preflight. Allocate up to 10% of this expected profit to the Jito tip, overriding the 1000 lamport hard cap.",
+      "exit_logic": "Apply the same dynamic tipping logic to exit routing to prevent being trapped in a depreciating asset during congestion.",
+      "failure_modes": "The dynamic tip consumes too much of the edge, resulting in a lower net profit factor despite a higher win rate.",
+      "falsification": "If the net P&L of the dynamic tipping cohort is lower than the flat 1000 lamport cohort after accounting for the increased fee drag, the hypothesis is false.",
+      "hypothesis": "Dynamic Jito tipping scaled to 5-10% of the expected gross profit will yield a higher durable realized NET P&L than a hardcapped 1000 lamport tip by significantly increasing the landing rate of high-edge trades.",
+      "market_regime": "High Volatility / Network Congestion",
+      "minimum_observations": 500,
+      "minimum_trades": 50,
+      "shadow_experiment": "Run SHADOW execution simulating dynamic tips vs flat tips, comparing the simulated landing probability and net edge."
+    },
+    {
+      "costs": "Base network fees incurred on partial loss exits.",
+      "data_required": "Leader partial sell events, position unrealized P&L, network fee estimates.",
+      "entry_logic": "Standard leader copy entry.",
+      "exit_logic": "If a leader executes a partial sell and the position is currently at a loss, mirror the partial sell if the recovered capital exceeds 5x the estimated base network fee.",
+      "failure_modes": "The asset immediately rebounds after the partial loss exit, meaning the bot locked in a loss unnecessarily and paid a fee to do so.",
+      "falsification": "If the cohort allowing loss-mitigation partial sells has a lower overall Profit Factor than the strict hold cohort, the hypothesis is false.",
+      "hypothesis": "Mirroring leader partial exits during drawdowns (loss mitigation) will reduce maximum portfolio drawdown and improve the overall profit factor compared to forcing a HOLD until the hard stop-loss is hit.",
+      "market_regime": "Trending / Reversal",
+      "minimum_observations": 200,
+      "minimum_trades": 30,
+      "shadow_experiment": "Track two SHADOW cohorts: one using the current strict profit-only partial sell guard, and one allowing loss-mitigation partial sells."
+    }
+  ],
+  "no_live_changes": true,
+  "provider": "gemini",
+  "recommended_next_action": "RUN_SHADOW_EXPERIMENTS",
+  "status": "COMPLETED",
+  "strategy_assessment": [
+    {
+      "action": "IMPROVE",
+      "evidence": "solana_live_executor.py uses synchronous requests.get() with 30s timeouts for Jupiter /quote and /order endpoints.",
+      "rationale": "Synchronous blocking calls introduce severe latency in fast-moving markets, leading to high slippage or missed execution windows. This degrades the expected edge calculated during preflight.",
+      "shadow_test": "Implement an asynchronous execution path using aiohttp/httpx to parallelize RPC and Jupiter API calls, measuring latency reduction and slippage improvement in SHADOW mode.",
+      "strategy/name": "Solana Leader Copy Trading"
+    },
+    {
+      "action": "REWORK",
+      "evidence": "solana_partial_sell_profit_guard_patch.py rejects partial sells if net_pct < 3.0% or economic value < 0.002 SOL.",
+      "rationale": "While this prevents fixed fees from consuming small profits, it completely disables loss-mitigation. If a leader scales out of a bad trade to cut losses, the bot forces a HOLD, absorbing the full loss when the hard stop-loss is eventually hit.",
+      "shadow_test": "Modify the guard to allow partial sells at a loss IF the leader is actively de-risking, provided the recovered capital significantly exceeds the network fee.",
+      "strategy/name": "Solana Partial Sell Profit Guard"
+    },
+    {
+      "action": "KEEP",
+      "evidence": "market_scanner.py validates factory pairs locally before querying the router, avoiding blind RPC spam.",
+      "rationale": "The graph-first approach is highly efficient and safe, ensuring only liquid, existing pairs are quoted. The strict slippage and price impact checks protect capital.",
+      "shadow_test": "None required; continue monitoring existing metrics.",
+      "strategy/name": "EVM Direct Market Triangular Arbitrage"
+    },
+    {
+      "action": "KEEP",
+      "evidence": "profit_control_amount_objective_patch.py enforces a strict 1.30 Profit Factor (amount-based) rather than just win rate.",
+      "rationale": "Optimizing for gross profit amount vs gross loss amount is mathematically superior to optimizing for win count, ensuring durable net profitability.",
+      "shadow_test": "None required; the logic is sound.",
+      "strategy/name": "Profit Control Loop"
+    }
+  ]
+}
