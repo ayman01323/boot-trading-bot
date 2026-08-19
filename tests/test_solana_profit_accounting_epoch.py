@@ -33,9 +33,30 @@ def test_pre_epoch_losses_do_not_poison_corrected_guard(monkeypatch, tmp_path):
 
     metrics = epoch._copied_metrics_corrected(app, "123", "leader")
     assert metrics["closed"] == 1
+    assert metrics["wins"] == 1
+    assert metrics["losses"] == 0
+    assert metrics["gross_profit_sol"] == Decimal("0.2")
+    assert metrics["gross_loss_sol"] == Decimal("0")
+    assert metrics["net_sol"] == Decimal("0.2")
     assert metrics["win_rate"] == Decimal("100")
     assert metrics["profit_factor"] == Decimal("99")
     assert metrics["consecutive_losses"] == 0
+
+
+def test_corrected_amount_metrics_compute_profit_factor_from_amounts(tmp_path):
+    app = _app(tmp_path)
+    with sol.connect(app) as conn:
+        sol._set_state(conn, epoch._EPOCH_STATE_KEY, 100)
+    _closed(app, "w1", 110, Decimal("0.03"))
+    _closed(app, "l1", 120, Decimal("-0.01"))
+    _closed(app, "l2", 130, Decimal("-0.01"))
+    metrics = epoch._copied_metrics_corrected(app, "123", "leader")
+    assert metrics["wins"] == 1
+    assert metrics["losses"] == 2
+    assert metrics["gross_profit_sol"] == Decimal("0.03")
+    assert metrics["gross_loss_sol"] == Decimal("0.02")
+    assert metrics["net_sol"] == Decimal("0.01")
+    assert metrics["profit_factor"] == Decimal("1.5")
 
 
 def test_pending_rent_reclaim_is_not_learned_as_loss(tmp_path):
@@ -69,6 +90,8 @@ def test_pending_rent_reclaim_is_not_learned_as_loss(tmp_path):
 
     metrics = epoch._copied_metrics_corrected(app, "123", "leader")
     assert metrics["closed"] == 1
+    assert metrics["gross_profit_sol"] == Decimal("0.0002")
+    assert metrics["gross_loss_sol"] == Decimal("0")
     assert metrics["win_rate"] == Decimal("100")
     assert metrics["profit_factor"] == Decimal("99")
 
