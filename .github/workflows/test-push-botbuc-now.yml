@@ -7,36 +7,25 @@ on:
 
 jobs:
   push:
-    name: Push today's BotBuc ZIP to Google Drive
+    name: Inspect rclone availability for BotBuc
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 60
+    timeout-minutes: 10
     steps:
-      - name: Verify local backup and push to Drive
+      - name: Inspect runner rclone without exposing credentials
         shell: bash
         run: |
-          set -euo pipefail
-          DATE="$(date +%F)"
-          ARCHIVE="/root/BotBuc/${DATE}.zip"
-          CONFIG="/root/.config/rclone/rclone.conf"
-          DEST="gdrive:BotBuc/${DATE}.zip"
-
-          echo "date=$DATE"
-          echo "archive=$ARCHIVE"
-          echo "destination=$DEST"
-
-          sudo -n test -s "$ARCHIVE"
-          sudo -n test -f "$CONFIG"
-
-          REMOTES="$(sudo -n rclone --config "$CONFIG" listremotes)"
-          printf 'remotes:\n%s\n' "$REMOTES"
-          grep -qx 'gdrive:' <<<"$REMOTES"
-
-          sudo -n rclone --config "$CONFIG" mkdir gdrive:BotBuc
-          sudo -n rclone --config "$CONFIG" copyto "$ARCHIVE" "$DEST" --progress
-
-          LOCAL_SIZE="$(sudo -n rclone size --json "$ARCHIVE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bytes"])')"
-          REMOTE_SIZE="$(sudo -n rclone --config "$CONFIG" lsjson "$DEST" --stat | python3 -c 'import json,sys; print(json.load(sys.stdin)["Size"])')"
-          echo "local_size=$LOCAL_SIZE"
-          echo "remote_size=$REMOTE_SIZE"
-          test "$LOCAL_SIZE" = "$REMOTE_SIZE"
-          echo "BOTBUC_PUSH_VERIFIED $DEST bytes=$REMOTE_SIZE"
+          set +e
+          echo "user=$(id -un)"
+          id
+          echo "home=$HOME"
+          command -v rclone || true
+          echo "runner_config=$HOME/.config/rclone/rclone.conf"
+          if [ -f "$HOME/.config/rclone/rclone.conf" ]; then
+            echo "runner_rclone_config=present"
+            rclone listremotes || true
+          else
+            echo "runner_rclone_config=missing"
+          fi
+          echo "root_rclone_config_readable=$([ -r /root/.config/rclone/rclone.conf ] && echo yes || echo no)"
+          echo "root_backup_readable=$([ -r /root/BotBuc/$(date +%F).zip ] && echo yes || echo no)"
+          exit 0
