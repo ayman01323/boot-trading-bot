@@ -27,7 +27,7 @@ jobs:
   synthesize-and-act:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 120
 
     steps:
       - name: Resolve Copilot report PR
@@ -45,8 +45,8 @@ jobs:
             exit 2
           fi
           head_sha="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
-          head_repo="$(gh pr view "$pr" --json headRepositoryOwner,headRepository --jq '.headRepositoryOwner.login + "/" + .headRepository.name')"
-          if [[ "$head_repo" != "$GITHUB_REPOSITORY" ]]; then
+          cross_repo="$(gh pr view "$pr" --json isCrossRepository --jq '.isCrossRepository')"
+          if [[ "$cross_repo" == "true" ]]; then
             echo "Refusing report PR from a fork because repository secrets must not be exposed." >&2
             exit 3
           fi
@@ -79,6 +79,31 @@ jobs:
           npm install -g @openai/codex@latest
           codex --version
 
+      - name: Refuse Copilot PR containing anything except weekly report files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr diff "$PR_NUMBER" --name-only > /tmp/copilot-pr-files.txt
+          python - <<'PY'
+          import pathlib, sys
+          files=[x.strip().replace('\\','/') for x in pathlib.Path('/tmp/copilot-pr-files.txt').read_text().splitlines() if x.strip()]
+          if len(files) != 2:
+              print(f'Copilot report PR must contain exactly two files; found {len(files)}', file=sys.stderr)
+              print(*files, sep='\n', file=sys.stderr)
+              raise SystemExit(2)
+          if any(not p.startswith('.ai/weekly/copilot/') or pathlib.PurePosixPath(p).suffix not in {'.json','.md'} for p in files):
+              print('Copilot report PR contains a non-report file.', file=sys.stderr)
+              print(*files, sep='\n', file=sys.stderr)
+              raise SystemExit(3)
+          stems={str(pathlib.PurePosixPath(p).with_suffix('')) for p in files}
+          if len(stems) != 1:
+              print('Copilot JSON and Markdown reports do not share the same source-commit filename.', file=sys.stderr)
+              raise SystemExit(4)
+          PY
+
       - name: Locate and validate Copilot report
         id: report
         shell: bash
@@ -100,11 +125,16 @@ jobs:
             echo "Copilot report source_commit missing." >&2
             exit 2
           fi
+          expected_json=".ai/weekly/copilot/${source_sha}.json"
+          expected_md=".ai/weekly/copilot/${source_sha}.md"
+          if [[ "$report" != "$expected_json" || ! -f "$expected_md" ]]; then
+            echo "Copilot report filenames must exactly match source_commit." >&2
+            exit 3
+          fi
           python -m learnerbot.weekly_bug_audit_contract validate-agent \
             --input "$report" --provider copilot --source-commit "$source_sha" >/dev/null
           cp "$report" /tmp/copilot.json
-          md="${report%.json}.md"
-          if [[ -f "$md" ]]; then cp "$md" /tmp/copilot.md; fi
+          cp "$expected_md" /tmp/copilot.md
           echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
           echo "short=${source_sha:0:12}" >> "$GITHUB_OUTPUT"
           echo "path=${report}" >> "$GITHUB_OUTPUT"
@@ -142,8 +172,6 @@ jobs:
 
       - name: Refuse synthesis if an independent report is incomplete
         id: completeness
-        env:
-          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -169,6 +197,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           NAMES: ${{ steps.completeness.outputs.names }}
+        shell: bash
         run: |
           gh pr comment "$PR_NUMBER" --body "Weekly three-agent audit is incomplete (${NAMES}). GPT corrective action is blocked until all three independent reports complete. No code was changed."
           exit 1
@@ -259,11 +288,19 @@ jobs:
           fi
           codex exec --sandbox workspace-write --ask-for-approval never --ephemeral "${model_args[@]}" - < /tmp/master_prompt.txt
           test -f .weekly_master/master_decision.json
-          if ! git diff --quiet; then
-            echo "GPT synthesis modified tracked files, refusing." >&2
-            git diff --stat >&2
-            exit 3
-          fi
+          test -f .weekly_master/master_decision.md
+          python - <<'PY'
+          import subprocess, sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_master/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('GPT synthesis changed files outside .weekly_master:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
+          PY
 
       - name: Apply deterministic master policy gate
         id: gate
@@ -291,11 +328,11 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf /tmp/master-ai-reviews
-          git worktree add -b master-ai-reviews-work /tmp/master-ai-reviews origin/ai-reviews
+          git worktree add --detach /tmp/master-ai-reviews origin/ai-reviews
           dest="/tmp/master-ai-reviews/weekly/runs/${SOURCE_SHA}"
           mkdir -p "$dest" /tmp/master-ai-reviews/weekly
           cp /tmp/copilot.json "$dest/copilot.json"
-          if [[ -f /tmp/copilot.md ]]; then cp /tmp/copilot.md "$dest/copilot.md"; fi
+          cp /tmp/copilot.md "$dest/copilot.md"
           cp .weekly_master/master_decision.json "$dest/master_decision_raw.json"
           cp .weekly_master/master_gated.json "$dest/master_decision.json"
           cp .weekly_master/master_decision.md "$dest/master_decision.md"
@@ -317,6 +354,8 @@ jobs:
           git add weekly
           if ! git diff --cached --quiet; then
             git commit -m "Complete weekly three-agent audit ${SOURCE_SHA:0:12}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
             git push origin HEAD:ai-reviews
           fi
 
@@ -350,7 +389,6 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_WEEKLY_FIX_MODEL: ${{ vars.OPENAI_WEEKLY_FIX_MODEL }}
-          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -363,13 +401,13 @@ jobs:
           Hard rules:
           - Change only exact paths listed in allowed_files of policy-eligible rows.
           - Add/modify the exact tests already listed in allowed_files; do not broaden scope.
-          - Do not act on REJECT, DEFER, policy_eligible=false, P0, or protected-file findings.
+          - Do not act on REJECT, DEFER, policy_eligible=false, P0, HIGH/CRITICAL risk, or protected-file findings.
           - Do not change secrets, private keys, wallet/signing material, user permissions, deployment workflows,
             live/armed switches, capital/position size/risk limits, or RPC/API credentials.
           - Do not weaken or bypass simulation, sellability, liquidity, slippage, positive-edge, nonce, atomicity,
             stop-loss, circuit-breaker, execution reconciliation, quarantine, or canary protections.
           - Fix software defects, not strategy profitability by guesswork.
-          - Prefer the smallest correct patch. Preserve unrelated behavior.
+          - Prefer the smallest correct patch. Preserve unrelated behaviour.
           - Run relevant local tests if possible. Do not commit, push, merge, deploy, or submit transactions.
           - If an accepted item is not actually supported by current code, make no change for that item.
           PROMPT
@@ -422,7 +460,9 @@ jobs:
               raise SystemExit('Refusing patch broader than 15 files')
           print('Approved changed files:', *sorted(changed), sep='\n  ')
           PY
-          lines="$(git diff --numstat | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+          tracked_lines="$(git diff --numstat | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+          untracked_lines="$(git ls-files --others --exclude-standard | while read -r f; do [[ -f "$f" ]] && wc -l < "$f" || true; done | awk '{n+=$1} END {print n+0}')"
+          lines=$((tracked_lines + untracked_lines))
           if [[ "$lines" -gt 2500 ]]; then
             echo "Refusing patch larger than 2500 changed lines (${lines})." >&2
             exit 4
@@ -444,7 +484,8 @@ jobs:
             tests/test_sibot_profit_guard.py \
             tests/test_profit_control_loop.py \
             tests/test_transaction_audit.py \
-            tests/test_loss_forensics_github_export.py
+            tests/test_loss_forensics_github_export.py \
+            tests/test_weekly_bug_audit_contract.py
 
       - name: Commit and push tested corrective patch
         if: steps.diff.outputs.changed == 'true' && success()
@@ -485,8 +526,8 @@ jobs:
           Safety controls:
           - GPT/Gemini/Copilot audited independently before synthesis.
           - GPT recorded ACCEPT / REJECT / DEFER with reasons.
-          - A deterministic gate required confidence >= 0.85 plus two-agent support or deterministic evidence.
-          - P0 and protected-file changes are never auto-implemented.
+          - A deterministic gate required confidence >= 0.85 plus two-agent support or deterministic evidence with an explicit verification test.
+          - P0, HIGH/CRITICAL-risk, and protected-file changes are never auto-implemented.
           - Changed paths were restricted to the exact approved allow-list.
           - Full pytest plus critical trading-safety regression tests passed before push.
           - This is a **draft PR only**. No merge/deploy/live-mode/capital change is authorised.
@@ -500,6 +541,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
         run: |
           gh pr comment "$PR_NUMBER" --body "GPT master policy allowed a corrective attempt for \`${SOURCE_SHA}\`, but the implementation agent found no supported code change within the approved scope. No patch was pushed or deployed."
 
@@ -522,4 +564,4 @@ jobs:
       - name: Clean temporary worktrees and evidence files
         if: always()
         run: |
-          rm -rf .weekly_master /tmp/master-ai-reviews /tmp/master_gated.json /tmp/master_prompt.txt /tmp/fix_prompt.txt
+          rm -rf .weekly_master /tmp/master-ai-reviews /tmp/master_gated.json /tmp/master_prompt.txt /tmp/fix_prompt.txt /tmp/copilot.json /tmp/copilot.md /tmp/baseline.json /tmp/gpt.json /tmp/gemini.json
