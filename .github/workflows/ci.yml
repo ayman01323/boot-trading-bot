@@ -118,6 +118,15 @@ jobs:
         if: always()
         shell: bash
         run: sudo /usr/local/sbin/status-boot-trading-bot
+      - name: Captured learnerbot startup exception
+        if: always()
+        shell: bash
+        run: |
+          if [[ -r /tmp/learnerbot-startup-error.txt ]]; then
+            cat /tmp/learnerbot-startup-error.txt
+          else
+            echo 'no readable /tmp/learnerbot-startup-error.txt'
+          fi
       - name: Recent learnerbot journal after deploy attempt
         if: always()
         shell: bash
@@ -145,6 +154,14 @@ jobs:
       - name: Current status
         shell: bash
         run: sudo /usr/local/sbin/status-boot-trading-bot
+      - name: Captured learnerbot startup exception
+        shell: bash
+        run: |
+          if [[ -r /tmp/learnerbot-startup-error.txt ]]; then
+            cat /tmp/learnerbot-startup-error.txt
+          else
+            echo 'no readable /tmp/learnerbot-startup-error.txt'
+          fi
       - name: Service unit metadata
         shell: bash
         run: |
