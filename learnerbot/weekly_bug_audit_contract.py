@@ -28,7 +28,10 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 def _clean_path(value: Any) -> str:
-    return str(value or "").replace("\\", "/").strip().lstrip("./")
+    cleaned = str(value or "").replace("\\", "/").strip()
+    while cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned.lstrip("/")
 
 
 def protected_path(path: str) -> bool:
