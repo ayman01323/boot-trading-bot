@@ -33,7 +33,31 @@ from . import solana_partial_sell_profit_guard_patch as _partial_sell_guard
 from . import solana_positive_edge_entry_gate_patch as _positive_edge
 
 
+def _recompose_execution_validation():
+    """Make final executor composition independent of earlier import-cache order.
+
+    Some Telegram/runtime modules can import the validation patch before the later
+    efficiency/atomic wrappers are installed.  The validation module deliberately
+    has an idempotency flag, so a later normal import will not re-run install().
+    At the final audited runtime boundary we know the exact intended inner stack;
+    re-bind those captured inner functions and then restore validation as the
+    authoritative outer BUY/SELL/swap layer before verifying the invariant.
+    """
+    _validation._PREV_SWAP = _efficiency.swap_with_cost_receipt
+    _validation._PREV_SELL = _atomic_fallback.sell_with_atomic_or_capped_legacy_fallback
+    _validation._PREV_BUY = _reserve._buy_with_simulated_reserve
+    _exec.SolanaLiveExecutor.swap = _validation._swap_amounts_authoritative
+    _exec.SolanaLiveExecutor.sell = _validation._sell_with_token_reconciliation
+    _exec.SolanaLiveExecutor.buy = _validation._buy_with_token_reconciliation
+    _exec.SolanaLiveExecutor._economic_validation_patch = True
+
+
 def install():
+    # This is intentionally a repair-then-verify boundary.  It does not weaken an
+    # invariant: it restores the one exact audited composition and then checks all
+    # identities below.  Any later displacement still fails closed.
+    _recompose_execution_validation()
+
     checks = {
         "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
         "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,

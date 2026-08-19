@@ -1,5 +1,7 @@
 import importlib
 import pkgutil
+import subprocess
+import sys
 
 import learnerbot
 
@@ -23,3 +25,17 @@ def test_all_learnerbot_modules_import():
         except Exception as exc:
             failures.append((name, type(exc).__name__, str(exc)))
     assert not failures, failures
+
+
+def test_python_m_learnerbot_real_startup_stack_reaches_cli_help():
+    """Exercise the actual __main__ import order, not a hand-built test order."""
+    result = subprocess.run(
+        [sys.executable, "-m", "learnerbot", "--help"],
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    assert result.returncode == 0, combined
+    assert "Audited trading runtime invariant failed" not in combined
