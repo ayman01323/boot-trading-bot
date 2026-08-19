@@ -11,14 +11,19 @@ on:
       - 'learnerbot/market_feature_adapter.py'
       - 'learnerbot/shadow_strategy_executor.py'
       - 'learnerbot/profit_control_audit_export_patch.py'
+      - 'learnerbot/three_agent_strategy_contract.py'
+      - 'scripts/extract_strategy_report.py'
       - 'tests/test_strategy_lab.py'
       - 'tests/test_strategy_ai_proposals.py'
       - 'tests/test_strategy_lab_cross_chain_research.py'
       - 'tests/test_cross_chain_strategy_signals.py'
       - 'tests/test_market_feature_shadow_executor.py'
+      - 'tests/test_three_agent_strategy_contract.py'
       - 'docs/STRATEGY_LAB.md'
       - '.github/copilot-instructions.md'
       - '.github/workflows/hourly-gemini-strategy-review.yml'
+      - '.github/workflows/three-agent-strategy-review.yml'
+      - '.github/workflows/gpt-master-strategy-action.yml'
       - '.github/workflows/strategy-lab-ci.yml'
   push:
     branches:
@@ -26,6 +31,7 @@ on:
       - 'release/strategy-lab-current'
       - 'release/cross-chain-shadow-strategies'
       - 'release/market-feature-shadow-executor'
+      - 'release/three-agent-strategy-cycle'
     paths:
       - 'learnerbot/strategy_lab.py'
       - 'learnerbot/strategy_lab_research.py'
@@ -35,13 +41,18 @@ on:
       - 'learnerbot/market_feature_adapter.py'
       - 'learnerbot/shadow_strategy_executor.py'
       - 'learnerbot/profit_control_audit_export_patch.py'
+      - 'learnerbot/three_agent_strategy_contract.py'
+      - 'scripts/extract_strategy_report.py'
       - 'tests/test_strategy_lab.py'
       - 'tests/test_strategy_ai_proposals.py'
       - 'tests/test_strategy_lab_cross_chain_research.py'
       - 'tests/test_cross_chain_strategy_signals.py'
       - 'tests/test_market_feature_shadow_executor.py'
+      - 'tests/test_three_agent_strategy_contract.py'
       - '.github/copilot-instructions.md'
       - '.github/workflows/hourly-gemini-strategy-review.yml'
+      - '.github/workflows/three-agent-strategy-review.yml'
+      - '.github/workflows/gpt-master-strategy-action.yml'
       - '.github/workflows/strategy-lab-ci.yml'
   workflow_dispatch:
 
@@ -60,7 +71,7 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt pytest
-      - name: Compile strategy laboratory
+      - name: Compile strategy laboratory and three-agent review controls
         run: |
           python -m py_compile \
             learnerbot/strategy_lab.py \
@@ -70,12 +81,16 @@ jobs:
             learnerbot/cross_chain_strategy_signals.py \
             learnerbot/market_feature_adapter.py \
             learnerbot/shadow_strategy_executor.py \
-            learnerbot/profit_control_audit_export_patch.py
-      - name: Run strategy laboratory lifecycle, cross-chain and shadow-executor tests
+            learnerbot/profit_control_audit_export_patch.py \
+            learnerbot/three_agent_strategy_contract.py \
+            scripts/extract_strategy_report.py \
+            tests/test_three_agent_strategy_contract.py
+      - name: Run Strategy Lab and guarded three-agent strategy tests
         run: |
           pytest -x -vv \
             tests/test_strategy_lab.py \
             tests/test_strategy_ai_proposals.py \
             tests/test_strategy_lab_cross_chain_research.py \
             tests/test_cross_chain_strategy_signals.py \
-            tests/test_market_feature_shadow_executor.py
+            tests/test_market_feature_shadow_executor.py \
+            tests/test_three_agent_strategy_contract.py
