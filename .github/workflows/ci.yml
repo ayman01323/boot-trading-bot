@@ -118,6 +118,20 @@ jobs:
         if: always()
         shell: bash
         run: sudo /usr/local/sbin/status-boot-trading-bot
+      - name: Recent learnerbot journal after deploy attempt
+        if: always()
+        shell: bash
+        run: |
+          journalctl -u learnerbot.service --since '10 minutes ago' -n 350 --no-pager || true
+      - name: Deployment wrapper log tail
+        if: always()
+        shell: bash
+        run: |
+          if [[ -r /var/log/boot-github-deploy.log ]]; then
+            tail -n 120 /var/log/boot-github-deploy.log
+          else
+            echo 'deploy log is not readable by github-runner'
+          fi
 
   server_diagnostics:
     name: Read VPS learnerbot diagnostics
@@ -131,7 +145,19 @@ jobs:
       - name: Current status
         shell: bash
         run: sudo /usr/local/sbin/status-boot-trading-bot
+      - name: Service unit metadata
+        shell: bash
+        run: |
+          systemctl show learnerbot.service -p FragmentPath -p WorkingDirectory -p ExecStart --no-pager || true
       - name: Recent learnerbot journal
         shell: bash
         run: |
-          sudo journalctl -u learnerbot.service --since '15 minutes ago' -n 300 --no-pager || true
+          journalctl -u learnerbot.service --since '20 minutes ago' -n 400 --no-pager || true
+      - name: Deployment wrapper log tail
+        shell: bash
+        run: |
+          if [[ -r /var/log/boot-github-deploy.log ]]; then
+            tail -n 160 /var/log/boot-github-deploy.log
+          else
+            echo 'deploy log is not readable by github-runner'
+          fi
