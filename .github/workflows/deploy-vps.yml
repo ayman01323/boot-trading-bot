@@ -105,60 +105,81 @@ jobs:
           STATUS_EXIT: ${{ steps.status.outputs.exit_code }}
         run: |
           set +e
-          repo_path="$(sudo env EXPECTED_SHA="${TARGET_SHA}" bash -c '
-            candidate=""
-            while IFS= read -r gitdir; do
-              repo="${gitdir%/.git}"
-              origin="$(git -C "$repo" remote get-url origin 2>/dev/null || true)"
-              case "$origin" in *ayman01323/boot-trading-bot*) ;; *) continue ;; esac
-              candidate="$repo"
-              head="$(git -C "$repo" rev-parse HEAD 2>/dev/null || true)"
-              if [[ "$head" == "$EXPECTED_SHA" ]]; then
-                printf "%s\n" "$repo"
-                exit 0
-              fi
-            done < <(find /root /opt /srv -maxdepth 5 -type d -name .git 2>/dev/null)
-            [[ -n "$candidate" ]] && printf "%s\n" "$candidate"
-          ' | head -n1)"
+          # The runner has passwordless access to the restricted status wrapper. Poll it
+          # briefly so the restarted Telegram menu has time to register and verify the
+          # MASTER command scopes against Telegram's own getMyCommands endpoint.
+          cp /tmp/boot-server-status.txt /tmp/boot-attest-status.txt 2>/dev/null || true
+          for _ in 1 2 3 4 5 6; do
+            sudo /usr/local/sbin/status-boot-trading-bot > /tmp/boot-attest-status.txt 2>&1 || true
+            if grep -q '\[telegram-ai-ops-commands\] verified=' /tmp/boot-attest-status.txt; then
+              break
+            fi
+            sleep 3
+          done
 
-          if [[ -n "$repo_path" && -f "$repo_path/scripts/vps_deploy_attestation.py" ]]; then
-            sudo python3 "$repo_path/scripts/vps_deploy_attestation.py" \
-              --repo "$repo_path" \
-              --expected-sha "$TARGET_SHA" \
-              --status-log /tmp/boot-server-status.txt \
-              --output /tmp/boot-deploy-attestation.json
-            attest_rc=$?
-            sudo chmod 0644 /tmp/boot-deploy-attestation.json || true
-          else
-            attest_rc=3
-            python3 - <<PY > /tmp/boot-deploy-attestation.json
-          import json,time
+          python3 - "$TARGET_SHA" "${DEPLOY_OUTCOME:-unknown}" "${DEPLOY_EXIT:-}" "${STATUS_EXIT:-}" <<'PY' > /tmp/boot-deploy-attestation.json
+          import json,re,sys,time
+          expected, deploy_outcome, deploy_exit, status_exit = sys.argv[1:5]
+          try:
+              text=open('/tmp/boot-attest-status.txt',encoding='utf-8',errors='replace').read()
+          except Exception:
+              text=''
+          sha_match_obj=re.search(r'(?m)^sha:\s*([0-9a-fA-F]{40})\s*$',text)
+          deployed=(sha_match_obj.group(1).lower() if sha_match_obj else '')
+          service_ok=bool(re.search(r'Active:\s+active \(running\)',text,re.I))
+          watcher_ok='[ai-ops-watcher] started' in text
+          markers=re.findall(r'\[telegram-ai-ops-commands\]\s+verified=(true|false)\s+masters=(\d+)\s+expected=([^\s]+)\s+missing=([^\s]+)',text,re.I)
+          telegram_verified=False
+          master_count=0
+          expected_commands=[]
+          missing='marker-not-found'
+          if markers:
+              verified, count, commands, missing=markers[-1]
+              telegram_verified=verified.lower()=='true'
+              master_count=int(count)
+              expected_commands=[x for x in commands.split(',') if x]
+          required={'aiaudit','aidecision','aistrategy','aiupdates'}
+          command_code_ok=required.issubset(set(expected_commands))
+          sha_ok=(deployed==expected.lower())
+          deployment_ok=(deploy_outcome=='success' and str(deploy_exit)=='0' and sha_ok and service_ok and watcher_ok)
+          full_ok=(deployment_ok and command_code_ok and telegram_verified and master_count>0)
           print(json.dumps({
-            "schema_version":1,
-            "generated_at":int(time.time()),
-            "expected_sha":"${TARGET_SHA}",
-            "deployed_sha":"",
-            "sha_match":False,
-            "service_status_ok":False,
-            "ai_master_commands_code_ok":False,
-            "telegram_command_verification":{"attempted":False,"verified":False,"detail":"production repository path or attestation script not found"},
-            "deployment_attested":False,
+              'schema_version':2,
+              'generated_at':int(time.time()),
+              'expected_sha':expected,
+              'deployed_sha':deployed,
+              'sha_match':sha_ok,
+              'deploy_outcome':deploy_outcome,
+              'deploy_exit':deploy_exit,
+              'status_exit':status_exit,
+              'service_status_ok':service_ok,
+              'ai_ops_watcher_started':watcher_ok,
+              'ai_master_commands_code_ok':command_code_ok,
+              'telegram_command_verification':{
+                  'attempted':bool(markers),
+                  'verified':telegram_verified,
+                  'master_count':master_count,
+                  'expected_commands':expected_commands,
+                  'missing':missing,
+                  'detail':'verified via running service getMyCommands startup self-check' if telegram_verified else 'startup verification marker missing or reported failure',
+              },
+              'deployment_attested':deployment_ok,
+              'full_telegram_attestation':full_ok,
+              'workflow_run_id':__import__('os').environ.get('GITHUB_RUN_ID',''),
+              'workflow_event':__import__('os').environ.get('GITHUB_EVENT_NAME',''),
           },indent=2,sort_keys=True))
           PY
-          fi
-
-          python3 - <<PY
+          attest_rc="$(python3 - <<'PY'
           import json
+          d=json.load(open('/tmp/boot-deploy-attestation.json',encoding='utf-8'))
+          print(0 if d.get('full_telegram_attestation') else (1 if d.get('deployment_attested') else 2))
+          PY
+          )"
+          python3 - "$attest_rc" <<'PY'
+          import json,sys
           p='/tmp/boot-deploy-attestation.json'
           d=json.load(open(p,encoding='utf-8'))
-          d.update({
-            'workflow_run_id':'${GITHUB_RUN_ID}',
-            'workflow_event':'${GITHUB_EVENT_NAME}',
-            'deploy_outcome':'${DEPLOY_OUTCOME:-unknown}',
-            'deploy_exit':'${DEPLOY_EXIT:-}',
-            'status_exit':'${STATUS_EXIT:-}',
-            'attestation_exit':int('${attest_rc:-3}'),
-          })
+          d['attestation_exit']=int(sys.argv[1])
           open(p,'w',encoding='utf-8').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY
 
@@ -208,7 +229,7 @@ jobs:
             tail -n 120 /tmp/boot-deploy-output.txt 2>/dev/null || true
             echo
             echo "=== SERVER STATUS ==="
-            cat /tmp/boot-server-status.txt 2>/dev/null || true
+            cat /tmp/boot-attest-status.txt 2>/dev/null || cat /tmp/boot-server-status.txt 2>/dev/null || true
           } > /tmp/boot-deploy-diagnostic.txt
 
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-deploy.txt"
