@@ -30,12 +30,16 @@ def test_non_master_menu_is_short_and_user_only(monkeypatch, tmp_path):
     assert "menu:power" not in callbacks
 
 
-def test_master_menu_is_not_replaced(monkeypatch, tmp_path):
+def test_master_menu_is_preserved_and_gets_reports_entry(monkeypatch, tmp_path):
     from learnerbot import telegram_user_menu_compact_patch as patch
 
-    expected = {"inline_keyboard": [[{"text": "MASTER", "callback_data": "menu:control"}]]}
+    previous = {"inline_keyboard": [[{"text": "MASTER", "callback_data": "menu:control"}]]}
+    expected = {"inline_keyboard": [
+        [{"text": "MASTER", "callback_data": "menu:control"}],
+        [{"text": "⏰ My Reports & Loss Alerts", "callback_data": "menu:myalerts"}],
+    ]}
     monkeypatch.setattr(patch, "is_master", lambda csv_dir, chat_id: True)
-    monkeypatch.setattr(patch, "_PREV_MENU", lambda app=None, chat_id=None: expected)
+    monkeypatch.setattr(patch, "_PREV_MENU", lambda app=None, chat_id=None: previous)
     app = SimpleNamespace(csv_dir=tmp_path)
 
     assert patch.menu_keyboard(app, "5923828381") == expected
