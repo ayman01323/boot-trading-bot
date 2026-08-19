@@ -17,6 +17,13 @@ from .user_registry import all_users, user_setting
 _ORIGINAL_START_MENU_THREAD = _ui.start_menu_thread
 _STARTED = False
 _LOCK = threading.Lock()
+_REPORT_LAST_SENT = {}
+_LOSS_ACTIVE = set()
+
+REPORT_ENABLED_KEY = "hourly_capital_alert_enabled"
+REPORT_INTERVAL_KEY = "hourly_capital_alert_interval_minutes"
+LOSS_ALERT_ENABLED_KEY = "live_loss_alert_enabled"
+LOSS_ALERT_THRESHOLD_KEY = "live_loss_alert_threshold_pct"
 
 
 def _bool(v, default=False):
@@ -43,6 +50,31 @@ def _fmt_native(v: Decimal) -> str:
     return f"{v:.8f}".rstrip("0").rstrip(".") or "0"
 
 
+def report_enabled(app, tid) -> bool:
+    # Per-user reporting is deliberately opt-in. Existing explicit user values
+    # continue to be honoured, but a missing row means OFF.
+    return _bool(user_setting(app.csv_dir, tid, 0, REPORT_ENABLED_KEY, "false"), False)
+
+
+def report_interval_minutes(app, tid) -> int:
+    raw = user_setting(app.csv_dir, tid, 0, REPORT_INTERVAL_KEY, "60")
+    try:
+        value = int(Decimal(str(raw)))
+    except Exception:
+        value = 60
+    return min(1440, max(5, value))
+
+
+def loss_alert_enabled(app, tid) -> bool:
+    return _bool(user_setting(app.csv_dir, tid, 0, LOSS_ALERT_ENABLED_KEY, "false"), False)
+
+
+def loss_alert_threshold_pct(app, tid) -> Decimal:
+    raw = user_setting(app.csv_dir, tid, 0, LOSS_ALERT_THRESHOLD_KEY, "10")
+    value = _dec(raw, "10")
+    return min(Decimal("95"), max(Decimal("1"), value))
+
+
 def _reserve_for(app, tid, chain) -> Decimal:
     cfg = load_kv_scoped(Path(app.csv_dir) / "live_trading_settings.csv", chain.chain_id)
     raw = user_setting(app.csv_dir, tid, chain.chain_id, "min_native_gas_reserve", None)
@@ -64,7 +96,7 @@ def build_hourly_capital_alert(app, tid) -> str:
     active = next((w for w in wallets if _bool(w.get("active"), False)), wallets[0] if wallets else None)
     total = _dec(data.get("capital_usd"), 0)
     lines = [
-        "<b>⏰ Hourly Capital & Gas Check</b>",
+        "<b>⏰ Scheduled Capital & Gas Check</b>",
         "━━━━━━━━━━━━━━━━━━━━",
         f"💰 Total priced capital  <b>{_fmt_usd(total)}</b>",
     ]
@@ -125,7 +157,6 @@ def build_hourly_capital_alert(app, tid) -> str:
             "",
             "<b>🟣 Solana</b>",
             f"📈 Positive-profit wallets found  <b>{len(sol_rows)}</b>",
-            "🧪 <b>SHADOW only</b> — Solana LIVE capital is not used yet.",
         ]
 
     if warnings:
@@ -142,7 +173,19 @@ def build_hourly_capital_alert(app, tid) -> str:
     return "\n".join(lines)
 
 
+def scheduled_report_text(app, tid) -> str:
+    # telegram_live_reporting_patch replaces the builder later in import order.
+    # Normalise its legacy "Hourly" heading so custom per-user intervals remain true.
+    text = build_hourly_capital_alert(app, tid)
+    text = text.replace("⏰ Hourly Capital &amp; Gas Check — ALL CHAINS", "⏰ Scheduled Capital &amp; Gas Check — ALL CHAINS")
+    text = text.replace("⏰ Hourly Capital & Gas Check — ALL CHAINS", "⏰ Scheduled Capital & Gas Check — ALL CHAINS")
+    text = text.replace("⏰ Hourly Capital & Gas Check", "⏰ Scheduled Capital & Gas Check")
+    interval = report_interval_minutes(app, tid)
+    return text + f"\n\n<i>Personal schedule: every {interval} minute{'s' if interval != 1 else ''}.</i>"
+
+
 def send_hourly_capital_alerts(app) -> dict:
+    """Compatibility entry point: send the report only to users who opted in."""
     sent = 0
     failed = 0
     if not app.telegram_bot_token:
@@ -151,37 +194,149 @@ def send_hourly_capital_alerts(app) -> dict:
         if str(user.get("status") or "").upper() != "ACTIVE":
             continue
         tid = str(user.get("telegram_id") or "").strip()
-        if not tid:
-            continue
-        enabled = user_setting(app.csv_dir, tid, 0, "hourly_capital_alert_enabled", None)
-        if enabled is not None and not _bool(enabled, True):
+        if not tid or not report_enabled(app, tid):
             continue
         try:
-            send_message(app.telegram_bot_token, tid, build_hourly_capital_alert(app, tid), parse_mode="HTML")
+            send_message(app.telegram_bot_token, tid, scheduled_report_text(app, tid), parse_mode="HTML")
             sent += 1
         except Exception as exc:
             failed += 1
-            print(f"[hourly-capital:{tid}] {type(exc).__name__}: {exc}")
+            print(f"[scheduled-capital:{tid}] {type(exc).__name__}: {exc}")
     return {"sent": sent, "failed": failed}
 
 
-def _worker(app):
-    interval = 3600
-    next_due = time.monotonic() + interval
-    while True:
-        wait = max(1.0, next_due - time.monotonic())
-        time.sleep(min(wait, 30.0))
-        if time.monotonic() < next_due:
+def _short_asset(value) -> str:
+    value = str(value or "")
+    if len(value) <= 18:
+        return value or "unknown"
+    return f"{value[:8]}…{value[-6:]}"
+
+
+def _live_loss_rows(app, tid, threshold: Decimal):
+    rows = []
+    chain_map = {int(c.chain_id): c for c in load_chains(app, enabled_only=False)}
+
+    try:
+        evm_positions = _sibot.position_rows(app, tid, open_only=True)
+    except Exception:
+        evm_positions = []
+    for p in evm_positions:
+        if str(p.get("mode") or "").upper() != "LIVE":
             continue
+        pct = _dec(p.get("unrealised_pct"), "0")
+        if pct > -threshold:
+            continue
+        cid = int(p.get("chain_id") or 0)
+        chain = chain_map.get(cid)
+        name = chain.name if chain else f"chain {cid}"
+        asset = p.get("symbol") or p.get("token") or "token"
+        pid = str(p.get("position_id") or f"evm:{cid}:{p.get('token')}")
+        rows.append({
+            "key": (str(tid), "evm", pid),
+            "chain": name,
+            "asset": _short_asset(asset),
+            "pct": pct,
+            "pending": bool(int(p.get("leader_exit_pending") or 0)),
+        })
+
+    try:
+        sol_positions = _sol.position_rows(app, tid, open_only=True)
+    except Exception:
+        sol_positions = []
+    for p in sol_positions:
+        if str(p.get("mode") or "").upper() != "LIVE":
+            continue
+        pct = _dec(p.get("unrealised_pct"), "0")
+        if pct > -threshold:
+            continue
+        mint = p.get("symbol") or p.get("mint") or "token"
+        pid = str(p.get("position_id") or f"sol:{p.get('mint')}")
+        rows.append({
+            "key": (str(tid), "solana", pid),
+            "chain": "Solana",
+            "asset": _short_asset(mint),
+            "pct": pct,
+            "pending": bool(int(p.get("leader_exit_pending") or 0)),
+        })
+    return rows
+
+
+def send_new_loss_alerts(app, tid) -> int:
+    """Alert once per threshold crossing for real LIVE positions only."""
+    global _LOSS_ACTIVE
+    if not loss_alert_enabled(app, tid) or not app.telegram_bot_token:
+        _LOSS_ACTIVE = {k for k in _LOSS_ACTIVE if k[0] != str(tid)}
+        return 0
+
+    threshold = loss_alert_threshold_pct(app, tid)
+    rows = _live_loss_rows(app, tid, threshold)
+    current = {r["key"] for r in rows}
+    previous = {k for k in _LOSS_ACTIVE if k[0] == str(tid)}
+    new_rows = [r for r in rows if r["key"] not in previous]
+
+    # Re-arm a position only after it recovers above the user's threshold or closes.
+    _LOSS_ACTIVE = {k for k in _LOSS_ACTIVE if k[0] != str(tid)} | current
+    if not new_rows:
+        return 0
+
+    lines = [
+        f"<b>🚨 LIVE LOSS ALERT — {threshold:g}% threshold</b>",
+        "━━━━━━━━━━━━",
+    ]
+    for r in new_rows[:10]:
+        state = " • ⏳ exit pending" if r["pending"] else ""
+        lines.append(
+            f"🔻 <b>{html.escape(r['chain'])}</b> • <code>{html.escape(r['asset'])}</code> • "
+            f"P&amp;L <b>{r['pct']:+.2f}%</b>{state}"
+        )
+    lines += [
+        "",
+        "<i>This is a Telegram warning only. It does not change the configured stop-loss or submit an extra trade.</i>",
+    ]
+    send_message(app.telegram_bot_token, str(tid), "\n".join(lines), parse_mode="HTML")
+    return len(new_rows)
+
+
+def _process_user(app, tid, now_mono):
+    # Periodic capital report: each user has an independent opt-in switch and interval.
+    if report_enabled(app, tid):
+        interval = report_interval_minutes(app, tid) * 60
+        last = _REPORT_LAST_SENT.get(str(tid))
+        if last is None:
+            _REPORT_LAST_SENT[str(tid)] = now_mono
+        elif now_mono - last >= interval:
+            try:
+                send_message(app.telegram_bot_token, str(tid), scheduled_report_text(app, tid), parse_mode="HTML")
+                _REPORT_LAST_SENT[str(tid)] = now_mono
+            except Exception as exc:
+                print(f"[scheduled-capital:{tid}] {type(exc).__name__}: {exc}")
+    else:
+        _REPORT_LAST_SENT.pop(str(tid), None)
+
+    try:
+        send_new_loss_alerts(app, tid)
+    except Exception as exc:
+        print(f"[live-loss-alert:{tid}] {type(exc).__name__}: {exc}")
+
+
+def _worker(app):
+    """Small scheduler tick; actual report cadence remains independently per user."""
+    while True:
+        time.sleep(30.0)
+        if not getattr(app, "telegram_bot_token", ""):
+            continue
+        now_mono = time.monotonic()
         try:
-            current_app = type(app).load()
-            cfg = current_app.telegram_settings()
-            if _bool(cfg.get("hourly_capital_alert_enabled"), True):
-                result = send_hourly_capital_alerts(current_app)
-                print(f"[hourly-capital] sent={result['sent']} failed={result['failed']}")
+            users = all_users(app.csv_dir, enabled_only=True)
         except Exception as exc:
-            print(f"[hourly-capital] {type(exc).__name__}: {exc}")
-        next_due = time.monotonic() + interval
+            print(f"[telegram-user-reports] {type(exc).__name__}: {exc}")
+            continue
+        for user in users:
+            if str(user.get("status") or "").upper() != "ACTIVE":
+                continue
+            tid = str(user.get("telegram_id") or "").strip()
+            if tid:
+                _process_user(app, tid, now_mono)
 
 
 def start_menu_thread(app):
@@ -190,8 +345,8 @@ def start_menu_thread(app):
     with _LOCK:
         if not _STARTED:
             _STARTED = True
-            threading.Thread(target=_worker, args=(app,), daemon=True, name="hourly-capital-alert").start()
-            print("[hourly-capital] 60-minute Telegram capital/gas reminder started")
+            threading.Thread(target=_worker, args=(app,), daemon=True, name="telegram-user-report-alerts").start()
+            print("[telegram-user-reports] per-user report schedule + LIVE loss alerts started")
     return result
 
 
