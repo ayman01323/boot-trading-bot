@@ -1,0 +1,113 @@
+{
+  "provider": "copilot",
+  "phase": "research_only_frozen_snapshot",
+  "snapshot": {
+    "base_branch": "ai/workspace-20260819-1322",
+    "working_branch": "ai/copilot-work-20260819-1322",
+    "reviewed_at_utc": "2026-08-19T12:27:58Z"
+  },
+  "objective": "Optimise durable realised net P&L after measurable costs, not win count.",
+  "strategy_actions": [
+    {
+      "strategy": "EVM_SIBOT_SIMO_COPY",
+      "files": ["learnerbot/sibot.py", "learnerbot/sibot_profit_guard_patch.py"],
+      "action": "IMPROVE",
+      "reason": "Quality and copied-loss controls are strong, but participation can be over-constrained in regime transitions."
+    },
+    {
+      "strategy": "SOLANA_SIBOT_SHADOW_COPY",
+      "files": ["learnerbot/solana_sibot.py"],
+      "action": "KEEP",
+      "reason": "Shadow-first mirror flow with stale-signal, round-trip loss, and entry deterioration checks aligns with safe research."
+    },
+    {
+      "strategy": "SOLANA_LIVE_GUARDED_COPY",
+      "files": ["learnerbot/solana_live_patch.py", "learnerbot/solana_positive_edge_entry_gate_patch.py"],
+      "action": "SHADOW_MORE",
+      "reason": "Risk controls are robust, but broader live use should wait for more measured shadow/near-live expectancy evidence."
+    },
+    {
+      "strategy": "DYNAMIC_PRODUCT_UNIVERSE",
+      "files": ["learnerbot/product_universe.py"],
+      "action": "KEEP",
+      "reason": "Fail-closed token categorisation and quarantine integration reduce avoidable toxic-asset exposure."
+    },
+    {
+      "strategy": "PROFIT_EVIDENCE_PATTERN_LEARNING",
+      "files": ["learnerbot/profit.py", "learnerbot/strategy.py", "learnerbot/scoring.py"],
+      "action": "REWORK",
+      "reason": "Evidence classes are useful but should separate strong realised net proof from weaker flow inference before policy promotion."
+    },
+    {
+      "strategy": "HOURLY_AI_STRATEGY_REVIEW",
+      "files": ["learnerbot/hourly_gpt_strategy_review.py"],
+      "action": "IMPROVE",
+      "reason": "Good governance wrapper; needs stronger weighting toward realised net-after-cost decision metrics."
+    }
+  ],
+  "existing_strategy_risks": [
+    "Signal staleness and entry deterioration under latency bursts.",
+    "Small-notional entries can be overwhelmed by execution overhead.",
+    "Strict qualification gates can suppress opportunity participation.",
+    "Incomplete historical reconstruction can bias ranking confidence."
+  ],
+  "new_hypotheses": [
+    {
+      "id": "H1_REGIME_AWARE_PARTICIPATION_BAND",
+      "mode": "SHADOW_ONLY",
+      "market_regime": "Mixed/transition regimes with intermittent momentum and spread widening.",
+      "entry_hypothesis": "Adaptive tightening/loosening of leader qualification thresholds based on recent realised net amount and drawdown trend will improve net expectancy versus fixed thresholds.",
+      "exit_logic": "Use current independent exits; compare adaptive-threshold cohort vs fixed-threshold cohort on realised net outcomes.",
+      "required_data": [
+        "Per-trade realised net (after fees/overhead)",
+        "Leader-level drawdown and recent PF windows",
+        "Rejection reason telemetry for skipped entries"
+      ],
+      "expected_costs": "No additional live cost in SHADOW; moderate compute and storage for cohort tagging.",
+      "failure_modes": [
+        "Overfitting to short windows",
+        "Increased false positives during chop",
+        "Threshold oscillation causing unstable participation"
+      ],
+      "shadow_test": "Run parallel SHADOW cohorts for 14 days: fixed rules vs adaptive band. Require better median and total realised net in adaptive cohort with no worse max drawdown proxy.",
+      "minimum_observations": {
+        "closed_trades": 80,
+        "distinct_leaders": 10,
+        "minimum_days": 14
+      },
+      "falsification_criteria": "Reject if adaptive cohort net/PF is not higher after costs, or if loss magnitude tail (p95 loss) worsens materially."
+    },
+    {
+      "id": "H2_POST_SIGNAL_STABILISATION_ENTRY",
+      "mode": "SHADOW_ONLY",
+      "market_regime": "Fast-moving launches/pumps where immediate copy suffers slippage and reversals.",
+      "entry_hypothesis": "A short stabilisation delay with quote-quality confirmation (improved round-trip and deterioration bounds) reduces adverse selection and improves realised net after costs.",
+      "exit_logic": "Retain existing exits; compare immediate-entry vs delayed-confirmed-entry SHADOW legs from same leader events.",
+      "required_data": [
+        "Signal timestamp and quote latency",
+        "Round-trip loss and deterioration snapshots over delay ladder",
+        "Resulting realised net by delay bucket"
+      ],
+      "expected_costs": "No live capital risk in SHADOW; added quote API usage and event buffering.",
+      "failure_modes": [
+        "Missed winners from late entry",
+        "Lower fill rate reducing sample efficiency",
+        "Delay heuristic stale in rapidly changing liquidity"
+      ],
+      "shadow_test": "A/B SHADOW for 21 days across delay buckets (0s/3s/6s) with identical safety filters; target higher net SOL per trade and lower p95 loss in delayed-confirmed cohort.",
+      "minimum_observations": {
+        "closed_trades": 120,
+        "distinct_mints": 25,
+        "minimum_days": 21
+      },
+      "falsification_criteria": "Reject if delayed cohorts fail to beat immediate-entry realised net after costs or materially reduce participation without offsetting loss reduction."
+    }
+  ],
+  "must_not_change": [
+    "Do not modify main branch.",
+    "Do not deploy or broaden LIVE execution pathways.",
+    "Do not alter capital, wallet/signing, or credential settings.",
+    "Do not loosen safety gates to increase trade count.",
+    "Any new or materially changed strategy remains SHADOW only until human approval."
+  ]
+}
