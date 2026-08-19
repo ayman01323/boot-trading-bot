@@ -180,18 +180,27 @@ jobs:
           test -f .weekly_audit/gpt.json
           python -m learnerbot.weekly_bug_audit_contract validate-agent \
             --input .weekly_audit/gpt.json --provider gpt --source-commit "$SOURCE_SHA" > /dev/null
-          if ! git diff --quiet; then
-            echo "GPT changed tracked files during report-only audit" >&2
-            git diff --stat >&2
-            exit 3
-          fi
+          python - <<'PY'
+          import subprocess, sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_audit/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('GPT report-only audit changed files outside .weekly_audit:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
+          PY
 
-      - name: Create GPT incomplete report if needed
+      - name: Recover safely if GPT audit was incomplete
         if: steps.gpt.outcome != 'success'
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         shell: bash
         run: |
+          git restore --source=HEAD --staged --worktree . || true
+          git clean -fd -e .weekly_audit/ || true
           python - <<'PY'
           import json, os
           p={
@@ -238,25 +247,31 @@ jobs:
             --provider gemini \
             --source-commit "$SOURCE_SHA"
           python - <<'PY'
-          import json
+          import json, subprocess, sys
           r=json.load(open('.weekly_audit/gemini.json',encoding='utf-8'))
           lines=['# Gemini weekly audit','',r.get('summary','')]
           for f in r.get('findings') or []:
               lines += ['',f"## {f.get('severity')} — {f.get('title')}",f.get('impact',''),f"Corrective action: {f.get('corrective_action','')}"]
           open('.weekly_audit/gemini.md','w',encoding='utf-8').write('\n'.join(lines)+'\n')
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_audit/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('Gemini report-only audit changed files outside .weekly_audit:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
           PY
-          if ! git diff --quiet; then
-            echo "Gemini changed tracked files during report-only audit" >&2
-            git diff --stat >&2
-            exit 3
-          fi
 
-      - name: Create Gemini incomplete report if needed
+      - name: Recover safely if Gemini audit was incomplete
         if: steps.gemini.outcome != 'success'
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         shell: bash
         run: |
+          git restore --source=HEAD --staged --worktree . || true
+          git clean -fd -e .weekly_audit/ || true
           python - <<'PY'
           import json, os
           p={
@@ -270,18 +285,26 @@ jobs:
           open('.weekly_audit/gemini.md','w',encoding='utf-8').write('# Gemini weekly audit\n\nINCOMPLETE — inspect the workflow log.\n')
           PY
 
-      - name: Ensure report-only agents left tracked code untouched
+      - name: Verify report-only workspace boundary
         shell: bash
         run: |
           set -euo pipefail
-          if ! git diff --quiet; then
-            echo "Tracked repository changes detected during report-only stage." >&2
-            git diff --stat >&2
-            exit 1
-          fi
+          python - <<'PY'
+          import subprocess, sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              status=line[:2]; path=line[3:].replace('\\','/')
+              if status=='??' and path.startswith('.weekly_audit/'):
+                  continue
+              bad.append(line)
+          if bad:
+              print('Unexpected repository changes remain after audits:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(1)
+          PY
 
       - name: Create or reuse Copilot report-only audit issue
-        id: copilot_issue
+        id: copilot
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
@@ -290,10 +313,13 @@ jobs:
         run: |
           set -euo pipefail
           title="Weekly Copilot full-bot bug audit ${SHORT_SHA}"
-          existing="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number --jq '.[0].number // empty')"
+          existing="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number,state --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             issue="$existing"
-            echo "Reusing issue #${issue}"
+            state="$(gh issue view "$issue" --json state --jq '.state')"
+            if [[ "$state" == "CLOSED" ]]; then gh issue reopen "$issue"; fi
+            gh issue edit "$issue" --add-assignee "@copilot"
+            echo "Reused and assigned issue #${issue} to Copilot."
           else
             cat > /tmp/copilot-issue.md <<EOF
           # Weekly independent Copilot full-bot bug audit
@@ -310,9 +336,8 @@ jobs:
           - \`.ai/weekly/copilot/${SOURCE_SHA}.json\`
           - \`.ai/weekly/copilot/${SOURCE_SHA}.md\`
 
-          The JSON must use:
-          \`provider=copilot\`, \`source_commit=${SOURCE_SHA}\`, \`scope=FULL_REPOSITORY_BUG_AUDIT\`,
-          \`report_only=true\`, \`no_live_changes=true\`, and the same finding fields described below.
+          The JSON must use \`provider=copilot\`, \`source_commit=${SOURCE_SHA}\`,
+          \`scope=FULL_REPOSITORY_BUG_AUDIT\`, \`report_only=true\`, \`no_live_changes=true\`.
 
           Each finding needs: \`id\`, \`severity\` (P0-P3), \`category\`, \`title\`, non-empty file evidence,
           \`impact\`, \`root_cause\`, bounded \`corrective_action\`, \`tests_required\`, confidence 0..1, and
@@ -320,67 +345,32 @@ jobs:
 
           Never trade, deploy, edit secrets/signing/wallet material, change capital, or weaken safety controls.
           EOF
-            issue="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md --json number --jq '.number')"
+            url="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md --assignee "@copilot")"
+            issue="${url##*/}"
+            echo "Created and assigned issue #${issue} to Copilot."
           fi
           echo "number=${issue}" >> "$GITHUB_OUTPUT"
 
-      - name: Assign Copilot cloud agent to the weekly audit issue
-        id: copilot_assign
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.source.outputs.sha }}
-          ISSUE_NUMBER: ${{ steps.copilot_issue.outputs.number }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY' > /tmp/copilot-assignment.json
-          import json, os
-          instructions=(
-            "Report-only full repository bug audit. Base from main and audit exact source commit " + os.environ['SOURCE_SHA'] + ". "
-            "Create only .ai/weekly/copilot/" + os.environ['SOURCE_SHA'] + ".json and .md. Do not implement fixes, trade, "
-            "deploy, alter secrets/wallet/signing/capital, or weaken safety. The JSON provider must be copilot, scope must be "
-            "FULL_REPOSITORY_BUG_AUDIT, report_only=true, no_live_changes=true."
-          )
-          print(json.dumps({
-            "assignees":["copilot-swe-agent[bot]"],
-            "agent_assignment":{
-              "target_repo":os.environ['GITHUB_REPOSITORY'],
-              "base_branch":"main",
-              "custom_instructions":instructions,
-              "custom_agent":"",
-              "model":""
-            }
-          }))
-          PY
-          gh api --method POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/assignees" \
-            --input /tmp/copilot-assignment.json > /tmp/copilot-assignment-response.json
-          echo "Copilot assignment requested for issue #${ISSUE_NUMBER}."
-
-      - name: Record Copilot assignment status
+      - name: Record Copilot kickoff status
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
-          ISSUE_NUMBER: ${{ steps.copilot_issue.outputs.number }}
-          ASSIGN_OUTCOME: ${{ steps.copilot_assign.outcome }}
+          ISSUE_NUMBER: ${{ steps.copilot.outputs.number }}
+          COPILOT_OUTCOME: ${{ steps.copilot.outcome }}
         shell: bash
         run: |
           python - <<'PY'
           import json, os
+          issue=os.environ.get('ISSUE_NUMBER','').strip()
+          outcome=os.environ.get('COPILOT_OUTCOME','failure')
           p={
             "source_commit":os.environ['SOURCE_SHA'],
-            "issue_number":int(os.environ['ISSUE_NUMBER']),
-            "assignment_outcome":os.environ['ASSIGN_OUTCOME'],
+            "issue_number":int(issue) if issue.isdigit() else None,
+            "assignment_outcome":outcome,
             "expected_report_path":".ai/weekly/copilot/"+os.environ['SOURCE_SHA']+".json",
-            "stage":"WAITING_FOR_COPILOT_REPORT_PR" if os.environ['ASSIGN_OUTCOME']=='success' else "COPILOT_ASSIGNMENT_NEEDS_ATTENTION",
+            "stage":"WAITING_FOR_COPILOT_REPORT_PR" if outcome=='success' else "COPILOT_ASSIGNMENT_NEEDS_ATTENTION",
           }
           open('.weekly_audit/copilot_assignment.json','w',encoding='utf-8').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
           PY
-          if [[ "$ASSIGN_OUTCOME" != "success" ]]; then
-            gh issue comment "$ISSUE_NUMBER" --body "Automatic Copilot assignment did not succeed. Please assign this issue to Copilot manually; GPT corrective action will remain blocked until the Copilot report PR exists." || true
-          fi
 
       - name: Publish weekly baseline and first two reports to ai-reviews
         env:
@@ -391,16 +381,8 @@ jobs:
           git config user.name "weekly-ai-audit-bot"
           git config user.email "weekly-ai-audit-bot@users.noreply.github.com"
           rm -rf /tmp/weekly-ai-reviews
-          if git ls-remote --exit-code --heads origin ai-reviews >/dev/null 2>&1; then
-            git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
-            git worktree add -b weekly-ai-reviews-work /tmp/weekly-ai-reviews origin/ai-reviews
-          else
-            git worktree add --detach /tmp/weekly-ai-reviews HEAD
-            cd /tmp/weekly-ai-reviews
-            git switch --orphan weekly-ai-reviews-work
-            git rm -rf . >/dev/null 2>&1 || true
-            cd - >/dev/null
-          fi
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          git worktree add --detach /tmp/weekly-ai-reviews origin/ai-reviews
           dest="/tmp/weekly-ai-reviews/weekly/runs/${SOURCE_SHA}"
           mkdir -p "$dest" /tmp/weekly-ai-reviews/weekly
           cp .weekly_audit/baseline.json "$dest/baseline.json"
@@ -420,4 +402,4 @@ jobs:
 
       - name: Clean temporary audit files
         if: always()
-        run: rm -rf .weekly_audit /tmp/weekly-ai-reviews /tmp/gpt_prompt.txt /tmp/gemini_prompt.txt
+        run: rm -rf .weekly_audit /tmp/weekly-ai-reviews /tmp/gpt_prompt.txt /tmp/gemini_prompt.txt /tmp/copilot-issue.md
