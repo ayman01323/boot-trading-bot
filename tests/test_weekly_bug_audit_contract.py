@@ -103,24 +103,37 @@ def test_master_policy_accepts_high_confidence_two_agent_low_risk_fix():
     assert gated["decisions"][0]["policy_eligible"] is True
 
 
-def test_master_policy_allows_single_agent_only_with_deterministic_evidence():
+def test_master_policy_allows_single_agent_only_with_deterministic_evidence_and_test():
     decision = master_decision(master_row(supporting_agents=["gpt"], deterministic_evidence=True))
     gated = enforce_master_policy(decision)
     assert gated["implementation_allowed"] is True
 
-    decision2 = master_decision(master_row(supporting_agents=["gpt"], deterministic_evidence=False))
-    gated2 = enforce_master_policy(decision2)
-    assert gated2["implementation_allowed"] is False
-    assert "two independent agents" in " ".join(gated2["decisions"][0]["policy_reasons"])
+    no_test = master_decision(master_row(supporting_agents=["gpt"], deterministic_evidence=True, required_tests=[]))
+    gated_no_test = enforce_master_policy(no_test)
+    assert gated_no_test["implementation_allowed"] is False
+    assert "verification test" in " ".join(gated_no_test["decisions"][0]["policy_reasons"])
+
+    no_deterministic = master_decision(master_row(supporting_agents=["gpt"], deterministic_evidence=False))
+    gated_no_deterministic = enforce_master_policy(no_deterministic)
+    assert gated_no_deterministic["implementation_allowed"] is False
+    assert "two independent agents" in " ".join(gated_no_deterministic["decisions"][0]["policy_reasons"])
 
 
-def test_master_policy_blocks_low_confidence_and_p0():
+def test_master_policy_blocks_low_confidence_p0_and_high_risk():
     low = enforce_master_policy(master_decision(master_row(confidence=0.84)))
     assert low["implementation_allowed"] is False
 
     p0 = enforce_master_policy(master_decision(master_row(severity="P0", confidence=0.99)))
     assert p0["implementation_allowed"] is False
     assert p0["status"] == "HUMAN_REVIEW_REQUIRED"
+
+    high = enforce_master_policy(master_decision(master_row(risk_class="HIGH", confidence=0.99)))
+    assert high["implementation_allowed"] is False
+    assert high["status"] == "HUMAN_REVIEW_REQUIRED"
+
+    critical = enforce_master_policy(master_decision(master_row(risk_class="CRITICAL", confidence=0.99)))
+    assert critical["implementation_allowed"] is False
+    assert critical["status"] == "HUMAN_REVIEW_REQUIRED"
 
 
 def test_master_policy_blocks_protected_file():
