@@ -263,11 +263,14 @@ def start_daily_backup_thread() -> threading.Thread | None:
 
 
 def _production_run_command() -> bool:
-    # Do not start any backup thread during imports/tests/one-shot CLI commands.
-    if not SOURCE.is_dir():
-        return False
+    # Inspect argv first so normal imports/tests never even probe the protected /root path.
     args = sys.argv[1:]
-    return bool(args and args[0] == "run")
+    if not (args and args[0] == "run"):
+        return False
+    try:
+        return SOURCE.is_dir()
+    except OSError:
+        return False
 
 
 if _production_run_command():
