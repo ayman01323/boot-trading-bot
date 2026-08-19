@@ -68,7 +68,7 @@ jobs:
           fi
           if [[ ! -s .strategy_cycle/evidence.json ]]; then
             python - "$SOURCE_SHA" <<'PY' > .strategy_cycle/evidence.json
-          import json,sys,time
+          import json,sys
           print(json.dumps({
             'schema_version':1,
             'generated_epoch':0,
@@ -292,13 +292,13 @@ jobs:
           cp .strategy_cycle/gemini.json "$dest/gemini.json"; cp .strategy_cycle/gemini.md "$dest/gemini.md"
           python - <<PY > "$dest/context.json"
           import json
-          print(json.dumps({'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}','evidence_source':'${EVIDENCE_SOURCE}','evidence_fresh':${EVIDENCE_FRESH},'base_kind':'HOURLY_CURRENT_MAIN','copilot_issue':'${COPILOT_ISSUE}'},indent=2,sort_keys=True))
+          print(json.dumps({'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}','evidence_source':'${EVIDENCE_SOURCE}','evidence_fresh':'${EVIDENCE_FRESH}','base_kind':'HOURLY_CURRENT_MAIN','copilot_issue':'${COPILOT_ISSUE}'},indent=2,sort_keys=True))
           PY
           python - <<PY > /tmp/hourly-ai-reviews/strategy/latest_status.json
           import json
           g=json.load(open('.strategy_cycle/gpt.json')); m=json.load(open('.strategy_cycle/gemini.json'))
           def s(x): return 'INCOMPLETE' if x.get('status')=='INCOMPLETE' else 'DONE'
-          print(json.dumps({'available':True,'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}','evidence_fresh':${EVIDENCE_FRESH},'state':'WAITING_FOR_COPILOT','gpt':s(g),'gemini':s(m),'copilot':'WAITING','three_agent_reports_complete':False,'master_decision_available':False,'change_pr_url':'','live_auto_deploy':False},indent=2,sort_keys=True))
+          print(json.dumps({'available':True,'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}','evidence_fresh':'${EVIDENCE_FRESH}','state':'WAITING_FOR_COPILOT','gpt':s(g),'gemini':s(m),'copilot':'WAITING','three_agent_reports_complete':False,'master_decision_available':False,'change_pr_url':'','live_auto_deploy':False},indent=2,sort_keys=True))
           PY
           printf '%s\n' "$CYCLE_ID" > /tmp/hourly-ai-reviews/strategy/latest_cycle_id.txt
           cd /tmp/hourly-ai-reviews
