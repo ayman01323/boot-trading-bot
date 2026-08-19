@@ -1,0 +1,30 @@
+name: BotBuc read-only diagnostics
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: >-
+      github.head_ref == 'agent/server-diagnostics' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect backup directory through learnerbot process root
+        shell: bash
+        run: |
+          set +e
+          PID="$(systemctl show learnerbot.service -p MainPID --value)"
+          echo "learnerbot_pid=$PID"
+          ROOT="/proc/$PID/root"
+          echo "process_root=$(readlink "$ROOT" 2>&1)"
+          echo "backup_dir_probe:"
+          ls -ld "$ROOT/root/BotBuc" 2>&1
+          echo "backup_files_probe:"
+          ls -lah "$ROOT/root/BotBuc" 2>&1
+          echo "today_probe:"
+          stat "$ROOT/root/BotBuc/$(date +%F).zip" 2>&1
