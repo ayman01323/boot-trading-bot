@@ -83,6 +83,11 @@ def _copied_metrics_corrected(app, tid, wallet):
             break
     return {
         "closed": closed,
+        "wins": wins,
+        "losses": closed - wins,
+        "gross_profit_sol": profit,
+        "gross_loss_sol": loss,
+        "net_sol": profit - loss,
         "win_rate": Decimal(wins * 100) / Decimal(closed) if closed else Decimal(0),
         "profit_factor": _pf(profit, loss),
         "consecutive_losses": streak,
@@ -112,7 +117,7 @@ def install():
     _guard._corrected_accounting_epoch_installed = True
     print(
         "[solana-profit-epoch] corrected_pnl_only=true historical_rows_preserved=true "
-        "pending_rent_excluded=true"
+        "pending_rent_excluded=true amount_fields_preserved=true"
     )
 
 
