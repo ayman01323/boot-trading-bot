@@ -126,6 +126,8 @@ from . import telegram_profit_report_alerts_patch  # noqa: F401
 from . import telegram_loss_alert_direction_patch  # noqa: F401
 # One-shot greeting requested for Telegram user 461513364; does not alter account/trading settings.
 from . import telegram_hi_keefek_patch  # noqa: F401
+# Loss exits may unwind in safe slices when whole-position Solana liquidity is too shallow; 100% impact is never bypassed.
+from . import solana_emergency_liquidity_unwind_patch  # noqa: F401
 # This is deliberately the final import before CLI: refuse startup if any feature or presentation layer displaced an audited trading hook.
 from . import trading_runtime_invariant_patch  # noqa: F401
 from .cli import main
