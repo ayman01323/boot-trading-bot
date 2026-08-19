@@ -5,6 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from learnerbot import profit_control_loop_patch as loop
+from learnerbot import profit_control_amount_objective_patch as amount_objective  # noqa: F401
 
 
 def test_profiles_touch_only_bounded_entry_quality_keys():
@@ -20,11 +21,15 @@ def test_profiles_touch_only_bounded_entry_quality_keys():
         assert forbidden.isdisjoint(overlay)
 
 
-def test_success_requires_more_wins_positive_net_and_pf_above_110():
-    assert loop._is_success(3, 2, Decimal("0.01"), Decimal("1.11"), min_trades=5, closed=5)
-    assert not loop._is_success(2, 3, Decimal("0.01"), Decimal("2"), min_trades=5, closed=5)
-    assert not loop._is_success(3, 2, Decimal("-0.01"), Decimal("2"), min_trades=5, closed=5)
-    assert not loop._is_success(3, 2, Decimal("0.01"), Decimal("1.10"), min_trades=5, closed=5)
+def test_success_is_profit_amount_first_at_pf_130_not_win_count():
+    assert loop.MIN_SUCCESS_PROFIT_FACTOR == Decimal("1.30")
+    # Fewer wins may still be economically successful when their realised amount
+    # is sufficiently larger than the loss amount.
+    assert loop._is_success(2, 3, Decimal("0.04"), Decimal("3.0"), min_trades=5, closed=5)
+    # More wins are not enough when realised profit amount is too close to losses.
+    assert not loop._is_success(4, 1, Decimal("0.001"), Decimal("1.29"), min_trades=5, closed=5)
+    assert not loop._is_success(4, 1, Decimal("-0.01"), Decimal("3"), min_trades=5, closed=5)
+    assert loop._is_success(3, 2, Decimal("0.01"), Decimal("1.30"), min_trades=5, closed=5)
     assert not loop._is_success(2, 1, Decimal("0.01"), Decimal("2"), min_trades=5, closed=3)
 
 
