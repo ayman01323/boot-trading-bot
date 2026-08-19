@@ -1,0 +1,169 @@
+name: Hourly Gemini Strategy Review
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hourly-gemini-strategy-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Review latest sanitised trading evidence with Gemini
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch latest sanitised evidence
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin audit-status:audit-status
+          git fetch --force origin ai-reviews:ai-reviews || true
+          git show audit-status:latest_loss_forensics.json > /tmp/latest_loss_forensics.json
+
+          python - <<'PY' > /tmp/source.env
+          import hashlib, json, time
+          p = '/tmp/latest_loss_forensics.json'
+          report = json.load(open(p, encoding='utf-8'))
+          canonical = json.dumps(report, sort_keys=True, separators=(',', ':'), default=str)
+          print('SOURCE_HASH=' + hashlib.sha256(canonical.encode()).hexdigest())
+          generated = int(report.get('generated_epoch') or 0)
+          age = max(0, int(time.time()) - generated) if generated else 10**9
+          print('SOURCE_AGE_SECONDS=' + str(age))
+          PY
+          source /tmp/source.env
+
+          previous=""
+          if git show ai-reviews:reviews/gemini/latest_source_sha256.txt > /tmp/previous_hash 2>/dev/null; then
+            previous="$(tr -d '\r\n' < /tmp/previous_hash)"
+          fi
+
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+          if [[ "$SOURCE_AGE_SECONDS" -gt 14400 ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=source report older than 4 hours" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$previous" && "$previous" == "$SOURCE_HASH" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=source report already reviewed by Gemini" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Call Gemini reviewer
+        if: steps.source.outputs.skip != 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-pro-preview' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, sys, urllib.request
+
+          key = os.environ.get('GEMINI_API_KEY', '').strip()
+          model = os.environ.get('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+          if not key:
+              raise SystemExit('GEMINI_API_KEY is not configured for GitHub Actions')
+
+          report = json.load(open('/tmp/latest_loss_forensics.json', encoding='utf-8'))
+          prompt = '''You are an independent quantitative reviewer of an automated cryptocurrency trading system.
+Use only the supplied sanitised evidence. Optimise durable realised NET P&L after measured costs, not win count.
+Examine gross profit vs gross loss, profit factor, average/largest loss, exits, execution failures, fees/slippage/latency where measured, opportunity participation, data quality and sample size.
+Do not recommend buying or selling a named asset. Do not produce live trading instructions. Do not relax safety controls.
+Any improvement must be expressed as a falsifiable SHADOW experiment. Return JSON only with this exact top-level structure:
+{
+  "status":"HEALTHY|WATCH|DEGRADED",
+  "executive_summary":"...",
+  "observed_facts":[{"fact":"...","evidence":"...","importance":"LOW|MEDIUM|HIGH"}],
+  "recommendations":[{"title":"...","rationale":"...","downside_risk":"...","shadow_test":"...","minimum_evidence":"...","live_mode":false}],
+  "evidence_gaps":["..."],
+  "no_live_changes":true
+}
+SOURCE REPORT:\n''' + json.dumps(report, sort_keys=True, default=str)
+
+          body = {
+              'systemInstruction': {'parts': [{'text': 'Return valid JSON only. Never authorise live trading changes.'}]},
+              'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+              'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1},
+          }
+          url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+          req = urllib.request.Request(
+              url,
+              data=json.dumps(body).encode('utf-8'),
+              headers={'Content-Type':'application/json','x-goog-api-key':key},
+              method='POST',
+          )
+          with urllib.request.urlopen(req, timeout=120) as resp:
+              payload = json.loads(resp.read().decode('utf-8'))
+          text = ''.join(
+              str(part.get('text') or '')
+              for cand in payload.get('candidates') or []
+              for part in ((cand.get('content') or {}).get('parts') or [])
+              if isinstance(part, dict)
+          ).strip()
+          review = json.loads(text)
+          if review.get('no_live_changes') is not True:
+              raise SystemExit('Gemini review failed no_live_changes safety gate')
+          for rec in review.get('recommendations') or []:
+              if rec.get('live_mode') is not False:
+                  raise SystemExit('Gemini recommendation attempted live_mode')
+          out = {
+              'schema_version': 1,
+              'provider': 'gemini',
+              'model': model,
+              'source_report_sha256': os.environ.get('SOURCE_HASH', ''),
+              'review': review,
+              'live_auto_deploy': False,
+              'mode': 'RESEARCH_ONLY',
+          }
+          json.dump(out, open('/tmp/gemini_review.json','w',encoding='utf-8'), indent=2, sort_keys=True)
+          print('Gemini live review completed safely.')
+          PY
+        env:
+          SOURCE_HASH: ${{ steps.source.outputs.source_hash }}
+
+      - name: Publish Gemini review to ai-reviews branch
+        if: steps.source.outputs.skip != 'true'
+        shell: bash
+        env:
+          SOURCE_HASH: ${{ steps.source.outputs.source_hash }}
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +'%Y%m%d_%H%M%S')"
+          git config user.name "gemini-strategy-review-bot"
+          git config user.email "gemini-strategy-review-bot@users.noreply.github.com"
+          git switch ai-reviews
+          mkdir -p "reviews/gemini/runs/${stamp}" reviews/gemini
+          cp /tmp/gemini_review.json "reviews/gemini/runs/${stamp}/review.json"
+          cp /tmp/gemini_review.json reviews/gemini/latest.json
+          printf '%s\n' "$SOURCE_HASH" > reviews/gemini/latest_source_sha256.txt
+          printf '%s\n' "$stamp" > reviews/gemini/latest_run_utc.txt
+          git add reviews/gemini
+          if git diff --cached --quiet; then
+            echo "No Gemini review changes to publish."
+            exit 0
+          fi
+          git commit -m "Gemini strategy review ${stamp}"
+          git push origin HEAD:ai-reviews
+
+      - name: Explain skipped run
+        if: steps.source.outputs.skip == 'true'
+        run: echo "Gemini review skipped - ${{ steps.source.outputs.skip_reason }}"
