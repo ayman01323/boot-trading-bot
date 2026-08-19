@@ -1,0 +1,525 @@
+name: Weekly GPT Master Corrective Action
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    paths:
+      - '.ai/weekly/copilot/*.json'
+      - '.ai/weekly/copilot/*.md'
+  workflow_dispatch:
+    inputs:
+      copilot_pr_number:
+        description: "Copilot report PR number to process"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: weekly-gpt-master-corrective-action
+  cancel-in-progress: false
+
+jobs:
+  synthesize-and-act:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Resolve Copilot report PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.copilot_pr_number }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="${EVENT_PR:-${INPUT_PR:-}}"
+          if [[ -z "$pr" ]]; then
+            echo "A Copilot report PR number is required." >&2
+            exit 2
+          fi
+          head_sha="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
+          head_repo="$(gh pr view "$pr" --json headRepositoryOwner,headRepository --jq '.headRepositoryOwner.login + "/" + .headRepository.name')"
+          if [[ "$head_repo" != "$GITHUB_REPOSITORY" ]]; then
+            echo "Refusing report PR from a fork because repository secrets must not be exposed." >&2
+            exit 3
+          fi
+          echo "number=${pr}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Copilot report PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install synthesis and implementation tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest
+          codex --version
+
+      - name: Locate and validate Copilot report
+        id: report
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t reports < <(find .ai/weekly/copilot -maxdepth 1 -type f -name '*.json' -print 2>/dev/null | sort)
+          if [[ "${#reports[@]}" -ne 1 ]]; then
+            echo "Expected exactly one Copilot weekly JSON report in this PR; found ${#reports[@]}." >&2
+            printf '%s\n' "${reports[@]}" >&2
+            exit 2
+          fi
+          report="${reports[0]}"
+          source_sha="$(python - <<PY
+          import json
+          print(json.load(open('$report',encoding='utf-8')).get('source_commit') or '')
+          PY
+          )"
+          if [[ -z "$source_sha" ]]; then
+            echo "Copilot report source_commit missing." >&2
+            exit 2
+          fi
+          python -m learnerbot.weekly_bug_audit_contract validate-agent \
+            --input "$report" --provider copilot --source-commit "$source_sha" >/dev/null
+          cp "$report" /tmp/copilot.json
+          md="${report%.json}.md"
+          if [[ -f "$md" ]]; then cp "$md" /tmp/copilot.md; fi
+          echo "source_sha=${source_sha}" >> "$GITHUB_OUTPUT"
+          echo "short=${source_sha:0:12}" >> "$GITHUB_OUTPUT"
+          echo "path=${report}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify audit source belongs to current main history
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin main:refs/remotes/origin/main
+          if ! git cat-file -e "${SOURCE_SHA}^{commit}" 2>/dev/null; then
+            echo "Audit source commit does not exist locally." >&2
+            exit 2
+          fi
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" origin/main; then
+            echo "Audit source is not an ancestor of current main; refusing stale/divergent automatic correction." >&2
+            exit 3
+          fi
+
+      - name: Fetch matching GPT Gemini and deterministic reports
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          for file in baseline.json gpt.json gemini.json; do
+            git show "origin/ai-reviews:weekly/runs/${SOURCE_SHA}/${file}" > "/tmp/${file}"
+          done
+          python -m learnerbot.weekly_bug_audit_contract validate-agent \
+            --input /tmp/gpt.json --provider gpt --source-commit "$SOURCE_SHA" >/dev/null
+          python -m learnerbot.weekly_bug_audit_contract validate-agent \
+            --input /tmp/gemini.json --provider gemini --source-commit "$SOURCE_SHA" >/dev/null
+
+      - name: Refuse synthesis if an independent report is incomplete
+        id: completeness
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/completeness.env
+          import json
+          names=['gpt','gemini','copilot']
+          reports={
+            'gpt':json.load(open('/tmp/gpt.json',encoding='utf-8')),
+            'gemini':json.load(open('/tmp/gemini.json',encoding='utf-8')),
+            'copilot':json.load(open('/tmp/copilot.json',encoding='utf-8')),
+          }
+          incomplete=[name for name in names if reports[name].get('status')=='INCOMPLETE']
+          print('INCOMPLETE=' + ('true' if incomplete else 'false'))
+          print('NAMES=' + ','.join(incomplete))
+          PY
+          source /tmp/completeness.env
+          echo "incomplete=${INCOMPLETE}" >> "$GITHUB_OUTPUT"
+          echo "names=${NAMES}" >> "$GITHUB_OUTPUT"
+
+      - name: Stop automatic action when any agent report is incomplete
+        if: steps.completeness.outputs.incomplete == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          NAMES: ${{ steps.completeness.outputs.names }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "Weekly three-agent audit is incomplete (${NAMES}). GPT corrective action is blocked until all three independent reports complete. No code was changed."
+          exit 1
+
+      - name: Check out current main for GPT verification and any fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git switch --detach origin/main
+          git clean -fdx
+          mkdir -p .weekly_master
+          cp /tmp/baseline.json .weekly_master/baseline.json
+          cp /tmp/gpt.json .weekly_master/gpt.json
+          cp /tmp/gemini.json .weekly_master/gemini.json
+          cp /tmp/copilot.json .weekly_master/copilot.json
+
+      - name: GPT master synthesis with explicit accept reject defer ledger
+        id: synthesis
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_WEEKLY_SYNTH_MODEL: ${{ vars.OPENAI_WEEKLY_SYNTH_MODEL }}
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo "OPENAI_API_KEY missing; master synthesis cannot run." >&2
+            exit 2
+          fi
+          cat > /tmp/master_prompt.txt <<'PROMPT'
+          You are the MASTER engineering adjudicator for a weekly three-agent bug audit of an automated multi-chain
+          trading bot. Read these first:
+            .weekly_master/baseline.json
+            .weekly_master/gpt.json
+            .weekly_master/gemini.json
+            .weekly_master/copilot.json
+          Then inspect the CURRENT checked-out main code to verify disputed or high-impact claims.
+
+          Consolidate equivalent root causes across agents. For EVERY materially distinct proposed bug/fix, record whether
+          you ACCEPT, REJECT, or DEFER it. Do not use majority vote blindly. Concrete code/test evidence outranks model
+          agreement. Reject hallucinated, stale, non-bug strategy tuning, or unsupported claims. Defer ambiguous or high-risk
+          changes needing runtime evidence/human judgement. P0 must be HUMAN REVIEW, never automatic.
+
+          An ACCEPT recommendation should be narrowly scoped and safe to implement only when confidence is high. List exact
+          allowed repository files (including exact test files) that an implementation agent may change. Do not authorize
+          secrets, private keys, wallet/signing material, deployment workflow changes, capital/risk increases, live-mode
+          activation, or removal/weakening of simulation, sellability, liquidity, slippage, positive-edge, nonce, atomicity,
+          stop-loss or circuit-breaker controls.
+
+          The master decision is an AUDIT LEDGER, not permission to deploy. Live auto-deploy is always false and any code fix
+          is draft-PR-only after mandatory tests.
+
+          Write exactly these two untracked files and change no tracked file:
+            .weekly_master/master_decision.json
+            .weekly_master/master_decision.md
+
+          JSON shape:
+          {
+            "schema_version":1,
+            "source_commit":"SOURCE_COMMIT",
+            "status":"NO_ACTION|DRAFT_FIX|HUMAN_REVIEW_REQUIRED",
+            "summary":"...",
+            "decisions":[
+              {
+                "finding_id":"consolidated stable id",
+                "source_finding_ids":["gpt:id","gemini:id","copilot:id"],
+                "severity":"P0|P1|P2|P3",
+                "title":"...",
+                "disposition":"ACCEPT|REJECT|DEFER",
+                "reason":"why GPT agreed/refused/deferred, citing code/test evidence",
+                "confidence":0.0,
+                "supporting_agents":["gpt","gemini","copilot"],
+                "deterministic_evidence":false,
+                "risk_class":"LOW|MEDIUM|HIGH|CRITICAL",
+                "allowed_files":["exact/path.py","tests/exact_test.py"],
+                "required_tests":["specific test/command"]
+              }
+            ],
+            "implementation_allowed":false,
+            "live_auto_deploy":false,
+            "draft_pr_only":true
+          }
+          PROMPT
+          sed -i "s/SOURCE_COMMIT/${SOURCE_SHA}/g" /tmp/master_prompt.txt
+          model_args=()
+          if [[ -n "${OPENAI_WEEKLY_SYNTH_MODEL:-}" ]]; then
+            model_args=(-m "$OPENAI_WEEKLY_SYNTH_MODEL")
+          fi
+          codex exec --sandbox workspace-write --ask-for-approval never --ephemeral "${model_args[@]}" - < /tmp/master_prompt.txt
+          test -f .weekly_master/master_decision.json
+          if ! git diff --quiet; then
+            echo "GPT synthesis modified tracked files, refusing." >&2
+            git diff --stat >&2
+            exit 3
+          fi
+
+      - name: Apply deterministic master policy gate
+        id: gate
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m learnerbot.weekly_bug_audit_contract gate-master \
+            --input .weekly_master/master_decision.json \
+            --output .weekly_master/master_gated.json \
+            --source-commit "$SOURCE_SHA" | tee /tmp/gate.txt
+          allowed="$(grep '^implementation_allowed=' /tmp/gate.txt | cut -d= -f2)"
+          status="$(grep '^status=' /tmp/gate.txt | cut -d= -f2-)"
+          accepted="$(grep '^accepted=' /tmp/gate.txt | cut -d= -f2)"
+          echo "allowed=${allowed}" >> "$GITHUB_OUTPUT"
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          echo "accepted=${accepted}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Copilot report and GPT master ledger to ai-reviews
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+          REPORT_PR: ${{ steps.pr.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/master-ai-reviews
+          git worktree add -b master-ai-reviews-work /tmp/master-ai-reviews origin/ai-reviews
+          dest="/tmp/master-ai-reviews/weekly/runs/${SOURCE_SHA}"
+          mkdir -p "$dest" /tmp/master-ai-reviews/weekly
+          cp /tmp/copilot.json "$dest/copilot.json"
+          if [[ -f /tmp/copilot.md ]]; then cp /tmp/copilot.md "$dest/copilot.md"; fi
+          cp .weekly_master/master_decision.json "$dest/master_decision_raw.json"
+          cp .weekly_master/master_gated.json "$dest/master_decision.json"
+          cp .weekly_master/master_decision.md "$dest/master_decision.md"
+          python - <<PY > "$dest/completion.json"
+          import json
+          print(json.dumps({
+            "source_commit":"${SOURCE_SHA}",
+            "copilot_report_pr":int("${REPORT_PR}"),
+            "three_agent_reports_complete":True,
+            "master_decision_available":True,
+          },indent=2,sort_keys=True))
+          PY
+          cp "$dest/master_decision.json" /tmp/master-ai-reviews/weekly/latest_master_decision.json
+          printf '%s\n' "$SOURCE_SHA" > /tmp/master-ai-reviews/weekly/latest_completed_source_commit.txt
+          printf '%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > /tmp/master-ai-reviews/weekly/latest_completed_utc.txt
+          cd /tmp/master-ai-reviews
+          git config user.name "weekly-gpt-master-audit-bot"
+          git config user.email "weekly-gpt-master-audit-bot@users.noreply.github.com"
+          git add weekly
+          if ! git diff --cached --quiet; then
+            git commit -m "Complete weekly three-agent audit ${SOURCE_SHA:0:12}"
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Explain no automatic fix
+        if: steps.gate.outputs.allowed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          STATUS: ${{ steps.gate.outputs.status }}
+          ACCEPTED: ${{ steps.gate.outputs.accepted }}
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "Three-agent weekly audit completed for \`${SOURCE_SHA}\`. GPT master status: **${STATUS}**. Deterministic policy-approved fixes: **${ACCEPTED}**. No automatic code implementation is allowed for this cycle. Master ledger is stored on the \`ai-reviews\` branch under \`weekly/runs/${SOURCE_SHA}/master_decision.json\`."
+
+      - name: Prepare isolated corrective branch
+        if: steps.gate.outputs.allowed == 'true'
+        id: branch
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="ai/weekly-fix-${SOURCE_SHA:0:12}-${GITHUB_RUN_ID}"
+          git switch -c "$branch" origin/main
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+      - name: GPT implement only policy-approved fixes
+        if: steps.gate.outputs.allowed == 'true'
+        id: implement
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_WEEKLY_FIX_MODEL: ${{ vars.OPENAI_WEEKLY_FIX_MODEL }}
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .weekly_master/master_gated.json /tmp/master_gated.json
+          rm -rf .weekly_master
+          cat > /tmp/fix_prompt.txt <<'PROMPT'
+          You are the bounded implementation agent for a completed weekly three-agent bug audit.
+          Read /tmp/master_gated.json. Implement ONLY decision rows where policy_eligible=true.
+
+          Hard rules:
+          - Change only exact paths listed in allowed_files of policy-eligible rows.
+          - Add/modify the exact tests already listed in allowed_files; do not broaden scope.
+          - Do not act on REJECT, DEFER, policy_eligible=false, P0, or protected-file findings.
+          - Do not change secrets, private keys, wallet/signing material, user permissions, deployment workflows,
+            live/armed switches, capital/position size/risk limits, or RPC/API credentials.
+          - Do not weaken or bypass simulation, sellability, liquidity, slippage, positive-edge, nonce, atomicity,
+            stop-loss, circuit-breaker, execution reconciliation, quarantine, or canary protections.
+          - Fix software defects, not strategy profitability by guesswork.
+          - Prefer the smallest correct patch. Preserve unrelated behavior.
+          - Run relevant local tests if possible. Do not commit, push, merge, deploy, or submit transactions.
+          - If an accepted item is not actually supported by current code, make no change for that item.
+          PROMPT
+          model_args=()
+          if [[ -n "${OPENAI_WEEKLY_FIX_MODEL:-}" ]]; then
+            model_args=(-m "$OPENAI_WEEKLY_FIX_MODEL")
+          fi
+          codex exec --sandbox workspace-write --ask-for-approval never --ephemeral "${model_args[@]}" - < /tmp/fix_prompt.txt
+
+      - name: Detect corrective diff
+        if: steps.gate.outputs.allowed == 'true'
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git status --short
+            git diff --stat
+          fi
+
+      - name: Enforce exact approved-file scope and protected-path guard
+        if: steps.diff.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, subprocess, sys
+          from learnerbot.weekly_bug_audit_contract import protected_path
+          decision=json.load(open('/tmp/master_gated.json',encoding='utf-8'))
+          allowed=set()
+          for row in decision.get('decisions') or []:
+              if row.get('policy_eligible'):
+                  allowed.update(str(p).replace('\\','/').lstrip('./') for p in (row.get('allowed_files') or []))
+          changed=set()
+          for cmd in (["git","diff","--name-only"],["git","ls-files","--others","--exclude-standard"]):
+              out=subprocess.check_output(cmd,text=True)
+              changed.update(x.strip().replace('\\','/').lstrip('./') for x in out.splitlines() if x.strip())
+          bad=sorted(p for p in changed if p not in allowed)
+          protected=sorted(p for p in changed if protected_path(p))
+          if bad:
+              print('Unapproved changed files:', *bad, sep='\n  ', file=sys.stderr)
+              raise SystemExit(2)
+          if protected:
+              print('Protected changed files:', *protected, sep='\n  ', file=sys.stderr)
+              raise SystemExit(3)
+          if len(changed)>15:
+              raise SystemExit('Refusing patch broader than 15 files')
+          print('Approved changed files:', *sorted(changed), sep='\n  ')
+          PY
+          lines="$(git diff --numstat | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+          if [[ "$lines" -gt 2500 ]]; then
+            echo "Refusing patch larger than 2500 changed lines (${lines})." >&2
+            exit 4
+          fi
+
+      - name: Run mandatory full regression and safety gate
+        if: steps.diff.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q learnerbot scripts tests
+          timeout 35m pytest -q
+          pytest -x -vv \
+            tests/test_imports.py \
+            tests/test_main_import_order.py \
+            tests/test_solana_live_canary.py \
+            tests/test_solana_execution_safety.py \
+            tests/test_solana_profit_guard.py \
+            tests/test_sibot_profit_guard.py \
+            tests/test_profit_control_loop.py \
+            tests/test_transaction_audit.py \
+            tests/test_loss_forensics_github_export.py
+
+      - name: Commit and push tested corrective patch
+        if: steps.diff.outputs.changed == 'true' && success()
+        id: push
+        env:
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "weekly-gpt-corrective-bot"
+          git config user.email "weekly-gpt-corrective-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "Weekly audited corrective fixes ${SOURCE_SHA:0:12}"
+          git push -u origin "${{ steps.branch.outputs.branch }}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open corrective draft PR only
+        if: steps.push.outputs.pushed == 'true'
+        id: corrective_pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+          MASTER_STATUS: ${{ steps.gate.outputs.status }}
+          ACCEPTED: ${{ steps.gate.outputs.accepted }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/corrective-pr.md <<EOF
+          Weekly three-agent full-bot bug audit source: \`${SOURCE_SHA}\`.
+
+          GPT master status: **${MASTER_STATUS}**  
+          Deterministic policy-approved corrective findings: **${ACCEPTED}**
+
+          This draft contains only policy-eligible fixes from the GPT master ledger on the \`ai-reviews\` branch:
+          \`weekly/runs/${SOURCE_SHA}/master_decision.json\`.
+
+          Safety controls:
+          - GPT/Gemini/Copilot audited independently before synthesis.
+          - GPT recorded ACCEPT / REJECT / DEFER with reasons.
+          - A deterministic gate required confidence >= 0.85 plus two-agent support or deterministic evidence.
+          - P0 and protected-file changes are never auto-implemented.
+          - Changed paths were restricted to the exact approved allow-list.
+          - Full pytest plus critical trading-safety regression tests passed before push.
+          - This is a **draft PR only**. No merge/deploy/live-mode/capital change is authorised.
+          EOF
+          url="$(gh pr create --draft --base main --head "$BRANCH" --title "Weekly audited bot fixes ${SOURCE_SHA:0:12}" --body-file /tmp/corrective-pr.md)"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Record implementation no-op when GPT finds no supported patch
+        if: steps.gate.outputs.allowed == 'true' && steps.diff.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+        run: |
+          gh pr comment "$PR_NUMBER" --body "GPT master policy allowed a corrective attempt for \`${SOURCE_SHA}\`, but the implementation agent found no supported code change within the approved scope. No patch was pushed or deployed."
+
+      - name: Comment Copilot report PR with final weekly outcome
+        if: always() && steps.gate.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
+          STATUS: ${{ steps.gate.outputs.status }}
+          ACCEPTED: ${{ steps.gate.outputs.accepted }}
+          FIX_PR: ${{ steps.corrective_pr.outputs.url }}
+        shell: bash
+        run: |
+          body="Weekly three-agent audit completed for \`${SOURCE_SHA}\`. GPT master decision: **${STATUS}**. Policy-approved fixes: **${ACCEPTED}**."
+          if [[ -n "${FIX_PR:-}" ]]; then body="${body} Corrective draft PR: ${FIX_PR}"; fi
+          body="${body} Master ACCEPT/REJECT/DEFER ledger: \`ai-reviews:weekly/runs/${SOURCE_SHA}/master_decision.json\`. No automatic merge or deployment occurred."
+          gh pr comment "$PR_NUMBER" --body "$body" || true
+
+      - name: Clean temporary worktrees and evidence files
+        if: always()
+        run: |
+          rm -rf .weekly_master /tmp/master-ai-reviews /tmp/master_gated.json /tmp/master_prompt.txt /tmp/fix_prompt.txt
