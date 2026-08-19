@@ -54,11 +54,11 @@ jobs:
 
           print(f'Testing Gemini model: {model}')
           client = genai.Client(api_key=api_key)
-          response = client.interactions.create(
+          response = client.models.generate_content(
               model=model,
-              input='This is a connectivity test. Reply with exactly GEMINI_GITHUB_OK and nothing else.'
+              contents='This is a connectivity test. Reply with exactly GEMINI_GITHUB_OK and nothing else.'
           )
-          text = (response.output_text or '').strip()
+          text = (response.text or '').strip()
           print('Gemini response:', text)
 
           if text != 'GEMINI_GITHUB_OK':
