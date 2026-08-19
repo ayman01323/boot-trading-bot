@@ -5,7 +5,11 @@ import io
 import json
 import subprocess
 import sys
+import time
+import warnings
 import zipfile
+from collections import defaultdict
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -228,3 +232,170 @@ def test_master_delivery_targets_only_active_masters(monkeypatch, tmp_path):
         {"telegram_id": "3", "role": "MASTER", "status": "SUSPENDED"},
     ])
     assert worker._master_chat_ids(app) == ["1"]
+
+
+def test_temporary_public_solana_loss_forensics():
+    """Temporary CI-only chain probe anchored on the reported failed-exit signature.
+
+    This test never signs or broadcasts. It reads public finalized/confirmed chain
+    data and emits a compact warning so the investigation result is recoverable
+    from GitHub Actions logs. It lives only on the investigation branch.
+    """
+    anchor = "2eQUeOzkKUVXpzEMV2QXcTR45gV6CVN9qif3aP06WGRBq5MUCYpWHeY3V78gMkj9TxueMkb5sBHoD8mnfwtb3tcR"
+    rpc_url = "https://api.mainnet-beta.solana.com"
+    wsol = "So11111111111111111111111111111111111111112"
+
+    def rpc(method, params):
+        last = None
+        for attempt in range(6):
+            try:
+                response = audit.requests.post(
+                    rpc_url,
+                    json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                    timeout=30,
+                    headers={"User-Agent": "BOOT-loss-forensics/1.0"},
+                )
+                if response.status_code == 429:
+                    time.sleep(1.0 + attempt * 1.25)
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get("error"):
+                    last = RuntimeError(str(payload["error"]))
+                    time.sleep(0.5 + attempt * 0.5)
+                    continue
+                return payload.get("result")
+            except Exception as exc:
+                last = exc
+                time.sleep(0.5 + attempt * 0.75)
+        raise RuntimeError(f"RPC {method} failed: {last}")
+
+    def keys(tx):
+        raw = (((tx or {}).get("transaction") or {}).get("message") or {}).get("accountKeys") or []
+        return [str(x.get("pubkey") or "") if isinstance(x, dict) else str(x) for x in raw]
+
+    def owner_state(tx, wallet):
+        meta = (tx or {}).get("meta") or {}
+        pre = defaultdict(int); post = defaultdict(int); decimals = {}
+        for field, target in (("preTokenBalances", pre), ("postTokenBalances", post)):
+            for row in meta.get(field) or []:
+                if str(row.get("owner") or "") != wallet:
+                    continue
+                mint = str(row.get("mint") or "")
+                ui = row.get("uiTokenAmount") or {}
+                target[mint] += int(ui.get("amount") or 0)
+                decimals[mint] = int(ui.get("decimals") or 0)
+        return dict(pre), dict(post), decimals
+
+    def sol_delta(tx, wallet):
+        ak = keys(tx)
+        try:
+            idx = ak.index(wallet)
+        except ValueError:
+            return Decimal(0)
+        meta = (tx or {}).get("meta") or {}
+        pre = meta.get("preBalances") or []; post = meta.get("postBalances") or []
+        if idx >= len(pre) or idx >= len(post):
+            return Decimal(0)
+        return Decimal(int(post[idx]) - int(pre[idx])) / Decimal(1_000_000_000)
+
+    anchor_tx = rpc("getTransaction", [anchor, {"commitment": "confirmed", "maxSupportedTransactionVersion": 0, "encoding": "jsonParsed"}])
+    if not anchor_tx:
+        warnings.warn("FORENSICS_JSON=" + json.dumps({"error": "anchor_not_visible"}, separators=(",", ":")))
+        return
+
+    raw_keys = (((anchor_tx.get("transaction") or {}).get("message") or {}).get("accountKeys") or [])
+    signers = [str(x.get("pubkey") or "") for x in raw_keys if isinstance(x, dict) and x.get("signer")]
+    wallet = signers[0] if signers else keys(anchor_tx)[0]
+    anchor_pre, anchor_post, _ = owner_state(anchor_tx, wallet)
+    anchor_token_delta = {m: int(anchor_post.get(m, 0)) - int(anchor_pre.get(m, 0)) for m in set(anchor_pre) | set(anchor_post)}
+    anchor_token_delta = {m: v for m, v in anchor_token_delta.items() if v and m != wsol}
+    anchor_sol_delta = sol_delta(anchor_tx, wallet)
+    anchor_ts = int(anchor_tx.get("blockTime") or 0)
+
+    sig_rows = rpc("getSignaturesForAddress", [wallet, {"commitment": "confirmed", "limit": 250}]) or []
+    start_ts = anchor_ts - 10 * 3600 if anchor_ts else 0
+    end_ts = anchor_ts + 2 * 3600 if anchor_ts else 2**63 - 1
+    selected = [r for r in sig_rows if start_ts <= int(r.get("blockTime") or 0) <= end_ts][:100]
+
+    trades = []
+    groups = defaultdict(lambda: {"buy": Decimal(0), "sell": Decimal(0), "fees": Decimal(0), "buys": 0, "sells": 0, "last_post": None, "txs": []})
+    rpc_errors = []
+    for idx, row in enumerate(reversed(selected)):
+        sig = str(row.get("signature") or "")
+        if not sig:
+            continue
+        try:
+            tx = rpc("getTransaction", [sig, {"commitment": "confirmed", "maxSupportedTransactionVersion": 0, "encoding": "jsonParsed"}])
+            if not tx:
+                continue
+            meta = tx.get("meta") or {}
+            pre, post, decimals = owner_state(tx, wallet)
+            deltas = {m: int(post.get(m, 0)) - int(pre.get(m, 0)) for m in set(pre) | set(post)}
+            deltas.pop(wsol, None)
+            positive = [(m, v) for m, v in deltas.items() if v > 0]
+            negative = [(m, -v) for m, v in deltas.items() if v < 0]
+            sd = sol_delta(tx, wallet)
+            action = None; mint = None; raw = 0
+            if meta.get("err") is None and sd < Decimal("-0.000005") and len(positive) == 1 and not negative:
+                mint, raw = positive[0]; action = "BUY"
+            elif meta.get("err") is None and sd > Decimal("0.000005") and len(negative) == 1 and not positive:
+                mint, raw = negative[0]; action = "SELL"
+            if action and mint:
+                fee = Decimal(int(meta.get("fee") or 0)) / Decimal(1_000_000_000)
+                g = groups[mint]
+                if action == "BUY":
+                    g["buy"] += -sd; g["buys"] += 1
+                else:
+                    g["sell"] += sd; g["sells"] += 1
+                g["fees"] += fee; g["last_post"] = int(post.get(mint, 0)); g["txs"].append(sig)
+                trades.append({
+                    "ts": int(tx.get("blockTime") or 0), "sig": sig, "action": action,
+                    "mint": mint, "token_raw": str(raw), "decimals": int(decimals.get(mint, 0)),
+                    "sol_delta": str(sd), "fee_sol": str(fee), "post_raw": str(post.get(mint, 0)),
+                })
+        except Exception as exc:
+            rpc_errors.append(f"{sig[:10]}:{type(exc).__name__}")
+        if idx % 8 == 0:
+            time.sleep(0.35)
+
+    closed = []
+    openish = []
+    for mint, g in groups.items():
+        net = g["sell"] - g["buy"]
+        item = {
+            "mint": mint, "buys": g["buys"], "sells": g["sells"],
+            "buy_out_sol": str(g["buy"]), "sell_in_sol": str(g["sell"]),
+            "net_sol": str(net), "fees_sol": str(g["fees"]), "last_post_raw": str(g["last_post"]),
+            "txs": g["txs"],
+        }
+        if g["buys"] and g["sells"] and g["last_post"] == 0:
+            closed.append(item)
+        else:
+            openish.append(item)
+    closed.sort(key=lambda x: Decimal(x["net_sol"]))
+    openish.sort(key=lambda x: Decimal(x["net_sol"]))
+    gp = sum((Decimal(x["net_sol"]) for x in closed if Decimal(x["net_sol"]) > 0), Decimal(0))
+    gl = sum((-Decimal(x["net_sol"]) for x in closed if Decimal(x["net_sol"]) < 0), Decimal(0))
+
+    report = {
+        "anchor": {
+            "signature": anchor,
+            "block_time": anchor_ts,
+            "meta_err": (anchor_tx.get("meta") or {}).get("err"),
+            "wallet": wallet,
+            "sol_delta": str(anchor_sol_delta),
+            "token_deltas_raw": anchor_token_delta,
+            "input_token_decreased": any(v < 0 for v in anchor_token_delta.values()),
+        },
+        "window": {"start": start_ts, "end": end_ts, "signatures_seen": len(sig_rows), "transactions_examined": len(selected)},
+        "closed_roundtrips": len(closed),
+        "gross_profit_sol": str(gp), "gross_loss_sol": str(gl),
+        "profit_factor": str(gp / gl) if gl > 0 else ("99" if gp > 0 else "0"),
+        "net_closed_sol": str(gp - gl),
+        "worst_closed": closed[:12],
+        "open_or_partial": openish[:12],
+        "classified_trades": trades[-40:],
+        "rpc_errors": rpc_errors[:20],
+    }
+    warnings.warn("FORENSICS_JSON=" + json.dumps(report, separators=(",", ":"), default=str))
