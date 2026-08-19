@@ -168,3 +168,5 @@ _cli._app = _app_with_roles
 # MASTER-only AI operations reporting composes on top of the established role wrapper.
 # It reads only sanitised ai-reviews state and never changes trading hooks or wallet data.
 from . import telegram_ai_ops_patch  # noqa: E402,F401
+# Verify the final chat-scoped AI command registration against Telegram itself.
+from . import telegram_ai_ops_verification_patch  # noqa: E402,F401
