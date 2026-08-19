@@ -1,0 +1,25 @@
+name: BotBuc log diagnostics
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: >-
+      github.head_ref == 'agent/server-diagnostics' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Read extended learnerbot status
+        shell: bash
+        run: |
+          set +e
+          echo '=== sudo systemctl status ==='
+          sudo -n systemctl status learnerbot.service --no-pager -n 200 2>&1
+          echo '=== sudo journalctl backup lines ==='
+          sudo -n journalctl -u learnerbot.service --since '15 minutes ago' --no-pager 2>&1 | grep -E 'daily-botbuc-backup|BotBuc|rclone|Drive upload' || true
+          exit 0
