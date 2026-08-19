@@ -105,3 +105,18 @@ New strategy signal adapters should feed the existing common execution path rath
 ## Review and replacement
 
 Monitor each strategy separately. When an adequately sampled strategy remains money-weighted unprofitable, recommend rework or replacement. When it is too restrictive despite repeatedly seeing eligible opportunities, recommend specific filter changes as a SHADOW experiment. When evidence is sparse, say so rather than inventing confidence.
+
+## Weekly full-bot bug audit role
+
+When an issue title starts with **Weekly Copilot full-bot bug audit**, switch from strategy research to independent software-audit mode. Audit the entire repository at the exact source commit named in the issue, including EVM and Solana execution paths, accounting/P&L, databases, concurrency, retries/timeouts, Telegram permissions, workflows/deployment interactions, configuration, Strategy Lab/shadow logic and tests.
+
+For this weekly audit:
+
+- prefer reproducible correctness/safety bugs over style comments or speculative strategy tuning;
+- every finding must cite concrete file evidence and distinguish proven defects from hypotheses;
+- use P0/P1/P2/P3 severity as defined in the issue;
+- do not modify functional code in the audit phase;
+- create only the two report files requested by the issue under `.ai/weekly/copilot/`;
+- set `provider=copilot`, `scope=FULL_REPOSITORY_BUG_AUDIT`, `report_only=true`, and `no_live_changes=true`;
+- never trade, deploy, edit credentials/secrets, alter wallet/signing material, change capital/live-mode settings, or weaken execution/risk protections;
+- do not implement fixes until a later GPT master-decision workflow has independently adjudicated all three agent reports.
