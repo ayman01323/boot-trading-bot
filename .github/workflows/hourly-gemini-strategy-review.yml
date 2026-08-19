@@ -85,23 +85,57 @@ jobs:
               raise SystemExit('GEMINI_API_KEY is not configured for GitHub Actions')
 
           report = json.load(open('/tmp/latest_loss_forensics.json', encoding='utf-8'))
-          prompt = '''You are an independent quantitative reviewer of an automated cryptocurrency trading system.
-Use only the supplied sanitised evidence. Optimise durable realised NET P&L after measured costs, not win count.
-Examine gross profit vs gross loss, profit factor, average/largest loss, exits, execution failures, fees/slippage/latency where measured, opportunity participation, data quality and sample size.
-Do not recommend buying or selling a named asset. Do not produce live trading instructions. Do not relax safety controls.
-Any improvement must be expressed as a falsifiable SHADOW experiment. Return JSON only with this exact top-level structure:
+          prompt = '''You are an independent quantitative reviewer and Strategy Laboratory researcher for an automated cryptocurrency trading system.
+Use the supplied sanitised evidence as the primary truth. Optimise durable realised NET P&L after measured costs, not win count.
+The Strategy Laboratory covers BOTH Solana and EVM. The same economic strategy family may be researched on both, but each chain requires its own executable quote, liquidity, sellability, fees/gas/priority cost, slippage, price impact, latency and MEV assumptions.
+
+Push the learner beyond leader-wallet copying. Inspect profitable-wallet cohort summaries and learned strategy_patterns for behaviours repeated across multiple profitable wallets. A single profitable wallet is not proof. Prefer route/behaviour structures that remain positive after costs, have enough observations and can be falsified in SHADOW.
+
+When evidence is missing, recommend specific research tools/sources. Preferred tools are Dune for public wallet/DEX cohort research, DEX Screener for pools/liquidity/flow, Etherscan V2 for EVM wallet histories, DefiLlama for chain/protocol regimes, Jupiter for Solana quote/route research, and GitHub public code search for READ-ONLY public bot architecture/strategy ideas. Never execute untrusted third-party repository code.
+
+You may propose predictive strategies, but the forecast target must be positive NET edge after costs, not price-up/down alone. Require time-ordered validation with no lookahead, probability calibration, expected net edge, an abstain rule for uncertainty, and separate chain/regime results.
+
+If evidence identifies an asset that is not in the current product universe, you may create an ASSET REQUEST only. It is not a live buy recommendation and not permission to enable the asset. State chain, asset identifier, symbol if known, evidence, reason, and required identity/liquidity/sellability/quote/simulation/risk checks.
+
+Do not produce live trading instructions. Do not relax safety controls. Every new strategy or cross-chain port starts SHADOW. Return JSON only with this exact top-level structure:
 {
   "status":"HEALTHY|WATCH|DEGRADED",
   "executive_summary":"...",
   "observed_facts":[{"fact":"...","evidence":"...","importance":"LOW|MEDIUM|HIGH"}],
   "recommendations":[{"title":"...","rationale":"...","downside_risk":"...","shadow_test":"...","minimum_evidence":"...","live_mode":false}],
+  "research_tools_to_use":[{"tool":"...","purpose":"...","evidence_to_collect":"...","priority":"LOW|MEDIUM|HIGH"}],
+  "cross_chain_portability":[{"strategy_or_pattern":"...","source_chain_type":"SOLANA|EVM|BOTH","target_chain_type":"SOLANA|EVM","reason":"...","chain_specific_changes":["..."],"shadow_test":"..."}],
+  "forecast_experiments":[{"name":"...","target":"positive_net_edge_after_costs","horizon":"...","features":["..."],"validation":"...","trade_threshold":"...","abstain_rule":"...","shadow_test":"..."}],
+  "new_strategy_hypotheses":[{
+    "name":"...",
+    "family":"...",
+    "hypothesis":"...",
+    "market_regime":"...",
+    "entry_logic":"...",
+    "exit_logic":"...",
+    "data_required":["..."],
+    "estimated_costs":"...",
+    "failure_modes":["..."],
+    "shadow_test":"...",
+    "minimum_observation_windows":3,
+    "minimum_trades":5,
+    "falsification_conditions":["..."],
+    "differentiation":"...",
+    "chain_scope":["SOLANA","EVM"],
+    "research_plan":["..."],
+    "research_tools":["..."],
+    "forecast":{},
+    "asset_requests":[]
+  }],
+  "asset_requests":[{"chain":"SOLANA|EVM","asset":"...","symbol":"...","reason":"...","evidence":"...","required_checks":["identity","liquidity","sellability","quote/simulation","cost","risk"]}],
   "evidence_gaps":["..."],
   "no_live_changes":true
 }
+Limit new_strategy_hypotheses to at most 2 per review and asset_requests to only evidence-supported missing-universe cases.
 SOURCE REPORT:\n''' + json.dumps(report, sort_keys=True, default=str)
 
           body = {
-              'systemInstruction': {'parts': [{'text': 'Return valid JSON only. Never authorise live trading changes.'}]},
+              'systemInstruction': {'parts': [{'text': 'Return valid JSON only. Never authorise live trading changes, automatic asset enablement, or execution of untrusted third-party code.'}]},
               'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
               'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.1},
           }
@@ -126,17 +160,20 @@ SOURCE REPORT:\n''' + json.dumps(report, sort_keys=True, default=str)
           for rec in review.get('recommendations') or []:
               if rec.get('live_mode') is not False:
                   raise SystemExit('Gemini recommendation attempted live_mode')
+          if len(review.get('new_strategy_hypotheses') or []) > 2:
+              raise SystemExit('Gemini proposed too many new strategies in one review')
           out = {
-              'schema_version': 1,
+              'schema_version': 2,
               'provider': 'gemini',
               'model': model,
               'source_report_sha256': os.environ.get('SOURCE_HASH', ''),
               'review': review,
               'live_auto_deploy': False,
-              'mode': 'RESEARCH_ONLY',
+              'asset_auto_add': False,
+              'mode': 'STRATEGY_LAB_RESEARCH_ONLY',
           }
           json.dump(out, open('/tmp/gemini_review.json','w',encoding='utf-8'), indent=2, sort_keys=True)
-          print('Gemini live review completed safely.')
+          print('Gemini Strategy Lab review completed safely.')
           PY
 
       - name: Publish Gemini review to ai-reviews branch
