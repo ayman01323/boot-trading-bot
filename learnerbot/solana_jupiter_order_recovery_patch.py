@@ -42,15 +42,19 @@ def _get_json(executor, params: dict, *, context: str) -> dict:
         headers=_eff._headers(executor),
         timeout=30,
     )
-    if not response.ok:
+    # Real requests.Response objects always expose status_code.  Defaulting to 200
+    # keeps compatibility with the repository's older lightweight response mocks,
+    # which only implement json()/raise_for_status().
+    status = int(getattr(response, "status_code", 200) or 200)
+    if status >= 400:
         raise _exec.SolanaLiveError(
-            f"Jupiter {context} HTTP {response.status_code}: {_response_error_text(response)}"
+            f"Jupiter {context} HTTP {status}: {_response_error_text(response)}"
         )
     try:
         data = response.json()
     except Exception as exc:
         raise _exec.SolanaLiveError(
-            f"Jupiter {context} returned invalid JSON (HTTP {response.status_code})"
+            f"Jupiter {context} returned invalid JSON (HTTP {status})"
         ) from exc
     return dict(data or {})
 
