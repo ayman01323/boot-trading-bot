@@ -1,0 +1,63 @@
+name: Gemini Connectivity Test
+
+on:
+  push:
+    branches:
+      - test/gemini-connectivity
+    paths:
+      - '.github/workflows/gemini-connectivity-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-gemini:
+    name: Verify GitHub to Gemini API
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out test branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Google GenAI SDK
+        run: python -m pip install --disable-pip-version-check --quiet google-genai
+
+      - name: Call Gemini and verify exact response
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-pro-preview' }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from google import genai
+
+          api_key = os.environ.get('GEMINI_API_KEY', '').strip()
+          model = os.environ.get('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
+
+          if not api_key:
+              print('ERROR: GEMINI_API_KEY is not available to this GitHub Action.')
+              sys.exit(2)
+
+          print(f'Testing Gemini model: {model}')
+          client = genai.Client(api_key=api_key)
+          response = client.interactions.create(
+              model=model,
+              input='This is a connectivity test. Reply with exactly GEMINI_GITHUB_OK and nothing else.'
+          )
+          text = (response.output_text or '').strip()
+          print('Gemini response:', text)
+
+          if text != 'GEMINI_GITHUB_OK':
+              print('ERROR: Gemini responded, but not with the required exact test value.')
+              sys.exit(3)
+
+          print('GEMINI_CONNECTIVITY_TEST_PASSED')
+          PY
