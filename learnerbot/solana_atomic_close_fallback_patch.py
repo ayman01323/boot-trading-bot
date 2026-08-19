@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from . import solana_execution_efficiency_patch as _eff
+from . import solana_jupiter_order_recovery_patch as _jup_recovery  # noqa: F401
 from . import solana_live_executor as _exec
 from . import solana_sibot as _sol
 
