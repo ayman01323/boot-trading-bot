@@ -118,14 +118,16 @@ jobs:
             echo "Skipping legacy config-bound tests: runtime CSVbot fixtures are not stored in this GitHub checkout."
           fi
 
-      # Optional Gemini integration step: runs only when secret exists
-      - name: Call Gemini and verify exact response
-        if: ${{ secrets.GEMINI_API_KEY != '' }}
+      - name: Optional Gemini connectivity check
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "Skipping Gemini call: GEMINI_API_KEY is not available in this run context."
+            exit 0
+          fi
           python - <<'PY'
           import os
           import sys
@@ -133,10 +135,6 @@ jobs:
           import urllib.request
 
           api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-          if not api_key:
-              print("GEMINI_API_KEY is empty at runtime")
-              sys.exit(2)
-
           url = (
               "https://generativelanguage.googleapis.com/v1beta/models/"
               "gemini-1.5-flash:generateContent?key=" + api_key
@@ -159,7 +157,6 @@ jobs:
           with urllib.request.urlopen(req, timeout=30) as resp:
               body = json.loads(resp.read().decode("utf-8"))
 
-          text = ""
           try:
               text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
           except Exception:
@@ -173,10 +170,6 @@ jobs:
 
           print("Gemini connectivity OK")
           PY
-
-      - name: Skip Gemini call (no secret)
-        if: ${{ secrets.GEMINI_API_KEY == '' }}
-        run: echo "Skipping Gemini call: GEMINI_API_KEY is not available in this run context."
 
   deploy_current_main:
     name: Deploy current main to VPS
