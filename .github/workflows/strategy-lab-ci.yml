@@ -5,8 +5,10 @@ on:
     paths:
       - 'learnerbot/strategy_lab.py'
       - 'learnerbot/strategy_lab_audit_patch.py'
+      - 'learnerbot/strategy_ai_proposals.py'
       - 'learnerbot/profit_control_audit_export_patch.py'
       - 'tests/test_strategy_lab.py'
+      - 'tests/test_strategy_ai_proposals.py'
       - 'docs/STRATEGY_LAB.md'
       - '.github/workflows/strategy-lab-ci.yml'
   push:
@@ -15,8 +17,10 @@ on:
     paths:
       - 'learnerbot/strategy_lab.py'
       - 'learnerbot/strategy_lab_audit_patch.py'
+      - 'learnerbot/strategy_ai_proposals.py'
       - 'learnerbot/profit_control_audit_export_patch.py'
       - 'tests/test_strategy_lab.py'
+      - 'tests/test_strategy_ai_proposals.py'
       - '.github/workflows/strategy-lab-ci.yml'
   workflow_dispatch:
 
@@ -36,6 +40,6 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt pytest
       - name: Compile strategy laboratory
-        run: python -m py_compile learnerbot/strategy_lab.py learnerbot/strategy_lab_audit_patch.py learnerbot/profit_control_audit_export_patch.py
+        run: python -m py_compile learnerbot/strategy_lab.py learnerbot/strategy_lab_audit_patch.py learnerbot/strategy_ai_proposals.py learnerbot/profit_control_audit_export_patch.py
       - name: Run strategy laboratory lifecycle tests
-        run: pytest -x -vv tests/test_strategy_lab.py
+        run: pytest -x -vv tests/test_strategy_lab.py tests/test_strategy_ai_proposals.py
