@@ -13,14 +13,16 @@ def test_non_master_menu_is_short_and_user_only(monkeypatch, tmp_path):
     texts = [button["text"] for button in buttons]
     callbacks = {button["callback_data"] for button in buttons}
 
-    assert len(rows) == 4
-    assert len(buttons) == 8
+    assert len(rows) == 5
+    assert len(buttons) == 9
     assert texts == [
         "🤖 SiBot", "💰 Capital",
         "🔐 Wallets", "💱 Trading",
         "⚡ Auto", "🛰 Opportunities",
+        "⏰ Reports & Alerts",
         "📡 Status", "❓ Help",
     ]
+    assert "menu:myalerts" in callbacks
     assert not any("All Chains" in text or "EVM + SOL" in text for text in texts)
     assert "menu:control" not in callbacks
     assert "menu:autodeploy" not in callbacks
