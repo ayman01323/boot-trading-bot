@@ -46,7 +46,7 @@ def test_swap_returns_positive_amount_result_when_only_events_are_missing(monkey
     assert result["swap_events_present"] is False
 
 
-def test_buy_requires_actual_output_token_increase_when_reconciled(monkeypatch):
+def test_buy_accepts_authoritative_transaction_delta_even_if_balance_rpc_is_stale(monkeypatch):
     balances = iter([10, 10])
     fake = SimpleNamespace(token_balance_raw=lambda mint: next(balances))
     monkeypatch.setattr(
@@ -60,12 +60,25 @@ def test_buy_requires_actual_output_token_increase_when_reconciled(monkeypatch):
             "totalOutputAmount": "100",
         },
     )
-    with pytest.raises(execmod.SolanaLivePostExecutionError) as caught:
-        guard._buy_with_token_reconciliation(fake, "mint", 0.0005, 0.005)
-    assert "no output-token balance increase" in str(caught.value)
+    monkeypatch.setattr(
+        guard,
+        "_tx_evidence",
+        lambda *args: {
+            "visible": True,
+            "tx_ok": True,
+            "token_delta_raw": 100,
+            "wallet_delta_lamports": -520000,
+            "slot": 123,
+        },
+    )
+
+    result = guard._buy_with_token_reconciliation(fake, "mint", 0.0005, 0.005)
+    assert result["output_token_delta_raw"] == 100
+    assert result["output_token_reconciliation_source"] == "getTransaction"
+    assert result["wallet_delta_lamports"] == -520000
 
 
-def test_sell_requires_actual_input_token_decrease_when_reconciled(monkeypatch):
+def test_sell_accepts_authoritative_transaction_delta_even_if_balance_rpc_is_stale(monkeypatch):
     balances = iter([100, 100])
     fake = SimpleNamespace(token_balance_raw=lambda mint: next(balances))
     monkeypatch.setattr(
@@ -79,6 +92,75 @@ def test_sell_requires_actual_input_token_decrease_when_reconciled(monkeypatch):
             "totalOutputAmount": "250000",
         },
     )
+    monkeypatch.setattr(
+        guard,
+        "_tx_evidence",
+        lambda *args: {
+            "visible": True,
+            "tx_ok": True,
+            "token_delta_raw": -50,
+            "wallet_delta_lamports": 230000,
+            "slot": 456,
+        },
+    )
+
+    result = guard._sell_with_token_reconciliation(fake, "mint", 50)
+    assert result["input_token_delta_raw"] == 50
+    assert result["input_token_reconciliation_source"] == "getTransaction"
+    assert result["wallet_delta_lamports"] == 230000
+
+
+def test_sell_without_visible_transaction_enters_reconciliation_instead_of_landed_invalid(monkeypatch):
+    balances = iter([100, 100])
+    fake = SimpleNamespace(token_balance_raw=lambda mint: next(balances))
+    monkeypatch.setattr(
+        guard,
+        "_PREV_SELL",
+        lambda self, mint, amount: {
+            "status": "Success",
+            "code": 0,
+            "signature": "sell-pending",
+            "totalInputAmount": "50",
+            "totalOutputAmount": "250000",
+        },
+    )
+    monkeypatch.setattr(
+        guard,
+        "_tx_evidence",
+        lambda *args: {"visible": False, "error": "RPC lag"},
+    )
+
+    with pytest.raises(guard.SolanaLiveReconciliationPending) as caught:
+        guard._sell_with_token_reconciliation(fake, "mint", 50)
+    assert caught.value.signature == "sell-pending"
+    assert "reconciliation required" in str(caught.value)
+
+
+def test_sell_visible_without_input_decrease_is_definitive_post_execution_fault(monkeypatch):
+    balances = iter([100, 100])
+    fake = SimpleNamespace(token_balance_raw=lambda mint: next(balances))
+    monkeypatch.setattr(
+        guard,
+        "_PREV_SELL",
+        lambda self, mint, amount: {
+            "status": "Success",
+            "code": 0,
+            "signature": "sell-invalid",
+            "totalInputAmount": "50",
+            "totalOutputAmount": "250000",
+        },
+    )
+    monkeypatch.setattr(
+        guard,
+        "_tx_evidence",
+        lambda *args: {
+            "visible": True,
+            "tx_ok": True,
+            "token_delta_raw": 0,
+            "wallet_delta_lamports": -5000,
+        },
+    )
+
     with pytest.raises(execmod.SolanaLivePostExecutionError) as caught:
         guard._sell_with_token_reconciliation(fake, "mint", 50)
-    assert "no input-token balance decrease" in str(caught.value)
+    assert "no on-chain input-token decrease" in str(caught.value)
