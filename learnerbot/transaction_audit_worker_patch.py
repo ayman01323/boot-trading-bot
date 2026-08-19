@@ -121,6 +121,32 @@ def send_gpt_review_message(app, chat_id: str, result: dict) -> None:
     response.raise_for_status()
 
 
+def _bootstrap_loss_forensics(seed_app):
+    """Publish the last completed audit before starting a potentially long fresh scan."""
+    time.sleep(3)
+    try:
+        app = AppSettings.load()
+    except Exception:
+        app = seed_app
+    latest = Path(app.data_dir) / "transaction_audits" / "latest_all_ids.zip"
+    if not latest.exists():
+        print("[loss-forensics-bootstrap] no completed audit zip yet")
+        return
+    try:
+        forensic = publish_loss_forensics(app, latest, None)
+        print(
+            "[loss-forensics-bootstrap] ok=%s branch=%s file=%s error=%s"
+            % (
+                forensic.get("ok"),
+                forensic.get("branch", ""),
+                forensic.get("file", ""),
+                str(forensic.get("error") or "")[:300],
+            )
+        )
+    except Exception as exc:
+        print("[loss-forensics-bootstrap] ERROR", type(exc).__name__, str(exc)[:300])
+
+
 def _audit_loop(seed_app):
     # Start shortly after restart; thereafter collect/analyse once per hour.
     time.sleep(10)
@@ -208,12 +234,18 @@ def start_menu_thread_with_transaction_audit(app):
         if not _STARTED:
             _STARTED = True
             threading.Thread(
+                target=_bootstrap_loss_forensics,
+                args=(app,),
+                daemon=True,
+                name="loss-forensics-bootstrap",
+            ).start()
+            threading.Thread(
                 target=_audit_loop,
                 args=(app,),
                 daemon=True,
                 name="all-user-hourly-audit-and-gpt-review",
             ).start()
-            print("[transaction-audit] scheduled hourly; GPT shadow review + MASTER delivery enabled")
+            print("[transaction-audit] scheduled hourly; bootstrap forensics + GPT shadow review + MASTER delivery enabled")
     return result
 
 
