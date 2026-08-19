@@ -1,0 +1,213 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "review_only": true,
+  "no_live_changes": true,
+  "cycle_id": "05c336365846-2026081922-4e935b54",
+  "source_commit": "05c3363658460e73c85f0307fba8b7df2eb2e021",
+  "evidence_sha256": "4e935b543f8f86516ca0153bb9d380c2fbf67a4ebf7e9d0bcfe0f7d0c5a3491e",
+  "fresh_runtime_evidence": false,
+  "reviewed_at": "2026-08-19T22:19:33Z",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Six seeded Strategy Lab hypotheses reviewed against static source code. No live runtime evidence is available for this cycle (fresh_runtime_evidence=false). Reviews are therefore based solely on code structure, governance gates, and published strategy patterns. All proposals target SHADOW-only research or incremental improvement; none authorise live execution, capital adjustment, or risk relaxation.",
+  "proposals": [
+    {
+      "id": "PROP-001-ARBITRAGE-COST-MODEL",
+      "strategy_name": "Cross Venue Net Arbitrage",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "The arbitrage hypothesis in strategy_lab.py correctly demands positive net edge, but the MarketFeatures dataclass in cross_chain_strategy_signals.py calculates net_edge_bps by subtracting fees, slippage, price_impact and latency_reserve. There is currently no explicit guard preventing a stale quote_age_ms from inflating apparent net edge on slow chains. A bounded staleness check (e.g. reject if quote_age_ms > configurable threshold) should be added to the shadow executor to avoid false positives in low-latency venues.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "net_edge_bps is computed without enforcing a maximum quote_age_ms. The field exists but no guard raises or suppresses the signal when it exceeds a staleness threshold."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "Cross Venue Net Arbitrage requires_net_edge=True but no minimum quote freshness parameter is seeded."
+        }
+      ],
+      "expected_effect": "Reduce false-positive arbitrage entries caused by stale quotes; expected improvement in gross-profit/gross-loss ratio for this family.",
+      "downside": "May reduce opportunity count if quote infrastructure is slow; threshold must be calibrated per chain.",
+      "shadow_test": "Run SHADOW for Cross Venue Net Arbitrage with and without a 500 ms quote_age_ms cap on both SOLANA and EVM for >=8 windows; compare net P&L and profit factor between the two configurations.",
+      "min_observation_windows": 8,
+      "min_observation_trades": 8,
+      "confidence": 0.72,
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "PROP-002-MOMENTUM-CONFIRMATION",
+      "strategy_name": "Liquidity Confirmed Momentum",
+      "action": "SHADOW_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "The Liquidity Confirmed Momentum hypothesis requires simultaneous confirmation from price_acceleration, liquidity, and flow signals. The MarketFeatures dataclass provides momentum_z, flow_acceleration_z, and liquidity_score, but there is no explicit multi-signal gate in shadow_strategy_executor.py that requires all three to be simultaneously positive/above threshold. Without this, individual strong signals may drive entries that would be filtered by the full confirmation rule.",
+      "evidence": [
+        {
+          "path": "learnerbot/shadow_strategy_executor.py",
+          "observation": "Shadow executor does not appear to enforce simultaneous confirmation across the three momentum sub-signals required by the seeded hypothesis parameters."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "confirmation param lists [price_acceleration, liquidity, flow] but no enforcement logic is seeded in strategy_lab."
+        }
+      ],
+      "expected_effect": "Stronger opportunity filtering; fewer low-quality momentum trades; improved profit factor at the cost of lower opportunity count.",
+      "downside": "All three signals may rarely align, resulting in near-zero participation. An abstain-or-relax rule is needed to distinguish low-edge from no-edge.",
+      "shadow_test": "Shadow for >=10 eligible windows. Count windows where all three confirmation signals are simultaneously positive. If participation rate drops below 20% of eligible opportunities, diagnose which signal is blocking valid entries and file a SHADOW_MORE with the filter adjustment as a falsifiable variant.",
+      "min_observation_windows": 10,
+      "min_observation_trades": 8,
+      "confidence": 0.65,
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ]
+    },
+    {
+      "id": "PROP-003-MEAN-REVERSION-LIQUIDITY-GUARD",
+      "strategy_name": "Dislocation Mean Reversion",
+      "action": "SHADOW_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "Mean reversion is two-sided: dislocation_z may be positive or negative. The hypothesis requires liquidity_stability during the dislocation window. No chain-specific minimum pool_age_seconds is enforced. New pools on both chains can show large dislocation_z values that are structural rather than mean-reverting; entering these without a pool-age guard increases expected loss.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "MarketFeatures.pool_age_seconds exists but shadow strategy executor and strategy_lab seed do not enforce a minimum pool age for the mean-reversion family."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "Dislocation Mean Reversion params include requires_liquidity_stability=True but no pool_age guard is seeded."
+        }
+      ],
+      "expected_effect": "Excluding very new pools from mean-reversion entries should reduce tail losses from structural dislocations being misclassified as revertible.",
+      "downside": "Older pool requirement may reduce cross-chain opportunity count; calibration must be per-chain.",
+      "shadow_test": "Shadow for >=8 windows split by pool_age_seconds < 7200 (2 h) vs >= 7200. Compare net P&L and largest single loss across groups. Accept pool-age guard if the young-pool subset has profit_factor < 1.0 and >=5 trades in the observation window.",
+      "min_observation_windows": 8,
+      "min_observation_trades": 8,
+      "confidence": 0.68,
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "PROP-004-FLOW-CONCENTRATION-GUARD",
+      "strategy_name": "Flow Acceleration",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "Flow Acceleration avoids single-wallet dependency (avoid_single_wallet_dependency=True), which is correct governance. However, the independent_wallet_count field in MarketFeatures has no enforced minimum in the shadow executor. A single large wallet can generate a high flow_acceleration_z without triggering the concentration guard if the count field is not checked. This is a low-complexity gap: the guard should reject entries when independent_wallet_count < configurable minimum (suggested: 3).",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "independent_wallet_count is a field on MarketFeatures with default 0, but no SHADOW gate enforces a minimum."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "Flow Acceleration avoid_single_wallet_dependency=True is a param flag but no numeric minimum is seeded."
+        }
+      ],
+      "expected_effect": "Prevents concentrated single-wallet flow from driving false-positive entries; reduces leader-copy mimicry risk that is explicitly out-of-scope for this family.",
+      "downside": "Low independent_wallet_count is common in early-stage pools; minimum must be calibrated to avoid excessive suppression.",
+      "shadow_test": "Shadow >=8 windows with independent_wallet_count < 3 filtered out vs baseline. Confirm participation does not fall below 20% of eligible opportunities. If it does, lower threshold to 2 and re-test.",
+      "min_observation_windows": 8,
+      "min_observation_trades": 8,
+      "confidence": 0.74,
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "PROP-005-NEW-LIQUIDITY-SCORING-CALIBRATION",
+      "strategy_name": "New Liquidity Quality",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "New Liquidity Quality is conceptually sound and defensive (requires_sellability and requires_liquidity). However, without runtime evidence it is unknown whether the composite liquidity_score and sellability_score thresholds used in shadow execution are calibrated to produce profitable outcomes versus just filtering obvious rugs. The score thresholds are likely too permissive or too restrictive without empirical P&L evidence over a range of pool ages.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "liquidity_score and sellability_score are normalised 0-1 fields; specific entry thresholds are not visible in the source at this commit."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "New Liquidity Quality params require sellability and liquidity but do not specify numeric cut-offs."
+        }
+      ],
+      "expected_effect": "Collecting calibration evidence will identify whether the current thresholds are set too low (admitting low-quality pools) or too high (suppressing valid opportunities).",
+      "downside": "Research-only cycle; no improvement in P&L until thresholds are calibrated and shadow-tested.",
+      "shadow_test": "Run shadow for >=10 eligible windows. Segment by decile of liquidity_score and sellability_score at entry. Report net P&L, profit factor and largest loss per decile. Propose threshold adjustments only after this segmentation is available.",
+      "research_tools": ["DEX Screener API", "Dune", "Jupiter"],
+      "research_plan": "Query DEX Screener API for pool quality metrics (age, TVL, 24h volume, holder count) for all pools entering SHADOW under this strategy. Cross-reference with shadow P&L to identify quality score cut-offs. Use Dune for EVM cohort analysis and Jupiter for Solana quote/route quality.",
+      "min_observation_windows": 10,
+      "min_observation_trades": 8,
+      "confidence": 0.55,
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab_research.py"
+      ]
+    },
+    {
+      "id": "PROP-006-LEARNED-ROUTE-FORECAST-CALIBRATION",
+      "strategy_name": "Learned Route Replication",
+      "action": "SHADOW_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "Learned Route Replication uses use_strategy_patterns=True and require_proven_net=True. MarketFeatures exposes learned_route_avg_net_bps and forecast_positive_edge_probability fields. Without runtime evidence it is unknown whether these fields are populated with real learned values or default to zero (which would suppress all entries). A zero forecast_positive_edge_probability effectively silences the strategy.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "learned_route_avg_net_bps and forecast_positive_edge_probability both default to Decimal('0'). If the feature adapter does not populate them from actual historical data, all Learned Route entries will be filtered as zero-confidence."
+        },
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "observation": "The market feature adapter is the expected source of learned/forecast values; whether it writes non-zero values to these fields is not verifiable from static code alone."
+        }
+      ],
+      "expected_effect": "Confirming non-zero learned fields are flowing through the adapter will determine whether this strategy is genuinely shadow-active or effectively dormant.",
+      "downside": "If adapter is not populating forecast fields, shadow results will be misleading (0 trades, not 0 edge).",
+      "shadow_test": "Instrument shadow executor to log learned_route_avg_net_bps and forecast_positive_edge_probability at each candidate evaluation. After >=8 windows, verify mean of both fields > 0 across evaluated candidates. If both are zero, flag strategy as DORMANT pending adapter fix.",
+      "min_observation_windows": 8,
+      "min_observation_trades": 8,
+      "confidence": 0.60,
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ]
+    },
+    {
+      "id": "PROP-007-CROSS-CHAIN-COST-PARITY",
+      "strategy_name": "All families",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "All six strategy families share the same MarketFeatures cost model (fees_bps, slippage_bps, price_impact_bps, latency_reserve_bps). Solana and EVM have structurally different cost profiles: Solana priority fees and rent are not equivalent to EVM gas/MEV costs. Without chain-specific cost calibration evidence, net_edge_bps calculations may be systematically over- or under-stated on one chain.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "MarketFeatures cost fields are chain-agnostic. chain_type is available but no chain-specific cost multiplier or floor is enforced in the signal model."
+        },
+        {
+          "path": "learnerbot/fee_engine.py",
+          "observation": "fee_engine.py exists and presumably provides chain-specific fee estimates; whether it feeds MarketFeatures cost fields is not verifiable from static code alone."
+        }
+      ],
+      "expected_effect": "Confirming that fee_engine feeds chain-specific cost fields into MarketFeatures will close the gap. If it does not, strategies on the over-estimated-edge chain will have systematically higher entry rates and lower realised P&L.",
+      "downside": "Research only; no P&L impact until chain-specific cost calibration is verified and shadow-tested.",
+      "shadow_test": "Compare shadow net P&L per executed basis-point of stated net_edge_bps separately for SOLANA and EVM entries across >=10 windows. If EVM net P&L/bps is significantly lower than SOLANA, investigate whether fees_bps is under-stated for EVM. Propose per-chain cost floor adjustment as a SHADOW variant.",
+      "research_tools": ["Etherscan API V2", "Jupiter", "DefiLlama"],
+      "research_plan": "Use Etherscan API V2 to reconstruct actual gas+MEV costs for a sample of EVM shadow trades. Use Jupiter quote API to validate Solana priority-fee estimates. Compare to fees_bps recorded at entry.",
+      "min_observation_windows": 10,
+      "min_observation_trades": 8,
+      "confidence": 0.63,
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab_research.py"
+      ]
+    }
+  ]
+}
