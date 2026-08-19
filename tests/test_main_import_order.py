@@ -1,4 +1,3 @@
-import importlib
 import re
 import subprocess
 import sys
@@ -21,13 +20,31 @@ def test_main_patch_import_order_starts_cleanly():
 
     assert modules, "No ordered patch imports found in learnerbot/__main__.py"
 
-    script = "\n".join(
-        ["import importlib"]
-        + [f"importlib.import_module('learnerbot.{name}')" for name in modules]
-        + ["print('MAIN_PATCH_IMPORT_ORDER_OK')"]
-    )
+    watched = [
+        "solana_simulated_reserve_guard_patch",
+        "solana_execution_efficiency_patch",
+        "solana_atomic_close_fallback_patch",
+        "solana_liquidity_fail_closed_patch",
+        "solana_execution_validation_patch",
+        "solana_exit_circuit_breaker_patch",
+    ]
+    script_lines = [
+        "import importlib, sys",
+        f"watched={watched!r}",
+        "seen=set()",
+    ]
+    for name in modules:
+        script_lines += [
+            f"importlib.import_module('learnerbot.{name}')",
+            f"trigger={name!r}",
+            "for w in watched:",
+            "    full='learnerbot.'+w",
+            "    if full in sys.modules and w not in seen:",
+            "        seen.add(w); print('FIRST_LOAD', w, 'while_importing', trigger, flush=True)",
+        ]
+    script_lines.append("print('MAIN_PATCH_IMPORT_ORDER_OK')")
     result = subprocess.run(
-        [sys.executable, "-c", script],
+        [sys.executable, "-c", "\n".join(script_lines)],
         check=False,
         capture_output=True,
         text=True,
