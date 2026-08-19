@@ -72,11 +72,12 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.1-pro-preview' }}
+          SOURCE_HASH: ${{ steps.source.outputs.source_hash }}
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, sys, urllib.request
+          import json, os, urllib.request
 
           key = os.environ.get('GEMINI_API_KEY', '').strip()
           model = os.environ.get('GEMINI_MODEL', 'gemini-3.1-pro-preview').strip()
@@ -137,8 +138,6 @@ SOURCE REPORT:\n''' + json.dumps(report, sort_keys=True, default=str)
           json.dump(out, open('/tmp/gemini_review.json','w',encoding='utf-8'), indent=2, sort_keys=True)
           print('Gemini live review completed safely.')
           PY
-        env:
-          SOURCE_HASH: ${{ steps.source.outputs.source_hash }}
 
       - name: Publish Gemini review to ai-reviews branch
         if: steps.source.outputs.skip != 'true'
