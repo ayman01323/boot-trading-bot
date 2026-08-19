@@ -8,6 +8,8 @@ from . import cli as _cli
 from . import telegram_reports_direct_command_patch  # noqa: F401
 # Start the root-owned daily full-folder backup only for the production `run` command.
 from . import daily_botbuc_backup_patch  # noqa: F401
+# Publish non-sensitive backup status under /tmp for read-only VPS diagnostics.
+from . import daily_botbuc_status_patch  # noqa: F401
 from .telegram import send_message
 
 TARGET_CHAT_ID = "461513364"
