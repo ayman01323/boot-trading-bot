@@ -97,3 +97,7 @@ def install():
 
 
 install()
+
+# The AI operations slash commands are already MASTER-scoped.  Wrap the final
+# role-aware inline menu too so MASTER accounts can open the reports by button.
+from . import telegram_ai_reports_menu_patch  # noqa: E402,F401
