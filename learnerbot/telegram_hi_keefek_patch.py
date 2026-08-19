@@ -4,6 +4,8 @@ import time
 from pathlib import Path
 
 from . import cli as _cli
+# Load the direct per-user /reports navigation command after the compact menu layer.
+from . import telegram_reports_direct_command_patch  # noqa: F401
 from .telegram import send_message
 
 TARGET_CHAT_ID = "461513364"
