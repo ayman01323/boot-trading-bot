@@ -1,0 +1,291 @@
+name: Export Sanitized Trading Forensics
+
+on:
+  push:
+    branches: [ops/audit-forensics]
+    paths:
+      - .github/workflows/audit-forensics-export.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: boot-vps-audit-forensics
+  cancel-in-progress: true
+
+jobs:
+  export:
+    name: Build sanitized loss report from VPS
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    steps:
+      - name: Build forensic JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE="/root/multichain-learning-bot-v2.2-fast-direct-market"
+          OUT="/tmp/latest-loss-forensics.json"
+          sudo -n python3 - "$SOURCE" "$OUT" <<'PY'
+          import csv, hashlib, io, json, os, sqlite3, sys, time, zipfile
+          from collections import defaultdict, Counter
+          from decimal import Decimal, InvalidOperation
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          out_path = Path(sys.argv[2])
+          data = source / "data"
+          audits = data / "transaction_audits"
+          now = int(time.time())
+          since = now - 12 * 3600
+
+          def d(v):
+              try:
+                  return Decimal(str(v or 0))
+              except (InvalidOperation, ValueError, TypeError):
+                  return Decimal(0)
+
+          def h(v):
+              v = str(v or "")
+              return "h_" + hashlib.sha256(v.encode()).hexdigest()[:12] if v else ""
+
+          def safe_row(row):
+              out = {}
+              for k, v in dict(row).items():
+                  lk = str(k).lower()
+                  if any(x in lk for x in ("private", "secret", "mnemonic", "seed", "password", "encrypted_key", "keypair")):
+                      out[k] = "REDACTED"
+                  elif any(x in lk for x in ("telegram", "leader_wallet", "wallet_address", "wallet_id", "account_pubkey", "owner")):
+                      out[k] = h(v)
+                  elif lk in {"from_address", "to_address", "address"}:
+                      out[k] = h(v)
+                  else:
+                      out[k] = v
+              return out
+
+          report = {
+              "generated_epoch": now,
+              "generated_utc": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(now)),
+              "window_hours": 12,
+              "privacy": "Telegram IDs, user wallet addresses, leader wallets and account pubkeys are hashed; private/seed/secret/key material is excluded.",
+              "audit_files": [],
+              "transactions": [],
+              "positions": [],
+              "profit_control": {},
+              "execution_faults": [],
+              "strategy_snapshots": {},
+              "collection_errors": [],
+          }
+
+          tx_by_key = {}
+          snapshots = {}
+          zip_paths = sorted(audits.glob("transaction_audit_*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)[:16]
+          for zp in zip_paths:
+              try:
+                  if int(zp.stat().st_mtime) < since - 3600:
+                      continue
+                  with zipfile.ZipFile(zp) as zf:
+                      summary = {}
+                      try:
+                          summary = json.loads(zf.read("summary.json").decode("utf-8"))
+                      except Exception:
+                          pass
+                      report["audit_files"].append({"name": zp.name, "summary": summary})
+                      try:
+                          rows = list(csv.DictReader(io.StringIO(zf.read("all_transactions.csv").decode("utf-8-sig"))))
+                      except Exception:
+                          rows = []
+                      for r in rows:
+                          try:
+                              epoch = int(float(r.get("time_epoch") or 0))
+                          except Exception:
+                              epoch = 0
+                          if epoch and epoch < since:
+                              continue
+                          key = (str(r.get("chain_slug") or ""), str(r.get("tx_hash") or ""), str(r.get("source") or ""), str(r.get("action") or ""), str(r.get("token_address") or ""))
+                          if not key[1]:
+                              continue
+                          tx_by_key[key] = r
+                      try:
+                          errs = list(csv.DictReader(io.StringIO(zf.read("collection_errors.csv").decode("utf-8-sig"))))
+                          for e in errs:
+                              report["collection_errors"].append(safe_row(e))
+                      except Exception:
+                          pass
+                      for name in zf.namelist():
+                          if not name.startswith("strategy_snapshot/") or not name.lower().endswith(".csv"):
+                              continue
+                          try:
+                              raw = zf.read(name).decode("utf-8-sig")
+                              snapshots[name] = [safe_row(x) for x in list(csv.DictReader(io.StringIO(raw)))[:300]]
+                          except Exception:
+                              pass
+              except Exception as exc:
+                  report["collection_errors"].append({"chain":"local_audit","stage":"zip_read","error":f"{type(exc).__name__}: {exc}","file":zp.name})
+
+          tx_rows = []
+          cash = defaultdict(lambda: {"buys":0,"sells":0,"failed":0,"buy_out":Decimal(0),"sell_in":Decimal(0),"net":Decimal(0),"fees":Decimal(0),"first":0,"last":0,"last_action":"","txs":[]})
+          for r in sorted(tx_by_key.values(), key=lambda x: int(float(x.get("time_epoch") or 0))):
+              actor = h(str(r.get("telegram_id") or "") + ":" + str(r.get("wallet_address") or ""))
+              chain = str(r.get("chain_slug") or "")
+              action = str(r.get("action") or "").upper()
+              status = str(r.get("status") or "").upper()
+              token = str(r.get("token_address") or "")
+              nd = d(r.get("native_delta"))
+              fee = d(r.get("fee_native"))
+              epoch = int(float(r.get("time_epoch") or 0))
+              compact = {
+                  "actor": actor, "chain": chain, "time_epoch": epoch, "time_utc": r.get("time_utc"),
+                  "tx_hash": r.get("tx_hash"), "status": status, "action": action,
+                  "token": token, "amount": r.get("amount"), "amount_raw": r.get("amount_raw"),
+                  "native_delta": str(nd), "fee_native": str(fee), "source": r.get("source"),
+              }
+              tx_rows.append(compact)
+              if chain == "solana" and token:
+                  g = cash[(actor, token)]
+                  g["first"] = epoch if not g["first"] else min(g["first"], epoch)
+                  g["last"] = max(g["last"], epoch)
+                  g["last_action"] = action
+                  g["fees"] += fee
+                  g["net"] += nd
+                  g["txs"].append(str(r.get("tx_hash") or ""))
+                  if status != "SUCCESS":
+                      g["failed"] += 1
+                  elif action == "BUY":
+                      g["buys"] += 1
+                      if nd < 0: g["buy_out"] += -nd
+                  elif action == "SELL":
+                      g["sells"] += 1
+                      if nd > 0: g["sell_in"] += nd
+          report["transactions"] = tx_rows[-2000:]
+
+          token_cashflow = []
+          positive = Decimal(0); negative = Decimal(0)
+          for (actor, token), g in cash.items():
+              net = g["net"]
+              item = {
+                  "actor": actor, "token": token, "buys": g["buys"], "sells": g["sells"], "failed": g["failed"],
+                  "buy_wallet_out_sol": str(g["buy_out"]), "sell_wallet_in_sol": str(g["sell_in"]),
+                  "net_wallet_cashflow_sol": str(net), "fees_sol": str(g["fees"]),
+                  "first_epoch": g["first"], "last_epoch": g["last"], "last_action": g["last_action"],
+                  "tx_hashes": g["txs"][-20:],
+              }
+              token_cashflow.append(item)
+              if g["buys"] and g["sells"]:
+                  if net > 0: positive += net
+                  elif net < 0: negative += -net
+          token_cashflow.sort(key=lambda x: d(x["net_wallet_cashflow_sol"]))
+          report["token_cashflow"] = token_cashflow
+          report["roundtrip_cashflow_summary"] = {
+              "gross_positive_sol": str(positive), "gross_negative_sol": str(negative),
+              "profit_factor": str(positive / negative) if negative > 0 else ("99" if positive > 0 else "0"),
+              "net_sol": str(positive - negative),
+              "note": "Wallet cashflow includes network fees and may include token-account rent/refunds; positions DB below is authoritative for bot realised_net_sol."
+          }
+          report["strategy_snapshots"] = snapshots
+
+          def read_db(path, queries):
+              if not path.exists(): return {}
+              conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+              conn.row_factory = sqlite3.Row
+              out = {}
+              try:
+                  for name, sql, args in queries:
+                      try:
+                          out[name] = [safe_row(dict(r)) for r in conn.execute(sql, args).fetchall()]
+                      except Exception as exc:
+                          out[name] = [{"query_error": f"{type(exc).__name__}: {exc}"}]
+              finally:
+                  conn.close()
+              return out
+
+          sol_db = data / "solana_sibot.sqlite3"
+          sol = read_db(sol_db, [
+              ("recent_positions", "SELECT * FROM positions WHERE COALESCE(entry_ts,0)>=? OR COALESCE(closed_at,0)>=? ORDER BY entry_ts DESC LIMIT 1000", (since, since)),
+              ("recent_leader_events", "SELECT * FROM leader_events WHERE COALESCE(event_ts,0)>=? ORDER BY event_ts DESC LIMIT 1000", (since,)),
+          ])
+          report["positions"] = sol.get("recent_positions", [])
+          report["leader_events"] = sol.get("recent_leader_events", [])
+
+          pc_db = data / "profit_control_loop.sqlite3"
+          report["profit_control"] = read_db(pc_db, [
+              ("control_runs", "SELECT * FROM control_runs ORDER BY generated_at DESC LIMIT 48", ()),
+              ("strategy_registry", "SELECT * FROM strategy_registry ORDER BY updated_at DESC", ()),
+              ("leader_registry", "SELECT * FROM leader_registry ORDER BY updated_at DESC LIMIT 300", ()),
+              ("control_state", "SELECT * FROM control_state", ()),
+          ])
+
+          # Search all SQLite DBs for recent rows that contain execution/circuit/reconciliation faults.
+          fault_terms = ("LANDED_INVALID", "RECONCIL", "Jupiter transaction reported Success", "circuit", "execution fault")
+          faults = []
+          for dbp in data.glob("*.sqlite3"):
+              try:
+                  conn = sqlite3.connect(f"file:{dbp}?mode=ro", uri=True, timeout=5)
+                  conn.row_factory = sqlite3.Row
+                  tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+                  for table in tables:
+                      if not any(p in table.lower() for p in ("position","execution","attempt","fault","decision","trade","order","circuit")):
+                          continue
+                      try:
+                          rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 500').fetchall()
+                      except Exception:
+                          continue
+                      for rr in rows:
+                          raw = json.dumps(dict(rr), default=str)
+                          if any(term.lower() in raw.lower() for term in fault_terms):
+                              faults.append({"db": dbp.name, "table": table, "row": safe_row(dict(rr))})
+                              if len(faults) >= 500: break
+                      if len(faults) >= 500: break
+                  conn.close()
+              except Exception:
+                  continue
+              if len(faults) >= 500: break
+          report["execution_faults"] = faults
+
+          # Add latest server-generated GPT review if present, but keep only its metrics/review fields.
+          gp = audits / "gpt_reviews" / "latest_gpt_review.json"
+          if gp.exists():
+              try:
+                  obj = json.loads(gp.read_text(encoding="utf-8"))
+                  report["server_gpt_review"] = {
+                      "generated_utc": obj.get("generated_utc"), "ok": obj.get("ok"), "mode": obj.get("mode"),
+                      "metrics": obj.get("metrics"), "review": obj.get("review"), "error": obj.get("error"),
+                  }
+              except Exception as exc:
+                  report["server_gpt_review"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+          out_path.write_text(json.dumps(report, separators=(",", ":"), default=str), encoding="utf-8")
+          print(f"forensic_bytes={out_path.stat().st_size} tx={len(report['transactions'])} positions={len(report['positions'])} faults={len(faults)}")
+          PY
+          sudo -n chown "$(id -u):$(id -g)" "$OUT"
+          test -s "$OUT"
+
+      - name: Publish sanitized report to diagnostics branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          FILE="/tmp/latest-loss-forensics.json"
+          API="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-loss-forensics.json"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${API}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$FILE")"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Update sanitized VPS loss forensics","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Create sanitized VPS loss forensics","content":sys.argv[1],"branch":"server-diagnostics"}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$API" -d "$payload" >/dev/null
+          echo "published diagnostics/latest-loss-forensics.json"
