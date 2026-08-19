@@ -26,6 +26,7 @@ from . import telegram_ui as _telegram_ui
 from . import transaction_audit_worker_patch as _audit_worker
 from . import hourly_gpt_live_engine_wording_patch  # noqa: F401
 from . import profit_control_loop_patch as _profit_control
+from . import profit_control_amount_objective_patch as _amount_objective
 from . import profit_control_audit_export_patch  # noqa: F401
 from . import profit_control_master_summary_patch as _profit_master_summary
 from . import solana_profit_first_live_correction_patch as _profit_first_live
@@ -76,9 +77,6 @@ def install():
         "solana_buy_reserve_inner": _validation._PREV_BUY is _reserve._buy_with_simulated_reserve,
         "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
-        # Reconciliation is deliberately the outer monitor. It runs even while a
-        # user's Solana LIVE flag is off, but its inner function remains the audited
-        # position monitor and it never broadcasts a replacement SELL.
         "solana_monitor_reconciliation_outer": _sol.monitor_positions is _exit_circuit._monitor_with_exit_reconciliation,
         "solana_monitor_positions_inner": _exit_circuit._MONITOR_INNER is _live.monitor_positions,
         "solana_reconciliation_hook": _sol.reconcile_pending_exit_circuits is _exit_circuit.reconcile_pending_exit_circuits,
@@ -91,6 +89,10 @@ def install():
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
+        "profit_control_amount_objective": (
+            _profit_control._is_success is _amount_objective.is_success_amount_first
+            and _profit_control.MIN_SUCCESS_PROFIT_FACTOR == _amount_objective.MIN_AMOUNT_PROFIT_FACTOR
+        ),
         "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
         "profit_first_live_settings": _sol.settings is _profit_first_live.settings_profit_first_live,
         "profit_first_full_sell_inner": _partial_sell_guard._PREV_PROCESS is _profit_first_live.process_leader_event_profit_first,
@@ -98,6 +100,7 @@ def install():
         "partial_sell_hard_profit_floor": str(_partial_sell_guard._HARD_MIN_PARTIAL_NET_PCT) == "3.0",
         "partial_sell_low_capital_floor": str(_partial_sell_guard._HARD_MIN_POSITION_ECONOMIC_VALUE_SOL) == "0.002",
         "positive_edge_entry_gate": _sol.process_leader_event is _positive_edge.process_leader_event_positive_edge,
+        "platform_amount_target": _positive_edge._HARD_PLATFORM_TARGET_PF >= _amount_objective.MIN_AMOUNT_PROFIT_FACTOR,
         "profit_control_leader_gate_inner": _positive_edge._PREV_COPIED_OK is _profit_control.copied_ok_with_profit_control,
         "positive_edge_first_loss_quarantine": _profit_guard._copied_ok is _positive_edge.copied_ok_quarantine_first_loss,
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
