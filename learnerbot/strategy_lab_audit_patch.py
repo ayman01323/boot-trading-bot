@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 # Reporting-only composition patch. It does not execute trades or alter trading hooks.
 # It enriches the existing sanitised hourly loss-forensics payload with a separate
 # scorecard for every Strategy Laboratory hypothesis plus cross-chain learner research.
@@ -11,11 +13,24 @@ from .strategy_lab_research import build_research_report, ensure_cross_chain_sco
 _PREV_BUILD = _forensics.build_loss_forensics
 
 
+def _activate_cross_chain_once(app) -> dict:
+    """Run the metadata migration once so later lifecycle states are never reset."""
+    marker = Path(app.data_dir) / "strategy_lab_cross_chain_v1.marker"
+    if marker.exists():
+        return {"already_activated": True, "marker": str(marker)}
+    result = ensure_cross_chain_scope(app)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("cross-chain Strategy Lab metadata activated\n", encoding="utf-8")
+    result["already_activated"] = False
+    result["marker"] = str(marker)
+    return result
+
+
 def build_loss_forensics_with_strategy_lab(app, zip_path, gpt_result=None, *, hours=_forensics.WINDOW_HOURS):
     report = _PREV_BUILD(app, zip_path, gpt_result, hours=hours)
     try:
         seeded = seed_creative_hypotheses(app)
-        cross_chain = ensure_cross_chain_scope(app)
+        cross_chain = _activate_cross_chain_once(app)
         lab = portfolio_report(app)
         research = build_research_report(app)
         lab["available"] = True
