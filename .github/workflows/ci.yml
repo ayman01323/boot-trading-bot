@@ -118,3 +118,20 @@ jobs:
         if: always()
         shell: bash
         run: sudo /usr/local/sbin/status-boot-trading-bot
+
+  server_diagnostics:
+    name: Read VPS learnerbot diagnostics
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.head_ref == 'agent/server-diagnostics' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Current status
+        shell: bash
+        run: sudo /usr/local/sbin/status-boot-trading-bot
+      - name: Recent learnerbot journal
+        shell: bash
+        run: |
+          sudo journalctl -u learnerbot.service --since '15 minutes ago' -n 300 --no-pager || true
