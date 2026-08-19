@@ -120,6 +120,8 @@ from . import solana_sell_pnl_emoji_patch  # noqa: F401
 from . import telegram_command_scope_patch  # noqa: F401
 # Final USER-only presentation guard: keep the non-MASTER /menu short after all compatibility layers.
 from . import telegram_user_menu_compact_patch  # noqa: F401
+# Expand personal Telegram reports with profit alerts, user-chosen percentages and time presets.
+from . import telegram_profit_report_alerts_patch  # noqa: F401
 # One-shot greeting requested for Telegram user 461513364; does not alter account/trading settings.
 from . import telegram_hi_keefek_patch  # noqa: F401
 # This is deliberately the final import before CLI: refuse startup if any feature or presentation layer displaced an audited trading hook.
