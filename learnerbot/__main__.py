@@ -122,6 +122,8 @@ from . import telegram_command_scope_patch  # noqa: F401
 from . import telegram_user_menu_compact_patch  # noqa: F401
 # Expand personal Telegram reports with profit alerts, user-chosen percentages and time presets.
 from . import telegram_profit_report_alerts_patch  # noqa: F401
+# Present loss alerts as positive loss magnitude: alert when loss reaches or exceeds the chosen percentage.
+from . import telegram_loss_alert_direction_patch  # noqa: F401
 # One-shot greeting requested for Telegram user 461513364; does not alter account/trading settings.
 from . import telegram_hi_keefek_patch  # noqa: F401
 # This is deliberately the final import before CLI: refuse startup if any feature or presentation layer displaced an audited trading hook.
