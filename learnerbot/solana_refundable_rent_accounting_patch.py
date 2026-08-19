@@ -37,28 +37,60 @@ def evaluate_position_economic(app, position: dict, fraction=Decimal(1)):
         if economic_cost > 0:
             p["entry_cost_sol"] = str(economic_cost)
     result = dict(_PREV_EVALUATE(app, p, fraction) or {})
-    result["refundable_rent_sol"] = _rent_principal_sol(app, p.get("position_id")) if str(p.get("mode") or "").upper() == "LIVE" else Decimal(0)
+    result["refundable_rent_sol"] = (
+        _rent_principal_sol(app, p.get("position_id"))
+        if str(p.get("mode") or "").upper() == "LIVE"
+        else Decimal(0)
+    )
     return result
 
 
-def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
-    executor, actual = _binding._resolve_executor(app, tid, position)
+def _finalize_live_sell_trade(
+    app,
+    tid,
+    position,
+    fraction: Decimal,
+    reason: str,
+    executor,
+    sell_raw: int,
+    trade: dict,
+):
+    """Apply accounting exactly once after an already-proved SELL transaction."""
     old_raw = max(1, _sol._int(position.get("token_amount_raw"), 0))
     f = max(Decimal("0.0001"), min(Decimal(1), Decimal(str(fraction))))
-    planned = max(1, int(Decimal(old_raw) * f))
-    sell_raw = min(planned, int(actual))
-    if sell_raw <= 0:
-        _binding._quarantine(app, position, "resolved wallet has no sellable matching token")
+    sell_raw = max(1, min(int(sell_raw), old_raw))
+    trade = dict(trade or {})
+
+    # Idempotence: if this exact transaction already updated the position, return
+    # without applying proceeds or realised P&L a second time.
+    sig = str(trade.get("signature") or "")
+    with closing(_sol.connect(app)) as conn:
+        current = conn.execute(
+            "SELECT * FROM positions WHERE position_id=?",
+            (str(position.get("position_id") or ""),),
+        ).fetchone()
+        current = dict(current) if current else None
+    if current and sig and str(current.get("exit_signature") or "") == sig:
+        return {
+            "closed": str(current.get("status") or "").upper() == "CLOSED",
+            "net_sol": Decimal(0),
+            "signature": sig,
+            "reason": reason,
+            "trade": trade,
+            "already_finalized": True,
+        }
 
     rent_principal = _rent_principal_sol(app, position.get("position_id"))
     old_cash_cost = _sol._dec(position.get("entry_cost_sol"), 0)
     old_economic_cost = max(Decimal(0), old_cash_cost - rent_principal)
 
-    trade = executor.sell(position["mint"], sell_raw)
-    out_lamports = max(0, int(trade.get("totalOutputAmount") or trade.get("outputAmountResult") or 0))
+    out_lamports = max(
+        0,
+        int(trade.get("totalOutputAmount") or trade.get("outputAmountResult") or 0),
+    )
     gross_swap_output = Decimal(out_lamports) / Decimal(1_000_000_000)
 
-    # Keep gross router output separate from actual wallet cashflow.  A swap output
+    # Keep gross router output separate from actual wallet cashflow. A swap output
     # cannot be negative; a negative wallet delta means execution fees/other tx-level
     # costs exceeded the SOL delivered to the wallet and must be shown as cashflow,
     # not mislabeled as negative "swap proceeds".
@@ -74,7 +106,9 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
     if delta_known:
         wallet_cashflow = Decimal(delta) / Decimal(1_000_000_000)
     else:
-        wallet_cashflow = gross_swap_output - _sol._dec(cfg.get("estimated_exit_fee_sol"), ".00002")
+        wallet_cashflow = gross_swap_output - _sol._dec(
+            cfg.get("estimated_exit_fee_sol"), ".00002"
+        )
 
     remaining = max(0, old_raw - sell_raw)
     closed = remaining <= max(1, int(old_raw * .001)) or f >= Decimal("0.999")
@@ -90,7 +124,10 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         except Exception as exc:
             print("[solana-token-reclaim]", type(exc).__name__, exc)
 
-    reclaimed_sol = Decimal(int(reclaim.get("reclaimed_lamports") or 0)) / Decimal(1_000_000_000)
+    reclaimed_sol = (
+        Decimal(int(reclaim.get("reclaimed_lamports") or 0))
+        / Decimal(1_000_000_000)
+    )
     if closed:
         # For managed/non-atomic exits, a separately reclaimed account is added once.
         # Atomic exits already include rent in wallet_delta and normally report no
@@ -103,13 +140,14 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         sold_fraction = Decimal(sell_raw) / Decimal(old_raw)
         economic_cost_sold = old_economic_cost * sold_fraction
         net = wallet_cashflow - economic_cost_sold
-        remaining_economic_cost = max(Decimal(0), old_economic_cost - economic_cost_sold)
+        remaining_economic_cost = max(
+            Decimal(0), old_economic_cost - economic_cost_sold
+        )
         remaining_cost = remaining_economic_cost + rent_principal
         proceeds = wallet_cashflow
 
     realised = _sol._dec(position.get("realised_net_sol"), 0) + net
     now = int(time.time())
-    sig = str(trade.get("signature") or "")
     with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
         conn.execute(
             """UPDATE positions SET token_amount_raw=?,entry_cost_sol=?,realised_net_sol=?,exit_signature=?,exit_reason=?,closed_at=?,
@@ -129,10 +167,25 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         )
         conn.commit()
 
-    reclaim_line = f"Rent reclaimed: <b>{reclaimed_sol:.9f} SOL</b>\n" if reclaimed_sol > 0 else ""
+    reclaim_line = (
+        f"Rent reclaimed: <b>{reclaimed_sol:.9f} SOL</b>\n"
+        if reclaimed_sol > 0
+        else ""
+    )
     partial_line = (
         f"Refundable rent still reserved: <b>{rent_principal:.9f} SOL</b>\n"
-        if not closed and rent_principal > 0 else ""
+        if not closed and rent_principal > 0
+        else ""
+    )
+    recovered_line = (
+        "Reconciliation source: <b>on-chain transaction metadata</b>\n"
+        if trade.get("recovered_from_exit_circuit")
+        else ""
+    )
+    gross_line = (
+        f"Gross swap output: <b>{gross_swap_output:.9f} SOL</b>\n"
+        if out_lamports > 0
+        else ""
     )
     _live._notify(
         app,
@@ -140,17 +193,28 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
         f"✅ <b>Solana LIVE SELL confirmed</b>\n"
         f"Reason: <code>{reason}</code>\n"
         f"Wallet: <code>{executor.address[:8]}…{executor.address[-6:]}</code>\n"
-        f"Gross swap output: <b>{gross_swap_output:.9f} SOL</b>\n"
+        f"{gross_line}"
         f"Wallet cashflow after transaction: <b>{wallet_cashflow:+.9f} SOL</b>\n"
-        f"{reclaim_line}{partial_line}"
+        f"{recovered_line}{reclaim_line}{partial_line}"
         f"Realised net P&L: <b>{net:+.9f} SOL</b>\n"
         f"TX: <code>{sig}</code>"
-        + (f"\nRent reclaim TX: <code>{reclaim.get('signature')}</code>" if reclaim.get("signature") else ""),
+        + (
+            f"\nRent reclaim TX: <code>{reclaim.get('signature')}</code>"
+            if reclaim.get("signature")
+            else ""
+        ),
     )
-    trade = dict(trade or {})
     trade["gross_swap_output_lamports"] = int(out_lamports)
-    trade["wallet_cashflow_lamports"] = int(delta) if delta_known else int((wallet_cashflow * Decimal(1_000_000_000)).to_integral_value())
-    trade["rent_reclaimed_lamports"] = int(reclaim.get("reclaimed_lamports") or 0)
+    trade["wallet_cashflow_lamports"] = (
+        int(delta)
+        if delta_known
+        else int(
+            (wallet_cashflow * Decimal(1_000_000_000)).to_integral_value()
+        )
+    )
+    trade["rent_reclaimed_lamports"] = int(
+        reclaim.get("reclaimed_lamports") or 0
+    )
     trade["rent_reclaim_signature"] = str(reclaim.get("signature") or "")
     return {
         "closed": closed,
@@ -165,18 +229,61 @@ def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
     }
 
 
+def finalize_reconciled_live_sell(
+    app,
+    tid,
+    position,
+    fraction: Decimal,
+    reason: str,
+    trade: dict,
+    sell_raw: int,
+):
+    """Finalize a SELL that was broadcast earlier and later proved on chain."""
+    executor, _actual = _binding._resolve_executor(app, tid, position)
+    return _finalize_live_sell_trade(
+        app,
+        tid,
+        position,
+        fraction,
+        reason,
+        executor,
+        int(sell_raw),
+        dict(trade or {}),
+    )
+
+
+def _close_live_rent_aware(app, tid, position, fraction: Decimal, reason: str):
+    executor, actual = _binding._resolve_executor(app, tid, position)
+    old_raw = max(1, _sol._int(position.get("token_amount_raw"), 0))
+    f = max(Decimal("0.0001"), min(Decimal(1), Decimal(str(fraction))))
+    planned = max(1, int(Decimal(old_raw) * f))
+    sell_raw = min(planned, int(actual))
+    if sell_raw <= 0:
+        _binding._quarantine(
+            app, position, "resolved wallet has no sellable matching token"
+        )
+
+    trade = executor.sell(position["mint"], sell_raw)
+    return _finalize_live_sell_trade(
+        app, tid, position, f, reason, executor, sell_raw, trade
+    )
+
+
 def retry_pending_rent_reclaims(app, limit=5):
     """Best-effort recovery for a successful SELL whose separate rent-close tx failed."""
     with closing(_sol.connect(app)) as conn:
         _reclaim._ensure_schema(conn)
-        rows = [dict(r) for r in conn.execute(
-            """SELECT DISTINCT p.position_id,p.telegram_id,p.mint,p.realised_net_sol
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT DISTINCT p.position_id,p.telegram_id,p.mint,p.realised_net_sol
                FROM positions p
                JOIN live_position_created_token_accounts a ON a.position_id=p.position_id
                WHERE p.mode='LIVE' AND p.status='CLOSED' AND a.closed_at IS NULL
                ORDER BY p.closed_at LIMIT ?""",
-            (max(1, min(20, int(limit))),),
-        ).fetchall()]
+                (max(1, min(20, int(limit))),),
+            ).fetchall()
+        ]
     for p in rows:
         binding = _binding._binding(app, p["position_id"])
         if not binding:
@@ -188,7 +295,10 @@ def retry_pending_rent_reclaims(app, limit=5):
             result = _reclaim._close_created_empty_accounts(
                 executor, p["position_id"], p["mint"]
             )
-            reclaimed = Decimal(int(result.get("reclaimed_lamports") or 0)) / Decimal(1_000_000_000)
+            reclaimed = (
+                Decimal(int(result.get("reclaimed_lamports") or 0))
+                / Decimal(1_000_000_000)
+            )
             if reclaimed <= 0:
                 continue
             with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
@@ -196,7 +306,11 @@ def retry_pending_rent_reclaims(app, limit=5):
                     "SELECT realised_net_sol FROM positions WHERE position_id=?",
                     (p["position_id"],),
                 ).fetchone()
-                current = _sol._dec(row["realised_net_sol"], 0) if row else Decimal(0)
+                current = (
+                    _sol._dec(row["realised_net_sol"], 0)
+                    if row
+                    else Decimal(0)
+                )
                 corrected = current + reclaimed
                 conn.execute(
                     "UPDATE positions SET realised_net_sol=?,updated_at=? WHERE position_id=?",

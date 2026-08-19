@@ -16,6 +16,11 @@ class _Executor:
     def token_balance_raw(self, mint):
         return 42
 
+    def _headers(self, json_body=False):
+        # Match the SolanaLiveExecutor interface used by the atomic Jupiter build.
+        # The test only inspects request parameters, so no auth headers are needed.
+        return {}
+
 
 def test_unproven_legacy_full_exit_falls_back_to_capped_managed_sell(monkeypatch):
     calls = []

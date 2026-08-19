@@ -52,7 +52,12 @@ def install():
         "solana_buy_reserve_inner": _validation._PREV_BUY is _reserve._buy_with_simulated_reserve,
         "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
-        "solana_monitor_positions": _sol.monitor_positions is _live.monitor_positions,
+        # Reconciliation is deliberately the outer monitor. It runs even while a
+        # user's Solana LIVE flag is off, but its inner function remains the audited
+        # position monitor and it never broadcasts a replacement SELL.
+        "solana_monitor_reconciliation_outer": _sol.monitor_positions is _exit_circuit._monitor_with_exit_reconciliation,
+        "solana_monitor_positions_inner": _exit_circuit._MONITOR_INNER is _live.monitor_positions,
+        "solana_reconciliation_hook": _sol.reconcile_pending_exit_circuits is _exit_circuit.reconcile_pending_exit_circuits,
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
         "solana_workers": _sol.start_workers is _workers.start_workers_reliable,
         "solana_quote": _sol.jupiter_quote is _quote.jupiter_quote_executable,

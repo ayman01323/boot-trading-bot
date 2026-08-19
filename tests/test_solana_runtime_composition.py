@@ -59,7 +59,8 @@ assert validation._PREV_BUY is reserve._buy_with_simulated_reserve
 assert executor.SolanaLiveExecutor._simulate is reserve._simulate_with_wallet_snapshot
 
 assert sol.evaluate_position is rent.evaluate_position_economic
-assert sol.monitor_positions is live.monitor_positions
+assert sol.monitor_positions is exit_circuit._monitor_with_exit_reconciliation
+assert exit_circuit._MONITOR_INNER is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
 assert sol.start_workers is workers.start_workers_reliable
 assert sol.jupiter_quote is quote.jupiter_quote_executable
