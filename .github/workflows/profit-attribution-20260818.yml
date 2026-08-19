@@ -1,0 +1,160 @@
+name: Read-only 18 Aug Profit Attribution
+
+on:
+  push:
+    branches: [ops/profit-attribution-20260818]
+
+permissions:
+  contents: write
+
+jobs:
+  attribute:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Query production databases read-only and publish sanitised attribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/profit-attribution-20260818.json
+          import csv,glob,json,os,sqlite3
+          from datetime import datetime
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          ROOT=Path('/root/multichain-learning-bot-v2.2-fast-direct-market')
+          data=ROOT/'data'
+          local=ZoneInfo('Europe/London')
+          start=int(datetime(2026,8,18,0,0,0,tzinfo=local).timestamp())
+          end=int(datetime(2026,8,19,0,0,0,tzinfo=local).timestamp())
+
+          user_files=[Path('/root/csv/users.csv'), ROOT/'csv'/'users.csv']
+          masters=[]
+          for p in user_files:
+              if not p.exists(): continue
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      if str(r.get('role') or '').upper()=='MASTER' and str(r.get('status') or '').upper()=='ACTIVE':
+                          tid=str(r.get('telegram_id') or '').strip()
+                          if tid and tid not in masters: masters.append(tid)
+          alias={tid:f'MASTER_{i+1}' for i,tid in enumerate(masters)}
+
+          sensitive=('wallet','address','signature','tx_hash','txid','private','secret','seed','mnemonic','key','telegram_id','user_id')
+          strategy_keys=('strategy','strategy_id','strategy_class','source','mode','action','exit_reason','leader_rank','signal_count','status','route','behaviour','profile')
+          pnl_terms=('realised_net','realized_net','net_profit','net_pnl','pnl','profit')
+          time_priority=('closed_at','executed_at','updated_at','created_at','timestamp','time_epoch','entry_ts')
+          findings=[]
+          schema=[]
+
+          def qname(x): return '"'+str(x).replace('"','""')+'"'
+          def safe_value(name,val):
+              n=name.lower()
+              if any(s in n for s in sensitive): return None
+              if isinstance(val,(bytes,bytearray)): return None
+              if val is None: return None
+              s=str(val)
+              return s[:500]
+
+          for dbp in sorted(data.glob('*.sqlite3')):
+              try:
+                  conn=sqlite3.connect(f'file:{dbp}?mode=ro',uri=True,timeout=5)
+                  conn.row_factory=sqlite3.Row
+              except Exception:
+                  continue
+              try:
+                  tables=[r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+                  for table in tables:
+                      try: cols=[r[1] for r in conn.execute(f'PRAGMA table_info({qname(table)})')]
+                      except Exception: continue
+                      low={c.lower():c for c in cols}
+                      user_col=next((low[k] for k in ('telegram_id','user_id') if k in low),None)
+                      pnl_cols=[c for c in cols if any(t in c.lower() for t in pnl_terms)]
+                      time_col=next((low[k] for k in time_priority if k in low),None)
+                      if not user_col or not pnl_cols or not time_col or not masters: continue
+                      schema.append({'db':dbp.name,'table':table,'pnl_columns':pnl_cols,'time_column':time_col})
+                      placeholders=','.join('?' for _ in masters)
+                      sql=f'SELECT * FROM {qname(table)} WHERE {qname(user_col)} IN ({placeholders}) AND CAST({qname(time_col)} AS INTEGER)>=? AND CAST({qname(time_col)} AS INTEGER)<? ORDER BY CAST({qname(time_col)} AS INTEGER)'
+                      try: rows=conn.execute(sql,[*masters,start,end]).fetchall()
+                      except Exception: continue
+                      for row in rows:
+                          d=dict(row)
+                          pnls={c:safe_value(c,d.get(c)) for c in pnl_cols}
+                          positive=False
+                          for v in pnls.values():
+                              try:
+                                  if v is not None and float(v)>0: positive=True
+                              except Exception: pass
+                          if not positive: continue
+                          details={}
+                          for c in cols:
+                              if c in pnl_cols or c==time_col: continue
+                              if c.lower() in strategy_keys or any(k in c.lower() for k in strategy_keys):
+                                  v=safe_value(c,d.get(c))
+                                  if v not in (None,''): details[c]=v
+                          findings.append({
+                              'account':alias.get(str(d.get(user_col)),'MASTER'),
+                              'db':dbp.name,'table':table,
+                              'time_epoch':int(d.get(time_col) or 0),
+                              'pnl':pnls,'attribution_fields':details,
+                          })
+              finally:
+                  conn.close()
+
+          # Dedicated Solana position extraction because this is the canonical LIVE realised P&L ledger.
+          sol_positions=[]
+          sp=data/'solana_sibot.sqlite3'
+          if sp.exists() and masters:
+              try:
+                  conn=sqlite3.connect(f'file:{sp}?mode=ro',uri=True,timeout=5); conn.row_factory=sqlite3.Row
+                  cols=[r[1] for r in conn.execute('PRAGMA table_info(positions)')]
+                  if {'telegram_id','closed_at','realised_net_sol'}.issubset(set(cols)):
+                      placeholders=','.join('?' for _ in masters)
+                      select=[c for c in ('telegram_id','position_id','leader_rank','mode','status','entry_cost_sol','entry_ts','closed_at','realised_net_sol','exit_reason','signal_count','current_exit_sol') if c in cols]
+                      rows=conn.execute(f"SELECT {','.join(qname(c) for c in select)} FROM positions WHERE telegram_id IN ({placeholders}) AND mode='LIVE' AND status='CLOSED' AND closed_at>=? AND closed_at<? ORDER BY closed_at",[*masters,start,end]).fetchall()
+                      for r in rows:
+                          d=dict(r); net=float(d.get('realised_net_sol') or 0)
+                          sol_positions.append({
+                              'account':alias.get(str(d.get('telegram_id')),'MASTER'),
+                              'position_id':str(d.get('position_id') or '')[:12],
+                              'leader_rank':d.get('leader_rank'),'mode':d.get('mode'),'status':d.get('status'),
+                              'entry_cost_sol':d.get('entry_cost_sol'),'entry_ts':d.get('entry_ts'),'closed_at':d.get('closed_at'),
+                              'realised_net_sol':d.get('realised_net_sol'),'exit_reason':d.get('exit_reason'),'signal_count':d.get('signal_count'),
+                              'profitable':net>0,
+                              'strategy_inference':'SOLANA_LEADER_COPY' if d.get('leader_rank') is not None else 'SOLANA_LIVE_UNATTRIBUTED'
+                          })
+                  conn.close()
+              except Exception as e:
+                  sol_positions=[{'error':type(e).__name__+': '+str(e)[:200]}]
+
+          print(json.dumps({
+              'schema_version':1,
+              'period_local':'2026-08-18 Europe/London',
+              'start_epoch':start,'end_epoch':end,
+              'active_master_accounts':len(masters),
+              'solana_live_positions':sol_positions,
+              'positive_user_linked_rows':findings,
+              'queried_user_pnl_tables':schema,
+              'privacy':'MASTER IDs, wallet addresses, leader wallets, mints and transaction signatures are omitted/redacted. Read-only query only.',
+          },indent=2,sort_keys=True,default=str))
+          PY
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/profit-attribution-2026-08-18.json"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/profit-attribution-20260818.json)"
+          if [[ -n "$sha" ]]; then
+            payload="$(python3 - "$encoded" "$sha" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Update sanitised 18 Aug profit attribution','content':sys.argv[1],'sha':sys.argv[2],'branch':'server-diagnostics'}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Publish sanitised 18 Aug profit attribution','content':sys.argv[1],'branch':'server-diagnostics'}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$api" -d "$payload" >/dev/null
