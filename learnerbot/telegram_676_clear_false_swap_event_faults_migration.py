@@ -5,7 +5,10 @@ from contextlib import closing
 from pathlib import Path
 
 from . import cli as _cli
-from . import solana_execution_validation_patch  # installs the corrected runtime validation
+# Historical fault cleanup is data-only. Do not import/install the Solana
+# execution-validation wrapper here: that wrapper must be composed later, after
+# reserve/efficiency/atomic execution guards, so its captured inner functions are
+# the audited ones checked by trading_runtime_invariant_patch.
 from . import solana_live_patch as _live
 from . import solana_sibot as _sol
 from .solana_execution_fault_counter_patch import reset_fault_count
@@ -51,7 +54,7 @@ def _apply(app) -> None:
         ).fetchone()["n"])
         conn.commit()
 
-    # The account-level counter included the now-corrected false positives.  Reset
+    # The account-level counter included the now-corrected false positives. Reset
     # it only when there are no remaining genuine landed-invalid attempt records.
     if corrected and remaining_true_faults == 0:
         reset_fault_count(app, TARGET_TELEGRAM_ID)
