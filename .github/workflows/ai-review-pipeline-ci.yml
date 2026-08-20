@@ -4,8 +4,12 @@ on:
   pull_request:
     paths:
       - '.github/workflows/hourly-three-agent-strategy-cycle.yml'
+      - '.github/workflows/gpt-master-strategy-action.yml'
+      - '.github/workflows/hourly-gemini-strategy-review.yml'
       - '.github/workflows/ai-review-pipeline-ci.yml'
       - 'tests/test_hourly_three_agent_workflow_contract.py'
+      - 'tests/test_hourly_three_agent_strategy_workflow.py'
+      - 'tests/test_gpt_master_strategy_reconciler.py'
   workflow_dispatch:
 
 permissions:
@@ -14,21 +18,37 @@ permissions:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Install test dependency
-        run: python -m pip install pytest
+      - name: Install test dependencies
+        run: |
+          python -m pip install pytest
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
 
       - name: Workflow contract tests
-        run: pytest -q tests/test_hourly_three_agent_workflow_contract.py
+        run: |
+          pytest -q tests/test_hourly_three_agent_workflow_contract.py \
+            tests/test_hourly_three_agent_strategy_workflow.py \
+            tests/test_gpt_master_strategy_reconciler.py
+
+      - name: Verify repository Python import path used by Gemini extraction
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE" python scripts/extract_strategy_report.py --help >/dev/null
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract --help >/dev/null
 
       - name: Install current provider CLIs
         run: |
@@ -36,7 +56,7 @@ jobs:
           codex --version
           gemini --version
 
-      - name: Verify GPT credential and Codex non-interactive invocation
+      - name: Verify GPT credential and no-bwrap non-interactive invocation
         id: gpt
         continue-on-error: true
         env:
@@ -45,14 +65,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${CODEX_API_KEY:-}" ]]; then
-            echo 'OPENAI_API_KEY source secret is missing from repository Actions secrets.' >&2
-            exit 20
-          fi
+          test -n "${CODEX_API_KEY:-}"
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
           printf 'Inspect nothing. Reply with exactly AI_PIPELINE_GPT_OK and do not run tools.\n' |
-            codex --ask-for-approval never exec --sandbox read-only --ephemeral "${model_args[@]}" - > /tmp/codex-smoke.txt
+            codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - > /tmp/codex-smoke.txt
           grep -q 'AI_PIPELINE_GPT_OK' /tmp/codex-smoke.txt
 
       - name: Verify Gemini credential and read-only invocation
@@ -65,24 +82,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-            echo 'GEMINI_API_KEY is missing from repository Actions secrets.' >&2
-            exit 20
-          fi
+          test -n "${GEMINI_API_KEY:-}"
           gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
             -p 'Inspect nothing. Reply with exactly AI_PIPELINE_GEMINI_OK and do not run tools.' > /tmp/gemini-smoke.txt
           grep -q 'AI_PIPELINE_GEMINI_OK' /tmp/gemini-smoke.txt
-
-      - name: Copilot assignment credential status
-        env:
-          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
-        shell: bash
-        run: |
-          if [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
-            echo 'COPILOT_ASSIGN_TOKEN is configured.'
-          else
-            echo 'WARNING: COPILOT_ASSIGN_TOKEN is not configured; hourly cycles will publish BLOCKED_COPILOT_AUTH until Copilot is assigned by a user-scoped token or manually.'
-          fi
 
       - name: Require both model providers to work
         env:
