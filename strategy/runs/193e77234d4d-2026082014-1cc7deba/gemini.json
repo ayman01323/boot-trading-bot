@@ -1,67 +1,44 @@
 {
   "cycle_id": "193e77234d4d-2026082014-1cc7deba",
   "evidence_gaps": [
-    "MISSING_RUNTIME_FORENSICS in .strategy_cycle/evidence.json",
-    "Lack of recent realization data for slippage, price impact, and gas/priority fees by route",
-    "No execution infrastructure failure logs available to distinguish strategy/market loss from execution failure"
+    "Missing runtime strategy scorecards and forensics.",
+    "No current evidence of live trade outcomes.",
+    "Lack of updated database metrics in .strategy_cycle/evidence.json."
   ],
   "evidence_sha256": "1cc7debad070dc4efef75743f666dce11b4d91f632491e81b8f226f12ebc003e",
   "no_live_changes": true,
   "proposals": [
     {
-      "action": "IMPROVE",
+      "action": "NEW_SHADOW",
       "chain_scope": [
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.8,
-      "downside_risk": "Fewer total arbitrage opportunities generated.",
+      "confidence": 0.75,
+      "downside_risk": "Asynchronous chain states or diverging bridge liquidity could trap positions if cross-chain execution fails or bridging costs outweigh the dislocation edge.",
       "evidence": [
         {
-          "detail": "cross_venue_net_arbitrage lacks a route_replicability check, unlike learned_route_replication.",
+          "detail": "Existing signals handle cross-venue net arbitrage and forecasted positive net edge, but lack explicit relative value evaluation between the same asset bridging Solana and EVM.",
           "path": "learnerbot/cross_chain_strategy_signals.py"
         }
       ],
-      "expected_effect": "Higher execution success rate and lower transaction costs from reverted executions.",
-      "id": "prop-cvna-1",
-      "minimum_observation": "100 shadow executions per chain",
-      "rationale": "Arbitrage strategies are particularly sensitive to execution infrastructure failures, latency, and toxic MEV flow. Adding a route_replicability check limits attempts to routes with a proven track record, protecting capital from infrastructure-level execution failures while preserving baseline strategy logic.",
-      "shadow_test": "Compare shadow execution success rates of arbitrage signals with route_replicability > 0.70 against those without the constraint.",
-      "strategy": "Cross Venue Net Arbitrage",
+      "expected_effect": "A new independent source of eligible opportunities in high-volatility market regimes, uncorrelated with leader-copy signals.",
+      "id": "strat_cross_chain_rel_value",
+      "minimum_observation": "14 days with > 30 eligible opportunities",
+      "rationale": "With the cross-chain strategy framework explicitly decoupling Solana/EVM costs, an opportunity exists to model pure relative value dislocations on identical assets before structural mean reversion, without single-wallet dependency.",
+      "shadow_test": "Record simultaneous simulated entries on both chains against theoretical bridging/hedging costs and measure net basis point edge post-latency. Falsified if net edge is consistently negative due to divergent gas and priority fees.",
+      "strategy": "Cross-Chain Relative Value",
       "suggested_files": [
-        "learnerbot/cross_chain_strategy_signals.py"
-      ]
-    },
-    {
-      "action": "SHADOW_MORE",
-      "chain_scope": [
-        "SOLANA",
-        "EVM"
-      ],
-      "confidence": 0.9,
-      "downside_risk": "Delayed promotion to live trading or canary.",
-      "evidence": [
-        {
-          "detail": "Uses static model thresholds (probability > 0.65, uncertainty < 0.35) for edge forecasting.",
-          "path": "learnerbot/cross_chain_strategy_signals.py"
-        }
-      ],
-      "expected_effect": "Validation of model profitability and risk calibration before actual capital deployment.",
-      "id": "prop-fc-1",
-      "minimum_observation": "500 shadow signals",
-      "rationale": "Model drift and changing market conditions require constant empirical validation. Without recent runtime forensics, we cannot confirm these thresholds translate to money-weighted positive P&L after realization of fees and slippage.",
-      "shadow_test": "Gather shadow signals to compare forecasted expected_net_bps versus realized net_bps, specifically tracking execution failures vs strategy/market losses.",
-      "strategy": "Forecasted Positive Net Edge",
-      "suggested_files": [
-        "learnerbot/cross_chain_strategy_signals.py"
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab.py"
       ]
     }
   ],
   "provider": "gemini",
   "rejected_ideas": [
     {
-      "idea": "Promote any current strategy to CANARY or LIVE status.",
-      "reason": "Runtime forensics are missing. Live profitability claims are strictly prohibited without recent empirical evidence of net P&L after execution costs."
+      "idea": "Promote Liquidity Confirmed Momentum to CANARY or LIVE",
+      "reason": "Promotion is forbidden due to missing runtime forensics; independent validation of live costs is currently impossible."
     }
   ],
   "review_only": true,
@@ -69,5 +46,5 @@
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "193e77234d4d5822b4e470c99de55927089648fa",
   "status": "CHANGES_PROPOSED",
-  "summary": "Architecture review completed based on static analysis of cross_chain_strategy_signals.py. Due to missing runtime forensics, recommendations focus on improving execution safety through architecture adjustments (e.g., adding replicability checks to arbitrage to limit infrastructure-level failures) and expanding shadow testing for forecast models. All strategies correctly mandate positive executable net edge via _common_executable. No strategies can be confirmed live-ready or profitable at this time."
+  "summary": "Runtime forensics are missing, so no strategy can be claimed profitable or canary-ready. Based on architectural review of the Strategy Lab, we propose introducing a new shadow test for cross-chain relative value tracking to enhance our suite of market-native predictive hypotheses."
 }
