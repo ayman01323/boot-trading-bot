@@ -3,11 +3,9 @@ import sys
 
 
 def test_final_runtime_hooks_match_audited_stack():
-    # Import the execution stack in the same relevant order as learnerbot.__main__:
-    # wallet binding -> rent tracking/accounting -> signed reserve guard -> economic
-    # efficiency -> capped legacy fallback -> liquidity guard -> validation -> circuit
-    # -> hourly control loop -> profit-first LIVE policy -> partial-sell profit gate
-    # -> final positive-edge BUY/first-loss quarantine gate.
+    # Import the execution stack in the same relevant order as learnerbot.__main__.
+    # Later execution/accounting/liquidity/circuit protections remain authoritative,
+    # while the final policy layer restores the first profitable Solana strategy.
     script = r'''
 from learnerbot import sibot as sibot
 from learnerbot import solana_live_patch as live
@@ -37,6 +35,7 @@ from learnerbot import profit_control_loop_patch as profit_control
 from learnerbot import solana_profit_first_live_correction_patch as profit_first
 from learnerbot import solana_partial_sell_profit_guard_patch as partial_guard
 from learnerbot import solana_positive_edge_entry_gate_patch as positive_edge
+from learnerbot import solana_first_day_strategy_restore_patch as first_day
 from learnerbot import solana_live_executor as executor
 from learnerbot import solana_sibot as sol
 
@@ -71,13 +70,23 @@ assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
 assert sibot.poll_leader_blocks is evm.poll_leader_blocks_reliable
 assert telegram_ui.start_menu_thread is audit_worker.start_menu_thread_with_transaction_audit
 
+# The later strategy modules are still importable/auditable but are no longer the
+# active Solana policy. The owner-requested first-day strategy is the final layer.
 assert profit_first._PREV_SETTINGS is profit_control.settings_with_profit_control
-assert sol.settings is profit_first.settings_profit_first_live
-assert partial_guard._PREV_PROCESS is profit_first.process_leader_event_profit_first
-assert positive_edge._PREV_PROCESS is partial_guard.process_leader_event_partial_profit_guard
-assert sol.process_leader_event is positive_edge.process_leader_event_positive_edge
-assert positive_edge._PREV_COPIED_OK is profit_control.copied_ok_with_profit_control
-assert guard._copied_ok is positive_edge.copied_ok_quarantine_first_loss
+assert first_day.FIRST_DAY_REFERENCE_COMMIT == "f0ca88450fe96a316dc15e676fab1e36c1137285"
+assert sol.settings is first_day.settings_first_day_strategy
+assert sol.process_leader_event is live.process_leader_event
+assert guard._copied_ok is first_day.copied_ok_first_day
+assert sol.process_leader_event is not positive_edge.process_leader_event_positive_edge
+assert sol.process_leader_event is not partial_guard.process_leader_event_partial_profit_guard
+assert sol.process_leader_event is not profit_first.process_leader_event_profit_first
+
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["leaders_per_user"] == "5"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_signal_age_seconds"] == "30"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_roundtrip_loss_pct"] == "3"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_entry_deterioration_pct"] == "2"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["stop_loss_pct"] == "10"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["take_profit_pct"] == "25"
 print("AUDITED_TRADING_RUNTIME_COMPOSITION_OK")
 '''
     result = subprocess.run(
