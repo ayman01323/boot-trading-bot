@@ -1,50 +1,53 @@
 {
   "cycle_id": "626a6cb0e9c5-2026082013-8114cafa",
   "evidence_gaps": [
-    "No sanitised runtime forensics branch available.",
-    "Lack of net P&L metrics factoring in fees, slippage, and execution failure.",
-    "Missing execution vs infrastructure failure distinction metrics."
+    "Missing sanitised runtime forensics branch in .strategy_cycle/evidence.json",
+    "No data on historical P&L, fees, slippage, or execution failures"
   ],
   "evidence_sha256": "8114cafae6513b218c1c7ccb2bb1d6154d9aec94657e2c41c270402fe1f90771",
   "no_live_changes": true,
   "proposals": [
     {
-      "action": "SHADOW_MORE",
+      "action": "NEW_SHADOW",
       "chain_scope": [
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.0,
-      "downside_risk": "Delay in promoting potentially profitable strategies.",
+      "confidence": 0.8,
+      "downside_risk": "No capital risk in SHADOW. Risk is limited to processing overhead and potential rate-limits from DEX screener/Jupiter APIs.",
       "evidence": [
         {
-          "detail": "evidence_status is MISSING_RUNTIME_FORENSICS",
+          "detail": "Lists 'New Liquidity Quality' as an initial non-leader research family to rank liquidity, sellability, and execution quality.",
+          "path": "docs/STRATEGY_LAB.md"
+        },
+        {
+          "detail": "Runtime forensics missing; only shadow/architecture proposals permitted.",
           "path": ".strategy_cycle/evidence.json"
         }
       ],
-      "expected_effect": "Prevents unvalidated promotion to CANARY or LIVE environments without sufficient execution metrics.",
-      "id": "proposal-req-runtime-forensics",
-      "minimum_observation": "72h",
-      "rationale": "Without fresh runtime evidence, no real execution quality, slippage, price impact, or network fee analysis can be performed. Strategies must remain in SHADOW until valid forensic data is generated.",
-      "shadow_test": "Collect 72 hours of shadow execution logs with fully simulated transaction costs, including gas, slippage, and Jupiter routing fees on Solana.",
-      "strategy": "ALL_STRATEGIES",
+      "expected_effect": "Accumulates true P&L data for liquidity-based ranking in the Strategy Laboratory without risking live capital.",
+      "id": "prop-lab-shadow-liquidity-quality-1",
+      "minimum_observation": "3 evaluation windows with at least 8 shadow trades and >10 eligible opportunities.",
+      "rationale": "Without fresh runtime evidence, the best action is to expand the portfolio of independently measured strategy families in SHADOW mode. A liquidity-focused strategy that validates execution quality before entry will help differentiate infrastructure failures from strategy losses in future forensics.",
+      "shadow_test": "Simulate trades on new liquidity pools. Deduct chain-specific gas/priority fees, slippage, and swap taxes. Falsify if net profit factor is <= 1.0 after execution costs, or if execution failures exceed 5%.",
+      "strategy": "New Liquidity Quality",
       "suggested_files": [
-        "learnerbot/strategy.py",
-        "learnerbot/live_executor.py"
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_lab_research.py"
       ]
     }
   ],
   "provider": "gemini",
   "rejected_ideas": [
     {
-      "idea": "Promote SHADOW strategies based solely on historical data or analytical models.",
-      "reason": "Missing runtime forensics prohibit claims of profitability or readiness for live/canary use."
+      "idea": "Promote existing strategies to CANARY or LIVE",
+      "reason": "Explicitly prohibited without fresh runtime forensics validating money-weighted net P&L after costs."
     }
   ],
   "review_only": true,
   "schema_version": 1,
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "626a6cb0e9c51ce3db7228f2806e646f09d33cf2",
-  "status": "HEALTHY",
-  "summary": "Completed architecture-only strategy review. Runtime forensics are missing as indicated by evidence.json. No strategy can be validated for profitability or live/canary readiness. Focus remains on SHADOW validation and infrastructure reliability."
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed due to missing runtime forensics. The codebase defines a Strategy Laboratory for observing non-leader strategies. To advance, I propose deploying a New Liquidity Quality shadow strategy to observe money-weighted edge across EVM and Solana without forcing trades."
 }
