@@ -242,7 +242,7 @@ jobs:
           raw='\n'.join(parts)
           raw=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}', '<redacted>', raw)
           reason='OpenAI/Codex API credential missing' if os.environ.get('OPENAI_PRESENT')!='true' else (raw.strip() or 'GPT execution/report extraction failed without diagnostic output')
-          p={'schema_version':1,'provider':'gpt','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'GPT report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True}
+          p={'schema_version':1,'provider':'gpt','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'GPT report unavailable for this cycle.','proposals':[],'rejected_ideas':[],'evidence_gaps':['gpt-report-unavailable'],'review_only':True,'no_live_changes':True,'refusals_or_limits':[reason[:1800]]}
           pathlib.Path('.strategy_cycle/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
           pathlib.Path('.strategy_cycle/gpt.md').write_text('# GPT strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
           PY
@@ -319,7 +319,7 @@ jobs:
           raw='\n'.join(parts)
           raw=re.sub(r'AIza[A-Za-z0-9_-]{20,}', '<redacted>', raw)
           reason='GEMINI_API_KEY missing' if os.environ.get('GEMINI_PRESENT')!='true' else (raw.strip() or 'Gemini execution/extraction/validation failed without diagnostic output')
-          p={'schema_version':1,'provider':'gemini','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'Gemini report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True}
+          p={'schema_version':1,'provider':'gemini','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'Gemini report unavailable for this cycle.','proposals':[],'rejected_ideas':[],'evidence_gaps':['gemini-report-unavailable'],'review_only':True,'no_live_changes':True,'refusals_or_limits':[reason[:1800]]}
           pathlib.Path('.strategy_cycle/gemini.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
           pathlib.Path('.strategy_cycle/gemini.md').write_text('# Gemini strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
           PY
@@ -370,10 +370,15 @@ jobs:
             gh issue view "$issue" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true
           }
 
+          if [[ -z "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            echo "COPILOT_ASSIGN_TOKEN is required for automatic Copilot assignment. Add a user-scoped repository secret named COPILOT_ASSIGN_TOKEN." >&2
+            exit 2
+          fi
+
           state='AWAITING_ASSIGNMENT'
           if is_assigned; then
             state='ASSIGNED'
-          elif [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+          else
             payload="$(python - "$GITHUB_REPOSITORY" <<'PY'
           import json,sys
           repo=sys.argv[1]
