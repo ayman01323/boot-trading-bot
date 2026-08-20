@@ -1,0 +1,355 @@
+{
+  "cycle_id": "128fe91d2a0f-2026082003-425a8d76",
+  "end_to_end_verification": [
+    "Use a non-live test cycle against an immutable source commit; confirm audit-status contains a sanitized report generated within two hours.",
+    "Trigger the hourly workflow manually and by the :17 schedule; record run IDs and confirm both resolve the same source/evidence tuple when within the same hour.",
+    "Confirm pinned GPT and Gemini CLIs pass their sandbox/provider preflights and produce contract-valid, non-INCOMPLETE reports.",
+    "Confirm Copilot assignment is verified and the issue records ASSIGNED without manual intervention.",
+    "Confirm Copilot creates a draft PR containing exactly the required JSON and Markdown files and no trading-code changes.",
+    "Before synthesis, confirm ai-reviews changes from WAITING/BLOCKED to copilot=DONE and records the PR while independently preserving GPT/Gemini states.",
+    "Confirm the GPT Master run starts without action_required, rejects forks/out-of-scope files, validates all three reports and checks out the exact reviewed source.",
+    "Confirm the master decision and deterministic gate are published to ai-reviews with live_auto_deploy=false and draft_pr_only=true.",
+    "Confirm concurrent/replayed events are idempotent and an older cycle cannot replace the latest newer status.",
+    "Confirm Telegram MASTER recipients receive cycle-start, provider failure/recovery, Copilot report, master decision and optional draft-change notifications exactly once.",
+    "Confirm /aistrategy and the AI Reports menu show the same cycle, agent states, master state and PR URL as ai-reviews.",
+    "Run workflow-contract, report-contract, ai_ops_status, Telegram visibility and full safety test suites in CI; the local audit environment lacked pytest, so no test success is claimed here."
+  ],
+  "executive_summary": "The pipeline failed through multiple independent faults. No audit-status branch existed, so the :17 workflow correctly substituted architecture-only evidence; this restricted runtime conclusions but did not prevent repository review. GPT then failed because Codex's bubblewrap sandbox could not configure loopback and could neither inspect nor write its report. Gemini also became INCOMPLETE, but its recovery logic preserved only stderr warnings and discarded the stdout/extraction/validation evidence needed to identify the actual failure. Copilot assignment was initially blocked because COPILOT_ASSIGN_TOKEN was absent, yet an external assignment subsequently succeeded and Copilot produced draft PR #108 with exactly two report files. The ai-reviews ledger was never reconciled and remained BLOCKED_COPILOT_AUTH. GPT Master was triggered by PR #108 but GitHub concluded the run action_required before jobs ran; moreover, approval alone would not complete this cycle because the workflow explicitly rejects INCOMPLETE GPT/Gemini reports. Telegram consumes ai-reviews, so it inherited the stale status and its transition logic supplied no dedicated blocked/provider-failure notification. Provider credentials were reported present for GPT and Gemini, and prior smoke success is recorded; missing API keys are not supported as causes.",
+  "failure_chain": [
+    {
+      "causality": "Runtime publication failure or absence is proven; exact VPS-side reason is unknown without fresh logs.",
+      "result": "No published audit-status branch was available.",
+      "stage": "VPS runtime forensics"
+    },
+    {
+      "causality": "Safe degradation; it restricted runtime claims but did not preclude source inspection.",
+      "result": "The :17 workflow generated MISSING_RUNTIME_FORENSICS architecture-only evidence and evidence_fresh=false.",
+      "stage": "audit-status resolution"
+    },
+    {
+      "causality": "No evidence of scheduler failure. The configured cron is 17 * * * *; GitHub scheduling may be delayed generally, but that is not implicated here.",
+      "result": "The workflow demonstrably progressed: issue #107 was created at 03:17:36Z.",
+      "stage": ":17 scheduler"
+    },
+    {
+      "causality": "Direct mandatory-report failure.",
+      "result": "Codex bubblewrap failed configuring loopback and could not inspect/write; fallback GPT report was INCOMPLETE.",
+      "stage": "GPT"
+    },
+    {
+      "causality": "Direct mandatory-report failure plus a diagnostic-capture defect; exact provider failure remains unknown.",
+      "result": "Gemini report was INCOMPLETE; only harmless stderr warnings survived.",
+      "stage": "Gemini"
+    },
+    {
+      "causality": "Initial automated assignment failure.",
+      "result": "Kickoff recorded BLOCKED_AUTH because the assignment token was absent.",
+      "stage": "Copilot assignment"
+    },
+    {
+      "causality": "Copilot delivery recovered independently and was not the final blocker.",
+      "result": "External assignment succeeded; Copilot created draft PR #108 with exactly two report files.",
+      "stage": "Copilot report PR"
+    },
+    {
+      "causality": "No early PR-arrival reconciliation; status publication was coupled to successful master completion.",
+      "result": "latest_status remained BLOCKED_COPILOT_AUTH.",
+      "stage": "ai-reviews status"
+    },
+    {
+      "causality": "Two independent blockers: platform approval and incomplete prerequisite reports.",
+      "result": "Run 32328146903 concluded action_required before jobs. If approved, its completeness gate would still reject GPT and Gemini INCOMPLETE.",
+      "stage": "GPT Master"
+    },
+    {
+      "causality": "Operators did not receive reliable end-to-end completion or accurate recovery visibility.",
+      "result": "Telegram consumed stale ai-reviews and had no dedicated blocked/provider-failure/action-required transition.",
+      "stage": "Telegram visibility"
+    }
+  ],
+  "fix_order": [
+    "1. Preserve safeguards and freeze the immutable cycle tuple; do not merge/deploy/trade while repairing reporting.",
+    "2. Repair audit-status observability and verify VPS publication with a sanitized disposable read/write test.",
+    "3. Pin provider CLIs and qualify the Codex workspace-write sandbox on the actual runner; correct all Codex invocation ordering.",
+    "4. Implement structured Gemini phase diagnostics and retained sanitized artifacts.",
+    "5. Establish reliable least-privilege Copilot assignment and capability preflight.",
+    "6. Add PR-arrival reconciliation so Copilot DONE is recorded independently of master success.",
+    "7. Resolve the GitHub action_required policy for the trusted same-repository Copilot report path without using unsafe pull_request_target execution.",
+    "8. Add bounded provider retries while retaining the all-three-complete master gate.",
+    "9. Add ai-reviews concurrency/version protection so older or parallel cycles cannot overwrite newer status.",
+    "10. Extend Telegram state and deduplicated notifications for provider failure, blocked assignment, report recovery and master approval requirements.",
+    "11. Run the complete end-to-end verification before relying on hourly delivery."
+  ],
+  "no_live_changes": true,
+  "provider": "gpt",
+  "remaining_unknowns": [
+    "No fresh VPS service logs, process state, deployed SHA, audit ZIP inventory or Git push stderr were supplied, so the precise reason audit-status was never created is unknown.",
+    "Gemini stdout, exit code, extraction error and validation error were discarded; the terminal/ripgrep warnings do not identify its root cause.",
+    "No repository/organization Actions settings or audit-log export was supplied, so the exact policy behind action_required is a hypothesis.",
+    "No GPT Master job list/log exists in the evidence; timestamps and conclusion indicate jobs did not meaningfully execute.",
+    "No Telegram delivery logs or persisted watcher state were supplied, so actual messages received cannot be proven; only the stale source state and visibility architecture can be established.",
+    "PR #108 report contents were described and metadata confirms two changed files, but the evidence bundle does not include the two file bodies or check-status response; their semantic contract validity was not independently re-executed.",
+    "The evidence does not show the exact hourly workflow run metadata or final conclusion, although issue creation and ai-reviews artifacts prove it ran through publication."
+  ],
+  "report_only": true,
+  "root_causes": [
+    {
+      "classification": "PROVEN_OUTCOME_WITH_UNRESOLVED_RUNTIME_CAUSE",
+      "component": "VPS runtime forensics and audit-status publication",
+      "confidence": 0.99,
+      "corrective_action": "Add observable, retried publication with a durable success/failure record and alert, while retaining the safe architecture-only fallback. Verify the deployed service actually starts the audit worker and can create/update only audit-status.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/audit_status_branch.err: gh reports 'Branch not found (HTTP 404)'.",
+        "/tmp/hourly-failure-evidence/audit_status_branch_rc.txt: audit_status_branch_rc=1.",
+        "/tmp/hourly-failure-evidence/context.json: evidence_source=architecture-only and evidence_fresh=false.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:72-98 checks audit-status and safely creates MISSING_RUNTIME_FORENSICS evidence when absent.",
+        "learnerbot/transaction_audit_worker_patch.py:151-226 generates audits and calls publish_loss_forensics only from an in-process daemon thread.",
+        "learnerbot/loss_forensics_github_export.py:236-279 creates and pushes audit-status with low-level Git commands, returning errors rather than ensuring delivery."
+      ],
+      "exact_files_or_steps": [
+        "Instrument learnerbot/transaction_audit_worker_patch.py to persist last audit start, completion and publication result, including sanitized error class.",
+        "Harden learnerbot/loss_forensics_github_export.py with bounded retry for non-fast-forward/transient transport errors and explicit authentication/remote diagnostics.",
+        "Add a deployment attestation that verifies audit worker composition and performs a sanitized audit-status write/read test without exposing credentials.",
+        "Do not make audit-status absence fatal to architecture review; continue marking runtime claims unavailable."
+      ],
+      "id": "RC-01",
+      "impact": "Runtime performance, execution failures, positions and control-loop telemetry were absent. Reviewers were required to avoid profitability or live-readiness claims. This did not make architecture-only repository review impossible and was not the cause of the GPT sandbox or Gemini diagnostic failures.",
+      "root_cause": "PROVEN: the audit-status branch did not exist at cycle time. HYPOTHESES requiring fresh VPS logs: the worker was not deployed/running, no completed audit ZIP existed, Git origin authentication lacked branch-write access, or the best-effort push failed. The supplied evidence cannot distinguish these possibilities.",
+      "severity": "HIGH",
+      "symptom": "Fresh VPS runtime evidence was unavailable; the cycle used architecture-only evidence with evidence_fresh=false.",
+      "tests_required": [
+        "Unit-test absent branch creation, existing branch update, non-fast-forward retry, authentication failure and sanitized error persistence.",
+        "Integration-test a disposable remote where latest_loss_forensics.json is created and is younger than two hours.",
+        "VPS smoke-test process startup, completed audit ZIP discovery and audit-status publication."
+      ]
+    },
+    {
+      "classification": "PROVEN",
+      "component": "GPT independent report",
+      "confidence": 1.0,
+      "corrective_action": "Pin and qualify a known-compatible Codex CLI/runner combination. Add a preflight that performs a minimal read and writes only a disposable report artifact through the same sandbox. Fail early with complete sandbox diagnostics if it cannot do both. Do not bypass or weaken the sandbox.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/gpt.json records bwrap loopback RTM_NEWADDR failure, failed writes to .strategy_cycle/gpt.json and apply_patch verification failure.",
+        "/tmp/hourly-failure-evidence/context.json records openai_credential_present=true.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:194 invokes Codex with workspace-write sandbox; lines 203-223 replace failure with an INCOMPLETE report.",
+        "/tmp/hourly-failure-evidence/gpt.json has no proposals and summary='GPT report failed.'"
+      ],
+      "exact_files_or_steps": [
+        "Replace @openai/codex@latest in .github/workflows/hourly-three-agent-strategy-cycle.yml with a tested pinned version.",
+        "Add a same-mode Codex sandbox preflight before the full prompt.",
+        "Capture CLI version, runner metadata and sanitized complete sandbox stderr as cycle artifacts and in ai-reviews.",
+        "After qualification, rerun the report for the immutable source/evidence identifiers rather than relabeling the fallback INCOMPLETE file."
+      ],
+      "id": "RC-02",
+      "impact": "One of the mandatory three independent reports was absent. The master workflow's completeness gate would reject the cycle even if all downstream workflow approvals succeeded.",
+      "root_cause": "Codex's bubblewrap sandbox failed during network-namespace loopback configuration before useful tool execution. This is a runner/sandbox compatibility failure, not evidence of a missing OpenAI credential or a repository defect.",
+      "severity": "CRITICAL",
+      "symptom": "GPT was published as INCOMPLETE without inspecting the repository or creating its requested artifacts.",
+      "tests_required": [
+        "Workflow test asserting a pinned CLI version.",
+        "Runner integration test proving repository read and disposable workspace write under workspace-write sandbox.",
+        "Failure-injection test for bwrap RTM_NEWADDR that verifies a precise diagnostic and no false review completion."
+      ]
+    },
+    {
+      "classification": "PROVEN_DIAGNOSTIC_DEFECT; EXECUTION_CAUSE_UNKNOWN",
+      "component": "Gemini independent report and failure capture",
+      "confidence": 1.0,
+      "corrective_action": "Capture CLI exit code, stdout tail, stderr tail and separate extraction/validation diagnostics in a sanitized structured failure record. Preserve them as cycle artifacts and identify the failing phase.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/gemini.json contains only '256-color support not detected' and 'Ripgrep is not available' warnings.",
+        "/tmp/hourly-failure-evidence/context.json records gemini_credential_present=true.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:250-258 sends model output to gemini_stdout.txt, stderr to gemini_error.txt, then performs extraction and contract validation.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:266-285 recovers from any CLI, extraction or validation failure using only the tail of gemini_error.txt.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:415-417 deletes the temporary stdout and error files."
+      ],
+      "exact_files_or_steps": [
+        "Modify .github/workflows/hourly-three-agent-strategy-cycle.yml Gemini step to record CLI_RC, extraction RC and validation RC separately.",
+        "Publish sanitized gemini_stdout.txt and gemini_error.txt diagnostics under strategy/runs/<cycle>/diagnostics or as retained workflow artifacts.",
+        "Update the recovery step to prefer a concrete failing-phase message over harmless terminal warnings.",
+        "Pin @google/gemini-cli rather than installing @latest after compatibility qualification."
+      ],
+      "id": "RC-03",
+      "impact": "The second mandatory report was unavailable, the failure was not actionable, and master adjudication could not pass its all-report gate.",
+      "root_cause": "The exact Gemini execution failure is UNKNOWN. The proven pipeline defect is inadequate failure capture: stdout, exit code, failing phase and extraction/validation output are not preserved, while unrelated stderr warnings are promoted as the reason.",
+      "severity": "HIGH",
+      "symptom": "Gemini was INCOMPLETE, but the published explanation contains only terminal color and ripgrep fallback warnings.",
+      "tests_required": [
+        "Inject CLI nonzero, missing delimiters, malformed JSON and contract mismatch independently and assert distinct diagnoses.",
+        "Test secret redaction across stdout and stderr.",
+        "Successful end-to-end Gemini extraction and validate-agent test on a report-only fixture."
+      ]
+    },
+    {
+      "classification": "PROVEN_INITIAL_BLOCK_WITH_LATER_EXTERNAL_RECOVERY",
+      "component": "Copilot authentication and assignment",
+      "confidence": 1.0,
+      "corrective_action": "Provision and preflight a least-privilege assignment credential or establish a documented GitHub-native assignment mechanism. Treat assignment as an asynchronously reconcilable state, not a permanent cycle result.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/context.json records copilot_assignment_token_present=false and copilot_assignment_state=BLOCKED_AUTH.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:328-358 can assign only if Copilot is already assigned or COPILOT_ASSIGN_TOKEN is present and succeeds.",
+        "/tmp/hourly-failure-evidence/copilot_issue_107.json shows issue #107 created at 03:17:36Z and later updated with Copilot assigned.",
+        "/tmp/hourly-failure-evidence/copilot_pr_108.json shows Copilot created draft PR #108 at 03:21:13Z."
+      ],
+      "exact_files_or_steps": [
+        "Configure COPILOT_ASSIGN_TOKEN with only the permissions required for agent assignment, without exposing it.",
+        "Add a preflight assignment-capability check that reports permission/endpoint errors without token material.",
+        "Retain verification of the resulting Copilot assignee rather than trusting a successful API response."
+      ],
+      "id": "RC-04",
+      "impact": "Assignment was initially nondeterministic and depended on external intervention. The kickoff state became obsolete within minutes.",
+      "root_cause": "The workflow lacked its dedicated Copilot assignment credential and correctly declared the automated assignment blocked. A later external assignment recovered the Copilot task, proving Copilot service authorization itself was available through another actor/path.",
+      "severity": "HIGH",
+      "symptom": "The kickoff workflow recorded BLOCKED_AUTH, although Copilot was subsequently assigned and produced PR #108.",
+      "tests_required": [
+        "Test missing token, invalid token, insufficient permission, already assigned and successful assignment cases.",
+        "Assert BLOCKED_AUTH is emitted only for a current unresolved assignment failure."
+      ]
+    },
+    {
+      "classification": "PROVEN",
+      "component": "Copilot PR reconciliation and ai-reviews ledger",
+      "confidence": 1.0,
+      "corrective_action": "On matching Copilot PR opened/synchronize/reopened events, first validate identity and report shape, then atomically publish copilot=DONE and the PR URL before attempting master adjudication. Preserve GPT/Gemini INCOMPLETE independently.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/latest_status.json remains state=BLOCKED_COPILOT_AUTH, copilot=BLOCKED_AUTH and three_agent_reports_complete=false.",
+        "/tmp/hourly-failure-evidence/copilot_pr_108.json shows an open draft PR with changed_files=2, additions=228 and a matching cycle/source.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:395-412 writes latest_status exactly once from the kickoff assignment snapshot.",
+        ".github/workflows/gpt-master-strategy-action.yml only updates ai-reviews after passing report validation, completeness checks, synthesis and policy gating; there is no early reconciliation step for PR arrival."
+      ],
+      "exact_files_or_steps": [
+        "Add an early reconciliation job/step in .github/workflows/gpt-master-strategy-action.yml with minimal read/write scope.",
+        "Write copilot.json, copilot.md, copilot_report_pr and a state such as REPORTS_INCOMPLETE to strategy/runs/<cycle> and latest_status.",
+        "Use cycle/source/evidence tuple as the idempotency key.",
+        "Add retry for concurrent ai-reviews push/rebase conflicts and prevent older cycles from overwriting a newer latest_status."
+      ],
+      "id": "RC-05",
+      "impact": "The authoritative status ledger lied about current Copilot state, blocked Telegram completion visibility, and obscured that the remaining blockers were GPT/Gemini and workflow approval.",
+      "root_cause": "The state machine has no durable PR-arrival reconciliation stage. Copilot success can only be reflected after the entire GPT Master path succeeds, so assignment recovery and report delivery are conflated with master adjudication.",
+      "severity": "CRITICAL",
+      "symptom": "ai-reviews latest_status remained BLOCKED_COPILOT_AUTH after Copilot completed PR #108.",
+      "tests_required": [
+        "PR-arrival test starting from BLOCKED_AUTH and ending with copilot=DONE while GPT/Gemini remain INCOMPLETE.",
+        "Idempotent synchronize/reopened event tests.",
+        "Concurrent-cycle test proving older reconciliation cannot overwrite newer latest status.",
+        "Reject mismatched cycle/source/evidence and non-two-file PRs."
+      ]
+    },
+    {
+      "classification": "PROVEN_RUN_BLOCK; PLATFORM_POLICY_CAUSE_HYPOTHESIS",
+      "component": "GPT Master workflow execution",
+      "confidence": 0.99,
+      "corrective_action": "Inspect the repository/organization Actions approval policy and explicitly authorize the trusted same-repository Copilot bot workflow path, while retaining the workflow's same-repository and two-file validation gates. Add monitoring for action_required runs.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/gpt_master_run.json: event=pull_request, actor=Copilot, status=completed, conclusion=action_required, created_at and updated_at both 03:25:00Z.",
+        "The same run references PR #108 and its correct head SHA.",
+        ".github/workflows/gpt-master-strategy-action.yml:3-8 correctly includes pull_request opened/synchronize/reopened events for the two Copilot report paths.",
+        ".github/workflows/gpt-master-strategy-action.yml:16-19 declares contents, pull-requests and issues write permissions."
+      ],
+      "exact_files_or_steps": [
+        "Review GitHub Actions fork/bot approval settings and audit log for run 32328146903.",
+        "Approve only the trusted same-repository Copilot report workflow or use a controlled workflow_dispatch handoff by a trusted actor.",
+        "Do not broaden pull_request_target permissions or execute untrusted PR code.",
+        "Add an operator alert when a matching master run remains action_required."
+      ],
+      "id": "RC-06",
+      "impact": "No PR validation, report reconciliation, synthesis, ledger publication, PR comment or final Telegram-visible status occurred.",
+      "root_cause": "PROVEN: GitHub held the workflow for an action-required approval before jobs executed. HYPOTHESIS: repository/organization Actions policy required approval for a bot-authored or first-time-contributor workflow. No settings export or job log is supplied, so the exact policy cannot be proven.",
+      "severity": "CRITICAL",
+      "symptom": "GPT Master run 32328146903 was triggered but concluded action_required immediately, before useful adjudication.",
+      "tests_required": [
+        "Create a disposable Copilot-style same-repository two-file PR and verify the master job starts without manual intervention.",
+        "Verify fork PRs remain refused.",
+        "Verify action_required monitoring identifies the run and cycle."
+      ]
+    },
+    {
+      "classification": "PROVEN_DOWNSTREAM_BLOCKER",
+      "component": "GPT Master completeness gate",
+      "confidence": 1.0,
+      "corrective_action": "Keep the completeness safeguard. Add bounded provider-only retries with immutable cycle/source/evidence identifiers and publish an explicit REPORTS_INCOMPLETE terminal state when retries are exhausted.",
+      "evidence": [
+        "/tmp/hourly-failure-evidence/gpt.json and gemini.json both have status=INCOMPLETE.",
+        ".github/workflows/gpt-master-strategy-action.yml:130-136 exits with code 3 if any independent report is INCOMPLETE.",
+        "GPT synthesis begins only at line 154."
+      ],
+      "exact_files_or_steps": [
+        "Add workflow_dispatch inputs for cycle_id and provider retry, reading the original evidence tuple from ai-reviews.",
+        "Replace only a matching INCOMPLETE provider artifact after contract validation.",
+        "Retrigger master adjudication only when all three reports are complete."
+      ],
+      "id": "RC-07",
+      "impact": "Approval of the action_required run alone would still leave the hourly report undelivered.",
+      "root_cause": "The master workflow correctly enforces completeness, but there is no retry/recovery orchestration for failed independent providers before adjudication.",
+      "severity": "HIGH",
+      "symptom": "Even if run 32328146903 were approved, the cycle could not reach GPT synthesis.",
+      "tests_required": [
+        "Retry replaces only the selected matching INCOMPLETE report.",
+        "Mismatched source/evidence is rejected.",
+        "Exhausted retries publish REPORTS_INCOMPLETE without weakening the master gate."
+      ]
+    },
+    {
+      "classification": "PROVEN",
+      "component": "Telegram/operator visibility",
+      "confidence": 1.0,
+      "corrective_action": "Reconcile ai-reviews first, then add deduplicated alerts for INCOMPLETE providers, BLOCKED_AUTH, Copilot report arrival and MASTER_ACTION_REQUIRED. Preserve MASTER-only authorization and sanitized content.",
+      "evidence": [
+        "learnerbot/ai_ops_status.py:184-204 reads strategy/latest_status.json from ai-reviews.",
+        "learnerbot/telegram_ai_ops_patch.py:216-235 polls ai-reviews every 60 seconds and emits only transition_messages.",
+        "learnerbot/ai_ops_status.py:276-294 emits strategy notifications for cycle start, all-three completion, master availability and change PR, but not individual INCOMPLETE/BLOCKED_AUTH transitions.",
+        "/tmp/hourly-failure-evidence/latest_status.json remained BLOCKED_COPILOT_AUTH with no master decision.",
+        "Telegram commands/menu can display the stale state, but no evidence proves successful delivery for this cycle."
+      ],
+      "exact_files_or_steps": [
+        "Extend learnerbot/ai_ops_status.py transition_messages with strategy provider and blocked/action-required transitions.",
+        "Extend status schema to include copilot_report_pr, master_run_url and master_run_state.",
+        "Update learnerbot/telegram_ai_ops_patch.py and learnerbot/telegram_ai_reports_menu_patch.py to render these states.",
+        "Persist notification hashes so repeated polling does not spam."
+      ],
+      "id": "RC-08",
+      "impact": "Operators could miss the actual failure progression and would not see Copilot's later success or the master approval requirement without inspecting GitHub directly.",
+      "root_cause": "Telegram is downstream of the stale ledger and its strategy transition model omits provider-failure, assignment-blocked, recovered-assignment and action_required states.",
+      "severity": "HIGH",
+      "symptom": "Telegram could show only the stale ai-reviews state and did not provide a dedicated notification for Copilot blockage/recovery or individual strategy provider failures.",
+      "tests_required": [
+        "Transition tests for WAITING\u2192INCOMPLETE, BLOCKED_AUTH\u2192DONE, master action_required and final master completion.",
+        "Deduplication and fetch-failure tests.",
+        "MASTER authorization and sanitized-message tests."
+      ]
+    },
+    {
+      "classification": "PROVEN_LATENT_DEFECTS_NOT_ESTABLISHED_AS_THIS_RUN_CAUSE",
+      "component": "Workflow and CLI reliability",
+      "confidence": 0.95,
+      "corrective_action": "Pin qualified CLI versions, standardize supported argument ordering across workflows, and update contract tests to validate behavior rather than obsolete literals.",
+      "evidence": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:43 installs both provider CLIs with @latest.",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml:194 uses global --ask-for-approval before exec.",
+        ".github/workflows/gpt-master-strategy-action.yml:200 and 303 use 'codex exec ... --ask-for-approval never', an ordering explicitly rejected by tests/test_hourly_three_agent_workflow_contract.py:17-20 for the hourly workflow.",
+        "tests/test_hourly_three_agent_strategy_workflow.py:12 expects '@copilot', while the workflow uses API assignment and contains no such literal.",
+        "The requested targeted pytest run could not execute because pytest is not installed in the audit environment."
+      ],
+      "exact_files_or_steps": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml",
+        ".github/workflows/gpt-master-strategy-action.yml",
+        "tests/test_hourly_three_agent_workflow_contract.py",
+        "tests/test_hourly_three_agent_strategy_workflow.py"
+      ],
+      "id": "RC-09",
+      "impact": "A future approved master run may fail at synthesis/implementation CLI parsing. Mutable CLI upgrades can introduce regressions such as sandbox incompatibility. The stale test can produce misleading CI failures.",
+      "root_cause": "Provider tool versions are unpinned, allowing hourly behavior to change without source changes. Codex invocation conventions are inconsistent, and workflow contract tests do not cover the master invocations or accurately reflect the assignment implementation.",
+      "severity": "MEDIUM",
+      "symptom": "The workflows install mutable latest CLIs and use inconsistent Codex argument ordering; current source tests also contain a stale expectation.",
+      "tests_required": [
+        "Run provider --version and minimal invocation smoke tests on the GitHub runner image.",
+        "Add tests for both master Codex command lines.",
+        "Run the workflow contract, ai_ops_status and Telegram visibility test suites in CI."
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "scope": "HOURLY_REPORT_PIPELINE_FAILURE_AUDIT",
+  "source_commit": "128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+  "status": "ROOT_CAUSES_FOUND"
+}
