@@ -32,6 +32,10 @@ from . import profit_control_master_summary_patch as _profit_master_summary
 from . import solana_profit_first_live_correction_patch as _profit_first_live
 from . import solana_partial_sell_profit_guard_patch as _partial_sell_guard
 from . import solana_positive_edge_entry_gate_patch as _positive_edge
+# Owner-requested strategy rollback is deliberately imported AFTER the later
+# strategy wrappers so it can restore first-day policy behaviour while leaving
+# all execution/accounting/simulation/liquidity/circuit safety wrappers intact.
+from . import solana_first_day_strategy_restore_patch as _first_day_strategy
 
 
 def _recompose_execution_validation():
@@ -55,8 +59,8 @@ def _recompose_execution_validation():
 
 def install():
     # This is intentionally a repair-then-verify boundary.  It does not weaken an
-    # invariant: it restores the one exact audited composition and then checks all
-    # identities below.  Any later displacement still fails closed.
+    # invariant: it restores the one exact audited execution composition and then
+    # checks all identities below. Any later displacement still fails closed.
     _recompose_execution_validation()
 
     checks = {
@@ -89,20 +93,22 @@ def install():
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
         "evm_leader_cursor": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
         "transaction_audit_worker": _telegram_ui.start_menu_thread is _audit_worker.start_menu_thread_with_transaction_audit,
+
+        # The later optimisation/reporting modules remain loaded for audit/history,
+        # but the active Solana policy is now explicitly the first profitable
+        # confirmed-fast-lane strategy requested by the owner.
         "profit_control_amount_objective": (
             _profit_control._is_success is _amount_objective.is_success_amount_first
             and _profit_control.MIN_SUCCESS_PROFIT_FACTOR == _amount_objective.MIN_AMOUNT_PROFIT_FACTOR
         ),
         "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
-        "profit_first_live_settings": _sol.settings is _profit_first_live.settings_profit_first_live,
-        "profit_first_full_sell_inner": _partial_sell_guard._PREV_PROCESS is _profit_first_live.process_leader_event_profit_first,
-        "partial_sell_guard_inner": _positive_edge._PREV_PROCESS is _partial_sell_guard.process_leader_event_partial_profit_guard,
-        "partial_sell_hard_profit_floor": str(_partial_sell_guard._HARD_MIN_PARTIAL_NET_PCT) == "3.0",
-        "partial_sell_low_capital_floor": str(_partial_sell_guard._HARD_MIN_POSITION_ECONOMIC_VALUE_SOL) == "0.002",
-        "positive_edge_entry_gate": _sol.process_leader_event is _positive_edge.process_leader_event_positive_edge,
-        "platform_amount_target": _positive_edge._HARD_PLATFORM_TARGET_PF >= _amount_objective.MIN_AMOUNT_PROFIT_FACTOR,
-        "profit_control_leader_gate_inner": _positive_edge._PREV_COPIED_OK is _profit_control.copied_ok_with_profit_control,
-        "positive_edge_first_loss_quarantine": _profit_guard._copied_ok is _positive_edge.copied_ok_quarantine_first_loss,
+        "first_day_strategy_reference": _first_day_strategy.FIRST_DAY_REFERENCE_COMMIT == "f0ca88450fe96a316dc15e676fab1e36c1137285",
+        "first_day_strategy_settings": _sol.settings is _first_day_strategy.settings_first_day_strategy,
+        "first_day_strategy_process": _sol.process_leader_event is _live.process_leader_event,
+        "first_day_strategy_copied_guard": _profit_guard._copied_ok is _first_day_strategy.copied_ok_first_day,
+        "first_day_signal_age": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("max_signal_age_seconds") == "30",
+        "first_day_take_profit": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("take_profit_pct") == "25",
+        "first_day_stop_loss": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("stop_loss_pct") == "10",
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
         "profit_control_master_summary": _audit_worker.run_hourly_gpt_review is _profit_master_summary.run_hourly_review_with_master_control_summary,
     }
