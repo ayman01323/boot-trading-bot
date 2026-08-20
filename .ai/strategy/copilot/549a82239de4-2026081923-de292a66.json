@@ -1,0 +1,176 @@
+{
+  "cycle_id": "549a82239de4-2026081923-de292a66",
+  "evidence_gaps": [
+    "Fresh runtime evidence within 2h is false for this cycle, so profitability, canary readiness and live readiness cannot be inferred from the repository review alone.",
+    "The checked-out worktree does not include the sanitised hourly evidence package referenced by SHA-256, so code findings could not be cross-checked against the exact latest scorecards or realised outcomes for this cycle.",
+    "Solana currently lacks a checked-in executable quote/sellability adapter, so cross-chain portability is not yet testable with symmetric current-edge evidence.",
+    "No fresh per-chain labelled dataset is present in the repository to validate calibrated positive-net-edge forecasts out of sample.",
+    "Needed next research sources: Dune for multi-wallet cohort persistence, DEX Screener for liquidity/flow confirmation, Jupiter for Solana executable route costs, Etherscan V2 for EVM wallet-route reconstruction, and DefiLlama for chain/regime context."
+  ],
+  "evidence_sha256": "de292a662310f5896c67ef0d79fa5d8e7decb2f05de99ef53d9564f76f5f283d",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.93,
+      "downside_risk": "Keeping the current governance does not by itself create new opportunities, so activity may remain low until better chain-specific evidence arrives.",
+      "evidence": [
+        {
+          "detail": "Lines 5-24 and 61-90 define durable net profitability after costs, separate opportunities/eligible_opportunities/trades, and explicitly replace money-losing strategies even when win count is high.",
+          "path": "docs/STRATEGY_LAB.md"
+        },
+        {
+          "detail": "Lines 399-457 evaluate strategies with money-weighted net profit, profit factor, eligible participation and explicit no-live-auto-promote output.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Lines 75-126 verify no-edge inactivity is not punished, net-losing strategies are replaced despite more wins than losses, and positive candidates remain non-live.",
+          "path": "tests/test_strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Preserves disciplined evaluation while fresher evidence is collected, reducing the risk of drifting back toward activity quotas or stale-evidence promotion.",
+      "id": "copilot-p1",
+      "minimum_observation": "3 fresh hourly review windows plus >=8 realised or simulated trades per reviewed strategy where available",
+      "rationale": "This is the strongest part of the current design: it already measures the right objective and resists the common failure mode of forcing trades or promoting on raw win rate.",
+      "shadow_test": "Across at least 3 fresh hourly windows per chain, confirm every review and scorecard still separates opportunities, eligible opportunities and trades, and that any replace/promote recommendation continues to follow net P&L, profit factor and participation rather than win count alone. Reject any workflow that treats stale or quote-only evidence as live-readiness proof.",
+      "strategy": "Money-weighted Strategy Lab governance",
+      "suggested_files": []
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Jupiter quote staleness, rate limits and routing variability can produce misleading shadow edges unless freshness and simulation bounds remain strict.",
+      "evidence": [
+        {
+          "detail": "Lines 269-330 intentionally fail closed on Solana by leaving gross_edge_bps, liquidity_score and sellability_score at zero and setting needs_quote_feature_adapter=True.",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "Lines 69-107 assert the Solana adapter does not invent current edge, produces no eligible signals, and only exposes historical wallet context.",
+          "path": "tests/test_market_feature_shadow_executor.py"
+        },
+        {
+          "detail": "Lines 206-220 and 231-243 surface quote-feature, liquidity, sellability and forecast gaps in SHADOW scorecards and explicitly forbid promotion from quote/simulation evidence alone.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        }
+      ],
+      "expected_effect": "Improves Solana shadow evidence quality without weakening live safety controls, making portability tests falsifiable instead of speculative.",
+      "id": "copilot-p2",
+      "minimum_observation": "6 fresh hourly windows and >=30 Solana observations with executable quotes",
+      "rationale": "Cross-chain strategy families cannot be evaluated fairly on Solana until the lab sees chain-specific executable quotes, sellability and priority-cost inputs instead of zeroed placeholders.",
+      "shadow_test": "In SHADOW only, add current Solana quote age, sellability, slippage and priority-fee features to recent observations. Over at least 6 fresh hourly windows and >=30 quoted observations, compare quote-simulated net edge with later shadow outcomes. Reject the adapter if median quote error exceeds 5 bps, realised net after recorded costs is <= 0, or exit/sell failures rise above baseline.",
+      "strategy": "Solana executable quote and sellability adapter",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.81,
+      "downside_risk": "Profitable-wallet mining is vulnerable to survivor bias, regime drift and crowding; copied patterns can decay once costs or competition rise.",
+      "evidence": [
+        {
+          "detail": "Lines 132-210 already summarise profitable wallets as anonymised, money-weighted research evidence with route counts and a warning not to auto-copy a single wallet.",
+          "path": "learnerbot/strategy_lab_research.py"
+        },
+        {
+          "detail": "Lines 213-256 already group learned strategy_patterns by class and require chain-specific shadow tests before assuming portability.",
+          "path": "learnerbot/strategy_lab_research.py"
+        },
+        {
+          "detail": "Lines 26-49 and 92-109 prioritise learned patterns, route replication and differentiated hypotheses over dependence on one selected leader wallet.",
+          "path": "docs/STRATEGY_LAB.md"
+        },
+        {
+          "detail": "Lines 33-98 and 137-223 show production recommendations are still anchored to approved top-20 leader wallets plus copy-specific gates, so diversification beyond leader-copy remains incomplete.",
+          "path": "learnerbot/copy_engine.py"
+        }
+      ],
+      "expected_effect": "Could diversify alpha sources away from leader selection alone and produce route/behaviour strategies that survive the loss of any one copied wallet.",
+      "id": "copilot-p3",
+      "minimum_observation": ">=40 eligible shadow observations per chain spanning >=2 independent windows and >=2 wallets",
+      "rationale": "The repository already contains the research primitives needed to learn from multiple profitable wallets and route fingerprints; the next step is converting repeated multi-wallet behaviour into bounded SHADOW hypotheses instead of broadening single-wallet reliance.",
+      "shadow_test": "For each proposed cohort pattern, require evidence from >=2 independent profitable wallets, >=2 time windows and positive average net after recorded costs on each chain separately. Re-quote the current route in SHADOW and compare pattern-triggered net P&L/profit factor against the baseline leader-copy family over >=40 eligible observations. Reject any pattern that collapses back to one wallet, loses money after costs, or fails to reproduce on current quotes.",
+      "strategy": "Profitable wallet cohort pattern transfer",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_strategy_lab_cross_chain_research.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.76,
+      "downside_risk": "Lookahead leakage, stale labels, regime overfit and uneven cross-chain data quality can create a false precision advantage that disappears out of sample.",
+      "evidence": [
+        {
+          "detail": "Lines 74-99 define the forecast objective correctly as positive net edge after costs, with strict time ordering, calibration and regime breakdown requirements.",
+          "path": "learnerbot/strategy_lab_research.py"
+        },
+        {
+          "detail": "Lines 228-246 require both a calibrated forecast and a currently executable net edge, and abstain when uncertainty is high.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "Lines 63-91 verify the forecast abstains when uncertainty is high and cannot override a missing current edge.",
+          "path": "tests/test_cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "Lines 58-81 and 120-143 accept only forecast proposals targeted at positive_net_edge_after_costs and preserve chain_scope plus SHADOW-only asset request handling.",
+          "path": "learnerbot/strategy_ai_proposals.py"
+        }
+      ],
+      "expected_effect": "If supported by fresh labels and calibration, an abstaining forecast could improve opportunity selection and reduce low-edge participation across both Solana and EVM.",
+      "id": "copilot-p4",
+      "minimum_observation": ">=8 time-ordered windows per chain with separate train/validation/test splits and >=50 labelled opportunities per chain",
+      "rationale": "The forecast scaffolding is thoughtfully constrained, but the repository review does not include fresh labelled outcomes proving that a calibrated model improves net P&L after costs on either chain.",
+      "shadow_test": "Train separate Solana and EVM models on strictly pre-decision features with time-ordered train/validation/test splits. Require positive out-of-sample net P&L after recorded costs, profit factor > 1.10, acceptable Brier/log-loss calibration and no worse largest-loss profile than incumbent shadow selectors over >=8 windows. Reject any model that depends on post-trade features or loses money net of costs.",
+      "strategy": "Forecasted Positive Net Edge",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_ai_proposals.py",
+        "tests/test_cross_chain_strategy_signals.py",
+        "tests/test_strategy_ai_proposals.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    }
+  ],
+  "provider": "copilot",
+  "rejected_ideas": [
+    {
+      "idea": "Claim current profitability, canary readiness or live readiness from this cycle.",
+      "reason": "Fresh runtime evidence is explicitly false, and shadow_strategy_executor.py lines 18-21 and 238-243 say quote/simulation scorecards are research evidence only, not realised P&L or promotion proof."
+    },
+    {
+      "idea": "Expand single-wallet leader copying as the main source of edge without multi-wallet corroboration.",
+      "reason": "docs/STRATEGY_LAB.md lines 26-49 and strategy_lab_research.py lines 205-209 explicitly push the lab toward repeated multi-wallet behaviours and away from dependence on one selected leader wallet."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "549a82239de4dcf547b9367f6abe6f962ebd3ba5",
+  "status": "CHANGES_PROPOSED",
+  "summary": "The checked-in Strategy Lab is already SHADOW-first, cross-chain aware, and correctly optimises money-weighted net P&L over win count, but runtime evidence for this cycle is not fresh. I therefore do not support profitability, canary, or live-readiness claims. The highest-value next steps are to preserve the current cost-aware governance, add a chain-specific Solana quote/sellability adapter, and turn profitable-wallet cohort learning plus calibrated forecasts into falsifiable SHADOW-only experiments backed by fresh out-of-sample evidence."
+}
