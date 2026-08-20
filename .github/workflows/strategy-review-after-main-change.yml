@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           # Every main change and explicit force-review trigger launches a fresh exact-main strategy cycle.
-          sha="$(gh api --repo "$GITHUB_REPOSITORY" "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
           echo "Current main: ${sha}"
           gh workflow run hourly-three-agent-strategy-cycle.yml --repo "$GITHUB_REPOSITORY" --ref main
           echo "Dispatched hourly-three-agent-strategy-cycle.yml for current main."
