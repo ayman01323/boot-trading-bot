@@ -1,12 +1,12 @@
 # GPT strategy review
 
-Architecture-only review completed. The repository generally fails closed, requires positive estimated net edge, preserves sellability/liquidity/simulation controls, and avoids optimizing raw win count. However, current SHADOW accounting is not sufficient to establish durable money-weighted net P&L: Solana has no current executable-edge adapter, EVM simulated outcomes are not realised outcomes, execution failures are not economically charged to strategy results, and Strategy Lab promotion thresholds do not require chain-specific cost completeness or bound execution-failure rates. STRATEGY/MARKET losses must be measured from successfully executed positions after all costs; EXECUTION/INFRASTRUCTURE failures must be reported separately while also charging any incurred gas, priority fees, rent, or failed-transaction costs to net P&L. No profitability, CANARY-readiness, or LIVE-readiness conclusion is supported.
+Architecture-only review completed and evidence hash/commit verified. The repository contains strong fail-closed execution concepts and correctly avoids treating quote simulations as realised profit, but Strategy Lab accounting can aggregate unlike native currencies, accepts externally supplied net profit, omits explicit price-impact/gas/priority/rent fields, and does not economically attribute execution failures. Solana SHADOW inputs lack current executable quote-edge evidence. Consequently no profitability, CANARY-readiness or LIVE-readiness claim is supported. STRATEGY/MARKET losses must be measured separately from EXECUTION/INFRASTRUCTURE costs and failures.
 
-## IMPROVE — Strategy Lab portfolio evaluation
-A strategy can appear positive when omitted chain costs or failed attempts are material. Preserve separate cause labels: completed-trade adverse movement is STRATEGY/MARKET loss; RPC, simulation, broadcast, revert, expiry, or confirmation failure is EXECUTION/INFRASTRUCTURE failure. Any fee actually paid by the latter must still reduce money-weighted net P&L.
+## REWORK — Strategy Lab portfolio evaluation
+Summing SOL, ETH and other native units is economically invalid, while caller-supplied net values can conceal omitted costs. Record immutable cost components and settlement denomination per observation. Classify adverse outcomes as STRATEGY_MARKET when an executed position loses after complete costs, EXECUTION when execution quality or transaction failure consumes edge, and INFRASTRUCTURE when RPC/indexer/queue failure prevents or corrupts measurement.
 
-## SHADOW_MORE — Solana strategy families
-Leader history or positive-trade ratio is not a contemporaneous executable edge. Solana needs decision-time round-trip quotes and chain-specific costs, including priority/Jito fees, price impact, token-account rent effects, quote expiry, blockhash expiry, and failed-signature fees.
+## NEW_SHADOW — Solana executable-edge adapter
+Historical leader quality is not current executable edge. Solana requires contemporaneous round-trip quotes, size-dependent impact, base and priority fees, account/rent treatment, sellability, quote age, landing probability and failed-attempt cost.
 
-## SHADOW_MORE — EVM Cross Venue Net Arbitrage and Learned Route Replication
-The EVM execution gate is conservative, but quote/simulation success cannot establish durable net profitability under state movement, inclusion latency, reverts, replacements, and dynamic base/priority fees.
+## SHADOW_MORE — Cross-chain strategy families
+A positive aggregate can conceal chain, size or regime dependence. EVM must include gas bidding, builder payments, revert/replacement costs and atomicity; Solana must include priority fees, landing failures, account economics and non-atomic exit risk. Promotion evidence should be forward, chain-stratified and cost-complete.

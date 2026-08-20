@@ -1,45 +1,47 @@
 {
   "cycle_id": "193e77234d4d-2026082014-1cc7deba",
   "evidence_gaps": [
-    "Fresh-within-2h runtime forensics are unavailable; evidence.json reports MISSING_RUNTIME_FORENSICS with generated_epoch 0.",
-    "No cost-complete, money-weighted realised net P&L by strategy, chain, asset, and notional.",
-    "No terminal attempt ledger joining signal, quote, simulation, submission, receipt/signature, fills, unwind, and all incurred costs.",
-    "No explicit split of STRATEGY/MARKET losses from EXECUTION/INFRASTRUCTURE failures, with paid failure costs reconciled into net P&L.",
-    "No Solana contemporaneous round-trip executable quotes, liquidity, sellability, price impact, priority/Jito fee, rent, expiry, and failed-signature evidence.",
-    "No EVM quote-to-realised edge-capture distribution covering base fee, priority fee, builder payment, replacements, reverts, and inclusion latency.",
-    "No out-of-sample regime coverage, drawdown distribution, tail loss, capital-weighted return, or confidence bounds.",
-    "Before any promotion: require fresh runtime evidence, cost completeness, deduplicated terminal outcomes, positive money-weighted net P&L after every cost, acceptable profit factor and drawdown, bounded execution-failure rate, stable out-of-sample results, and chain-specific liquidity/sellability validation."
+    "Fresh sanitised runtime forensics generated within two hours.",
+    "Per-trade decision timestamp, chain, strategy/version, asset, notional and settlement denomination.",
+    "Contemporaneous executable entry/exit quotes, quote age, route, liquidity, sellability, size-dependent price impact and realised slippage.",
+    "EVM gas used and effective gas price, priority/builder payments, reverted/replaced transaction costs, atomicity outcome and confirmation latency.",
+    "Solana base and priority fees, compute budget, landing/simulation outcomes, account creation/closure and refundable-rent reconciliation.",
+    "Complete reconciled cash flows and realised money-weighted NET P&L after platform/profit-share fees.",
+    "Failure taxonomy and counts separating STRATEGY_MARKET loss from EXECUTION and INFRASTRUCTURE failure, including monetary cost and missed-opportunity labeling.",
+    "Forward out-of-sample observations including rejected signals and failed attempts, stratified by chain, size, asset and market/congestion regime.",
+    "Evidence of parameter freeze, absence of look-ahead leakage, independence/deduplication and uncertainty estimates.",
+    "Before any promotion: fresh runtime evidence, positive cost-complete out-of-sample money-weighted net with conservative uncertainty above zero, acceptable drawdown/failure bounds, and no dependence on a single asset or regime."
   ],
   "evidence_sha256": "1cc7debad070dc4efef75743f666dce11b4d91f632491e81b8f226f12ebc003e",
   "no_live_changes": true,
   "proposals": [
     {
-      "action": "IMPROVE",
+      "action": "REWORK",
       "chain_scope": [
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.94,
-      "downside_risk": "More observations will be classified as cost-incomplete and remain SHADOW; attribution errors could double-count costs unless transaction identifiers are deduplicated.",
+      "confidence": 0.98,
+      "downside_risk": "Stricter completeness rules will reduce usable samples and may expose historical records as non-comparable.",
       "evidence": [
         {
-          "detail": "Windows store fees, slippage, net profit, and execution-failure counts, but have no explicit price-impact, gas/priority-fee, failed-attempt-cost, rent, or cost-completeness fields.",
-          "path": "learnerbot/strategy_lab.py:90"
+          "detail": "Window records contain profit, fees and slippage but no chain, settlement currency, gas/priority fee, price-impact, refundable-rent or failure-cost fields.",
+          "path": "learnerbot/strategy_lab.py:79"
         },
         {
-          "detail": "Promotion candidacy depends on aggregate net profit and profit factor without requiring complete cost provenance or an acceptable execution-failure rate.",
-          "path": "learnerbot/strategy_lab.py:432"
+          "detail": "Net may be supplied by the caller; otherwise it is gross profit minus gross loss, fees and slippage only.",
+          "path": "learnerbot/strategy_lab.py:329"
         },
         {
-          "detail": "Quote-simulated net is derived from notional multiplied by expected net-edge bps; it is explicitly not realised P&L.",
-          "path": "learnerbot/shadow_strategy_executor.py:96"
+          "detail": "Metrics sum monetary fields across all selected windows without chain/currency normalization.",
+          "path": "learnerbot/strategy_lab.py:371"
         }
       ],
-      "expected_effect": "Prevents promotion from incomplete cost accounting and makes Solana and EVM results economically comparable without conflating failure causes.",
-      "id": "net-pnl-cost-ledger-v1",
-      "minimum_observation": "At least 3 independent market-regime windows and 30 terminal executable attempts per chain and strategy, including failures; retain SHADOW if fewer than 10 completed round trips are available.",
-      "rationale": "A strategy can appear positive when omitted chain costs or failed attempts are material. Preserve separate cause labels: completed-trade adverse movement is STRATEGY/MARKET loss; RPC, simulation, broadcast, revert, expiry, or confirmation failure is EXECUTION/INFRASTRUCTURE failure. Any fee actually paid by the latter must still reduce money-weighted net P&L.",
-      "shadow_test": "Replay SHADOW windows with per-attempt cost completeness. For EVM include swap/LP fees, realised price impact, gas, priority fee, builder payment, revert cost, and replacement transactions. For Solana include swap fees, priority/Jito fees, price impact, rent effects, and failed-signature fees. Stop and mark the window invalid if any submitted attempt lacks a deduplicated terminal outcome or cost provenance. Pass only if money-weighted net P&L remains positive and profit factor exceeds the research threshold after all costs.",
+      "expected_effect": "Comparable, auditable money-weighted NET P&L by strategy and chain, with portfolio totals converted using decision-time and exit-time valuation rather than mixed native units.",
+      "id": "cost-ledger-chain-normalization-v1",
+      "minimum_observation": "At least 30 closed, cost-complete observations per strategy-chain-size bucket across at least 3 independent market regimes, with every failure classified and monetary costs reconciled.",
+      "rationale": "Summing SOL, ETH and other native units is economically invalid, while caller-supplied net values can conceal omitted costs. Record immutable cost components and settlement denomination per observation. Classify adverse outcomes as STRATEGY_MARKET when an executed position loses after complete costs, EXECUTION when execution quality or transaction failure consumes edge, and INFRASTRUCTURE when RPC/indexer/queue failure prevents or corrupts measurement.",
+      "shadow_test": "Replay SHADOW windows with independently recomputed net = proceeds minus principal, venue fees, price impact, slippage, gas or Solana base/priority fees, non-refundable account costs and failure costs. Stop and mark DATA_INCOMPLETE if denomination, cost provenance or reconciliation is missing; fail the hypothesis if recomputed aggregate net is non-positive or differs from recorded net beyond a predefined rounding tolerance.",
       "strategy": "Strategy Lab portfolio evaluation",
       "suggested_files": [
         "learnerbot/strategy_lab.py",
@@ -47,32 +49,32 @@
       ]
     },
     {
-      "action": "SHADOW_MORE",
+      "action": "NEW_SHADOW",
       "chain_scope": [
         "SOLANA"
       ],
-      "confidence": 0.98,
-      "downside_risk": "Quote sampling may overstate fill quality and create selection bias; rapid pools may make observations stale before execution.",
+      "confidence": 0.97,
+      "downside_risk": "Quote collection can be rate-limited and may bias the sample toward routes for which infrastructure responds successfully.",
       "evidence": [
         {
-          "detail": "Solana leader events deliberately set gross edge, fees, slippage, price impact, liquidity, and sellability to zero and expose no executable outcome.",
-          "path": "learnerbot/market_feature_adapter.py:273"
+          "detail": "Solana leader observations are emitted as SIGNAL_ONLY_MISSING_CURRENT_EXECUTABLE_EDGE with zero liquidity/sellability and needs_quote_feature_adapter=true.",
+          "path": "learnerbot/market_feature_adapter.py"
         },
         {
-          "detail": "Solana observations are labelled SIGNAL_ONLY_MISSING_CURRENT_EXECUTABLE_EDGE and require a quote feature adapter.",
-          "path": "learnerbot/market_feature_adapter.py:305"
+          "detail": "Only observations with an available executable outcome receive quote-simulated net; these are explicitly excluded from promotion evidence.",
+          "path": "learnerbot/shadow_strategy_executor.py:93"
         },
         {
-          "detail": "Common eligibility correctly requires positive cost-adjusted edge plus liquidity, sellability, and quote freshness, so missing Solana measurements fail closed.",
-          "path": "learnerbot/cross_chain_strategy_signals.py:65"
+          "detail": "Legacy SHADOW accounting uses fixed estimated entry and exit network/priority fees, which may not represent congestion-dependent execution economics.",
+          "path": "learnerbot/solana_sibot.py:48"
         }
       ],
-      "expected_effect": "Allows falsifiable Solana research while retaining abstention whenever an executable round-trip edge cannot be demonstrated.",
-      "id": "solana-executable-edge-shadow-v1",
-      "minimum_observation": "At least 100 timestamped candidates across 7 days and multiple congestion/liquidity regimes, with at least 30 fully costed executable round-trip simulations and explicit missing-data counts.",
-      "rationale": "Leader history or positive-trade ratio is not a contemporaneous executable edge. Solana needs decision-time round-trip quotes and chain-specific costs, including priority/Jito fees, price impact, token-account rent effects, quote expiry, blockhash expiry, and failed-signature fees.",
-      "shadow_test": "At each candidate timestamp capture buy and immediately sellable unwind quotes at the same proposed size, liquidity/sellability checks, price impact, all fees, and a latency reserve. Compare predicted net with later simulated or observed executable outcomes without submitting trades. Fail the hypothesis if cost-complete median prediction error consumes the edge, failure probability makes expected net non-positive, or sellability cannot be revalidated.",
-      "strategy": "Solana strategy families",
+      "expected_effect": "Prevents leader momentum or win history from masquerading as executable Solana profit and identifies whether losses arise from market selection or execution infrastructure.",
+      "id": "solana-executable-shadow-edge-v1",
+      "minimum_observation": "At least 100 independent candidates, including at least 30 executable round trips and all rejected/failed attempts, spanning congestion and liquidity conditions over no less than 14 days.",
+      "rationale": "Historical leader quality is not current executable edge. Solana requires contemporaneous round-trip quotes, size-dependent impact, base and priority fees, account/rent treatment, sellability, quote age, landing probability and failed-attempt cost.",
+      "shadow_test": "For each timestamped candidate, capture decision-time buy and sell quotes at the intended size, price impact, slippage limits, base/priority fees, account costs, simulation result and eventual executable mark-out. Treat failed or stale quote/simulation/landing attempts as EXECUTION or INFRASTRUCTURE outcomes, not strategy losses. Stop if cost fields are missing or quote age exceeds the configured bound; reject the hypothesis if cost-complete forward net is non-positive.",
+      "strategy": "Solana executable-edge adapter",
       "suggested_files": [
         "learnerbot/market_feature_adapter.py",
         "learnerbot/shadow_strategy_executor.py"
@@ -81,54 +83,55 @@
     {
       "action": "SHADOW_MORE",
       "chain_scope": [
+        "SOLANA",
         "EVM"
       ],
-      "confidence": 0.9,
-      "downside_risk": "Strict cost completeness and regime stratification may leave few eligible samples; simulated fills may still differ from mempool competition.",
+      "confidence": 0.95,
+      "downside_risk": "Promotion becomes slower and genuinely sparse strategies may remain dormant for long periods.",
       "evidence": [
         {
-          "detail": "EVM expected fees include estimated gas and builder payment, while slippage and price impact depend on source-row inputs.",
-          "path": "learnerbot/market_feature_adapter.py:145"
+          "detail": "Common executable rules use fixed net-edge and quote-age thresholds across both chain types after adapter normalization.",
+          "path": "learnerbot/cross_chain_strategy_signals.py:105"
         },
         {
-          "detail": "An exact quote plus simulation is marked outcome_available even though it is not a realised execution outcome.",
-          "path": "learnerbot/market_feature_adapter.py:184"
+          "detail": "Research promotion evaluation requires only 8 trades, 3 windows and profit factor 1.10.",
+          "path": "learnerbot/strategy_lab.py:41"
         },
         {
-          "detail": "Live-cycle simulation reserves 30 percent above estimated gas and rejects routes whose quoted edge cannot cover gas plus minimum profit.",
-          "path": "learnerbot/live_executor.py:529"
+          "detail": "The live-stage state machine can advance after 3 and 8 realised trades, samples too small to establish durable money-weighted performance.",
+          "path": "learnerbot/strategy_canary.py:20"
         }
       ],
-      "expected_effect": "Calibrates quoted edge against executable outcomes and identifies whether losses are MARKET/STRATEGY decay or EXECUTION/INFRASTRUCTURE failure.",
-      "id": "evm-realised-outcome-calibration-v1",
-      "minimum_observation": "At least 50 cost-complete terminal opportunities per supported EVM chain across 7 days, with congestion and volatility strata and no more than 5 percent unattributed attempts.",
-      "rationale": "The EVM execution gate is conservative, but quote/simulation success cannot establish durable net profitability under state movement, inclusion latency, reverts, replacements, and dynamic base/priority fees.",
-      "shadow_test": "Record immutable decision-time quotes and simulations, then measure terminal counterfactual or realised route economics using contemporaneous gas, priority fee, builder payment, price impact, slippage, and failure costs. Stratify MARKET/STRATEGY misses from EXECUTION/INFRASTRUCTURE failures. Stop if lower-confidence-bound money-weighted net P&L is non-positive, realised edge capture is below 50 percent, or submitted-attempt failure rate exceeds 5 percent.",
-      "strategy": "EVM Cross Venue Net Arbitrage and Learned Route Replication",
+      "expected_effect": "Reduces false promotion caused by tiny samples, favourable regimes, mixed economics or repeated correlated observations.",
+      "id": "chain-stratified-oos-promotion-v1",
+      "minimum_observation": "At least 50 closed cost-complete trades per strategy-chain pair, 30 calendar days, 3 regimes, and a conservative confidence interval for mean money-weighted net that remains above zero; promotion additionally requires fresh runtime forensics under two hours old.",
+      "rationale": "A positive aggregate can conceal chain, size or regime dependence. EVM must include gas bidding, builder payments, revert/replacement costs and atomicity; Solana must include priority fees, landing failures, account economics and non-atomic exit risk. Promotion evidence should be forward, chain-stratified and cost-complete.",
+      "shadow_test": "Freeze parameters, then evaluate chronologically out of sample by chain, notional bucket and volatility/congestion regime. Require positive money-weighted net and profit factor after every attributable cost, while reporting STRATEGY_MARKET loss separately from EXECUTION and INFRASTRUCTURE failure cost. Stop on non-positive cumulative net, cost incompleteness, concentration in one asset/regime, or a predefined execution-failure ceiling.",
+      "strategy": "Cross-chain strategy families",
       "suggested_files": [
-        "learnerbot/market_feature_adapter.py",
+        "learnerbot/strategy_lab.py",
         "learnerbot/shadow_strategy_executor.py",
-        "learnerbot/strategy_lab.py"
+        "learnerbot/cross_chain_strategy_signals.py"
       ]
     }
   ],
   "provider": "gpt",
   "rejected_ideas": [
     {
-      "idea": "Promote a strategy because its raw win count or positive-trade ratio is high.",
-      "reason": "Win count ignores loss magnitude, capital weighting, fees, price impact, and execution failures."
+      "idea": "Promote or declare profitable from the current evidence.",
+      "reason": "Runtime forensics are missing and generated_epoch is zero; architecture alone cannot establish realised executable profitability."
     },
     {
-      "idea": "Treat exact quotes and successful simulations as realised profitability evidence.",
-      "reason": "They omit inclusion latency, state changes, failed attempts, and realised unwind economics."
+      "idea": "Optimise leader or strategy selection for win rate.",
+      "reason": "Win count ignores loss magnitude and execution costs; durable money-weighted NET P&L is the objective."
     },
     {
-      "idea": "Force participation to satisfy a minimum trade count.",
-      "reason": "No trade is preferable when positive executable edge is absent; sample thresholds must never manufacture exposure."
+      "idea": "Loosen liquidity, sellability, simulation or positive-edge gates to increase trade frequency.",
+      "reason": "More trades without positive executable edge increase adverse-selection and failure exposure."
     },
     {
-      "idea": "Use EVM gas assumptions unchanged for Solana.",
-      "reason": "Solana priority/Jito fees, rent, blockhash expiry, account creation, and transaction failure economics require separate accounting."
+      "idea": "Combine Solana and EVM native-unit P&L into one raw total.",
+      "reason": "Unlike denominations and chain-specific cost structures make the result economically meaningless."
     }
   ],
   "review_only": true,
@@ -136,5 +139,5 @@
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "193e77234d4d5822b4e470c99de55927089648fa",
   "status": "CHANGES_PROPOSED",
-  "summary": "Architecture-only review completed. The repository generally fails closed, requires positive estimated net edge, preserves sellability/liquidity/simulation controls, and avoids optimizing raw win count. However, current SHADOW accounting is not sufficient to establish durable money-weighted net P&L: Solana has no current executable-edge adapter, EVM simulated outcomes are not realised outcomes, execution failures are not economically charged to strategy results, and Strategy Lab promotion thresholds do not require chain-specific cost completeness or bound execution-failure rates. STRATEGY/MARKET losses must be measured from successfully executed positions after all costs; EXECUTION/INFRASTRUCTURE failures must be reported separately while also charging any incurred gas, priority fees, rent, or failed-transaction costs to net P&L. No profitability, CANARY-readiness, or LIVE-readiness conclusion is supported."
+  "summary": "Architecture-only review completed and evidence hash/commit verified. The repository contains strong fail-closed execution concepts and correctly avoids treating quote simulations as realised profit, but Strategy Lab accounting can aggregate unlike native currencies, accepts externally supplied net profit, omits explicit price-impact/gas/priority/rent fields, and does not economically attribute execution failures. Solana SHADOW inputs lack current executable quote-edge evidence. Consequently no profitability, CANARY-readiness or LIVE-readiness claim is supported. STRATEGY/MARKET losses must be measured separately from EXECUTION/INFRASTRUCTURE costs and failures."
 }
