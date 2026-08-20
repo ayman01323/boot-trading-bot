@@ -1,0 +1,116 @@
+{
+  "provider": "copilot",
+  "source_commit": "eeb90b3d572d2935fe4d04b7609bb2ebb254a523",
+  "cycle_id": "cf72037b0c66-2026082008-fc0284e1",
+  "status": "COMPLETE",
+  "summary": "Root cause identified. The GPT Master path is not completing because the Master reconciler fails in its first PR-resolution step before checkout: it invokes GitHub CLI PR commands without repository context. PR #120 exists and matches the cycle, but the dispatcher has not produced any observed run, and the only observed Master run fails before it can validate the Copilot report or publish ai-reviews state. latest_status.json remains stale because the hourly cycle writes a waiting snapshot once and only a successful Master publish step overwrites it with copilot=DONE and master_decision_available=true.",
+  "findings": [
+    {
+      "severity": "P1",
+      "symptom": "The current cycle never reaches checkout, validation, synthesis, or publication; strategy/runs/cf72037b0c66-2026082008-fc0284e1/master_decision.json is absent.",
+      "evidence": [
+        "ai-reviews branch directory strategy/runs/cf72037b0c66-2026082008-fc0284e1 contains only context.json, gpt.json, gpt.md, gemini.json, gemini.md; master_decision.json is missing.",
+        "GitHub Actions run 32347179519 (GPT Master Strategy Reconciler) failed in step 'Resolve latest cycle and completed Copilot report PR from main'.",
+        "Failed job log ends with: 'failed to run git: fatal: not a git repository (or any of the parent directories): .git)'.",
+        "The failing step calls gh pr list / gh pr view before any actions/checkout: .github/workflows/gpt-master-strategy-action.yml lines 49-62."
+      ],
+      "proven_or_hypothesis": "PROVEN",
+      "root_cause": "The reconciler's initial PR-discovery step uses gh pr list and gh pr view without setting GH_REPO or passing -R, so in the pre-checkout workspace gh tries to infer the repository from git metadata and aborts because no .git checkout exists yet.",
+      "impact": "Master never reaches Copilot report checkout, contract validation, GPT synthesis, policy gate, or ai-reviews publication. three_agent_reports_complete stays false and master_decision_available stays false for the affected cycle.",
+      "exact_fix": "In .github/workflows/gpt-master-strategy-action.yml, give the PR-resolution step explicit repository context by setting GH_REPO: ${{ github.repository }} (or adding -R \"$GITHUB_REPOSITORY\" to gh pr list and both gh pr view calls). Keep the rest of the workflow unchanged.",
+      "files_or_steps": [
+        ".github/workflows/gpt-master-strategy-action.yml lines 49-62",
+        "GitHub Actions run 32347179519, job 96358266767, step 'Resolve latest cycle and completed Copilot report PR from main'"
+      ],
+      "tests": [
+        "Update tests/test_gpt_master_strategy_reconciler.py to assert the workflow explicitly scopes gh PR commands to github.repository.",
+        "After the fix, manually dispatch or wait for schedule and verify the reconciler progresses past the PR-resolution step into checkout and validation."
+      ],
+      "confidence": 0.99
+    },
+    {
+      "severity": "P1",
+      "symptom": "There is no observed dispatcher run proving that PR #120 was found and used to dispatch the Master workflow.",
+      "evidence": [
+        "Workflow 'GPT Master Cycle Dispatcher' exists, but listing workflow runs for gpt-master-cycle-dispatcher.yml returned total_count=0 during this audit.",
+        "PR #120 is open, draft, same-repository, contains exactly the cycle id in its title, and changes exactly two report files under .ai/strategy/copilot/.",
+        "The dispatcher workflow discovers PRs with gh pr list in .github/workflows/gpt-master-cycle-dispatcher.yml lines 42-52, also before any checkout and without explicit repo context."
+      ],
+      "proven_or_hypothesis": "PROVEN + HYPOTHESIS",
+      "root_cause": "Proven: no dispatcher run was observed for this workflow, so the audit found no evidence that the dispatcher actually found PR #120 or dispatched GPT Master. High-confidence hypothesis: when it does run, the current dispatcher step is vulnerable to the same missing-repository-context failure pattern as the reconciler because it calls gh pr list and gh workflow run without GH_REPO/-R in a no-checkout workspace.",
+      "impact": "The intended automatic handoff from Copilot PR creation to Master dispatch is not demonstrated for cycle cf72037b0c66-2026082008-fc0284e1, and may remain broken even after the reconciler fix if dispatcher repo context is not fixed too.",
+      "exact_fix": "In .github/workflows/gpt-master-cycle-dispatcher.yml, set GH_REPO: ${{ github.repository }} for the dispatch step (or add -R \"$GITHUB_REPOSITORY\" to gh pr list and gh workflow run). This is the smallest safe change and keeps PR discovery keyed only by immutable cycle id.",
+      "files_or_steps": [
+        ".github/workflows/gpt-master-cycle-dispatcher.yml lines 42-52",
+        "GitHub Actions workflow metadata for GPT Master Cycle Dispatcher (no observed runs during this audit)",
+        "PR #120 metadata: title 'Copilot hourly strategy review cf72037b0c66-2026082008-fc0284e1', open draft PR, changed_files=2"
+      ],
+      "tests": [
+        "Update tests/test_gpt_master_cycle_dispatcher.py to assert the dispatcher step explicitly scopes gh commands to github.repository.",
+        "After the fix, run the dispatcher manually and confirm it resolves PR #120 and creates a workflow_dispatch run of gpt-master-strategy-action.yml with copilot_pr_number=120."
+      ],
+      "confidence": 0.9
+    },
+    {
+      "severity": "P2",
+      "symptom": "strategy/latest_status.json still reports copilot=WAITING_ASSIGNMENT, state=WAITING_FOR_COPILOT_ASSIGNMENT, three_agent_reports_complete=false, and master_decision_available=false after PR #120 exists and issue #119 is assigned to Copilot.",
+      "evidence": [
+        "ai-reviews strategy/latest_status.json currently shows copilot='WAITING_ASSIGNMENT' and state='WAITING_FOR_COPILOT_ASSIGNMENT'.",
+        "ai-reviews strategy/runs/cf72037b0c66-2026082008-fc0284e1/context.json records copilot_assignment_state='AWAITING_ASSIGNMENT' and copilot_assignment_token_present='false'.",
+        "Issue #119 is now assigned to Copilot and is linked by open PR #120, proving the hourly snapshot is stale rather than current reality.",
+        "The hourly workflow writes latest_status.json once at cycle start with a waiting state based only on COPILOT_STATE: .github/workflows/hourly-three-agent-strategy-cycle.yml lines 444-457.",
+        "The only code path that flips latest_status.json to copilot='DONE', three_agent_reports_complete=true, and master_decision_available=true is the Master publish step: .github/workflows/gpt-master-strategy-action.yml lines 295-344.",
+        "Telegram strategy status renders master_decision_available and three_agent_reports_complete from the ai-reviews status files: learnerbot/ai_ops_status.py lines 187-203 and learnerbot/telegram_ai_ops_patch.py lines 133-145."
+      ],
+      "proven_or_hypothesis": "PROVEN",
+      "root_cause": "latest_status.json is intentionally just the cycle-start snapshot until another workflow overwrites it. Because Master never reaches the publish step, the stale waiting snapshot from the hourly workflow remains in ai-reviews even after Copilot was assigned and PR #120 was opened.",
+      "impact": "Telegram and any other ai-reviews consumers continue to show WAITING/WAITING_ASSIGNMENT instead of a reconciled DONE state, masking that GPT and Gemini finished and that a Copilot report PR already exists.",
+      "exact_fix": "No separate status-only patch is needed if the Master path is repaired. Once dispatcher/reconciler repo context is fixed and the publish step runs successfully, latest_status.json should be overwritten with copilot='DONE', three_agent_reports_complete=true, master_decision_available=true, and state='MASTER_DECIDED'.",
+      "files_or_steps": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml lines 444-457",
+        ".github/workflows/gpt-master-strategy-action.yml lines 295-344",
+        "learnerbot/ai_ops_status.py lines 187-203",
+        "learnerbot/telegram_ai_ops_patch.py lines 133-145"
+      ],
+      "tests": [
+        "Retain/extend tests around strategy status transitions so a published master decision produces three_agent_reports_complete=true and master_decision_available=true for downstream consumers.",
+        "After the workflow fix, verify Telegram's strategy pane shows Copilot DONE, All three complete YES, and Master decision AVAILABLE for the current cycle."
+      ],
+      "confidence": 0.97
+    },
+    {
+      "severity": "P2",
+      "symptom": "The current regression was not covered by the existing workflow tests.",
+      "evidence": [
+        "tests/test_gpt_master_strategy_reconciler.py currently checks schedule, title search text, and report-only invariants but does not assert GH_REPO or -R for gh PR commands.",
+        "tests/test_gpt_master_cycle_dispatcher.py checks cycle-only title search and workflow_dispatch wiring but does not assert explicit repository scoping for gh commands."
+      ],
+      "proven_or_hypothesis": "PROVEN",
+      "root_cause": "The tests validate business intent but not the operational requirement that gh PR/workflow subcommands run before checkout and therefore need explicit repository scoping.",
+      "impact": "A repo-context regression can merge cleanly and only fail at runtime in GitHub-hosted scheduled workflows.",
+      "exact_fix": "Add narrow assertions in the two existing tests requiring GH_REPO or -R usage in the affected workflow steps. No broader test harness change is necessary for the minimal safe fix.",
+      "files_or_steps": [
+        "tests/test_gpt_master_strategy_reconciler.py",
+        "tests/test_gpt_master_cycle_dispatcher.py"
+      ],
+      "tests": [
+        "pytest tests/test_gpt_master_strategy_reconciler.py tests/test_gpt_master_cycle_dispatcher.py"
+      ],
+      "confidence": 0.95
+    }
+  ],
+  "fix_order": [
+    "Patch .github/workflows/gpt-master-strategy-action.yml so every pre-checkout gh PR command has explicit repo context via GH_REPO or -R.",
+    "Patch .github/workflows/gpt-master-cycle-dispatcher.yml the same way for gh pr list and gh workflow run.",
+    "Add/adjust narrow workflow-string regression tests in tests/test_gpt_master_strategy_reconciler.py and tests/test_gpt_master_cycle_dispatcher.py.",
+    "Run the two targeted pytest files, then manually dispatch the dispatcher or Master workflow and verify ai-reviews publication for cycle cf72037b0c66-2026082008-fc0284e1."
+  ],
+  "proof_of_success": [
+    "strategy/runs/cf72037b0c66-2026082008-fc0284e1/completion.json exists in ai-reviews and contains three_agent_reports_complete=true and master_decision_available=true.",
+    "strategy/runs/cf72037b0c66-2026082008-fc0284e1/master_decision.json exists in ai-reviews.",
+    "strategy/latest_status.json shows copilot='DONE', three_agent_reports_complete=true, master_decision_available=true, and state='MASTER_DECIDED' for cycle cf72037b0c66-2026082008-fc0284e1.",
+    "Telegram strategy status renders the reconciled state (Copilot DONE, All three complete YES, Master decision AVAILABLE) after the ai-reviews update is fetched."
+  ],
+  "report_only": true,
+  "no_live_changes": true
+}
