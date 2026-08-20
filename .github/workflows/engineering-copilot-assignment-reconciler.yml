@@ -1,0 +1,185 @@
+name: Engineering Copilot Assignment Reconciler
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: 'Optional weekly engineering source commit'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: engineering-copilot-assignment-reconciler
+  cancel-in-progress: false
+
+jobs:
+  assign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve latest engineering audit source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE: ${{ inputs.source_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${INPUT_SOURCE:-}"
+          if [[ -z "$source_sha" ]]; then
+            set +e
+            source_sha="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/weekly/latest_source_commit.txt?ref=ai-reviews" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n')"
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 || -z "$source_sha" ]]; then
+              echo 'No weekly engineering audit source exists yet.'
+              echo 'found=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid source commit.' >&2; exit 2; }
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "short=${source_sha:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Create or reuse engineering Copilot report issue
+        if: steps.source.outputs.found == 'true'
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          SHORT_SHA: ${{ steps.source.outputs.short }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Weekly Copilot full-bot bug audit ${SHORT_SHA}"
+          issue="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [[ -z "$issue" ]]; then
+            cat > /tmp/copilot-engineering.md <<EOF
+          # Independent Copilot full-bot engineering audit
+
+          Audit exact source commit: \`${SOURCE_SHA}\` on \`main\`.
+
+          Inspect the full repository for correctness, execution, accounting, concurrency, data, network, configuration,
+          security, tests, performance and maintainability defects. This is the Copilot member of the same engineering
+          cycle as GPT and Gemini.
+
+          REPORT ONLY. Do not implement fixes, trade, deploy, edit secrets/signing/wallet material, change capital/risk,
+          weaken execution protections, or alter live settings.
+
+          Create a PR from \`main\` containing exactly these two files and nothing else:
+          - \`.ai/weekly/copilot/${SOURCE_SHA}.json\`
+          - \`.ai/weekly/copilot/${SOURCE_SHA}.md\`
+
+          JSON requirements: provider=copilot, source_commit=${SOURCE_SHA}, scope=FULL_REPOSITORY_BUG_AUDIT,
+          report_only=true, no_live_changes=true. Every finding must have severity P0-P3, category, concrete file evidence,
+          impact, root_cause, bounded corrective_action, tests_required, confidence 0..1 and deterministic_evidence.
+          EOF
+            url="$(gh issue create --title "$title" --body-file /tmp/copilot-engineering.md)"
+            issue="${url##*/}"
+          else
+            state="$(gh issue view "$issue" --json state --jq '.state')"
+            [[ "$state" != 'CLOSED' ]] || gh issue reopen "$issue" >/dev/null
+          fi
+          echo "number=$issue" >> "$GITHUB_OUTPUT"
+
+      - name: Assign Copilot with user-scoped token and verify
+        if: steps.source.outputs.found == 'true'
+        id: assign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          reason=''
+          state='AWAITING_ASSIGNMENT'
+          is_assigned() {
+            gh issue view "$ISSUE" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true
+          }
+          if is_assigned; then
+            state='ASSIGNED'
+            reason='Copilot is already assigned.'
+          elif [[ -z "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            state='BLOCKED_AUTH'
+            reason='COPILOT_ASSIGN_TOKEN repository secret is missing.'
+          else
+            payload="$(python - "$GITHUB_REPOSITORY" <<'PY'
+          import json,sys
+          print(json.dumps({
+            'assignees':['copilot-swe-agent[bot]'],
+            'agent_assignment':{
+              'target_repo':sys.argv[1],
+              'base_branch':'main',
+              'custom_instructions':'Produce only the two engineering report files requested by the issue. Do not change functional code or live settings.',
+              'custom_agent':'',
+              'model':''
+            }
+          }))
+          PY
+          )"
+            set +e
+            output="$(GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh api --method POST \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/assignees" --input - <<< "$payload" 2>&1)"
+            rc=$?
+            set -e
+            if [[ $rc -eq 0 ]] && is_assigned; then
+              state='ASSIGNED'
+              reason='Copilot assignment verified with COPILOT_ASSIGN_TOKEN.'
+            else
+              state='BLOCKED_AUTH'
+              reason="Copilot assignment API failed: ${output:0:800}"
+            fi
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          printf '%s' "$reason" > /tmp/copilot-assignment-reason.txt
+          echo "Engineering Copilot issue #${ISSUE}: ${state}"
+
+      - name: Publish reconciled assignment state to ai-reviews
+        if: steps.source.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+          STATE: ${{ steps.assign.outputs.state }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          reason="$(cat /tmp/copilot-assignment-reason.txt 2>/dev/null || true)"
+          python - "$SOURCE_SHA" "$ISSUE" "$STATE" "$reason" <<'PY' > /tmp/copilot-assignment-reconciled.json
+          import json,sys,time
+          source,issue,state,reason=sys.argv[1:5]
+          print(json.dumps({
+            'source_commit':source,
+            'issue_number':int(issue),
+            'assignment_state':state,
+            'reason':reason,
+            'checked_epoch':int(time.time()),
+            'expected_report_path':f'.ai/weekly/copilot/{source}.json',
+            'token_name':'COPILOT_ASSIGN_TOKEN'
+          },indent=2,sort_keys=True))
+          PY
+          path="weekly/runs/${SOURCE_SHA}/copilot_assignment_reconciled.json"
+          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+          current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+          blob_sha="$(printf '%s' "$current" | python -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/copilot-assignment-reconciled.json)"
+          python - "$encoded" "$blob_sha" <<'PY' > /tmp/payload.json
+          import json,sys
+          p={'message':'Update engineering Copilot assignment state','content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+          gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input /tmp/payload.json >/dev/null

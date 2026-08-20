@@ -1,0 +1,30 @@
+name: Fresh Strategy Review After Main Change
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: fresh-strategy-review-after-main-change
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch exact-main three-agent strategy cycle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+          echo "Current main: ${sha}"
+          gh workflow run hourly-three-agent-strategy-cycle.yml --ref main
+          echo "Dispatched hourly-three-agent-strategy-cycle.yml for current main."

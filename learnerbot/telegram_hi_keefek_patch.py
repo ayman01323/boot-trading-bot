@@ -85,3 +85,7 @@ _cli._app = _app_with_hiiii
 
 # Add MASTER Telegram notifications for BotBuc backup success and hourly failure state.
 from . import backup_telegram_alert_patch  # noqa: E402,F401
+# Warn ACTIVE MASTER accounts every 30 minutes while an AI reporting agent is unhealthy.
+from . import ai_agent_health_warning_patch  # noqa: E402,F401
+# A newly deployed strategy implementation must be reviewed at that exact source before live CANARY can use it.
+from . import strategy_canary_source_guard_patch  # noqa: E402,F401
