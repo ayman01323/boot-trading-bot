@@ -5,7 +5,8 @@ import sys
 def test_final_runtime_hooks_match_audited_stack():
     # Import the execution stack in the same relevant order as learnerbot.__main__.
     # Later execution/accounting/liquidity/circuit protections remain authoritative,
-    # while the final policy layer restores the first profitable Solana strategy.
+    # while the final policy layer restores the first profitable Solana strategy
+    # and adds a reject-only positive follower executable-edge preflight.
     script = r'''
 from learnerbot import sibot as sibot
 from learnerbot import solana_live_patch as live
@@ -63,7 +64,8 @@ assert exit_circuit._MONITOR_INNER is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
 assert sol.start_workers is workers.start_workers_reliable
 assert sol.jupiter_quote is quote.jupiter_quote_executable
-assert sol._validate_shadow_entry is preflight.validate_entry_cached
+assert sol._validate_shadow_entry is first_day.validate_entry_positive_executable_edge
+assert first_day._PREV_VALIDATE is preflight.validate_entry_cached
 assert live._economic_entry_gate is overhead._economic_entry_gate_reconciled
 assert live._open_live_count is capacity._verified_open_live_count
 assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
@@ -87,6 +89,8 @@ assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_roundtrip_loss_pct"] == "3"
 assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_entry_deterioration_pct"] == "2"
 assert first_day.FIRST_DAY_STRATEGY_TARGETS["stop_loss_pct"] == "10"
 assert first_day.FIRST_DAY_STRATEGY_TARGETS["take_profit_pct"] == "25"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["live_require_positive_executable_edge"] == "true"
+assert first_day.FIRST_DAY_STRATEGY_TARGETS["live_min_executable_net_edge_pct"] == "0.25"
 print("AUDITED_TRADING_RUNTIME_COMPOSITION_OK")
 '''
     result = subprocess.run(

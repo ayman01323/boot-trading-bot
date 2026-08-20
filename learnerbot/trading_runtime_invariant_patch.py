@@ -35,6 +35,8 @@ from . import solana_positive_edge_entry_gate_patch as _positive_edge
 # Owner-requested strategy rollback is deliberately imported AFTER the later
 # strategy wrappers so it can restore first-day policy behaviour while leaving
 # all execution/accounting/simulation/liquidity/circuit safety wrappers intact.
+# The restore layer also adds a protective positive follower executable-edge
+# preflight outside the existing Jupiter round-trip cache.
 from . import solana_first_day_strategy_restore_patch as _first_day_strategy
 
 
@@ -87,7 +89,8 @@ def install():
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
         "solana_workers": _sol.start_workers is _workers.start_workers_reliable,
         "solana_quote": _sol.jupiter_quote is _quote.jupiter_quote_executable,
-        "solana_preflight": _sol._validate_shadow_entry is _preflight.validate_entry_cached,
+        "solana_positive_executable_edge": _sol._validate_shadow_entry is _first_day_strategy.validate_entry_positive_executable_edge,
+        "solana_preflight_cache_inner": _first_day_strategy._PREV_VALIDATE is _preflight.validate_entry_cached,
         "solana_economic_gate": _live._economic_entry_gate is _overhead._economic_entry_gate_reconciled,
         "solana_capacity": _live._open_live_count is _capacity._verified_open_live_count,
         "solana_profit_epoch": _profit_guard._copied_metrics is _epoch._copied_metrics_with_cleanup,
@@ -96,7 +99,8 @@ def install():
 
         # The later optimisation/reporting modules remain loaded for audit/history,
         # but the active Solana policy is now explicitly the first profitable
-        # confirmed-fast-lane strategy requested by the owner.
+        # confirmed-fast-lane strategy requested by the owner, plus a reject-only
+        # positive follower executable-edge overlay.
         "profit_control_amount_objective": (
             _profit_control._is_success is _amount_objective.is_success_amount_first
             and _profit_control.MIN_SUCCESS_PROFIT_FACTOR == _amount_objective.MIN_AMOUNT_PROFIT_FACTOR
@@ -109,6 +113,8 @@ def install():
         "first_day_signal_age": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("max_signal_age_seconds") == "30",
         "first_day_take_profit": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("take_profit_pct") == "25",
         "first_day_stop_loss": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("stop_loss_pct") == "10",
+        "first_day_positive_edge_required": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("live_require_positive_executable_edge") == "true",
+        "first_day_positive_edge_floor": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("live_min_executable_net_edge_pct") == "0.25",
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
         "profit_control_master_summary": _audit_worker.run_hourly_gpt_review is _profit_master_summary.run_hourly_review_with_master_control_summary,
     }
