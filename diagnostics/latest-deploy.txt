@@ -1,21 +1,21 @@
-requested_sha=1295fc3145cacfddbe623796d936e25670f6a70b
+requested_sha=29f64bc545a29b77e6e373507fe673590675c71b
 deploy_outcome=failure
 deploy_exit=10
-run_id=32375609680
-utc=2026-08-20T13:41:44Z
+run_id=32375838234
+utc=2026-08-20T13:44:09Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-20T13:40:40Z BEGIN current=c00ff6f3dd2c579403075af3b70825e8f3cbc917 requested=1295fc3145cacfddbe623796d936e25670f6a70b
+2026-08-20T13:43:05Z BEGIN current=c00ff6f3dd2c579403075af3b70825e8f3cbc917 requested=29f64bc545a29b77e6e373507fe673590675c71b
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   7c73a32..1295fc3  main       -> origin/main
-Updating c00ff6f..1295fc3
+   1295fc3..29f64bc  main       -> origin/main
+Updating c00ff6f..29f64bc
 Fast-forward
  .github/workflows/ai-resilient-pipeline-ci.yml     |  82 ++++
  .github/workflows/engineering-agent-retry.yml      | 276 +++++++++++++
  .../engineering-copilot-assignment-reconciler.yml  | 185 +++++++++
  .../strategy-approved-change-promoter.yml          | 411 +++++++++++++++++++
- .../strategy-review-after-main-change.yml          |  33 ++
+ .../strategy-review-after-main-change.yml          |  40 ++
  .github/workflows/strategy-source-master.yml       | 314 +++++++++++++++
  .github/workflows/strategy-source-research.yml     | 359 +++++++++++++++++
  .github/workflows/weekly-resilient-master.yml      | 438 +++++++++++++++++++++
@@ -31,7 +31,7 @@ Fast-forward
  tests/test_ai_resilient_workflows.py               |  57 +++
  tests/test_strategy_canary_source_guard_patch.py   |  43 ++
  tests/test_strategy_source_governance.py           |  93 +++++
- 20 files changed, 3410 insertions(+), 9 deletions(-)
+ 20 files changed, 3417 insertions(+), 9 deletions(-)
  create mode 100644 .github/workflows/ai-resilient-pipeline-ci.yml
  create mode 100644 .github/workflows/engineering-agent-retry.yml
  create mode 100644 .github/workflows/engineering-copilot-assignment-reconciler.yml
@@ -67,7 +67,7 @@ _ test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources
         assert {"Dune", "DEX Screener API", "Etherscan API V2", "GitHub public code search", "DefiLlama", "Jupiter"} <= names
 >       assert all(row["safe_mode"].startswith(("READ_ONLY", "QUOTE")) for row in PUBLIC_RESEARCH_TOOLS)
 E       assert False
-E        +  where False = all(<generator object test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources.<locals>.<genexpr> at 0x7fade5cad2a0>)
+E        +  where False = all(<generator object test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources.<locals>.<genexpr> at 0x7f26ee0992a0>)
 
 tests/test_strategy_lab_cross_chain_research.py:167: AssertionError
 _ test_source_policy_rejects_single_agent_low_confidence_or_execution_permission _
@@ -121,13 +121,13 @@ learnerbot/strategy_source_contract.py:56: ValueError
 =========================== short test summary info ============================
 FAILED tests/test_strategy_lab_cross_chain_research.py::test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources
 FAILED tests/test_strategy_source_governance.py::test_source_policy_rejects_single_agent_low_confidence_or_execution_permission
-2 failed, 408 passed, 1 warning in 34.88s
-2026-08-20T13:41:23Z TESTS FAILED; service remains on old running process
+2 failed, 408 passed, 1 warning in 34.79s
+2026-08-20T13:43:48Z TESTS FAILED; service remains on old running process
 HEAD is now at c00ff6f Fix GPT Master report reconciliation across Copilot cycles (#132)
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-20T13:41:39Z
+UTC: 2026-08-20T13:44:04Z
 branch: main
 sha:    c00ff6f3dd2c579403075af3b70825e8f3cbc917
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -138,21 +138,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Thu 2026-08-20 11:34:22 BST; 3h 7min ago
+     Active: active (running) since Thu 2026-08-20 11:34:22 BST; 3h 9min ago
    Main PID: 262290 (python)
       Tasks: 19 (limit: 5869)
-     Memory: 638.9M (peak: 793.3M)
-        CPU: 2h 15min 5.901s
+     Memory: 678.5M (peak: 793.3M)
+        CPU: 2h 16min 19.593s
      CGroup: /system.slice/learnerbot.service
              └─262290 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 20 14:36:53 mint.yesgoodwill.com python[262290]: [copy-check:arbitrum] {'evaluated': 619, 'passed': 0, 'disabled': False}
-Aug 20 14:36:58 mint.yesgoodwill.com python[262290]: [scan:polygon] 92082466..92082475 tx=790
-Aug 20 14:37:09 mint.yesgoodwill.com python[262290]: [score:polygon] wallets=25881
-Aug 20 14:37:23 mint.yesgoodwill.com python[262290]: [analyse:polygon] {'candidate_pool': 500, 'wallets': 50, 'transactions': 617, 'transfer_logs': 51, 'evidence_rows': 617, 'proven_positive_wallets': 1, 'cursor': 450}
-Aug 20 14:37:25 mint.yesgoodwill.com python[262290]: [learn:polygon] patterns=233
-Aug 20 14:37:35 mint.yesgoodwill.com python[262290]: [research:polygon] {'evidence_rows': 40762, 'behaviours': 7, 'wallet_behaviour_rows': 1023}
-Aug 20 14:37:35 mint.yesgoodwill.com python[262290]: [copy-check:polygon] {'evaluated': 1023, 'passed': 0, 'disabled': False}
-Aug 20 14:37:39 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=54.535
-Aug 20 14:38:54 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=73.535
-Aug 20 14:41:17 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=142.557
+Aug 20 14:42:30 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=72.081
+Aug 20 14:43:08 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:13 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:19 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:34 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:42 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:49 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:54 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:43:56 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=84.141
+Aug 20 14:43:58 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
