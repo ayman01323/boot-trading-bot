@@ -18,12 +18,14 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+
     steps:
-      - name: Check out exact current main
+      - name: Check out exact current main without persisted GitHub credentials
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -40,9 +42,12 @@ jobs:
           set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
           npm install -g @openai/codex@latest @google/gemini-cli@latest
           codex --version
           gemini --version
+          rg --version | head -1
 
       - name: Provider credential preflight
         id: creds
@@ -56,12 +61,11 @@ jobs:
           [[ -n "${CODEX_API_KEY:-}" ]] && echo 'openai=true' >> "$GITHUB_OUTPUT" || echo 'openai=false' >> "$GITHUB_OUTPUT"
           [[ -n "${GEMINI_API_KEY:-}" ]] && echo 'gemini=true' >> "$GITHUB_OUTPUT" || echo 'gemini=false' >> "$GITHUB_OUTPUT"
           [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && echo 'copilot_token=true' >> "$GITHUB_OUTPUT" || echo 'copilot_token=false' >> "$GITHUB_OUTPUT"
-          echo "Codex API credential present: $([[ -n "${CODEX_API_KEY:-}" ]] && echo yes || echo no)"
-          echo "Gemini credential present: $([[ -n "${GEMINI_API_KEY:-}" ]] && echo yes || echo no)"
-          echo "Copilot assignment credential present: $([[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && echo yes || echo no)"
 
       - name: Resolve source and freshest available evidence
         id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -69,20 +73,22 @@ jobs:
           SOURCE_SHA="$(git rev-parse HEAD)"
           EVIDENCE_SOURCE="architecture-only"
           EVIDENCE_FRESH="false"
-          if git ls-remote --exit-code --heads origin audit-status >/dev/null 2>&1; then
-            git fetch --force origin audit-status:refs/remotes/origin/audit-status
-            if git show origin/audit-status:latest_loss_forensics.json > .strategy_cycle/evidence.json 2>/dev/null; then
-              EVIDENCE_SOURCE="audit-status:latest_loss_forensics.json"
-              age="$(python - <<'PY'
+
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" \
+              > /tmp/audit-status-file.json 2>/tmp/audit-status-error.txt; then
+            jq -r '.content' /tmp/audit-status-file.json | tr -d '\n' | base64 -d > .strategy_cycle/evidence.json
+            EVIDENCE_SOURCE="audit-status:latest_loss_forensics.json"
+            age="$(python - <<'PY'
           import json,time
           p=json.load(open('.strategy_cycle/evidence.json'))
           t=int(p.get('generated_epoch') or 0)
           print(max(0,int(time.time())-t) if t else 10**9)
           PY
           )"
-              if [[ "$age" -le 7200 ]]; then EVIDENCE_FRESH="true"; fi
-            fi
+            if [[ "$age" -le 7200 ]]; then EVIDENCE_FRESH="true"; fi
           fi
+
           if [[ ! -s .strategy_cycle/evidence.json ]]; then
             python - "$SOURCE_SHA" <<'PY' > .strategy_cycle/evidence.json
           import json,sys
@@ -96,6 +102,7 @@ jobs:
           },indent=2,sort_keys=True))
           PY
           fi
+
           EVIDENCE_SHA="$(python - <<'PY'
           import hashlib,json
           p=json.load(open('.strategy_cycle/evidence.json'))
@@ -122,21 +129,18 @@ jobs:
         run: |
           cat > .strategy_cycle/prompt.txt <<EOF
           You are one of three INDEPENDENT strategy reviewers for a multi-chain automated trading bot.
-          Inspect the entire checked-out repository and .strategy_cycle/evidence.json.
+          Inspect the checked-out repository and .strategy_cycle/evidence.json.
 
           Objective: durable money-weighted NET P&L after fees, slippage, price impact, gas/priority fees and execution failures.
           Never optimise raw win count and never force a trade without positive executable edge. Review Solana and EVM using
-          chain-specific economics. Review current Strategy Lab families, profitable-wallet/route learning, forecasting,
-          cross-venue arbitrage, momentum, mean reversion, flow acceleration, new-liquidity quality and learned-route replication.
-          Explicitly classify negative outcomes as STRATEGY/MARKET versus EXECUTION/INFRASTRUCTURE so provider failures such as
-          RPC/Jupiter rate limits are not mistaken for evidence that the trading hypothesis itself is bad.
+          chain-specific economics. Explicitly distinguish STRATEGY/MARKET loss from EXECUTION/INFRASTRUCTURE failure.
 
           Runtime evidence source: ${EVIDENCE_SOURCE}; fresh-within-2h=${EVIDENCE_FRESH}.
           If fresh runtime evidence is unavailable, you MAY suggest code/SHADOW hypotheses but MUST NOT claim a strategy is
-          profitable, canary-ready or live-ready. Explicitly list the missing evidence needed to promote it.
+          profitable, canary-ready or live-ready. Explicitly list evidence needed before promotion.
 
           REPORT ONLY. Do not edit tracked code, trade, deploy, change capital/risk/live settings, touch secrets/wallets/signing,
-          auto-add assets, or weaken any execution/sellability/liquidity/simulation protection.
+          auto-add assets, weaken execution/sellability/liquidity/simulation protection, or use external web research.
 
           Required JSON:
           {
@@ -182,21 +186,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${CODEX_API_KEY:-}" ]]; then
-            echo 'OPENAI_API_KEY_SOURCE_SECRET_MISSING' > .strategy_cycle/gpt_error.txt
-            exit 20
-          fi
+          test -n "${CODEX_API_KEY:-}"
           sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .strategy_cycle/prompt.txt > /tmp/gpt-prompt.txt
-          printf '\nWrite exactly .strategy_cycle/gpt.json and .strategy_cycle/gpt.md. Change no tracked file.\n' >> /tmp/gpt-prompt.txt
+          cat >> /tmp/gpt-prompt.txt <<'EOF'
+          Your FINAL answer must contain exactly one report between these markers:
+          STRATEGY_REVIEW_JSON_BEGIN
+          {required JSON object}
+          STRATEGY_REVIEW_JSON_END
+          Do not write repository files; return the report through stdout only.
+          EOF
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
+
           set +e
-          codex --ask-for-approval never exec --sandbox workspace-write --ephemeral "${model_args[@]}" - < /tmp/gpt-prompt.txt \
-            2> >(tee .strategy_cycle/gpt_error.txt >&2)
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+            < /tmp/gpt-prompt.txt > .strategy_cycle/gpt_stdout.txt 2> .strategy_cycle/gpt_error.txt
           rc=$?
           set -e
           [[ $rc -eq 0 ]] || exit "$rc"
-          python -m learnerbot.three_agent_strategy_contract validate-agent \
+
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('.strategy_cycle/gpt_stdout.txt').read_text(errors='replace')
+          m=re.search(r'STRATEGY_REVIEW_JSON_BEGIN\s*(\{.*?\})\s*STRATEGY_REVIEW_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT strategy JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.strategy_cycle/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# GPT strategy review','',p.get('summary','')]
+          for x in p.get('proposals') or []:
+              lines += ['',f"## {x.get('action')} — {x.get('strategy')}",x.get('rationale','')]
+          pathlib.Path('.strategy_cycle/gpt.md').write_text('\n'.join(lines)+'\n')
+          PY
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract validate-agent \
             --input .strategy_cycle/gpt.json --provider gpt --cycle-id "$CYCLE_ID" \
             --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
 
@@ -209,17 +230,19 @@ jobs:
           OPENAI_PRESENT: ${{ steps.creds.outputs.openai }}
         shell: bash
         run: |
-          git restore --source=HEAD --staged --worktree . || true
           mkdir -p .strategy_cycle
           python - <<'PY'
           import json,os,re,pathlib
-          pth=pathlib.Path('.strategy_cycle/gpt_error.txt')
-          raw=pth.read_text(errors='replace')[-1800:] if pth.exists() else ''
+          parts=[]
+          for name in ('gpt_error.txt','gpt_stdout.txt'):
+              p=pathlib.Path('.strategy_cycle')/name
+              if p.exists(): parts.append(p.read_text(errors='replace')[-1400:])
+          raw='\n'.join(parts)
           raw=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}', '<redacted>', raw)
-          reason='OpenAI/Codex API credential missing' if os.environ.get('OPENAI_PRESENT')!='true' else (raw.strip() or 'GPT step failed without stderr')
-          p={'schema_version':1,'provider':'gpt','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'GPT report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1500]],'review_only':True,'no_live_changes':True}
+          reason='OpenAI/Codex API credential missing' if os.environ.get('OPENAI_PRESENT')!='true' else (raw.strip() or 'GPT execution/report extraction failed without diagnostic output')
+          p={'schema_version':1,'provider':'gpt','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'GPT report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True}
           pathlib.Path('.strategy_cycle/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
-          pathlib.Path('.strategy_cycle/gpt.md').write_text('# GPT strategy review\n\nINCOMPLETE\n\n'+reason[:1500]+'\n')
+          pathlib.Path('.strategy_cycle/gpt.md').write_text('# GPT strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
           PY
 
       - name: Gemini independent strategy report
@@ -235,10 +258,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-            echo 'GEMINI_API_KEY_MISSING' > .strategy_cycle/gemini_error.txt
-            exit 20
-          fi
+          test -n "${GEMINI_API_KEY:-}"
           sed 's/"provider":"PROVIDER"/"provider":"gemini"/' .strategy_cycle/prompt.txt > /tmp/gemini-prompt.txt
           cat >> /tmp/gemini-prompt.txt <<'EOF'
           Inspect read-only. End with exactly:
@@ -246,20 +266,34 @@ jobs:
           {required JSON object}
           STRATEGY_REVIEW_JSON_END
           EOF
+
           set +e
           gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
-            -p "$(cat /tmp/gemini-prompt.txt)" > .strategy_cycle/gemini_stdout.txt \
-            2> >(tee .strategy_cycle/gemini_error.txt >&2)
-          rc=$?
+            -p "$(cat /tmp/gemini-prompt.txt)" > .strategy_cycle/gemini_stdout.txt 2> .strategy_cycle/gemini_cli_error.txt
+          cli_rc=$?
           set -e
-          [[ $rc -eq 0 ]] || exit "$rc"
-          python scripts/extract_strategy_report.py \
+          [[ $cli_rc -eq 0 ]] || exit "$cli_rc"
+
+          set +e
+          PYTHONPATH="$GITHUB_WORKSPACE" python scripts/extract_strategy_report.py \
             --input .strategy_cycle/gemini_stdout.txt --output .strategy_cycle/gemini.json \
-            --provider gemini --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
+            --provider gemini --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA" \
+            > .strategy_cycle/gemini_extract_stdout.txt 2> .strategy_cycle/gemini_extract_error.txt
+          extract_rc=$?
+          set -e
+          [[ $extract_rc -eq 0 ]] || exit "$extract_rc"
+
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract validate-agent \
+            --input .strategy_cycle/gemini.json --provider gemini --cycle-id "$CYCLE_ID" \
+            --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA" \
+            > .strategy_cycle/gemini_validate_stdout.txt 2> .strategy_cycle/gemini_validate_error.txt
+
           python - <<'PY'
           import json
-          p=json.load(open('.strategy_cycle/gemini.json')); lines=['# Gemini strategy review','',p.get('summary','')]
-          for x in p.get('proposals') or []: lines += ['',f"## {x.get('action')} — {x.get('strategy')}",x.get('rationale','')]
+          p=json.load(open('.strategy_cycle/gemini.json'))
+          lines=['# Gemini strategy review','',p.get('summary','')]
+          for x in p.get('proposals') or []:
+              lines += ['',f"## {x.get('action')} — {x.get('strategy')}",x.get('rationale','')]
           open('.strategy_cycle/gemini.md','w').write('\n'.join(lines)+'\n')
           PY
 
@@ -272,20 +306,23 @@ jobs:
           GEMINI_PRESENT: ${{ steps.creds.outputs.gemini }}
         shell: bash
         run: |
-          git restore --source=HEAD --staged --worktree . || true
           mkdir -p .strategy_cycle
           python - <<'PY'
           import json,os,re,pathlib
-          pth=pathlib.Path('.strategy_cycle/gemini_error.txt')
-          raw=pth.read_text(errors='replace')[-1800:] if pth.exists() else ''
+          parts=[]
+          for name in ('gemini_cli_error.txt','gemini_extract_error.txt','gemini_validate_error.txt','gemini_extract_stdout.txt','gemini_validate_stdout.txt','gemini_stdout.txt'):
+              p=pathlib.Path('.strategy_cycle')/name
+              if p.exists() and p.stat().st_size:
+                  parts.append(f'[{name}]\n'+p.read_text(errors='replace')[-900:])
+          raw='\n'.join(parts)
           raw=re.sub(r'AIza[A-Za-z0-9_-]{20,}', '<redacted>', raw)
-          reason='GEMINI_API_KEY missing' if os.environ.get('GEMINI_PRESENT')!='true' else (raw.strip() or 'Gemini step failed without stderr; inspect stdout/contract validation')
-          p={'schema_version':1,'provider':'gemini','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'Gemini report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1500]],'review_only':True,'no_live_changes':True}
+          reason='GEMINI_API_KEY missing' if os.environ.get('GEMINI_PRESENT')!='true' else (raw.strip() or 'Gemini execution/extraction/validation failed without diagnostic output')
+          p={'schema_version':1,'provider':'gemini','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'Gemini report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True}
           pathlib.Path('.strategy_cycle/gemini.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
-          pathlib.Path('.strategy_cycle/gemini.md').write_text('# Gemini strategy review\n\nINCOMPLETE\n\n'+reason[:1500]+'\n')
+          pathlib.Path('.strategy_cycle/gemini.md').write_text('# Gemini strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
           PY
 
-      - name: Create and assign Copilot the same strategy cycle
+      - name: Create and attempt to assign Copilot the same strategy cycle
         id: copilot
         env:
           GH_TOKEN: ${{ github.token }}
@@ -309,24 +346,27 @@ jobs:
           Evidence SHA-256: \`${EVIDENCE_SHA}\`
           Fresh runtime evidence within 2h: \`${EVIDENCE_FRESH}\`
 
-          REPORT ONLY. Inspect the entire source independently. Optimise durable NET P&L after costs, not win count.
-          Review Solana/EVM strategy families, profitable-wallet/route learning, forecasts and research sources. If runtime
-          evidence is not fresh, do not claim profitability/canary/live readiness; specify the evidence needed.
+          REPORT ONLY. Inspect the source independently and optimise durable NET P&L after all costs, not win count.
+          If runtime evidence is not fresh, do not claim profitability/canary/live readiness.
           Do not trade, deploy, change live/risk/capital settings, touch secrets/wallets/signing, or implement code.
 
-          Create a PR containing exactly:
+          Create a draft PR containing exactly:
           - \`.ai/strategy/copilot/${CYCLE_ID}.json\`
           - \`.ai/strategy/copilot/${CYCLE_ID}.md\`
 
-          JSON must satisfy the THREE_AGENT_STRATEGY_REVIEW contract with provider=copilot, this exact cycle/source/evidence,
+          JSON must satisfy THREE_AGENT_STRATEGY_REVIEW with provider=copilot, exact cycle/source/evidence,
           review_only=true and no_live_changes=true.
           EOF
             url="$(gh issue create --title "$title" --body-file /tmp/copilot.md)"
             issue="${url##*/}"
           fi
 
-          state='BLOCKED_AUTH'
-          if gh issue view "$issue" --json assignees --jq '[.assignees[].login] | map(ascii_downcase) | any(. == "copilot")' | grep -q true; then
+          is_assigned() {
+            gh issue view "$issue" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true
+          }
+
+          state='AWAITING_ASSIGNMENT'
+          if is_assigned; then
             state='ASSIGNED'
           elif [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
             payload="$(python - "$GITHUB_REPOSITORY" <<'PY'
@@ -350,18 +390,16 @@ jobs:
               "/repos/${GITHUB_REPOSITORY}/issues/${issue}/assignees" --input - <<< "$payload"
             rc=$?
             set -e
-            if [[ $rc -eq 0 ]] && gh issue view "$issue" --json assignees --jq '[.assignees[].login] | map(ascii_downcase) | any(. == "copilot")' | grep -q true; then
-              state='ASSIGNED'
-            else
-              state='BLOCKED_AUTH'
-            fi
+            if [[ $rc -eq 0 ]] && is_assigned; then state='ASSIGNED'; else state='BLOCKED_AUTH'; fi
           fi
+
           echo "issue=$issue" >> "$GITHUB_OUTPUT"
           echo "state=$state" >> "$GITHUB_OUTPUT"
           echo "Copilot issue #${issue} assignment state: ${state}"
 
-      - name: Publish reports and explicit agent state for GPT master
+      - name: Publish independent reports and reconciliable state
         env:
+          GH_TOKEN: ${{ github.token }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
@@ -375,13 +413,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          gh auth setup-git
           git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
           rm -rf /tmp/hourly-ai-reviews
           git worktree add --detach /tmp/hourly-ai-reviews origin/ai-reviews
           dest="/tmp/hourly-ai-reviews/strategy/runs/${CYCLE_ID}"
           mkdir -p "$dest" /tmp/hourly-ai-reviews/strategy
-          cp .strategy_cycle/gpt.json "$dest/gpt.json"; cp .strategy_cycle/gpt.md "$dest/gpt.md"
-          cp .strategy_cycle/gemini.json "$dest/gemini.json"; cp .strategy_cycle/gemini.md "$dest/gemini.md"
+
+          cp .strategy_cycle/gpt.json "$dest/gpt.json"
+          cp .strategy_cycle/gpt.md "$dest/gpt.md"
+          cp .strategy_cycle/gemini.json "$dest/gemini.json"
+          cp .strategy_cycle/gemini.md "$dest/gemini.md"
+
           python - <<PY > "$dest/context.json"
           import json
           print(json.dumps({
@@ -392,14 +435,23 @@ jobs:
             'copilot_assignment_state':'${COPILOT_STATE}'
           },indent=2,sort_keys=True))
           PY
+
           python - <<PY > /tmp/hourly-ai-reviews/strategy/latest_status.json
           import json
           g=json.load(open('.strategy_cycle/gpt.json')); m=json.load(open('.strategy_cycle/gemini.json'))
-          def s(x): return 'INCOMPLETE' if x.get('status')=='INCOMPLETE' else 'DONE'
-          cop='WAITING' if '${COPILOT_STATE}'=='ASSIGNED' else 'BLOCKED_AUTH'
-          state='WAITING_FOR_COPILOT' if cop=='WAITING' else 'BLOCKED_COPILOT_AUTH'
-          print(json.dumps({'available':True,'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}','evidence_fresh':'${EVIDENCE_FRESH}','state':state,'gpt':s(g),'gemini':s(m),'copilot':cop,'three_agent_reports_complete':False,'master_decision_available':False,'change_pr_url':'','live_auto_deploy':False},indent=2,sort_keys=True))
+          def done(x): return 'INCOMPLETE' if x.get('status')=='INCOMPLETE' else 'DONE'
+          cs='${COPILOT_STATE}'
+          cop='WAITING' if cs=='ASSIGNED' else ('WAITING_ASSIGNMENT' if cs=='AWAITING_ASSIGNMENT' else 'BLOCKED_AUTH')
+          state='WAITING_FOR_COPILOT' if cs=='ASSIGNED' else ('WAITING_FOR_COPILOT_ASSIGNMENT' if cs=='AWAITING_ASSIGNMENT' else 'BLOCKED_COPILOT_AUTH')
+          print(json.dumps({
+            'available':True,'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}',
+            'evidence_sha256':'${EVIDENCE_SHA}','evidence_fresh':'${EVIDENCE_FRESH}','state':state,
+            'gpt':done(g),'gemini':done(m),'copilot':cop,'copilot_issue':int('${COPILOT_ISSUE}'),
+            'three_agent_reports_complete':False,'master_decision_available':False,
+            'change_pr_url':'','live_auto_deploy':False
+          },indent=2,sort_keys=True))
           PY
+
           printf '%s\n' "$CYCLE_ID" > /tmp/hourly-ai-reviews/strategy/latest_cycle_id.txt
           cd /tmp/hourly-ai-reviews
           git config user.name 'hourly-three-agent-strategy-bot'

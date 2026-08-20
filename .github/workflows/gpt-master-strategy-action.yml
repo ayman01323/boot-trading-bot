@@ -1,160 +1,214 @@
-name: GPT Master Strategy Action
+name: GPT Master Strategy Reconciler
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.ai/strategy/copilot/*.json'
-      - '.ai/strategy/copilot/*.md'
+  schedule:
+    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
       copilot_pr_number:
-        description: 'Copilot strategy report PR number'
+        description: 'Optional Copilot strategy report PR number'
         required: false
         type: string
 
 permissions:
   contents: write
   pull-requests: write
-  issues: write
+  issues: read
 
 concurrency:
-  group: gpt-master-strategy-action
+  group: gpt-master-strategy-reconciler
   cancel-in-progress: false
 
 jobs:
   adjudicate:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
 
     steps:
-      - name: Resolve Copilot strategy report PR
+      - name: Resolve latest cycle and completed Copilot report PR from main
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.copilot_pr_number }}
-          EVENT_PR: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
           set -euo pipefail
-          pr="${EVENT_PR:-${INPUT_PR:-}}"
-          test -n "$pr"
-          head_sha="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
-          cross="$(gh pr view "$pr" --json isCrossRepository --jq '.isCrossRepository')"
-          if [[ "$cross" == "true" ]]; then echo 'Refusing fork report PR.' >&2; exit 2; fi
-          echo "number=${pr}" >> "$GITHUB_OUTPUT"
-          echo "head_sha=${head_sha}" >> "$GITHUB_OUTPUT"
+          cycle="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
+            --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
+          test -n "$cycle"
 
-      - uses: actions/checkout@v4
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${cycle}/master_decision.json?ref=ai-reviews" \
+              >/dev/null 2>&1; then
+            echo "Cycle ${cycle} already has a master decision."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          pr="${INPUT_PR:-}"
+          if [[ -z "$pr" ]]; then
+            pr="$(gh pr list --state open --search "Copilot hourly strategy review ${cycle} in:title" \
+              --limit 5 --json number,title --jq '.[0].number // empty')"
+          fi
+          if [[ -z "$pr" ]]; then
+            echo "No completed Copilot report PR yet for ${cycle}; reconciler will retry."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          cross="$(gh pr view "$pr" --json isCrossRepository --jq '.isCrossRepository')"
+          [[ "$cross" != "true" ]] || { echo 'Refusing fork report PR.' >&2; exit 2; }
+          head_sha="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "cycle_hint=$cycle" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Copilot report PR without persisted credentials
+        if: steps.pr.outputs.found == 'true'
+        uses: actions/checkout@v4
         with:
           ref: ${{ steps.pr.outputs.head_sha }}
           fetch-depth: 0
+          persist-credentials: false
+
       - uses: actions/setup-python@v5
+        if: steps.pr.outputs.found == 'true'
         with:
           python-version: '3.11'
           cache: pip
+
       - uses: actions/setup-node@v4
+        if: steps.pr.outputs.found == 'true'
         with:
           node-version: '22'
 
-      - name: Install synthesis and implementation tools
+      - name: Install synthesis tools
+        if: steps.pr.outputs.found == 'true'
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
           npm install -g @openai/codex@latest
           codex --version
 
-      - name: Refuse Copilot PR containing anything except its two strategy report files
+      - name: Refuse Copilot PR containing anything except its two report files
+        if: steps.pr.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
         shell: bash
         run: |
           set -euo pipefail
-          gh pr diff "$PR_NUMBER" --name-only > /tmp/copilot-strategy-files.txt
+          gh pr diff "$PR_NUMBER" --name-only > /tmp/copilot-files.txt
           python - <<'PY'
           import pathlib,sys
-          files=[x.strip().replace('\\','/') for x in pathlib.Path('/tmp/copilot-strategy-files.txt').read_text().splitlines() if x.strip()]
+          files=[x.strip().replace('\\','/') for x in pathlib.Path('/tmp/copilot-files.txt').read_text().splitlines() if x.strip()]
           if len(files)!=2:
-              print('Copilot strategy report PR must contain exactly two files.',*files,sep='\n',file=sys.stderr); raise SystemExit(2)
+              print('Copilot report PR must contain exactly two files.',*files,sep='\n',file=sys.stderr); raise SystemExit(2)
           if any(not p.startswith('.ai/strategy/copilot/') or pathlib.PurePosixPath(p).suffix not in {'.json','.md'} for p in files):
               print('Non-report file in Copilot strategy PR.',*files,sep='\n',file=sys.stderr); raise SystemExit(3)
           stems={str(pathlib.PurePosixPath(p).with_suffix('')) for p in files}
           if len(stems)!=1: raise SystemExit('Copilot JSON/Markdown report names do not match')
           PY
 
-      - name: Locate and validate Copilot strategy report
+      - name: Locate and validate Copilot report
+        if: steps.pr.outputs.found == 'true'
         id: report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t reports < <(find .ai/strategy/copilot -maxdepth 1 -type f -name '*.json' -print | sort)
-          [[ "${#reports[@]}" -eq 1 ]]
-          report="${reports[0]}"
-          python - <<PY > /tmp/copilot-meta.env
-          import json
-          p=json.load(open('$report'))
+          report="$(gh pr diff "$PR_NUMBER" --name-only | grep -E '^\.ai/strategy/copilot/[^/]+\.json$' | head -1)"
+          test -n "$report"
+          python - "$report" <<'PY' > /tmp/copilot-meta.env
+          import json,sys
+          p=json.load(open(sys.argv[1]))
           print('CYCLE_ID='+str(p.get('cycle_id') or ''))
           print('SOURCE_SHA='+str(p.get('source_commit') or ''))
           print('EVIDENCE_SHA='+str(p.get('evidence_sha256') or ''))
           PY
           source /tmp/copilot-meta.env
           test -n "$CYCLE_ID"; test -n "$SOURCE_SHA"; test -n "$EVIDENCE_SHA"
-          expected=".ai/strategy/copilot/${CYCLE_ID}.json"
-          [[ "$report" == "$expected" && -f ".ai/strategy/copilot/${CYCLE_ID}.md" ]]
-          python -m learnerbot.three_agent_strategy_contract validate-agent \
+          [[ "$CYCLE_ID" == "${{ steps.pr.outputs.cycle_hint }}" ]]
+          md="${report%.json}.md"
+          test -f "$md"
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract validate-agent \
             --input "$report" --provider copilot --cycle-id "$CYCLE_ID" \
             --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
           cp "$report" /tmp/copilot-strategy.json
-          cp ".ai/strategy/copilot/${CYCLE_ID}.md" /tmp/copilot-strategy.md
-          echo "cycle_id=${CYCLE_ID}" >> "$GITHUB_OUTPUT"
-          echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "evidence_sha=${EVIDENCE_SHA}" >> "$GITHUB_OUTPUT"
+          cp "$md" /tmp/copilot-strategy.md
+          echo "cycle_id=$CYCLE_ID" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "evidence_sha=$EVIDENCE_SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch matching GPT/Gemini reports and context
-        shell: bash
+      - name: Fetch and validate matching GPT and Gemini reports
+        if: steps.pr.outputs.found == 'true'
+        id: independent
         env:
+          GH_TOKEN: ${{ github.token }}
           CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.report.outputs.evidence_sha }}
+        shell: bash
         run: |
           set -euo pipefail
-          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          get_file() {
+            local path="$1" out="$2"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' \
+              | tr -d '\n' | base64 -d > "$out"
+          }
           root="strategy/runs/${CYCLE_ID}"
-          for file in gpt.json gemini.json context.json; do git show "origin/ai-reviews:${root}/${file}" > "/tmp/${file}"; done
-          python -m learnerbot.three_agent_strategy_contract validate-agent \
-            --input /tmp/gpt.json --provider gpt --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
-          python -m learnerbot.three_agent_strategy_contract validate-agent \
-            --input /tmp/gemini.json --provider gemini --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
+          get_file "${root}/gpt.json" /tmp/gpt.json
+          get_file "${root}/gemini.json" /tmp/gemini.json
+          get_file "${root}/context.json" /tmp/context.json
+
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract validate-agent \
+            --input /tmp/gpt.json --provider gpt --cycle-id "$CYCLE_ID" \
+            --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract validate-agent \
+            --input /tmp/gemini.json --provider gemini --cycle-id "$CYCLE_ID" \
+            --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
+
           python - <<'PY'
           import json,sys
           reports=[json.load(open('/tmp/gpt.json')),json.load(open('/tmp/gemini.json')),json.load(open('/tmp/copilot-strategy.json'))]
-          bad=[x['provider'] for x in reports if x.get('status')=='INCOMPLETE']
+          bad=[x.get('provider','?') for x in reports if x.get('status')=='INCOMPLETE']
           if bad:
-              print('Incomplete independent strategy reports: '+','.join(bad),file=sys.stderr); raise SystemExit(3)
+              print('Independent reports still incomplete: '+','.join(bad),file=sys.stderr)
+              raise SystemExit(3)
           PY
+          echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Check out exact reviewed strategy source
+      - name: Check out exact reviewed source without persisted credentials
+        if: steps.independent.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.report.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Prepare master evidence
+        if: steps.independent.outputs.ready == 'true'
         shell: bash
-        env:
-          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
         run: |
           set -euo pipefail
-          git fetch --force origin main:refs/remotes/origin/main
-          git cat-file -e "${SOURCE_SHA}^{commit}"
-          git checkout --detach "$SOURCE_SHA"
-          git clean -fdx
           mkdir -p .strategy_master
           cp /tmp/gpt.json .strategy_master/gpt.json
           cp /tmp/gemini.json .strategy_master/gemini.json
           cp /tmp/copilot-strategy.json .strategy_master/copilot.json
           cp /tmp/context.json .strategy_master/context.json
 
-      - name: GPT master strategy synthesis
+      - name: GPT master synthesis without bubblewrap workspace sandbox
+        if: steps.independent.outputs.ready == 'true'
         id: synth
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_STRATEGY_SYNTH_MODEL: ${{ vars.OPENAI_STRATEGY_SYNTH_MODEL }}
           CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
@@ -162,55 +216,68 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY:-}"
-          cat > /tmp/strategy-master-prompt.txt <<'PROMPT'
-          You are the MASTER adjudicator for three independent trading-strategy reviews. Read:
-          .strategy_master/gpt.json, .strategy_master/gemini.json, .strategy_master/copilot.json and context.json,
-          then inspect the exact checked-out source to verify claims.
+          test -n "${CODEX_API_KEY:-}"
+          cat > /tmp/master-prompt.txt <<EOF
+          You are GPT MASTER adjudicator for three independent trading-strategy reviews.
+          Read .strategy_master/gpt.json, gemini.json, copilot.json and context.json, and inspect the exact checked-out source.
 
-          Consolidate equivalent proposals. For EVERY materially distinct proposal record ACCEPT, REJECT or DEFER.
-          Do not use majority vote blindly: measured realised/shadow evidence and code truth outrank agent agreement.
-          Reject unsupported profit claims, look-ahead, forced trading, cost-blind forecasting, duplicate strategies or
-          recommendations that merely increase risk/capital. Defer when evidence is sparse or live/runtime proof is needed.
+          Consolidate equivalent proposals. For every materially distinct proposal record ACCEPT, REJECT or DEFER.
+          Measured evidence and code truth outrank majority vote. Reject unsupported profit claims, forced trading, cost-blind
+          forecasting, duplicate strategies and recommendations that only increase risk/capital. Defer where evidence is sparse.
 
-          An automatic implementation may only be a LOW/MEDIUM-risk SHADOW Strategy Lab change. Never authorise edits to
-          live execution, Solana live signing, auto trader, wallets, secrets, deployment workflows, CSV live/risk settings,
-          smart contracts or the live product universe. REPLACE/DORMANT/ASSET_REQUEST may be recommended but are not automatic
-          code actions. Every accepted code action must list exact allowed Strategy Lab/SHADOW files and explicit tests.
+          This run is REPORT ONLY. Do not modify tracked code, deploy, trade, change live/risk/capital settings, wallets/signing,
+          deployment workflows, smart contracts or live product-universe admission. Do not use external web research.
 
-          Write only .strategy_master/master_decision.json and .strategy_master/master_decision.md; no tracked changes.
-          JSON shape:
+          Return exactly one JSON object between:
+          MASTER_DECISION_JSON_BEGIN
           {
-            "schema_version":1,"cycle_id":"CYCLE","source_commit":"SOURCE","evidence_sha256":"EVIDENCE",
-            "status":"NO_ACTION|DRAFT_SHADOW_CHANGE|HUMAN_REVIEW_REQUIRED","summary":"...",
+            "schema_version":1,
+            "cycle_id":"${CYCLE_ID}",
+            "source_commit":"${SOURCE_SHA}",
+            "evidence_sha256":"${EVIDENCE_SHA}",
+            "status":"NO_ACTION|DRAFT_SHADOW_CHANGE|HUMAN_REVIEW_REQUIRED",
+            "summary":"...",
             "decisions":[{
-              "finding_id":"stable id","source_proposal_ids":["gpt:id","gemini:id","copilot:id"],
+              "finding_id":"stable id",
+              "source_proposal_ids":["gpt:id","gemini:id","copilot:id"],
               "action":"KEEP|IMPROVE|REWORK|SHADOW_MORE|REPLACE|DORMANT|NEW_SHADOW|ASSET_REQUEST|RESEARCH_MORE",
-              "strategy":"...","disposition":"ACCEPT|REJECT|DEFER","reason":"why, tied to evidence/code",
-              "confidence":0.0,"supporting_agents":["gpt","gemini","copilot"],
-              "risk_class":"LOW|MEDIUM|HIGH|CRITICAL","shadow_only":true,
-              "allowed_files":["exact Strategy Lab/SHADOW path"],"required_tests":["specific command/test"]
+              "strategy":"...",
+              "disposition":"ACCEPT|REJECT|DEFER",
+              "reason":"...",
+              "confidence":0.0,
+              "supporting_agents":["gpt","gemini","copilot"],
+              "risk_class":"LOW|MEDIUM|HIGH|CRITICAL",
+              "shadow_only":true,
+              "allowed_files":["exact Strategy Lab/SHADOW path"],
+              "required_tests":["specific command/test"]
             }],
-            "implementation_allowed":false,"live_auto_deploy":false,"draft_pr_only":true
+            "implementation_allowed":false,
+            "live_auto_deploy":false,
+            "draft_pr_only":true
           }
-          PROMPT
-          sed -i -e "s/CYCLE/${CYCLE_ID}/g" -e "s/SOURCE/${SOURCE_SHA}/g" -e "s/EVIDENCE/${EVIDENCE_SHA}/g" /tmp/strategy-master-prompt.txt
+          MASTER_DECISION_JSON_END
+          EOF
+
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_SYNTH_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_SYNTH_MODEL"); fi
-          codex exec --sandbox workspace-write --ask-for-approval never --ephemeral "${model_args[@]}" - < /tmp/strategy-master-prompt.txt
-          test -f .strategy_master/master_decision.json
-          test -f .strategy_master/master_decision.md
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+            < /tmp/master-prompt.txt > /tmp/master.stdout 2> /tmp/master.stderr
+
           python - <<'PY'
-          import subprocess,sys
-          bad=[]
-          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
-              if line[:2]=='??' and line[3:].replace('\\','/').startswith('.strategy_master/'):
-                  continue
-              bad.append(line)
-          if bad: print('GPT master changed out-of-scope files:',*bad,sep='\n',file=sys.stderr); raise SystemExit(3)
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/master.stdout').read_text(errors='replace')
+          m=re.search(r'MASTER_DECISION_JSON_BEGIN\s*(\{.*?\})\s*MASTER_DECISION_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT Master JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.strategy_master/master_decision.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# GPT Master strategy decision','',p.get('summary','')]
+          for d in p.get('decisions') or []:
+              lines += ['',f"## {d.get('disposition')} — {d.get('strategy')}",d.get('reason','')]
+          pathlib.Path('.strategy_master/master_decision.md').write_text('\n'.join(lines)+'\n')
           PY
 
       - name: Apply deterministic strategy policy gate
+        if: steps.independent.outputs.ready == 'true'
         id: gate
         env:
           CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
@@ -219,15 +286,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m learnerbot.three_agent_strategy_contract gate-master \
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract gate-master \
             --input .strategy_master/master_decision.json --output .strategy_master/master_gated.json \
-            --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA" | tee /tmp/strategy-gate.txt
-          echo "allowed=$(grep '^implementation_allowed=' /tmp/strategy-gate.txt | cut -d= -f2)" >> "$GITHUB_OUTPUT"
-          echo "status=$(grep '^status=' /tmp/strategy-gate.txt | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
-          echo "accepted=$(grep '^accepted=' /tmp/strategy-gate.txt | cut -d= -f2)" >> "$GITHUB_OUTPUT"
+            --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA" | tee /tmp/gate.txt
+          echo "status=$(grep '^status=' /tmp/gate.txt | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
+          echo "accepted=$(grep '^accepted=' /tmp/gate.txt | cut -d= -f2)" >> "$GITHUB_OUTPUT"
 
-      - name: Publish all-three completion and GPT master ledger
+      - name: Publish reconciled three-agent completion and master decision
+        if: steps.gate.outcome == 'success'
         env:
+          GH_TOKEN: ${{ github.token }}
           CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.report.outputs.evidence_sha }}
@@ -237,30 +305,47 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/strategy-master-reviews
-          git worktree add --detach /tmp/strategy-master-reviews origin/ai-reviews
-          dest="/tmp/strategy-master-reviews/strategy/runs/${CYCLE_ID}"
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/master-reviews
+          git worktree add --detach /tmp/master-reviews origin/ai-reviews
+          dest="/tmp/master-reviews/strategy/runs/${CYCLE_ID}"
+          mkdir -p "$dest"
+
           cp /tmp/copilot-strategy.json "$dest/copilot.json"
           cp /tmp/copilot-strategy.md "$dest/copilot.md"
           cp .strategy_master/master_decision.json "$dest/master_decision_raw.json"
           cp .strategy_master/master_gated.json "$dest/master_decision.json"
           cp .strategy_master/master_decision.md "$dest/master_decision.md"
-          cp .strategy_master/master_gated.json /tmp/strategy-master-reviews/strategy/latest_master_decision.json
+
           python - <<PY > "$dest/completion.json"
           import json
-          print(json.dumps({"cycle_id":"${CYCLE_ID}","source_commit":"${SOURCE_SHA}","evidence_sha256":"${EVIDENCE_SHA}",
-            "copilot_report_pr":int("${COPILOT_PR}"),"three_agent_reports_complete":True,"master_decision_available":True},indent=2,sort_keys=True))
+          print(json.dumps({
+            'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}',
+            'copilot_report_pr':int('${COPILOT_PR}'),'three_agent_reports_complete':True,
+            'master_decision_available':True,'live_auto_deploy':False
+          },indent=2,sort_keys=True))
           PY
-          python - <<PY > /tmp/strategy-master-reviews/strategy/latest_status.json
+
+          latest="$(cat /tmp/master-reviews/strategy/latest_cycle_id.txt 2>/dev/null || true)"
+          if [[ "$latest" == "$CYCLE_ID" ]]; then
+            cp .strategy_master/master_gated.json /tmp/master-reviews/strategy/latest_master_decision.json
+            python - <<PY > /tmp/master-reviews/strategy/latest_status.json
           import json
-          print(json.dumps({"available":True,"cycle_id":"${CYCLE_ID}","source_commit":"${SOURCE_SHA}",
-            "evidence_sha256":"${EVIDENCE_SHA}","state":"MASTER_DECIDED","gpt":"DONE","gemini":"DONE","copilot":"DONE",
-            "three_agent_reports_complete":True,"master_decision_available":True,"master_status":"${MASTER_STATUS}",
-            "policy_accepted_count":int("${ACCEPTED}"),"change_pr_url":"","live_auto_deploy":False},indent=2,sort_keys=True))
+          print(json.dumps({
+            'available':True,'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}',
+            'evidence_sha256':'${EVIDENCE_SHA}','state':'MASTER_DECIDED',
+            'gpt':'DONE','gemini':'DONE','copilot':'DONE','copilot_report_pr':int('${COPILOT_PR}'),
+            'three_agent_reports_complete':True,'master_decision_available':True,
+            'master_status':'${MASTER_STATUS}','policy_accepted_count':int('${ACCEPTED}'),
+            'change_pr_url':'','live_auto_deploy':False,'draft_pr_only':True
+          },indent=2,sort_keys=True))
           PY
-          cd /tmp/strategy-master-reviews
-          git config user.name "gpt-master-strategy-bot"
-          git config user.email "gpt-master-strategy-bot@users.noreply.github.com"
+          fi
+
+          cd /tmp/master-reviews
+          git config user.name 'gpt-master-strategy-bot'
+          git config user.email 'gpt-master-strategy-bot@users.noreply.github.com'
           git add strategy
           if ! git diff --cached --quiet; then
             git commit -m "Complete three-agent strategy review ${CYCLE_ID}"
@@ -269,171 +354,18 @@ jobs:
             git push origin HEAD:ai-reviews
           fi
 
-      - name: Create isolated SHADOW strategy implementation branch
-        if: steps.gate.outputs.allowed == 'true'
-        id: branch
-        env:
-          CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
-        run: |
-          set -euo pipefail
-          branch="ai/strategy-${CYCLE_ID}"
-          git switch -c "$branch"
-          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
-
-      - name: Let GPT implement only policy-approved SHADOW strategy changes
-        if: steps.gate.outputs.allowed == 'true'
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_STRATEGY_FIX_MODEL: ${{ vars.OPENAI_STRATEGY_FIX_MODEL }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp .strategy_master/master_gated.json /tmp/master_gated.json
-          cat > /tmp/strategy-fix-prompt.txt <<'PROMPT'
-          You are implementing policy-approved changes from /tmp/master_gated.json in the current repository.
-          Implement ONLY rows with policy_eligible=true. Exact allowed_files are hard boundaries. The changes are SHADOW-only.
-          Do not touch live_executor, auto_trader, Solana live/signing, wallets/keys, deployment workflows, CSV live/risk settings,
-          smart contracts, live product-universe admission or capital. Do not weaken simulation, sellability, liquidity, slippage,
-          positive-edge, nonce/atomicity, stop-loss or circuit-breaker controls. Do not auto-enable any requested asset.
-          Preserve existing behaviour outside the approved Strategy Lab scope. Add/update only approved tests. Run relevant tests.
-          Do not commit, push, merge or deploy. If a proposal cannot be safely supported, make no change for that proposal.
-          PROMPT
-          model_args=()
-          if [[ -n "${OPENAI_STRATEGY_FIX_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_FIX_MODEL"); fi
-          codex exec --sandbox workspace-write --ask-for-approval never --ephemeral "${model_args[@]}" - < /tmp/strategy-fix-prompt.txt
-          rm -rf .strategy_master
-
-      - name: Detect and enforce exact SHADOW file allow-list
-        if: steps.gate.outputs.allowed == 'true'
-        id: diff
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then echo 'changed=false' >> "$GITHUB_OUTPUT"; exit 0; fi
-          echo 'changed=true' >> "$GITHUB_OUTPUT"
-          python - <<'PY'
-          import json,subprocess,sys
-          p=json.load(open('/tmp/master_gated.json'))
-          allowed=set()
-          for r in p.get('decisions') or []:
-              if r.get('policy_eligible') is True: allowed.update(r.get('allowed_files') or [])
-          changed=[]
-          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
-              path=line[3:].split(' -> ')[-1].replace('\\','/')
-              changed.append(path)
-          bad=[x for x in changed if x not in allowed]
-          if bad:
-              print('Strategy implementation changed files outside GPT+policy exact allow-list:',*bad,sep='\n',file=sys.stderr); raise SystemExit(2)
-          if len(changed)>12: raise SystemExit('Strategy patch too broad')
-          lines=int(subprocess.check_output("git diff --numstat | awk '{a+=$1;d+=$2} END {print a+d+0}'",shell=True,text=True).strip() or 0)
-          if lines>2000: raise SystemExit('Strategy patch exceeds 2000 changed lines')
-          PY
-
-      - name: Run full and critical safety tests before strategy draft PR
-        if: steps.diff.outputs.changed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m compileall -q learnerbot scripts tests
-          pytest -x -vv tests/test_strategy_lab.py tests/test_strategy_ai_proposals.py tests/test_strategy_lab_cross_chain_research.py \
-            tests/test_cross_chain_strategy_signals.py tests/test_market_feature_shadow_executor.py tests/test_three_agent_strategy_contract.py
-          timeout 30m pytest -q
-          pytest -x -vv tests/test_solana_live_canary.py tests/test_solana_execution_safety.py tests/test_solana_profit_guard.py \
-            tests/test_sibot_profit_guard.py tests/test_profit_control_loop.py tests/test_transaction_audit.py
-
-      - name: Push tested strategy candidate
-        if: steps.diff.outputs.changed == 'true' && success()
-        id: push
-        env:
-          CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
-        run: |
-          set -euo pipefail
-          git config user.name "gpt-strategy-corrective-bot"
-          git config user.email "gpt-strategy-corrective-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "Three-agent SHADOW strategy candidate ${CYCLE_ID}"
-          git push -u origin "${{ steps.branch.outputs.branch }}"
-          echo 'pushed=true' >> "$GITHUB_OUTPUT"
-
-      - name: Open draft strategy PR only
-        if: steps.push.outputs.pushed == 'true'
-        id: change_pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
-          BRANCH: ${{ steps.branch.outputs.branch }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          review_base="$(python -c 'import json;print(json.load(open("/tmp/context.json")).get("review_ref") or "main")')"
-          cat > /tmp/strategy-pr.md <<EOF
-          Three-agent strategy cycle: \`${CYCLE_ID}\`.
-
-          GPT, Gemini and Copilot reviewed the same source/evidence. GPT then produced an ACCEPT/REJECT/DEFER ledger and a
-          deterministic gate allowed only low/medium-risk SHADOW Strategy Lab files. Full pytest and critical trading-safety
-          regressions passed before this branch was pushed.
-
-          This is a **draft SHADOW strategy candidate only**. It does not authorise live deployment, capital/risk changes,
-          wallet/signing changes, auto-adding assets or weakening execution safeguards.
-          EOF
-          url="$(gh pr create --draft --base "$review_base" --head "$BRANCH" --title "Three-agent SHADOW strategy ${CYCLE_ID}" --body-file /tmp/strategy-pr.md)"
-          echo "url=${url}" >> "$GITHUB_OUTPUT"
-
-      - name: Publish final strategy action status for MASTER Telegram
-        if: always() && steps.gate.outcome == 'success'
-        env:
-          CYCLE_ID: ${{ steps.report.outputs.cycle_id }}
-          SOURCE_SHA: ${{ steps.report.outputs.source_sha }}
-          EVIDENCE_SHA: ${{ steps.report.outputs.evidence_sha }}
-          MASTER_STATUS: ${{ steps.gate.outputs.status }}
-          ACCEPTED: ${{ steps.gate.outputs.accepted }}
-          CHANGE_PR: ${{ steps.change_pr.outputs.url }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
-          rm -rf /tmp/strategy-final
-          git worktree add --detach /tmp/strategy-final origin/ai-reviews
-          mkdir -p "/tmp/strategy-final/strategy/runs/${CYCLE_ID}"
-          state="NO_CODE_CHANGE"
-          if [[ -n "${CHANGE_PR:-}" ]]; then state="DRAFT_SHADOW_PR_READY"; fi
-          python - <<PY > "/tmp/strategy-final/strategy/runs/${CYCLE_ID}/action_status.json"
-          import json
-          print(json.dumps({"cycle_id":"${CYCLE_ID}","state":"${state}","change_pr_url":"${CHANGE_PR}",
-            "live_auto_deploy":False,"draft_pr_only":True},indent=2,sort_keys=True))
-          PY
-          python - <<PY > /tmp/strategy-final/strategy/latest_status.json
-          import json
-          print(json.dumps({"available":True,"cycle_id":"${CYCLE_ID}","source_commit":"${SOURCE_SHA}",
-            "evidence_sha256":"${EVIDENCE_SHA}","state":"${state}","gpt":"DONE","gemini":"DONE","copilot":"DONE",
-            "three_agent_reports_complete":True,"master_decision_available":True,"master_status":"${MASTER_STATUS}",
-            "policy_accepted_count":int("${ACCEPTED}"),"change_pr_url":"${CHANGE_PR}","live_auto_deploy":False},indent=2,sort_keys=True))
-          PY
-          cd /tmp/strategy-final
-          git config user.name "gpt-master-strategy-bot"
-          git config user.email "gpt-master-strategy-bot@users.noreply.github.com"
-          git add strategy
-          if ! git diff --cached --quiet; then
-            git commit -m "Record strategy action ${CYCLE_ID}"
-            git fetch origin ai-reviews
-            git rebase origin/ai-reviews
-            git push origin HEAD:ai-reviews
-          fi
-
-      - name: Comment Copilot strategy report PR with final outcome
-        if: always() && steps.gate.outcome == 'success'
+      - name: Comment Copilot report PR with final outcome
+        if: steps.gate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           STATUS: ${{ steps.gate.outputs.status }}
           ACCEPTED: ${{ steps.gate.outputs.accepted }}
-          CHANGE_PR: ${{ steps.change_pr.outputs.url }}
+        shell: bash
         run: |
-          body="Three-agent strategy review complete. GPT master status: **${STATUS}**. Policy-approved SHADOW code findings: **${ACCEPTED}**."
-          if [[ -n "${CHANGE_PR:-}" ]]; then body="${body} Draft strategy PR: ${CHANGE_PR}"; fi
-          body="${body} No automatic merge/deployment/live-capital change was authorised."
-          gh pr comment "$PR_NUMBER" --body "$body"
+          gh pr comment "$PR_NUMBER" --body \
+            "Three-agent review complete. GPT Master status: **${STATUS}**. Policy-accepted SHADOW findings: **${ACCEPTED}**. This reconciler is report-only: no automatic merge, deployment, capital/risk or live-trading change was authorised."
 
-      - name: Clean strategy master workspace
+      - name: Clean workspace
         if: always()
-        run: rm -rf .strategy_master /tmp/strategy-master-reviews /tmp/strategy-final /tmp/master_gated.json /tmp/strategy-master-prompt.txt /tmp/strategy-fix-prompt.txt
+        run: rm -rf .strategy_master /tmp/master-reviews /tmp/master-prompt.txt /tmp/master.stdout /tmp/master.stderr /tmp/gpt.json /tmp/gemini.json /tmp/context.json /tmp/copilot-strategy.json /tmp/copilot-strategy.md
