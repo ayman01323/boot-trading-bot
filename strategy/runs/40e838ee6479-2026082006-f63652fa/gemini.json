@@ -1,0 +1,100 @@
+{
+  "cycle_id": "40e838ee6479-2026082006-f63652fa",
+  "evidence_gaps": [
+    "No sanitized runtime forensics fresh within two hours; generated_epoch is zero.",
+    "No per-strategy, per-chain realized money-weighted NET P&L after every fee, slippage, impact, gas/priority charge and execution failure.",
+    "No explicit economic attribution separating STRATEGY/MARKET losses from EXECUTION/INFRASTRUCTURE failures.",
+    "No common-numeraire valuation, capital-at-risk exposure, drawdown, tail-loss or confidence-interval evidence."
+  ],
+  "evidence_sha256": "f63652fa65e05ece51cbf4212f9b0fd48d2366eda857dd09c973e079256a0a06",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "Valuation joins and failure attribution can introduce bias unless prices, timestamps and attribution rules are immutable and auditable.",
+      "evidence": [
+        {
+          "detail": "Windows record net profit and execution-failure counts, but the schema lacks an explicit separation of STRATEGY/MARKET versus EXECUTION/INFRASTRUCTURE loss amounts.",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Comparable capital-weighted NET P&L, drawdown and profit-factor evidence by strategy, chain and failure class.",
+      "id": "rework-chain-normalized-loss-attribution",
+      "minimum_observation": "At least 50 resolved attempts per chain, including at least 10 execution failures or an equivalent injected-failure suite, with 100% accounting reconciliation and explicit loss attribution.",
+      "rationale": "Execution failures can consume gas or priority fees without being strategy losses. Outcome evidence should classify STRATEGY/MARKET loss separately from EXECUTION/INFRASTRUCTURE failure and retain both economic costs.",
+      "shadow_test": "Record notional, capital-at-risk duration, chain, native and common-numeraire values, all costs, execution state and loss class for every attempted SHADOW trade. Reconcile gross proceeds minus fees, slippage, impact, gas/priority fees and failed-attempt costs to net P&L. Stop if reconciliation is non-zero beyond rounding tolerance or any failure is ambiguously classified.",
+      "strategy": "Strategy Laboratory outcome accounting",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.96,
+      "downside_risk": "Quote-only results may overstate fill quality, particularly during congestion, low liquidity and rapid token deterioration.",
+      "evidence": [
+        {
+          "detail": "Evidence status is MISSING_RUNTIME_FORENSICS with generated_epoch=0.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Produces falsifiable Solana net-edge and execution-quality evidence while retaining abstention.",
+      "id": "shadow-more-solana-executable-outcomes",
+      "minimum_observation": "At least 100 forward-SHADOW observations and 30 fully resolved eligible round trips across congestion and liquidity regimes.",
+      "rationale": "Solana strategy economics cannot be evaluated without contemporaneous Jupiter-route quotes, sell simulation, priority/base fees, account/rent effects, impact, slippage and failure outcomes.",
+      "shadow_test": "Capture entry and unwind quotes at decision time and configured horizons, including priority fees, base fees, refundable versus non-refundable rent, impact, slippage and failed-transaction costs. Compare modeled with executable or counterfactual realized NET P&L. Fail on missing sellability, stale quotes, negative net edge, or systematic model overstatement.",
+      "strategy": "All Solana research families",
+      "suggested_files": [
+        "Strategy Lab/SHADOW files only"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Historical simulation may miss mempool competition, MEV, nonce contention and state changes.",
+      "evidence": [
+        {
+          "detail": "Evidence status is MISSING_RUNTIME_FORENSICS with generated_epoch=0.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Measures failure-adjusted EVM NET P&L and identifies whether losses are STRATEGY/MARKET selection losses or EXECUTION/INFRASTRUCTURE costs.",
+      "id": "shadow-more-evm-failure-adjusted-outcomes",
+      "minimum_observation": "At least 50 resolved eligible attempts on each evaluated EVM chain across multiple gas and volatility regimes.",
+      "rationale": "The EVM adapter is economically broader than Solana's, but estimates do not demonstrate mined execution outcomes or account for reverted, replaced, dropped and partially completed attempts.",
+      "shadow_test": "Forward-shadow each eligible route using block-consistent quotes and simulations, then observe inclusion outcome and counterfactual unwind. Charge gas and builder costs for failures where applicable. Fail if failure-adjusted aggregate net is non-positive, reconciliation is incomplete, or tail loss exceeds the predeclared bound.",
+      "strategy": "EVM route and directional strategy families",
+      "suggested_files": [
+        "Strategy Lab/SHADOW files only"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy based on current architecture, win count, or quote-simulation scorecards.",
+      "reason": "There is no fresh runtime evidence, simulations are explicitly non-promotional, and raw win count does not establish durable money-weighted NET P&L."
+    },
+    {
+      "idea": "Lower edge, liquidity, sellability or simulation thresholds to increase activity.",
+      "reason": "This would manufacture trades without proven executable edge and could worsen adverse selection and tail losses."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "40e838ee6479f3eb0d844176a379ea85f9299200",
+  "status": "INCOMPLETE",
+  "summary": "No sanitised runtime forensics are available (generated_epoch=0). Evaluated codebase architecture logic for strategy_lab and cross_chain_strategy_signals. Identified that strategy_lab lacks explicit separation of STRATEGY/MARKET loss versus EXECUTION/INFRASTRUCTURE failure, preventing precise attribution of net P&L. Architecture has sound abstention controls, but profitability cannot be claimed without fresh runtime evidence."
+}
