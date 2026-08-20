@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "provider": "copilot",
+  "cycle_id": "cf72037b0c66-2026082008-fc0284e1",
+  "source_commit": "cf72037b0c66d0f39ac92ee8c67699a7b98b9723",
+  "evidence_sha256": "fc0284e19819f952d521477192d232b84615314f0638091cb150d1af824ff891",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture review complete on source commit cf72037b0c66d0f39ac92ee8c67699a7b98b9723. The Strategy Lab already keeps strategy research report-only, shadow-only and net-P&L-aware, but two bounded improvements are warranted before stronger cross-chain conclusions: complete a current-executable Solana quote/liquidity/sellability adapter for the shared shadow lane, and tighten lifecycle promotion scoring so downside gating reflects costs instead of gross-only profit factor. Fresh runtime evidence was not available within 2h, so this review makes no profitability, canary, or live-readiness claims.",
+  "proposals": [
+    {
+      "id": "copilot-solana-shadow-adapter",
+      "action": "IMPROVE",
+      "strategy": "Cross-chain Strategy Lab feature coverage",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "evidence": [
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "detail": "load_solana_market_features intentionally fail-closes gross_edge_bps, liquidity_score and sellability_score to zero and marks needs_quote_feature_adapter=True, so Solana strategies are not yet evaluated on current executable economics."
+        },
+        {
+          "path": "learnerbot/shadow_strategy_executor.py",
+          "detail": "The shadow scorecard reports solana_current_quote_edge_adapter and related evidence gaps while keeping quote/simulation output research-only and non-promotional."
+        },
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "detail": "All seven strategy evaluators share one MarketFeatures schema, so missing Solana current-edge inputs suppress cross-chain comparability rather than proving no edge exists."
+        }
+      ],
+      "rationale": "The shared cross-chain evaluator is only as good as its chain adapters. EVM opportunities can carry current executable edge, but the Solana lane currently carries historical leader context without the same quote, liquidity and sellability evidence. That keeps the lab safe, but it also means Solana shadow scorecards cannot falsify the same economic hypotheses on current executable terms.",
+      "expected_effect": "Enable genuinely comparable SOLANA-versus-EVM shadow observations for the same strategy families, improve eligible-opportunity measurement on Solana, and separate 'no edge' from 'missing current edge evidence' without weakening live protections.",
+      "downside_risk": "If the adapter accepts stale or non-executable quotes, the lab could over-count false eligible opportunities. The adapter must remain non-signing, quote-age bounded and fail-closed on missing liquidity, sellability or simulation evidence.",
+      "shadow_test": "For at least 3 independent hourly windows and 20 or more Solana shadow observations per targeted strategy family, compare pre/post adapter evidence gaps, eligible-opportunity counts and later realised-outcome alignment. Reject the change if quote freshness gaps stay high, if simulated edge cannot be tied to bounded current quotes, or if added Solana eligibility does not improve cost-adjusted out-of-sample net-P&L attribution.",
+      "minimum_observation": "3 independent windows and 20+ Solana shadow observations per targeted family with chain-specific quote-age and cost diagnostics",
+      "confidence": 0.91,
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "copilot-cost-adjusted-lifecycle-scoring",
+      "action": "IMPROVE",
+      "strategy": "Strategy Lab lifecycle scoring",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "evidence": [
+        {
+          "path": "docs/STRATEGY_LAB.md",
+          "detail": "The lab objective is money-weighted net profitability after recorded costs, and promotion logic is described as depending on research profit factor rather than win count."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "detail": "strategy_metrics records fees, slippage_cost and net_profit separately, but _pf computes profit_factor as gross_profit divided by gross_loss and evaluate_strategy promotes when net > 0 and that gross-only profit factor is at least 1.10."
+        },
+        {
+          "path": "tests/test_strategy_lab.py",
+          "detail": "Existing tests prove negative net P&L causes REPLACE even with more wins, but there is no matching guard proving that thin-margin strategies must also clear a cost-adjusted downside threshold before promotion."
+        }
+      ],
+      "rationale": "The architecture correctly records fees and slippage, but the promotion threshold still uses gross-only profit factor. That can overstate strategy quality when gross trading gains remain positive while recurring execution costs consume most of the durable edge.",
+      "expected_effect": "Align promotion and rework decisions more tightly with after-cost strategy quality, reducing the chance that a thin-margin strategy is advanced on flattering gross-profit statistics.",
+      "downside_risk": "If the threshold is tightened too aggressively without enough sample, quiet but valid strategies could remain stuck in PROBATION. Any change should preserve the existing insufficient-sample and no-eligible-opportunity safeguards.",
+      "shadow_test": "Replay historical strategy_lab_windows with a cost-adjusted profit-factor or downside-aware threshold and compare lifecycle decisions against later net P&L, largest-loss and participation outcomes. Keep the change only if false-positive promotion candidates decrease without materially increasing missed positive-net candidates over at least 3 windows and 8 trades per strategy.",
+      "minimum_observation": "3 windows and 8+ trades per strategy plus backfill comparison of current versus proposed lifecycle decisions",
+      "confidence": 0.83,
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    }
+  ],
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy from quote-simulation scorecards or stale runtime evidence alone",
+      "reason": "shadow_strategy_executor explicitly marks quote/simulation output as research-only, and fresh runtime evidence within 2h is false, so profitability, canary and live-readiness claims would be unsupported."
+    },
+    {
+      "idea": "Treat a single profitable leader wallet as the main strategy upgrade path",
+      "reason": "The Strategy Lab and cross-chain research layers explicitly prefer repeated behaviours across multiple profitable wallets and market-native hypotheses over single-wallet dependence."
+    }
+  ],
+  "evidence_gaps": [
+    "Fresh runtime evidence within 2h is false, so this review cannot support profitability, canary or live-readiness claims.",
+    "The exact hashed .strategy_cycle/evidence.json payload is not present in the workspace, so this is an architecture-only review of the named source commit plus issue metadata.",
+    "Solana shadow inputs currently lack current executable quote, liquidity and sellability evidence in the shared MarketFeatures adapter, limiting cross-chain comparability until that gap is filled."
+  ],
+  "review_only": true,
+  "no_live_changes": true
+}
