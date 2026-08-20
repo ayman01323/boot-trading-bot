@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from learnerbot import strategy_source_extension as source_extension
 from learnerbot.strategy_external_research import (
     _safe_url,
     collect_external_strategy_research,
@@ -121,3 +123,26 @@ def test_defillama_payload_is_compacted_not_dumped_wholesale():
     names = {row["name"] for row in defi["data"]["focus_chains"]}
     assert {"Ethereum", "Solana", "Base"} <= names
     assert defi["data"]["chain_count"] == 3
+
+
+def test_strategy_report_contains_fresh_external_pack_before_agent_review(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    csv_dir = tmp_path / "csv"
+    data_dir.mkdir()
+    csv_dir.mkdir()
+    app = SimpleNamespace(data_dir=data_dir, csv_dir=csv_dir)
+    stub = {
+        "schema_version": 1,
+        "sources": [{"source_id": "EXT1", "name": "stub"}],
+        "errors": [],
+        "research_only": True,
+        "live_execution_authorised": False,
+        "external_content_instruction_authority": False,
+        "evidence_sha256": "a" * 64,
+    }
+    monkeypatch.setattr(source_extension, "collect_external_strategy_research", lambda: stub)
+    report = source_extension._build_with_source_governance(app)
+    assert report["external_source_research"] == stub
+    assert report["fresh_external_source_count"] == 1
+    assert "BEFORE" in report["ai_source_discovery_instruction"]
+    assert "EXT" in report["ai_source_discovery_instruction"]
