@@ -1,0 +1,79 @@
+{
+  "findings": [
+    {
+      "category": "ACCOUNTING",
+      "confidence": 0.95,
+      "corrective_action": "Change the condition to `if delta_raw is not None:` and ensure exact negative deltas translate to negative proceeds.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "if delta > 0: proceeds = Decimal(delta) / 1e9 else: proceeds = Decimal(out_lamports) / 1e9 - estimated_fee",
+          "file": "learnerbot/solana_live_patch.py",
+          "line": 286,
+          "symbol": "_close_live"
+        }
+      ],
+      "id": "solana-delta-masking",
+      "impact": "If a sell transaction results in a net loss of SOL (e.g. a dust exit where the Solana priority fee exceeds the swap return), the exact negative `delta` is discarded. The code silently falls back to an estimate based on `out_lamports` (which excludes the priority fee), artificially padding the realised P&L and masking the loss.",
+      "root_cause": "The conditional check `if delta > 0` incorrectly treats valid negative or zero wallet deltas (true losses/break-evens) as invalid snapshots instead of using their precise loss value.",
+      "severity": "P1",
+      "tests_required": [
+        "Test `_close_live` with a transaction where priority fee exceeds gross output (wallet_delta_lamports < 0) and verify realised P&L is strictly reduced."
+      ],
+      "title": "Exact negative wallet SOL delta is discarded, artificially inflating P&L"
+    },
+    {
+      "category": "EXECUTION",
+      "confidence": 0.9,
+      "corrective_action": "Preserve explicit `priorityFeeLamports` limits on retry, or reject the fallback entirely if `broadcastFeeType` cannot be securely supported.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "order = _get_json(self, base_params, context='order safe-retry')",
+          "file": "learnerbot/solana_jupiter_order_recovery_patch.py",
+          "line": 177,
+          "symbol": "order_with_http400_recovery"
+        }
+      ],
+      "id": "jupiter-http400-fee-bypass",
+      "impact": "When Jupiter responds with HTTP 400 on an order carrying manual fee caps, the recovery logic retries using `base_params`. Because `base_params` strips out `priorityFeeLamports`, `jitoTipLamports`, and `broadcastFeeType`, the retry silently drops explicit Jito tips and delegates back to Jupiter's default unmanaged fee. While subsequent guards may reject the returned order, the broadcast cap intent is bypassed.",
+      "root_cause": "The `safe-retry` fallback logic hardcodes `base_params` and inadvertently discards dynamic priority budget controls established moments prior.",
+      "severity": "P2",
+      "tests_required": [
+        "Simulate HTTP 400 from Jupiter `/order` with explicit manual fees, and assert the retry payload preserves `priorityFeeLamports` limits."
+      ],
+      "title": "HTTP 400 recovery retry omits maximum priority fee and tip limits"
+    },
+    {
+      "category": "ACCOUNTING",
+      "confidence": 0.95,
+      "corrective_action": "Calculate losses explicitly using `sum(1 for n, _ in vals if n < 0)`.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "'losses': closed - wins",
+          "file": "learnerbot/solana_profit_accounting_epoch_patch.py",
+          "line": 61,
+          "symbol": "_copied_metrics_corrected"
+        }
+      ],
+      "id": "profit-guard-break-even-loss",
+      "impact": "Trades with exactly zero `realised_net_sol` increment `closed` but not `wins`. The simple `closed - wins` calculation counts them as losses. This deflates the reported win rate and could prematurely trigger negative performance metrics.",
+      "root_cause": "Binary assumption that all non-winning trades are explicitly losses, lacking handling for `net == 0` break-even outcomes.",
+      "severity": "P3",
+      "tests_required": [
+        "Test `_copied_metrics_corrected` with a break-even trade (`realised_net_sol=0`) and verify `losses` does not increment."
+      ],
+      "title": "Break-even trades are improperly classified as losses in profit metrics"
+    }
+  ],
+  "no_live_changes": true,
+  "provider": "gemini",
+  "refusals_or_limits": [],
+  "report_only": true,
+  "schema_version": 1,
+  "scope": "FULL_REPOSITORY_BUG_AUDIT",
+  "source_commit": "128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+  "status": "ISSUES_FOUND",
+  "summary": "Audited EVM and Solana execution, P&L accounting, and economic safety guards. Identified a critical P1 bug masking exact SOL losses on dust exits, a P2 bypass of priority fee controls during Jupiter rate-limit recovery, and a P3 defect classifying break-even trades as losses."
+}

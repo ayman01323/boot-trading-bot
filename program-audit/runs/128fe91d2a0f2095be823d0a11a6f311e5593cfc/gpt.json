@@ -1,0 +1,277 @@
+{
+  "findings": [
+    {
+      "category": "SECURITY",
+      "confidence": 1.0,
+      "corrective_action": "Remove identity-specific migrations from runtime imports. Require an explicit, authenticated, auditable administrative command that verifies the target identity and never auto-promotes a missing user. Fail startup if an unapplied privilege migration is required.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Production startup unconditionally imports telegram_676_full_live_migration.",
+          "file": "learnerbot/__main__.py",
+          "line": 87,
+          "symbol": "module startup imports"
+        },
+        {
+          "detail": "The privileged identity is hard-coded as 6760898817.",
+          "file": "learnerbot/telegram_676_full_live_migration.py",
+          "line": 10,
+          "symbol": "TARGET_TELEGRAM_ID"
+        },
+        {
+          "detail": "On any data directory lacking the local marker, the code creates the identity if absent and changes it to role MASTER and status ACTIVE.",
+          "file": "learnerbot/telegram_676_full_live_migration.py",
+          "line": 31,
+          "symbol": "_arm_full_live"
+        },
+        {
+          "detail": "It enables AUTO, LIVE, ARMED, SiBot auto execution, and Solana LIVE globally and per configured EVM chain.",
+          "file": "learnerbot/telegram_676_full_live_migration.py",
+          "line": 53,
+          "symbol": "_arm_full_live"
+        },
+        {
+          "detail": "The migration wraps cli._app, so it executes during routine application construction rather than an explicit administrative migration command.",
+          "file": "learnerbot/telegram_676_full_live_migration.py",
+          "line": 116,
+          "symbol": "_app_with_676_full_live"
+        }
+      ],
+      "id": "startup-hardcoded-master-live-escalation",
+      "impact": "Every fresh deployment, restored deployment missing the marker, or changed DATA_DIR silently gives a repository-embedded external identity full administrative Telegram control and real-money execution authorization. That identity can also operate MASTER-only platform gates.",
+      "root_cause": "A one-user operational migration was permanently composed into the production import path and uses a local marker rather than authenticated, deployment-scoped authorization.",
+      "severity": "P0",
+      "tests_required": [
+        "Start with an empty CSV_DIR/DATA_DIR and assert no user or privilege record is created.",
+        "Assert importing learnerbot.__main__ cannot alter users.csv or user_trading_settings.csv.",
+        "Regression-test that only an existing active MASTER can grant roles or arm another account."
+      ],
+      "title": "Normal startup grants a hard-coded Telegram ID MASTER privileges and arms live trading"
+    },
+    {
+      "category": "SAFETY",
+      "confidence": 1.0,
+      "corrective_action": "Separate entry authorization from exit authorization. Disabling LIVE must block new buys while the monitor continues guarded exits for existing verified positions, with an independent emergency-exit kill switch reserved for signing compromise.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "After the fault threshold, solana_live_enabled is set false; the notification explicitly states that monitored exits stop.",
+          "file": "learnerbot/solana_execution_fault_counter_patch.py",
+          "line": 29,
+          "symbol": "record_execution_fault"
+        },
+        {
+          "detail": "The monitor loads open LIVE positions but immediately skips each user when live_enabled is false.",
+          "file": "learnerbot/solana_live_patch.py",
+          "line": 405,
+          "symbol": "monitor_positions"
+        },
+        {
+          "detail": "Stop-loss, trailing, take-profit, and leader-exit handling occur only after the live_enabled skip.",
+          "file": "learnerbot/solana_live_patch.py",
+          "line": 426,
+          "symbol": "monitor_positions"
+        }
+      ],
+      "id": "solana-live-disable-blocks-emergency-exits",
+      "impact": "Automatic disablement caused by uncertain execution output\u2014or a user's manual disarm\u2014also disables risk-reducing exits for already-open positions, leaving capital exposed precisely when execution reliability is suspect.",
+      "root_cause": "One gate controls both risk-increasing entries and risk-reducing position liquidation.",
+      "severity": "P1",
+      "tests_required": [
+        "Create an open LIVE position, disable solana_live_enabled, trigger stop loss, and assert an exit is attempted.",
+        "Reach the landed-fault threshold and assert new entries stop while existing-position monitoring continues.",
+        "Test a separate explicit signing-compromise gate that blocks all transactions."
+      ],
+      "title": "Solana circuit breaker disables position monitoring and emergency exits together with new entries"
+    },
+    {
+      "category": "DATA",
+      "confidence": 0.99,
+      "corrective_action": "Persist a submitted/uncertain attempt before broadcast. Resolve the signature through RPC and compare pre/post token and SOL balances; create a reconciled position when acquisition is proven, or quarantine an explicit unknown holding for mandatory operator recovery.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "The executor first accepts Jupiter status Success, code zero, and a signature.",
+          "file": "learnerbot/solana_live_executor.py",
+          "line": 158,
+          "symbol": "SolanaLiveExecutor.swap"
+        },
+        {
+          "detail": "It then raises SolanaLivePostExecutionError if reported input/output fields or swapEvents are absent, even though a signature was already reported successful.",
+          "file": "learnerbot/solana_live_executor.py",
+          "line": 183,
+          "symbol": "SolanaLiveExecutor.swap"
+        },
+        {
+          "detail": "Position insertion occurs only after executor.buy returns normally.",
+          "file": "learnerbot/solana_live_patch.py",
+          "line": 347,
+          "symbol": "process_leader_event"
+        },
+        {
+          "detail": "The post-execution-error branch records LANDED_INVALID_OUTPUT but performs no on-chain token-delta reconciliation and creates no recoverable position.",
+          "file": "learnerbot/solana_live_patch.py",
+          "line": 353,
+          "symbol": "process_leader_event"
+        }
+      ],
+      "id": "solana-landed-buy-can-remain-untracked",
+      "impact": "If Jupiter changes or omits response fields while the signed transaction succeeds, acquired tokens can exist in the wallet without a tracked cost basis, wallet binding, position monitor, or automatic exit path.",
+      "root_cause": "Transport/API response completeness is treated as the authoritative economic result after broadcast, without durable on-chain reconciliation before abandoning position creation.",
+      "severity": "P1",
+      "tests_required": [
+        "Return Success plus signature but omit swapEvents and assert confirmed on-chain token deltas create a position.",
+        "Simulate delayed RPC visibility and assert reconciliation retries durably.",
+        "Assert every landed BUY ends in EXECUTED_POSITION, PROVEN_NO_FILL, or operator-visible QUARANTINED_HOLDING."
+      ],
+      "title": "A successful Solana BUY with incomplete Jupiter result metadata is not reconciled into a position"
+    },
+    {
+      "category": "CONCURRENCY",
+      "confidence": 0.98,
+      "corrective_action": "Introduce a per-chain/per-address inter-process nonce manager that locks acquisition through broadcast, tracks locally reserved nonces, reconciles pending transactions, and handles replacement explicitly.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Each transaction independently reads get_transaction_count(address, 'pending') with no wallet/chain nonce reservation or lock.",
+          "file": "learnerbot/live_executor.py",
+          "line": 299,
+          "symbol": "LiveTrader._base_tx"
+        },
+        {
+          "detail": "Signing and broadcast are separate from nonce acquisition and are not protected by synchronization.",
+          "file": "learnerbot/live_executor.py",
+          "line": 310,
+          "symbol": "LiveTrader._sign_send"
+        },
+        {
+          "detail": "Telegram manual BUY and SELL handlers can submit transactions from the menu thread.",
+          "file": "learnerbot/telegram_ui.py",
+          "line": 775,
+          "symbol": "handle_update"
+        },
+        {
+          "detail": "The Telegram menu runs in a background thread while the main loop and additional discovery/worker threads run concurrently.",
+          "file": "learnerbot/cli.py",
+          "line": 142,
+          "symbol": "main"
+        }
+      ],
+      "id": "evm-wallet-nonce-race",
+      "impact": "Two operations for the same wallet and chain can receive the same nonce. One may replace or invalidate the other, causing failed exits, approval/swap sequencing failures, misleading broadcast reports, or unintended fee bidding competition.",
+      "root_cause": "The executor relies on the RPC pending nonce as a reservation mechanism, but pending nonce reads are not atomic across threads or processes.",
+      "severity": "P1",
+      "tests_required": [
+        "Submit two concurrent transactions from one mocked wallet and assert distinct sequential nonces.",
+        "Test concurrent approval plus sell sequencing.",
+        "Test restart reconciliation with pending and dropped transactions."
+      ],
+      "title": "Concurrent EVM submissions from one wallet can sign the same pending nonce"
+    },
+    {
+      "category": "CONCURRENCY",
+      "confidence": 1.0,
+      "corrective_action": "Move mutable operational state and ledgers to SQLite transactions with uniqueness constraints. At minimum, use a shared inter-process lock, unique temporary files, reload under lock, and fsync the containing directory.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Atomic replacement prevents partial files but provides no lock around callers' preceding read-modify-write sequence and uses one shared .tmp filename.",
+          "file": "learnerbot/user_registry.py",
+          "line": 24,
+          "symbol": "_atomic_write"
+        },
+        {
+          "detail": "User safety gates are read, modified, and rewritten without synchronization.",
+          "file": "learnerbot/user_registry.py",
+          "line": 236,
+          "symbol": "set_user_setting"
+        },
+        {
+          "detail": "Execution accounting reads the entire ledger, appends in memory, and replaces it using a shared temporary path without a lock.",
+          "file": "learnerbot/auto_trader.py",
+          "line": 30,
+          "symbol": "_append"
+        },
+        {
+          "detail": "Hourly trade, gas, and cooldown enforcement is derived from that lossy CSV ledger.",
+          "file": "learnerbot/auto_trader.py",
+          "line": 48,
+          "symbol": "auto_state"
+        },
+        {
+          "detail": "The application deliberately runs multiple worker threads that can update shared CSV state.",
+          "file": "learnerbot/cli.py",
+          "line": 142,
+          "symbol": "main"
+        }
+      ],
+      "id": "csv-state-read-modify-write-races",
+      "impact": "Overlapping writers can lose settings or execution rows, collide on the shared temporary file, or overwrite newer data. Lost execution rows undercount hourly trades/gas and can permit limits to be exceeded; lost settings can re-enable stale values or produce misleading reports.",
+      "root_cause": "Atomic rename was mistaken for transaction isolation; it protects file completeness but not concurrent logical updates.",
+      "severity": "P1",
+      "tests_required": [
+        "Stress concurrent set_user_setting calls and assert no updates are lost.",
+        "Stress concurrent execution-ledger appends and assert exact row cardinality.",
+        "Verify hourly limits remain enforced under concurrent append attempts.",
+        "Run two processes against the same CSV_DIR and assert safe serialization."
+      ],
+      "title": "Critical CSV authorization, accounting, and rate-limit state uses unlocked read-modify-replace operations"
+    },
+    {
+      "category": "SECURITY",
+      "confidence": 1.0,
+      "corrective_action": "Store activation codes and users in a transactional database. Atomically validate the code and fee plan, increment usage conditionally, and activate exactly one identity in one transaction.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Redemption reads the complete activation-code file before checking and incrementing uses.",
+          "file": "learnerbot/user_registry.py",
+          "line": 179,
+          "symbol": "redeem_activation_code"
+        },
+        {
+          "detail": "The max_uses check and uses increment occur only in memory, with no lock or database transaction.",
+          "file": "learnerbot/user_registry.py",
+          "line": 193,
+          "symbol": "redeem_activation_code"
+        },
+        {
+          "detail": "The updated file is replaced afterward, allowing two callers that read the same old count to both pass and activate separate users.",
+          "file": "learnerbot/user_registry.py",
+          "line": 199,
+          "symbol": "redeem_activation_code"
+        },
+        {
+          "detail": "Fee-plan validity is checked only after the usage count is persisted, so an invalid plan consumes the code even though activation fails.",
+          "file": "learnerbot/user_registry.py",
+          "line": 200,
+          "symbol": "redeem_activation_code"
+        }
+      ],
+      "id": "activation-code-nonatomic-redemption",
+      "impact": "Concurrent Telegram requests can exceed an activation code's authorized usage count and create unauthorized active trading accounts. Misconfigured codes are also irreversibly consumed without successful activation.",
+      "root_cause": "Authorization redemption is implemented as multiple unlocked CSV operations rather than one atomic transaction.",
+      "severity": "P1",
+      "tests_required": [
+        "Race two redemptions of a max_uses=1 code and assert exactly one succeeds.",
+        "Assert a missing or disabled fee plan does not consume a use.",
+        "Test process-level concurrency, not only threads."
+      ],
+      "title": "Single-use activation codes can be redeemed concurrently more than once"
+    }
+  ],
+  "no_live_changes": true,
+  "provider": "gpt",
+  "refusals_or_limits": [
+    "No network tools or external websites were used.",
+    "No files, settings, wallets, secrets, signing material, deployments, commits, or external systems were modified.",
+    "The supplied baseline reports 367 passing and 13 failing tests; failures are primarily missing runtime CSV/script fixtures plus one workflow assertion.",
+    "Findings based on concurrency or incomplete external response shapes identify proven unsafe control flow; occurrence in a particular deployment depends on concurrent timing or provider response conditions."
+  ],
+  "report_only": true,
+  "schema_version": 1,
+  "scope": "FULL_REPOSITORY_BUG_AUDIT",
+  "source_commit": "128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+  "status": "ISSUES_FOUND",
+  "summary": "Six concrete defects were identified. Most critically, ordinary startup grants a hard-coded Telegram identity MASTER privileges and arms live execution. Solana safety faults can strand positions, successful but incompletely reported swaps can become untracked, and non-transactional CSV and nonce handling permit races affecting authorization, limits, accounting, and execution."
+}
