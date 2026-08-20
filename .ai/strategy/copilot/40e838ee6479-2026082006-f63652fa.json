@@ -1,0 +1,132 @@
+{
+  "cycle_id": "40e838ee6479-2026082006-f63652fa",
+  "evidence_gaps": [
+    "Fresh runtime evidence within 2 hours is false, so this review cannot claim profitability, canary readiness, or live readiness.",
+    "The issue provides an evidence SHA but no local sanitized evidence bundle to re-measure realised participation, execution-failure rates, or chain-specific realised P&L from this session.",
+    "Static source review cannot verify whether any learned pattern remains positive out of sample across separate Solana and EVM market regimes."
+  ],
+  "evidence_sha256": "f63652fa65e05ece51cbf4212f9b0fd48d2366eda857dd09c973e079256a0a06",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.97,
+      "downside_risk": "This will likely demote some previously favored patterns and reduce apparent opportunity count until stronger multi-wallet cohorts are found.",
+      "evidence": [
+        {
+          "detail": "avg_net_base is calculated from positive proven trades only, so losing proven trades do not reduce the stored pattern average.",
+          "path": "learnerbot/strategy.py:32-34"
+        },
+        {
+          "detail": "profitable-wallet pattern research exports and ranks learned patterns using avg_net_base, confidence and replicability.",
+          "path": "learnerbot/strategy_lab_research.py:177-197"
+        },
+        {
+          "detail": "the lab objective explicitly prioritises money-weighted net P&L, profit factor and largest loss over raw win count.",
+          "path": "docs/STRATEGY_LAB.md:77-90"
+        }
+      ],
+      "expected_effect": "Ranking patterns with all proven net outcomes, plus explicit gross-positive/gross-negative context, should reduce false-positive shadow candidates and better align learned-route replication with money-weighted net profitability.",
+      "id": "p1-pattern-net",
+      "minimum_observation": "At least 20 proven pattern observations and 2 non-overlapping time windows per chain type.",
+      "rationale": "A positive-only average can make a route family look attractive even when a few larger losses erase the gains in aggregate. That conflicts with the repository objective of durable net P&L after costs and can bias learned-pattern research toward high-win-rate but fragile routes.",
+      "shadow_test": "Recompute pattern summaries with all proven net_base rows (not just winners), then compare the next shadow cohort against the current ranking on out-of-sample net P&L after recorded costs, profit factor and largest loss separately for Solana and EVM. Reject the change if the revised ranking lowers opportunity count without improving post-cost net results or tail-loss control.",
+      "strategy": "Learned Route Replication",
+      "suggested_files": [
+        "learnerbot/strategy.py",
+        "learnerbot/strategy_lab_research.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.96,
+      "downside_risk": "Quote/simulation data can be over-trusted if documentation and tests do not keep the hard boundary that simulated edge is not realised P&L or promotion evidence.",
+      "evidence": [
+        {
+          "detail": "the Solana adapter explicitly states that current gross edge, liquidity and sellability remain fail-closed at zero because no contemporaneous executable quote is available.",
+          "path": "learnerbot/market_feature_adapter.py:270-276"
+        },
+        {
+          "detail": "Solana shadow events are marked current_edge_proven=false and needs_quote_feature_adapter=true.",
+          "path": "learnerbot/market_feature_adapter.py:323-330"
+        },
+        {
+          "detail": "the scorecard already reports a solana_current_quote_edge_adapter evidence gap when those events are seen.",
+          "path": "learnerbot/shadow_strategy_executor.py:206-207"
+        }
+      ],
+      "expected_effect": "Adding a bounded Solana quote/liquidity/sellability adapter should convert more Solana observations from signal-only placeholders into comparable shadow evidence without changing any live execution path.",
+      "id": "p2-solana-exec-gap",
+      "minimum_observation": "24 shadow hours and at least 30 recent Solana observations with chain-specific fee/priority-cost fields populated.",
+      "rationale": "The repository requires chain-specific executability, liquidity, sellability and cost models. Today the Solana lane can show scanning activity, but it cannot yet produce comparable current executable-edge evidence to the EVM lane, so cross-chain shadow conclusions are structurally incomplete.",
+      "shadow_test": "Add a Solana quote feature adapter that records current executable quotes, liquidity and sellability while keeping promotion_evidence=false and live submission disabled. Success requires increased Solana executable_quote_simulations coverage and better chain-by-chain evidence completeness without any live order path or any claim of realised profitability.",
+      "strategy": "Cross-chain Solana shadow executability evidence",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "A stricter evaluator may delay promotion of legitimately good but fee-heavy strategies until thresholds are recalibrated on enough shadow data.",
+      "evidence": [
+        {
+          "detail": "strategy metrics track fees, slippage_cost and net_profit, but profit_factor is still computed from gross_profit divided by gross_loss.",
+          "path": "learnerbot/strategy_lab.py:371-393"
+        },
+        {
+          "detail": "promotion/replacement decisions rely on net_profit plus a profit-factor threshold that is not directly cost-adjusted.",
+          "path": "learnerbot/strategy_lab.py:432-439"
+        },
+        {
+          "detail": "the positive-candidate test confirms the current promotion path uses the existing evaluator thresholds.",
+          "path": "tests/test_strategy_lab.py:118-126"
+        }
+      ],
+      "expected_effect": "Using a cost-adjusted companion ratio or stronger post-cost gating should reduce the chance of promoting thin-edge strategies whose gross profit factor masks recurring execution leakage.",
+      "id": "p3-cost-robustness",
+      "minimum_observation": "At least 3 windows and 8 trades per strategy per chain, plus one later out-of-sample replay window.",
+      "rationale": "A strategy can look cleaner on gross win/loss ratio than it really is once recurring fees and slippage are considered. Because the Strategy Lab objective is durable net profitability after recorded costs, the evaluator should rank cost-fragile strategies more conservatively.",
+      "shadow_test": "Replay existing strategy_lab_windows with both the current evaluator and a cost-adjusted variant, then compare promoted candidates on subsequent out-of-sample net P&L after costs, profit factor and largest loss by chain. Reject the change if it suppresses clearly positive, adequately sampled strategies without improving post-cost drawdown control.",
+      "strategy": "Strategy Lab portfolio evaluator",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    }
+  ],
+  "provider": "copilot",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any existing Strategy Lab family toward canary or live trading from this repository review alone.",
+      "reason": "The issue states fresh runtime evidence is not available, and the repository repeatedly says quote simulations and shadow scorecards are not realised P&L or live-promotion evidence."
+    },
+    {
+      "idea": "Increase dependence on single leader-wallet copying as the main optimization path.",
+      "reason": "Repository guidance and Strategy Lab research code explicitly prefer repeated behaviours across multiple profitable wallets and learned patterns over reliance on one selected wallet."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "40e838ee6479f3eb0d844176a379ea85f9299200",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Static review of source commit 40e838ee6479f3eb0d844176a379ea85f9299200 found three bounded Strategy Lab improvements worth shadow-only follow-up: learned-pattern ranking currently overweights winners by averaging only positive proven trades, the Solana shadow lane still lacks current executable quote/liquidity evidence, and portfolio promotion logic still relies on a gross-loss profit-factor ratio even though fees and slippage are tracked separately. Fresh runtime evidence is not available, so this report does not claim profitability, canary readiness, or live readiness."
+}
