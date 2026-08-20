@@ -1,0 +1,120 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "review_only": true,
+  "no_live_changes": true,
+  "cycle_id": "626a6cb0e9c5-2026082013-8114cafa",
+  "source_commit": "626a6cb0e9c51ce3db7228f2806e646f09d33cf2",
+  "evidence_sha256": "8114cafae6513b218c1c7ccb2bb1d6154d9aec94657e2c41c270402fe1f90771",
+  "generated_at": "2026-08-20T13:50:00Z",
+  "status": "CHANGES_PROPOSED",
+  "fresh_runtime_evidence": false,
+  "runtime_evidence_gaps": [
+    "No runtime evidence fresher than 2h is available; profitability, canary or live-readiness claims cannot be made for any strategy.",
+    "strategy_lab_windows table data is absent from evidence; profit_factor, win/loss counts and net P&L metrics cannot be confirmed.",
+    "Execution failure rates and signal-skip counts for shadow windows are unobserved."
+  ],
+  "architecture_summary": "The Strategy Laboratory (learnerbot/strategy_lab.py) provides a well-gated SHADOW-first pipeline with MIN_PROFIT_FACTOR=1.10, mandatory simulation/preflight, and atomic promotion controls. Cross-chain signals are handled separately in cross_chain_strategy_signals.py with independent SOLANA/EVM models. The shadow executor (shadow_strategy_executor.py) correctly writes results without touching live capital. The contract validator (three_agent_strategy_contract.py) enforces review_only/no_live_changes flags and requires falsifiable shadow_test on every proposal. No live-execution bypass, credential, or signing material was observed in the strategy lab path.",
+  "proposals": [
+    {
+      "id": "PROP-001-LIQUIDITY-MOMENTUM-SOLANA",
+      "name": "New-pool liquidity-confirmed momentum entry — Solana",
+      "family": "MARKET_NATIVE",
+      "action": "NEW_SHADOW",
+      "confidence": 0.62,
+      "chain_scope": ["SOLANA"],
+      "rationale": "Pools created within the last 30 minutes on Jupiter with >=3 SOL single-sided depth and a 5-minute price change of +8–35% (avoiding extreme pump/dump outliers) show a mean reversion window of 2–6 minutes that can be exploited with a tight 4% stop-loss and 6% take-profit target. The hypothesis is falsifiable: if median net P&L across >=10 shadow trades falls below 0 after Jupiter swap fees (~0.25%) and estimated slippage (0.5%), the strategy is disqualified.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_PROFIT_FACTOR, MIN_EVALUATION_TRADES, MIN_ELIGIBLE_OPPORTUNITIES thresholds govern promotion eligibility."
+        },
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "Existing cross-chain signal framework; Solana new-pool signal can be added here."
+        },
+        {
+          "path": "learnerbot/strategy_lab_research.py",
+          "note": "Research module for DEX Screener and Jupiter data ingestion."
+        }
+      ],
+      "shadow_test": "Run >= 10 shadow trades on Solana pools aged < 30 min with 5-min price change 8–35%. Net P&L after Jupiter fees and estimated slippage must be > 0 across the evaluation window. Profit factor must exceed 1.10. If either threshold is missed the strategy is disqualified without promotion.",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_strategy_liquidity_momentum_solana.py"
+      ],
+      "cost_model": {
+        "swap_fee_pct": 0.25,
+        "estimated_slippage_pct": 0.5,
+        "priority_fee_sol": 0.001
+      },
+      "research_tools": ["Jupiter quote API", "DEX Screener pool-age endpoint"],
+      "runtime_evidence_needed": "Shadow window P&L from strategy_lab_windows for this strategy ID."
+    },
+    {
+      "id": "PROP-002-LIQUIDITY-MOMENTUM-EVM",
+      "name": "New-pool liquidity-confirmed momentum entry — EVM",
+      "family": "MARKET_NATIVE",
+      "action": "NEW_SHADOW",
+      "confidence": 0.58,
+      "chain_scope": ["EVM"],
+      "rationale": "Same economic hypothesis as PROP-001 applied to EVM (Polygon/Arbitrum). Uniswap V3/V2 pools created within 30 min with >=1000 USD single-sided depth and 5-min price change 8–35%. EVM gas and MEV exposure are higher than Solana, so cost model must be calibrated separately before any shadow-to-active promotion is considered.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "Strategy Lab governance thresholds apply identically on EVM."
+        },
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "EVM signal branch can be added alongside Solana signal."
+        },
+        {
+          "path": "learnerbot/fee_engine.py",
+          "note": "EVM gas/fee model for cost-adjusted P&L simulation."
+        }
+      ],
+      "shadow_test": "Run >= 10 shadow trades on EVM pools aged < 30 min with 5-min price change 8–35%. Net P&L after gas, swap fee and estimated MEV slippage must be > 0 across the evaluation window. Profit factor must exceed 1.10. EVM shadow results must be collected independently and not merged with Solana results.",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_strategy_liquidity_momentum_evm.py"
+      ],
+      "cost_model": {
+        "swap_fee_pct": 0.3,
+        "estimated_slippage_pct": 0.8,
+        "gas_usd_estimate": 2.5
+      },
+      "research_tools": ["DEX Screener pool-age endpoint", "Etherscan API V2 transaction history"],
+      "runtime_evidence_needed": "Shadow window P&L from strategy_lab_windows for this strategy ID on EVM chain."
+    },
+    {
+      "id": "PROP-003-PARTICIPATION-RATE-AUDIT",
+      "name": "Shadow strategy participation rate audit",
+      "family": "LEARNED_PATTERN",
+      "action": "RESEARCH_MORE",
+      "confidence": 0.70,
+      "chain_scope": ["SOLANA", "EVM"],
+      "rationale": "The strategy lab enforces MIN_ELIGIBLE_PARTICIPATION=0.20 (20% of eligible opportunities must be taken). Without runtime evidence it is unknown whether any live/shadow strategy is suppressing valid trades through overly restrictive filters (e.g. sellability gate, positive-edge gate). A participation rate audit across all strategy IDs in strategy_lab_windows would identify strategies that repeatedly see eligible opportunities but rarely act, which is a leading indicator of miscalibrated filters rather than genuine edge absence.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_ELIGIBLE_PARTICIPATION=0.20 threshold defined; participation rate is computed from eligible_opportunities vs trades in strategy_lab_windows."
+        },
+        {
+          "path": "learnerbot/shadow_strategy_executor.py",
+          "note": "Shadow executor records signal_skips per window; high skip counts with low trade counts indicate filter suppression."
+        }
+      ],
+      "shadow_test": "Query strategy_lab_windows for all SHADOW and ACTIVE strategies. Flag any strategy where trades/eligible_opportunities < 0.10 over >= 3 windows with eligible_opportunities >= 10. For flagged strategies, inspect signal_skips breakdown to identify which gate is suppressing trades.",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_strategy_participation_audit.py"
+      ],
+      "research_tools": ["Internal strategy_lab_windows DB query", "Dune for on-chain cohort validation"],
+      "runtime_evidence_needed": "strategy_lab_windows rows for all active shadow strategies with eligible_opportunities, trades and signal_skips."
+    }
+  ],
+  "cost_and_risk_notes": "All proposals target SHADOW status only. No proposal requests live capital, relaxed safety gates, weakened positive-edge checks, or removal of simulation/preflight. Cost models for each proposal are estimates only and must be verified through shadow execution before any promotion review.",
+  "deduplication": "PROP-001 and PROP-002 share the same economic family but require independent shadow evidence per chain. They are not duplicates. PROP-003 is orthogonal (a governance/audit proposal, not a trading strategy)."
+}

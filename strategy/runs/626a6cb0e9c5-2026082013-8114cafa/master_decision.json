@@ -1,0 +1,185 @@
+{
+  "cycle_id": "626a6cb0e9c5-2026082013-8114cafa",
+  "decisions": [
+    {
+      "action": "REWORK",
+      "allowed_files": [],
+      "confidence": 0.94,
+      "disposition": "REJECT",
+      "finding_id": "copy-entry-positive-edge-duplicate",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "requires support from at least two independent agents",
+        "HIGH/CRITICAL strategy change requires human review",
+        "no bounded allowed_files scope",
+        "accepted strategy code change needs explicit required tests"
+      ],
+      "reason": "The cited base validators are not the complete checked-out control stack. EVM's profit-guard wrapper requires historical expected edge to cover estimated gas and round-trip costs, while Solana installs historical-return, realised-profit-factor, and loss-quarantine gates. Strategy Lab also already contains a Forecasted Positive Net Edge evaluator requiring positive current executable edge. The proposal is therefore substantially duplicative, and no runtime evidence demonstrates an additional forecast would improve net outcomes.",
+      "required_tests": [],
+      "risk_class": "HIGH",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:positive-edge-before-copy-entry"
+      ],
+      "strategy": "SiBot leader-copy entry",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_strategy_solana_shadow_costs.py"
+      ],
+      "confidence": 0.96,
+      "disposition": "ACCEPT",
+      "finding_id": "solana-shadow-realised-cost-accounting",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "requires support from at least two independent agents"
+      ],
+      "reason": "Code truth confirms SHADOW P&L uses fixed entry and exit fee defaults despite the execution stack modelling additional priority, tip, platform, impact, failure, and refundable-rent components. Recording observed cost components and separately reporting stress imputations is justified without asserting profitability.",
+      "required_tests": [
+        "pytest -q tests/test_strategy_solana_shadow_costs.py tests/test_strategy_lab.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:dynamic-solana-shadow-costs"
+      ],
+      "strategy": "Solana SiBot SHADOW accounting",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_strategy_attribution_ledger.py"
+      ],
+      "confidence": 0.95,
+      "disposition": "ACCEPT",
+      "finding_id": "strategy-lab-trade-attribution-ledger",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "requires support from at least two independent agents"
+      ],
+      "reason": "Strategy Lab stores aggregate windows and counts execution failures, but lacks trade-level capital duration, incurred failure cost, wallet-delta reconciliation, and mutually exclusive outcome attribution. A SHADOW-only ledger would strengthen evidence quality without changing trading behavior.",
+      "required_tests": [
+        "pytest -q tests/test_strategy_attribution_ledger.py tests/test_strategy_lab.py tests/test_market_feature_shadow_executor.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:money-weighted-attribution-ledger"
+      ],
+      "strategy": "Cross-chain Strategy Lab evaluation",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_strategy_oos_durability.py"
+      ],
+      "confidence": 0.97,
+      "disposition": "ACCEPT",
+      "finding_id": "shadow-promotion-oos-durability",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "requires support from at least two independent agents"
+      ],
+      "reason": "The checked-out Strategy Lab can label a promotion candidate from three aggregate windows, eight trades, positive net P&L, and profit factor at least 1.10 without mechanically enforcing a time-split holdout, uncertainty bound, chain separation, or regime coverage. Acceptance is limited to SHADOW promotion-candidate evaluation; the live CANARY state machine is outside the allowed scope and requires separate human review.",
+      "required_tests": [
+        "pytest -q tests/test_strategy_oos_durability.py tests/test_strategy_lab.py"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:promotion-requires-oos-durability"
+      ],
+      "strategy": "Strategy lifecycle promotion evaluation",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "allowed_files": [],
+      "confidence": 0.98,
+      "disposition": "REJECT",
+      "finding_id": "new-liquidity-family-duplicate-unsupported",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "no bounded allowed_files scope",
+        "accepted strategy code change needs explicit required tests"
+      ],
+      "reason": "The repository already seeds both Liquidity Confirmed Momentum and New Liquidity Quality and implements a cross-chain new-liquidity evaluator with sellability, liquidity, dispersion, freshness, and positive-net-edge gates. The proposed age, price-change, depth, stop, target, fee, and MEV constants have no measured runtime support; Copilot's claimed exploitable mean-reversion window is unsupported and internally mismatched with a momentum entry.",
+      "required_tests": [],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gemini:prop-lab-shadow-liquidity-quality-1",
+        "copilot:PROP-001-LIQUIDITY-MOMENTUM-SOLANA",
+        "copilot:PROP-002-LIQUIDITY-MOMENTUM-EVM"
+      ],
+      "strategy": "New Liquidity Quality and liquidity-confirmed momentum",
+      "supporting_agents": [
+        "copilot",
+        "gemini"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "allowed_files": [],
+      "confidence": 0.97,
+      "disposition": "REJECT",
+      "finding_id": "participation-audit-already-implemented",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "requires support from at least two independent agents",
+        "no bounded allowed_files scope",
+        "accepted strategy code change needs explicit required tests"
+      ],
+      "reason": "Strategy Lab already records eligible opportunities, trades, participation, and signal skips, and evaluate_strategy already returns REWORK_FILTERS when participation is below its configured threshold. Treating low participation as evidence that safety filters should be loosened would risk forced trading; absent opportunity-level outcomes, abstention may be correct.",
+      "required_tests": [],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:PROP-003-PARTICIPATION-RATE-AUDIT"
+      ],
+      "strategy": "Shadow strategy participation-rate audit",
+      "supporting_agents": [
+        "copilot"
+      ]
+    }
+  ],
+  "draft_pr_only": true,
+  "evidence_sha256": "8114cafae6513b218c1c7ccb2bb1d6154d9aec94657e2c41c270402fe1f90771",
+  "implementation_allowed": false,
+  "live_auto_deploy": false,
+  "policy": {
+    "auto_deploy": false,
+    "auto_merge": false,
+    "live_execution_files_allowed": false,
+    "minimum_confidence": 0.85,
+    "minimum_independent_agents": 2,
+    "risk_allowed": [
+      "LOW",
+      "MEDIUM"
+    ],
+    "shadow_only_required": true
+  },
+  "policy_accepted_count": 0,
+  "schema_version": 1,
+  "source_commit": "626a6cb0e9c51ce3db7228f2806e646f09d33cf2",
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "summary": "Architecture-only evidence supports bounded improvements to SHADOW cost accounting, trade-level attribution, and out-of-sample promotion evaluation. No profitability, CANARY, LIVE, increased-frequency, or increased-capital conclusion is supported. Proposed liquidity strategies and participation auditing duplicate checked-in Strategy Lab capabilities, while the proposed copy-entry forecast duplicates existing positive-edge gates and the Forecasted Positive Net Edge evaluator."
+}
