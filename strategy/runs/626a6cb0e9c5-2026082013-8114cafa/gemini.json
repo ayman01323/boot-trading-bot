@@ -1,0 +1,50 @@
+{
+  "cycle_id": "626a6cb0e9c5-2026082013-8114cafa",
+  "evidence_gaps": [
+    "No sanitised runtime forensics branch available.",
+    "Lack of net P&L metrics factoring in fees, slippage, and execution failure.",
+    "Missing execution vs infrastructure failure distinction metrics."
+  ],
+  "evidence_sha256": "8114cafae6513b218c1c7ccb2bb1d6154d9aec94657e2c41c270402fe1f90771",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.0,
+      "downside_risk": "Delay in promoting potentially profitable strategies.",
+      "evidence": [
+        {
+          "detail": "evidence_status is MISSING_RUNTIME_FORENSICS",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Prevents unvalidated promotion to CANARY or LIVE environments without sufficient execution metrics.",
+      "id": "proposal-req-runtime-forensics",
+      "minimum_observation": "72h",
+      "rationale": "Without fresh runtime evidence, no real execution quality, slippage, price impact, or network fee analysis can be performed. Strategies must remain in SHADOW until valid forensic data is generated.",
+      "shadow_test": "Collect 72 hours of shadow execution logs with fully simulated transaction costs, including gas, slippage, and Jupiter routing fees on Solana.",
+      "strategy": "ALL_STRATEGIES",
+      "suggested_files": [
+        "learnerbot/strategy.py",
+        "learnerbot/live_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote SHADOW strategies based solely on historical data or analytical models.",
+      "reason": "Missing runtime forensics prohibit claims of profitability or readiness for live/canary use."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "626a6cb0e9c51ce3db7228f2806e646f09d33cf2",
+  "status": "HEALTHY",
+  "summary": "Completed architecture-only strategy review. Runtime forensics are missing as indicated by evidence.json. No strategy can be validated for profitability or live/canary readiness. Focus remains on SHADOW validation and infrastructure reliability."
+}
