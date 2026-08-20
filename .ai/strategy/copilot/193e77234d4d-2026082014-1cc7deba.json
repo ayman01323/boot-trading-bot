@@ -1,0 +1,92 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "review_only": true,
+  "no_live_changes": true,
+  "cycle_id": "193e77234d4d-2026082014-1cc7deba",
+  "source_commit": "193e77234d4d5822b4e470c99de55927089648fa",
+  "evidence_sha256": "1cc7debad070dc4efef75743f666dce11b4d91f632491e81b8f226f12ebc003e",
+  "reviewed_at": "2026-08-20T14:21:00Z",
+  "fresh_runtime_evidence": false,
+  "status": "CHANGES_PROPOSED",
+  "runtime_evidence_gaps": [
+    "No fresh runtime evidence within the 2-hour window — all performance assessments below are architecture-only and cannot claim live profitability.",
+    "strategy_lab_windows table data not available for this cycle; profit_factor, win-rate and cost metrics cannot be calculated from the current evidence snapshot.",
+    "Shadow execution outcomes for cross-chain signals (Solana/EVM) are absent; edge estimates are hypothetical until shadow sampling completes."
+  ],
+  "proposals": [
+    {
+      "id": "PROP-CSIG-COST-GUARD-001",
+      "title": "Cross-chain signal: enforce per-chain cost floor before any positive-edge call",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.82,
+      "rationale": "cross_chain_strategy_signals.py computes net_edge_bps as gross_edge_bps minus sum of cost fields but the caller in shadow_strategy_executor can receive a MarketFeatures object whose cost fields (fees_bps, slippage_bps, price_impact_bps, latency_reserve_bps) are all zero if a chain adapter has not yet populated them. A zero-cost phantom edge passes the positive-edge gate and risks shadow trades on unpriced opportunities. A hard minimum cost floor per chain (e.g. 10 bps EVM, 5 bps Solana) should be enforced inside the signal computation rather than relying on adapter completeness.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "net_edge_bps is computed from fields that default to Decimal('0') if not populated; no minimum cost floor is applied"
+        },
+        {
+          "path": "learnerbot/strategy_ai_proposals.py",
+          "observation": "MarketFeatures dataclass allows all cost fields to be zero; no guard in proposal validation"
+        }
+      ],
+      "shadow_test": "Inject a MarketFeatures with gross_edge_bps=50, all cost fields=0 for both SOLANA and EVM chain types. Assert that positive_edge() returns False (or raises) when a minimum-cost-floor guard is in place. Also inject a correctly costed feature set and assert the signal remains True.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "net_pl_impact": "Prevents phantom edge from masking unpriced opportunities in shadow mode; does not reduce opportunity count for properly costed signals.",
+      "priority": "HIGH"
+    },
+    {
+      "id": "PROP-STRATLAB-PARTICIPATION-FLOOR-002",
+      "title": "Strategy Lab: log and surface participation rate when eligible_opportunities > MIN but participation < MIN_ELIGIBLE_PARTICIPATION",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.78,
+      "rationale": "evaluate_strategy() in strategy_lab.py correctly flags REWORK when profit_factor < MIN_PROFIT_FACTOR but does not produce a structured log or metric when a strategy's participation rate is below MIN_ELIGIBLE_PARTICIPATION (0.20). Operators and the hourly review loop cannot distinguish a strategy that sees many eligible opportunities and ignores them from one that simply sees none. Adding a structured participation_rate metric and a WARNING log when participation is low but opportunities are present will enable targeted filter rework recommendations.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "MIN_ELIGIBLE_PARTICIPATION is defined but strategy_metrics() does not return a participation_rate field; evaluate_strategy() does not emit a distinct warning for low-participation cases"
+        }
+      ],
+      "shadow_test": "Create a strategy_lab_windows record set with eligible_opportunities=20 and participated=1 (5 pct). Call evaluate_strategy() and assert the returned dict contains participation_rate=Decimal('0.05') and a status/warning indicating low-participation. Verify that a second set with participated=5 (25 pct) does not trigger the warning.",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab_participation.py"
+      ],
+      "net_pl_impact": "No direct P&L change; enables diagnostic visibility that prevents profitable opportunities from being silently suppressed by over-restrictive filters.",
+      "priority": "MEDIUM"
+    },
+    {
+      "id": "PROP-FORECAST-CALIBRATION-003",
+      "title": "Research: add calibration check (Brier score) to forecast_positive_edge_probability field before trusting it for participation",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.75,
+      "rationale": "MarketFeatures.forecast_positive_edge_probability is used as an input to positive_edge decisions in cross_chain_strategy_signals.py but there is no calibration metric (e.g. Brier score or log loss) recorded alongside it. An uncalibrated forecast with high stated probability can inflate participation in low-edge periods. The FORECAST_RESEARCH_SPEC in strategy_lab_research.py defines the correct approach but does not yet enforce calibration evidence before a forecast field is trusted. Recommended next step: collect shadow outcomes against forecast probabilities and compute rolling Brier score before enabling forecast gating in live evaluation.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "forecast_positive_edge_probability is consumed directly without a calibration guard"
+        },
+        {
+          "path": "learnerbot/strategy_lab_research.py",
+          "observation": "FORECAST_RESEARCH_SPEC defines calibration requirement (Brier/log loss) but no enforcement mechanism exists in the evaluation path"
+        }
+      ],
+      "shadow_test": "After at least 50 shadow outcomes are available per chain, compute rolling Brier score for forecast_positive_edge_probability. Assert Brier score < 0.25 before any strategy is allowed to use forecast gating. Document chain-specific and market-regime-separated results.",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/cross_chain_strategy_signals.py"
+      ],
+      "research_plan": "1. Collect shadow execution outcomes with recorded forecast probabilities for both Solana and EVM chains over >= 50 events per chain. 2. Compute rolling Brier score and compare to naive baseline (always predict 0.5). 3. If Brier score < 0.25 AND positive net P&L in shadow, proceed to IMPROVE proposal for calibration-gated forecasting.",
+      "research_tools": ["Dune", "DEX Screener API", "Jupiter"],
+      "net_pl_impact": "Cannot be quantified without calibration data; reduces risk of phantom-edge trades driven by an uncalibrated model.",
+      "priority": "MEDIUM"
+    }
+  ]
+}
