@@ -1,0 +1,51 @@
+{
+  "cycle_id": "193e77234d4d-2026082013-1cc7deba",
+  "evidence_gaps": [
+    "Fresh within 2h live runtime forensics.",
+    "Realised vs expected slippage metrics for both EVM and Solana execution layers.",
+    "Network gas/priority fee impact on net P&L for recent SiBot copy trades."
+  ],
+  "evidence_sha256": "1cc7debad070dc4efef75743f666dce11b4d91f632491e81b8f226f12ebc003e",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "None from maintaining current state. Potential missed opportunity cost if execution parameters have structurally deteriorated out of bounds.",
+      "evidence": [
+        {
+          "detail": "EVM block-by-block leader monitoring and position replication logic structure.",
+          "path": "learnerbot/sibot.py"
+        },
+        {
+          "detail": "Solana counterpart implementation with independent token tracking logic.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Maintain existing strategy execution stability without assuming any live profitability.",
+      "id": "sibot-base-architecture-keep",
+      "minimum_observation": "100 shadow events across EVM and Solana combined to establish baseline non-live execution edge.",
+      "rationale": "Core strategy mechanics (matching native<->token DEX trades, avoiding LP/bridge confusion, checking token deterioration) are structurally sound. Without live runtime forensics, modifying this architecture introduces unquantifiable execution risks.",
+      "shadow_test": "Continue standard shadow logging of proposed SiBot executions to track theoretical slippage and gas overhead without live capital at risk.",
+      "strategy": "SiBot directional spot-copy",
+      "suggested_files": []
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Increase SiBot allocation or widen maximum deterioration limits.",
+      "reason": "Cannot justify parameter expansion without recent live forensics proving the current bounds are overly restrictive and executable edge remains positive."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "193e77234d4d5822b4e470c99de55927089648fa",
+  "status": "HEALTHY",
+  "summary": "Architecture review of the SiBot EVM and Solana implementations shows robust separation of concerns, explicit profitability gating, and reasonable shadow implementations. Due to missing runtime forensics, live profitability cannot be validated, and no direct source code changes are proposed. The existing loss-halting and circuit breaker designs remain logically sound."
+}
