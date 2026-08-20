@@ -1,0 +1,260 @@
+{
+  "provider": "copilot",
+  "source_commit": "86c840ab147b0af2e775b63096d0a83048345c27",
+  "scope": "FULL_REPOSITORY_BUG_AUDIT",
+  "report_only": true,
+  "no_live_changes": true,
+  "audit_timestamp_utc": "2026-08-19T16:36:01Z",
+  "total_findings": 11,
+  "findings": [
+    {
+      "id": "CPL-001",
+      "severity": "P0",
+      "category": "execution",
+      "title": "transfer_native omits 'to' field from transaction — funds sent to zero address / contract creation",
+      "file_evidence": [
+        {
+          "file": "learnerbot/live_executor.py",
+          "lines": "707-717",
+          "excerpt": "tx = self._base_tx(value=int(amount * Decimal(10**18)))\ntry:\n    gas = int(self.w3.eth.estimate_gas(tx))\nexcept Exception:\n    gas = 21000\ntx[\"gas\"] = max(21000, int(gas * 1.10))\ntxh = self._sign_send(tx)"
+        },
+        {
+          "file": "learnerbot/live_executor.py",
+          "lines": "299-308",
+          "excerpt": "def _base_tx(self, value=0):\n    tx = {\n        \"from\": self.address,\n        \"nonce\": self.w3.eth.get_transaction_count(self.address, \"pending\"),\n        \"chainId\": self.chain.chain_id,\n        \"value\": int(value),\n    }"
+        }
+      ],
+      "impact": "transfer_native() is used for both the Telegram /send command and SiBot profit-share fee payouts. Because 'to' is never inserted into the tx dict before estimate_gas/sign_send, the transaction is treated as a contract-creation call with no code, consuming gas while sending native value to the zero address. All fee payouts and manual native transfers silently lose funds.",
+      "root_cause": "The resolved checksum address (variable 'to') is validated and stored locally but never assigned into the tx dict before it is passed to estimate_gas() and _sign_send(). The _base_tx() helper has no 'to' parameter.",
+      "corrective_action": "Add tx['to'] = to between the _base_tx() call and estimate_gas(); alternatively add a 'to' parameter to _base_tx(). Add a post-broadcast assertion that tx['to'] is non-empty.",
+      "tests_required": [
+        "Unit test: transfer_native() must include a non-empty 'to' field in the signed transaction.",
+        "Integration test: simulated profit-share payout reaches master_wallet address on a test RPC."
+      ],
+      "confidence": 0.99,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-002",
+      "severity": "P1",
+      "category": "billing",
+      "title": "User activation granted on fee broadcast, not confirmed receipt — revertable payment creates active account",
+      "file_evidence": [
+        {
+          "file": "learnerbot/fee_engine.py",
+          "lines": "63-65",
+          "excerpt": "def mark_activation_paid(csv_dir,telegram_id,plan_id,chain_id,amount,master,tx_hash):\n    activate_user(csv_dir,telegram_id,plan_id,'Activated by fixed on-chain fee')\n    ledger(csv_dir,{...'status':'BROADCAST','note':'Activation fee paid; user marked active after broadcast'})"
+        }
+      ],
+      "impact": "Any caller can broadcast an activation-fee transaction, call mark_activation_paid, and immediately receive ACTIVE status. If the transaction is later dropped from the mempool or reverts on-chain, the account remains permanently active without a confirmed payment. This is also exploitable by sending a dust transaction that passes the address check but reverts on the ERC20 path.",
+      "root_cause": "The state transition (activate_user) is performed synchronously after broadcast. There is no step that waits for the receipt or re-verifies the on-chain balance of the master wallet.",
+      "corrective_action": "Return a PENDING status from mark_activation_paid. A background worker should verify the tx receipt (status==1, value >= expected amount) before calling activate_user. Alternatively require the Telegram flow to present a receipt before activation.",
+      "tests_required": [
+        "Unit test: activation-fee tx that reverts must leave user INACTIVE.",
+        "Unit test: only confirmed receipt with correct value activates user."
+      ],
+      "confidence": 0.98,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-003",
+      "severity": "P1",
+      "category": "concurrency",
+      "title": "TOCTOU race: max_positions_per_chain check is not atomic with position INSERT",
+      "file_evidence": [
+        {
+          "file": "learnerbot/sibot.py",
+          "lines": "1010-1013",
+          "excerpt": "with closing(connect(app)) as conn:\n    open_count = conn.execute(\"SELECT COUNT(*) n FROM positions WHERE telegram_id=? AND chain_id=? AND status='OPEN'\", (tid, chain.chain_id)).fetchone()[\"n\"]\nif int(open_count) >= _int(cfg.get(\"max_positions_per_chain\"), 5):\n    continue"
+        },
+        {
+          "file": "learnerbot/sibot.py",
+          "lines": "963-968",
+          "excerpt": "def _insert_position(app, row: dict):\n    with _DB_LOCK, closing(connect(app)) as conn:\n        conn.execute(\"INSERT INTO positions ...\", row)\n        conn.commit()"
+        }
+      ],
+      "impact": "Two concurrent BUY leader events for different tokens can both read open_count below the limit and both proceed to _insert_position, creating max_positions_per_chain + N open positions. Under normal multi-chain polling the two leader events arrive inside the same _live_worker iteration.",
+      "root_cause": "The SELECT COUNT check executes outside _DB_LOCK. By the time _insert_position acquires the lock, the count may have already changed. No database-level uniqueness or re-check exists inside the lock.",
+      "corrective_action": "Move the open_count SELECT inside _DB_LOCK and re-check after acquiring the lock before calling _insert_position, or enforce a per-(telegram_id, chain_id) UNIQUE constraint that limits concurrent inserts.",
+      "tests_required": [
+        "Unit test: two concurrent process_leader_event calls for the same user+chain must not create more positions than max_positions_per_chain."
+      ],
+      "confidence": 0.95,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-004",
+      "severity": "P1",
+      "category": "execution",
+      "title": "LIVE BUY broadcast with no orphan guard: position not recorded if wait_for_receipt times out",
+      "file_evidence": [
+        {
+          "file": "learnerbot/sibot.py",
+          "lines": "1028-1059",
+          "excerpt": "result = trader.buy(event['token'], amount, 'CONFIRM')\nreceipt = trader.w3.eth.wait_for_transaction_receipt(result['tx_hash'], timeout=180, poll_latency=2)\nif int(receipt.status) != 1:\n    raise LiveTradingError('SiBot BUY transaction failed')\n...\nexcept Exception:\n    continue"
+        }
+      ],
+      "impact": "If wait_for_transaction_receipt times out (180 s) or raises a network error after the BUY has been broadcast on-chain, the outer 'except Exception: continue' fires. No position row is recorded but the user's wallet balance has already decreased. Funds are orphaned: the bot has no record of the open position and will never attempt an exit.",
+      "root_cause": "The try/except wraps both broadcast and receipt wait in one block. A failure in the receipt-wait path discards the already-live transaction without creating a position record or sending a user alert.",
+      "corrective_action": "Split broadcast from receipt wait. After trader.buy() returns a tx_hash, immediately persist a PENDING position row. Update to OPEN (or FAILED) after receipt confirmation. A receipt timeout should trigger a user alert and leave the PENDING row for manual reconciliation.",
+      "tests_required": [
+        "Unit test simulating receipt timeout after broadcast: verify a PENDING position row is created and a Telegram alert is sent."
+      ],
+      "confidence": 0.97,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-005",
+      "severity": "P1",
+      "category": "execution",
+      "title": "LIVE SELL triggered by leader exit signal silently swallowed on close_position failure",
+      "file_evidence": [
+        {
+          "file": "learnerbot/sibot.py",
+          "lines": "1090-1094",
+          "excerpt": "try:\n    close_position(app, p['position_id'], fraction, reason)\nexcept Exception:\n    pass"
+        }
+      ],
+      "impact": "If the LIVE SELL broadcast fails (RPC error, insufficient allowance, gas estimation failure), the exception is discarded. The position remains OPEN with no exit scheduled, no user alert, and no circuit-breaker triggered. The position can stay OPEN indefinitely if the leader never re-triggers.",
+      "root_cause": "close_position exceptions are completely swallowed in _handle_leader_sell. No fallback (circuit breaker, re-queue, notification) exists.",
+      "corrective_action": "Catch close_position exceptions explicitly, set leader_exit_pending=1 on the position so monitor_positions retries, and send a Telegram alert with the failure reason and position id.",
+      "tests_required": [
+        "Unit test where close_position raises LiveTradingError: verify leader_exit_pending is set to 1 and a notification is sent."
+      ],
+      "confidence": 0.97,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-006",
+      "severity": "P1",
+      "category": "accounting",
+      "title": "profit.py wrapped-base detection trusts token symbol, not address — spoofed symbol creates false PROVEN profit",
+      "file_evidence": [
+        {
+          "file": "learnerbot/profit.py",
+          "lines": "65-69",
+          "excerpt": "symbol = tr['symbol'] or token[:10]\n...\nif symbol.upper() == settings.wrapped_base_symbol.upper():\n    if frm in cluster and to not in cluster:\n        wrapped_out = True"
+        }
+      ],
+      "impact": "Any token with a symbol matching WETH, WBNB, WMATIC etc. is classified as the wrapped base asset. A token contract that lies about its symbol (a common honey-pot technique) will produce PROVEN_WRAPPED_BASE classification with inflated profit figures, making a malicious wallet appear highly profitable and eligible for SiMo leader status.",
+      "root_cause": "The classification logic compares the symbol string fetched from token metadata rather than comparing the token address to the canonical chain.wrapped_base_address.",
+      "corrective_action": "Replace symbol comparison with address comparison: if token.lower() == settings.wrapped_base_address.lower(). The wrapped_base_address is already present in ChainConfig and propagated into ChainSettings.",
+      "tests_required": [
+        "Unit test: analyse_tx with a fake-WBNB token address must not produce proof_quality=PROVEN_WRAPPED_BASE.",
+        "Unit test: analyse_tx with the canonical WBNB address must produce PROVEN_WRAPPED_BASE."
+      ],
+      "confidence": 0.97,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-007",
+      "severity": "P2",
+      "category": "execution",
+      "title": "monitor_positions stop-loss/take-profit close_position failure silently ignored, no user alert",
+      "file_evidence": [
+        {
+          "file": "learnerbot/sibot.py",
+          "lines": "1231-1235",
+          "excerpt": "if reason:\n    try:\n        close_position(app, p['position_id'], Decimal(1), reason)\n    except Exception:\n        pass"
+        }
+      ],
+      "impact": "A LIVE STOP_LOSS or TAKE_PROFIT trigger that fails (RPC unreachable, allowance issue) is silently discarded. The position continues to be evaluated and the trigger re-fires every monitor cycle (default 10 s), but no alert is sent. Under sustained RPC failure the stop-loss may fail for many minutes without the user knowing.",
+      "root_cause": "Same bare except/pass pattern as CPL-005 at a different call site.",
+      "corrective_action": "Log and send a Telegram alert with the failure reason. Optionally increment a per-position failure counter and disable auto-close after N consecutive failures while notifying the user.",
+      "tests_required": [
+        "Unit test where close_position raises on a STOP_LOSS trigger: verify a Telegram alert is dispatched."
+      ],
+      "confidence": 0.95,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-008",
+      "severity": "P2",
+      "category": "safety",
+      "title": "Solana post-execution economic validation gates are CSV-configurable and can be disabled by operator",
+      "file_evidence": [
+        {
+          "file": "learnerbot/solana_live_executor.py",
+          "lines": "184-199",
+          "excerpt": "require_output = _sol._bool(cfg.get('live_require_execute_output'), True)\nrequire_events = _sol._bool(cfg.get('live_require_swap_events'), True)\n...\nif require_output and output_result <= 0:\n    problems.append('non-positive executed output')\nif require_events and not swap_events:\n    problems.append('missing swapEvents')"
+        }
+      ],
+      "impact": "An operator (or a compromised CSV) can set live_require_execute_output=false or live_require_swap_events=false, allowing swap() to return successfully when Jupiter reports zero output tokens. Downstream callers treat the result as a successful trade and create a position with zero actual token balance.",
+      "root_cause": "These checks are safety-critical invariants (a swap that produced no output is economically failed) and should not be runtime-configurable.",
+      "corrective_action": "Hardcode require_output and require_events to True, removing the CSV config lookup. Retain the existing default=True behavior but eliminate the override path entirely.",
+      "tests_required": [
+        "Unit test verifying swap() raises SolanaLivePostExecutionError when outputAmountResult=0 regardless of any config value."
+      ],
+      "confidence": 0.93,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-009",
+      "severity": "P2",
+      "category": "accounting",
+      "title": "etherscan.py cache_wallet() fetches only page 1 — silently truncates wallets with >10 000 transactions",
+      "file_evidence": [
+        {
+          "file": "learnerbot/etherscan.py",
+          "lines": "13-37",
+          "excerpt": "params = {\n    ...\n    'page': 1,\n    'offset': 10000,\n    ...\n}"
+        }
+      ],
+      "impact": "For active wallets with >10 000 normal transactions, only the most recent 10 000 are stored. Older cost-basis transactions are silently absent, causing incomplete P&L reconstruction when cache_wallet() is used by external scripts.",
+      "root_cause": "No pagination loop. sibot.py history reconstruction correctly implements pagination via _fetch_action(), but the standalone EtherscanV2.cache_wallet() path does not.",
+      "corrective_action": "Add a pagination loop to EtherscanV2._get() that iterates pages until fewer than offset rows are returned or results fall below the cutoff timestamp.",
+      "tests_required": [
+        "Unit test with a mock returning 10 000 rows on page 1 and 5 rows on page 2: verify both pages are collected."
+      ],
+      "confidence": 0.98,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-010",
+      "severity": "P2",
+      "category": "strategy-lab",
+      "title": "portfolio_report() calls evaluate_strategy() which writes new decision rows on every invocation",
+      "file_evidence": [
+        {
+          "file": "learnerbot/strategy_lab.py",
+          "lines": "471-481",
+          "excerpt": "for row in rows:\n    decision = evaluate_strategy(app, row['strategy_id'], mode=mode)\n    strategies.append(decision)\n..."
+        },
+        {
+          "file": "learnerbot/strategy_lab.py",
+          "lines": "465-469",
+          "excerpt": "conn.execute(\n    \"INSERT INTO strategy_lab_decisions(strategy_id,generated_at,action,reason,metrics_json) VALUES(?,?,?,?,?)\",\n    ...\n)\nconn.commit()"
+        }
+      ],
+      "impact": "Every call to portfolio_report() (e.g., from a Telegram /lab command) inserts new strategy_lab_decisions rows for all registered strategies. The strategy_lab_decisions table grows unboundedly and the audit trail shows spurious repeated decisions at read time, making genuine state changes hard to distinguish.",
+      "root_cause": "The reporting path calls evaluate_strategy() which is a state-mutating function. Read and write paths are not separated.",
+      "corrective_action": "Have portfolio_report() call a read-only variant that loads the latest decision row without writing. Gate new decision inserts behind an explicit refresh/evaluate action.",
+      "tests_required": [
+        "Unit test: calling portfolio_report() twice without new shadow data must not change the row count in strategy_lab_decisions."
+      ],
+      "confidence": 0.97,
+      "deterministic_evidence": true
+    },
+    {
+      "id": "CPL-011",
+      "severity": "P3",
+      "category": "accounting",
+      "title": "receipts.py ingest_receipt increments insert counter even when INSERT OR IGNORE is a no-op",
+      "file_evidence": [
+        {
+          "file": "learnerbot/receipts.py",
+          "lines": "44-56",
+          "excerpt": "conn.execute(\n    \"INSERT OR IGNORE INTO token_transfers(...) VALUES(...)\",\n    ...\n)\n...\ninserted += 1"
+        }
+      ],
+      "impact": "Re-ingesting the same receipt returns a positive inserted count even though no new rows were written. Callers that check the return value to decide whether to re-scan will see a false positive, and audit logs will over-report ingest activity.",
+      "root_cause": "The counter is incremented unconditionally. The actual effect of INSERT OR IGNORE is not checked via cursor.rowcount or conn.total_changes.",
+      "corrective_action": "Track conn.total_changes before and after each INSERT OR IGNORE and only increment 'inserted' if changes increased.",
+      "tests_required": [
+        "Unit test: ingest same receipt twice; second call must return inserted=0."
+      ],
+      "confidence": 0.99,
+      "deterministic_evidence": true
+    }
+  ]
+}
