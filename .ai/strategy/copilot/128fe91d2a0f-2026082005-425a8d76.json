@@ -1,0 +1,169 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "cycle_id": "128fe91d2a0f-2026082005-425a8d76",
+  "source_commit": "128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+  "evidence_sha256": "425a8d76e143fb5791f24b49272a10bd5058ac2b64d33c6991062fe2da0ba32b",
+  "review_only": true,
+  "no_live_changes": true,
+  "fresh_runtime_evidence": false,
+  "status": "CHANGES_PROPOSED",
+  "reviewed_at": "2026-08-20T05:18:46Z",
+  "summary": "Static code review of source commit 128fe91d2a0f. No fresh runtime evidence available (false); profitability and canary/live readiness cannot be claimed. Review covers Solana/EVM strategy families, market feature adapters, shadow execution, forecast plumbing and Strategy Lab governance. Proposals are research/improvement actions only - none advance to LIVE.",
+  "proposals": [
+    {
+      "id": "PROP-COPILOT-001",
+      "title": "Liquidity-Confirmed Momentum Signal: net_edge_bps gate is missing upper-bound guard against stale quotes",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.80,
+      "family": "LIQUIDITY_CONFIRMED_MOMENTUM",
+      "hypothesis": "Trades passing the net_edge_bps > threshold gate may still execute on stale quotes when quote_age_ms is not bounded per-chain. Adding a per-chain maximum quote age check before edge evaluation prevents false positives from aged liquidity data.",
+      "shadow_test": "In SHADOW mode: inject a MarketFeatures snapshot with quote_age_ms > chain-specific threshold and gross_edge_bps = positive value. Verify the strategy gate rejects the signal. Compare participation/rejection counts over a 48h shadow window and confirm no net-negative trades attributable to stale-quote acceptance.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "detail": "CrossChainStrategySignal._evaluate_signal does not enforce a maximum quote_age_ms bound before computing net edge. Stale quotes can pass the positive-edge gate."
+        },
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "detail": "MarketFeatures.validate() checks quote_age_ms >= 0 but imposes no upper bound; chain-specific maximums (e.g. 800 ms Solana, 3000 ms EVM) are not enforced."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/market_feature_adapter.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "research_plan": "Shadow test both chains with controlled quote_age injections. Compare trade outcomes with and without the stale-quote gate over a minimum of 3 evaluation windows (per strategy_lab MIN_EVALUATION_WINDOWS).",
+      "research_tools": ["DEX Screener API", "Jupiter"],
+      "net_pnl_risk": "Stale quotes inflate apparent gross_edge_bps, causing real slippage to exceed forecast slippage_bps and erode net P&L. Cost: quantifiable via execution_failures and slippage_cost fields in strategy_lab_windows.",
+      "asset_requests": []
+    },
+    {
+      "id": "PROP-COPILOT-002",
+      "title": "Profitable-Wallet Cohort Pattern: research plan for multi-wallet route/behaviour analysis is specified but not scheduled",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.72,
+      "family": "PROFITABLE_WALLET_COHORT",
+      "hypothesis": "The repository's strategy_lab_research.py defines PUBLIC_RESEARCH_TOOLS and FORECAST_RESEARCH_SPEC but no scheduled Dune/Etherscan query materialises wallet-cohort data into the strategy_lab_registry. A cohort of wallets with consistently positive money-weighted net P&L (not raw win rate) across >= 3 market regimes and >= 2 chains would provide evidence to derive route-pattern and timing strategies without direct leader copying.",
+      "shadow_test": "Collect >= 30 wallets with: (a) >= 50 resolved trades on Dune/Etherscan per chain; (b) profit factor >= 1.10 in >= 3 distinct 30-day windows; (c) money-weighted net P&L positive after estimated gas/fees. Register a SHADOW strategy with the derived timing/route features. After >= 8 shadow trades, compare profit factor and largest loss against MIN_PROFIT_FACTOR = 1.10.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab_research.py",
+          "detail": "PUBLIC_RESEARCH_TOOLS lists Dune, Etherscan API V2 and DEX Screener as research sources but no module schedules these queries or feeds results into strategy_lab_registry."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "detail": "MIN_PROFIT_FACTOR, MIN_EVALUATION_WINDOWS and MIN_EVALUATION_TRADES define evaluation thresholds but no automated cohort-research pipeline populates the registry from external sources."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_strategy_lab_research.py"
+      ],
+      "research_plan": "1) Write Dune query for Solana DEX trades by wallet cohort (profit factor > 1.1, >= 3 regime windows). 2) Mirror with Etherscan API V2 for EVM. 3) Extract repeated route/token/timing patterns. 4) Register SHADOW strategy. 5) Evaluate under shadow_strategy_executor with real market features.",
+      "research_tools": ["Dune", "Etherscan API V2", "DEX Screener API", "DefiLlama"],
+      "net_pnl_risk": "Without cohort evidence, any derived strategy is speculative. Research more before any SHADOW implementation to avoid manufacturing edge from insufficient sample sizes.",
+      "asset_requests": []
+    },
+    {
+      "id": "PROP-COPILOT-003",
+      "title": "Forecast Calibration: forecast_positive_edge_probability field is defined but calibration pipeline is absent",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.75,
+      "family": "CALIBRATED_POSITIVE_NET_EDGE_FORECAST",
+      "hypothesis": "MarketFeatures.forecast_positive_edge_probability is structurally present but no calibration metric (Brier score/log-loss) is computed over shadow trades, no train/validation/test split is enforced, and no abstain rule for low-confidence predictions is implemented. A miscalibrated forecast passes the positive-edge gate at a rate that can degrade net P&L silently.",
+      "shadow_test": "Over a 72h shadow window on both chains: compute Brier score and log-loss for forecast_positive_edge_probability against realised binary net_profit > 0 outcomes recorded in strategy_lab_windows. Require Brier score <= 0.20 and log-loss <= 0.50 before the forecast gate is considered reliable. Implement abstain rule: skip signal when forecast_uncertainty > 0.4.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "detail": "forecast_positive_edge_probability is read from MarketFeatures but no calibration or abstain-threshold logic is applied before the gate decision."
+        },
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "detail": "forecast_uncertainty field exists and defaults to 1.0 (maximum uncertainty) but no consumer enforces an abstain rule when uncertainty is high."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/market_feature_adapter.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ],
+      "research_plan": "1) Instrument shadow_strategy_executor to log (forecast_positive_edge_probability, forecast_uncertainty, realised_net_profit) per trade. 2) After >= 100 shadow observations per chain, compute calibration metrics. 3) Tune abstain threshold on validation set. 4) Re-evaluate profit factor on held-out test set. Use strict time-ordered split - no lookahead.",
+      "research_tools": ["DEX Screener API", "Jupiter", "DefiLlama"],
+      "net_pnl_risk": "Overconfident or miscalibrated forecasts increase loss frequency. A well-calibrated abstain rule reduces participation but improves money-weighted net P&L by eliminating low-confidence trades with negative expected edge.",
+      "asset_requests": []
+    },
+    {
+      "id": "PROP-COPILOT-004",
+      "title": "New-Liquidity Quality Strategy: pool_age_seconds signal is captured but no strategy family uses it as a primary filter",
+      "action": "SHADOW_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.68,
+      "family": "NEW_LIQUIDITY_QUALITY",
+      "hypothesis": "pool_age_seconds is a MarketFeatures field but no registered strategy family uses it as a primary entry filter. New pools frequently carry elevated rug/honeypot risk but also sometimes carry outsized early-momentum edge. A strategy that gates entry on pool_age_seconds within [MIN_POOL_AGE, MAX_POOL_AGE] combined with sellability_score >= 0.7 and liquidity_score >= 0.5 could capture early legitimate liquidity without honeypot exposure.",
+      "shadow_test": "Register a SHADOW strategy with parameters: pool_age_seconds in [300, 7200], sellability_score >= 0.7, liquidity_score >= 0.5, net_edge_bps > 50. Run for >= 3 evaluation windows. Record participation rate, win rate, profit factor and largest_loss. A strategy where profit factor < 1.0 or largest_loss dominates gross_profit must be retired immediately. Do not promote to ACTIVE without >= 8 shadow trades meeting all quality gates.",
+      "evidence": [
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "detail": "pool_age_seconds field is present in MarketFeatures but grep across strategy_lab.py and cross_chain_strategy_signals.py shows no strategy uses it as a primary filter condition."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "detail": "STRATEGY_SOURCES includes MARKET_NATIVE but no registered strategy in the codebase uses pool_age as a discriminating feature for new-liquidity quality detection."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/strategy_ai_proposals.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_strategy_new_liquidity_quality.py"
+      ],
+      "research_plan": "1) Use DEX Screener API to retrieve pools < 2h old on both chains; measure distribution of sellability outcomes. 2) Compute profit factor for different pool-age brackets across a historical Dune dataset. 3) Calibrate MIN/MAX pool age bounds before shadow registration.",
+      "research_tools": ["DEX Screener API", "Dune", "Jupiter"],
+      "net_pnl_risk": "New-pool strategies carry high rug/exit risk. The strategy must never weaken sellability_score or liquidity_score gates to increase trade count. Largest loss controls are paramount.",
+      "asset_requests": []
+    }
+  ],
+  "evidence_gaps": [
+    "No fresh runtime evidence (fresh_runtime_evidence=false). Profitability and live/canary readiness cannot be claimed for any proposal.",
+    "No strategy_lab_windows rows are available in this static review; profit factor and net P&L figures are estimates only.",
+    "Cohort wallet analysis (Dune/Etherscan) has not been run; PROP-COPILOT-002 depends on this data.",
+    "Forecast calibration metrics (Brier/log-loss) are absent; PROP-COPILOT-003 cannot be validated without shadow trade data."
+  ],
+  "evidence_needed": [
+    {
+      "source": "Dune",
+      "query": "DEX wallet cohort: profit_factor > 1.1, >= 3 market-regime windows, both EVM and Solana",
+      "expected_cost": "Dune API query units; rate-limited on free tier",
+      "impact": "Enables PROP-COPILOT-002 cohort-pattern SHADOW strategy registration"
+    },
+    {
+      "source": "Jupiter",
+      "query": "Shadow quote/route for Solana new-pool candidates matching PROP-COPILOT-004 age/quality criteria",
+      "expected_cost": "Minimal; public quote API",
+      "impact": "Validates pool_age_seconds bounds and sellability thresholds for PROP-COPILOT-004"
+    },
+    {
+      "source": "DEX Screener API",
+      "query": "Pool pairs < 2h old with liquidity > $10k and transaction flow > 50 tx/h on EVM and Solana",
+      "expected_cost": "Public API; rate-limited",
+      "impact": "Enables calibration of new-liquidity quality thresholds in PROP-COPILOT-004"
+    },
+    {
+      "source": "strategy_lab_windows (live DB)",
+      "query": "All shadow trade rows for last 30 days with net_profit, fees, slippage_cost, execution_failures",
+      "expected_cost": "Internal DB read",
+      "impact": "Required to assess forecast calibration (PROP-COPILOT-003) and quote-staleness impact (PROP-COPILOT-001)"
+    }
+  ],
+  "safety_notes": [
+    "No live execution, capital, wallet, signing, or deployment change is proposed.",
+    "All proposals target SHADOW mode only; none request ACTIVE or LIVE promotion.",
+    "No API keys, private keys, seed phrases or credentials are embedded.",
+    "Sellability and liquidity gates must not be weakened to increase trade count.",
+    "Asset requests are absent; no new asset is requested for LIVE."
+  ]
+}
