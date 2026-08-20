@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "provider": "copilot",
+  "cycle_id": "c00ff6f3dd2c-2026082012-d6d8e488",
+  "source_commit": "c00ff6f3dd2c579403075af3b70825e8f3cbc917",
+  "evidence_sha256": "d6d8e48800d1e02f44901f12b047a9ab4b2e7131743164b0a088dafeb8723938",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture review completed. Strategy Lab safety boundaries are strong and SHADOW-only by design, but durable net-P&L research quality is constrained by stale runtime evidence and a known Solana executable-edge feature gap.",
+  "proposals": [
+    {
+      "id": "copilot-p1-solana-executable-feature-gap",
+      "action": "IMPROVE",
+      "strategy": "Solana Executable Edge Adapter for Strategy Lab",
+      "chain_scope": ["SOLANA"],
+      "evidence": [
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "detail": "load_solana_market_features currently sets gross_edge_bps/fees/slippage/liquidity/sellability to fail-closed zeros and marks needs_quote_feature_adapter=true, so Solana strategies cannot be evaluated on contemporaneous executable edge after costs."
+        },
+        {
+          "path": "learnerbot/shadow_strategy_executor.py",
+          "detail": "Scorecard aggregates forecast-related and quote-adapter evidence gaps and explicitly treats quote/simulation output as non-promotion evidence, indicating the architecture expects chain-specific executable evidence before promotion."
+        },
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "detail": "All strategy evaluators require positive net_edge_bps plus liquidity/sellability/quote-age gates; absent Solana quote features suppress eligible opportunities regardless of signal family."
+        }
+      ],
+      "rationale": "Improving Solana feature adaptation to include current executable quote, liquidity, sellability and chain-specific cost fields would allow falsifiable SHADOW evaluation of the same economic hypotheses on SOLANA without weakening safety controls.",
+      "expected_effect": "Higher-quality SOLANA shadow participation metrics and better comparability of money-weighted net P&L after costs versus EVM, while maintaining strict SHADOW and no-live-promotion safeguards.",
+      "downside_risk": "If adapter quality is poor or stale, false eligibility could increase simulated optimism; mitigated by existing quote-age, sellability, liquidity, and simulation gates plus SHADOW-only policy.",
+      "shadow_test": "For at least 3 windows and at least 8 eligible Solana opportunities, compare baseline vs improved adapter on: eligible participation ratio, quote-simulated net distribution, profit factor, and largest loss. Accept only if net and profit factor improve without a worse largest-loss profile.",
+      "minimum_observation": "3 windows / 8 eligible opportunities per chain",
+      "confidence": 0.91,
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "research_plan": [
+        "Add chain-specific Solana executable quote/cost feature extraction into the existing common adapter path.",
+        "Validate that missing inputs remain fail-closed and that no live execution path is touched.",
+        "Run chain-separated scorecard comparisons with identical strategy gate settings."
+      ],
+      "research_tools": [
+        "Jupiter",
+        "Dune",
+        "DEX Screener API"
+      ],
+      "forecast": {
+        "target": "positive_net_edge_after_costs",
+        "horizon": "short-horizon executable opportunity window",
+        "model_family": "calibrated probabilistic classifier with abstain threshold",
+        "features": [
+          "quote freshness",
+          "liquidity depth/quality",
+          "sellability",
+          "cost stack (fees/slippage/priority)",
+          "flow dispersion"
+        ],
+        "trade_threshold": "abstain unless probability and expected net edge both pass strategy-specific minima",
+        "validation": "time-ordered split with separate SOLANA results"
+      },
+      "asset_requests": []
+    },
+    {
+      "id": "copilot-p2-cross-chain-forecast-calibration",
+      "action": "SHADOW_MORE",
+      "strategy": "Forecasted Positive Net Edge Calibration",
+      "chain_scope": ["SOLANA", "EVM"],
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "detail": "forecasted_positive_net_edge requires probability, expected edge and uncertainty thresholds with abstain logic, which is aligned to net-edge forecasting rather than direction-only prediction."
+        },
+        {
+          "path": "learnerbot/strategy_lab_research.py",
+          "detail": "FORECAST_RESEARCH_SPEC already defines positive-net-edge target, no-lookahead constraints, calibration metrics, and chain-specific breakdown requirements."
+        },
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "detail": "Current Solana forecast fields derive from simple historical wallet stats and uncertainty proxy, not a calibrated pre-trade executable-edge model."
+        }
+      ],
+      "rationale": "A chain-separated calibrated forecast can improve opportunity selection only if it demonstrates out-of-sample net edge after costs and robust loss control. Existing architecture has the right governance, but evidence quality is currently uneven across chains.",
+      "expected_effect": "More reliable abstain behavior in low-confidence regimes and improved money-weighted net P&L quality in SHADOW by filtering weak-edge candidates.",
+      "downside_risk": "Overfitting or leakage could produce misleading confidence; mitigated through strict time-ordered validation and chain-specific calibration checks before any promotion discussion.",
+      "shadow_test": "Run a chain-separated out-of-sample shadow study with calibration (Brier/log-loss), net P&L after costs, profit factor, and largest loss. Keep only if both SOLANA and EVM show non-degraded downside and improved net-quality metrics versus current thresholds.",
+      "minimum_observation": "At least 2 market regimes and 8+ eligible opportunities per chain",
+      "confidence": 0.86,
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_strategy_lab_cross_chain_research.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ],
+      "research_plan": [
+        "Keep forecast outputs declarative and SHADOW-only in the existing execution path.",
+        "Measure calibration and net-P&L quality metrics separately for SOLANA and EVM.",
+        "Retain abstain gate where uncertainty is high or expected edge is too low."
+      ],
+      "research_tools": [
+        "Dune",
+        "DefiLlama",
+        "Etherscan API V2"
+      ],
+      "forecast": {
+        "target": "positive_net_edge_after_costs",
+        "horizon": "pre-trade short horizon",
+        "model_family": "probability + expected-edge dual-output model",
+        "features": [
+          "pre-trade quote/cost stack",
+          "liquidity/sellability quality",
+          "flow and momentum context",
+          "route replicability"
+        ],
+        "trade_threshold": "abstain when uncertainty high or expected edge below threshold",
+        "validation": "strict time-order split, chain-specific and regime-specific reporting"
+      },
+      "asset_requests": []
+    }
+  ],
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy to canary/live from stale runtime evidence",
+      "reason": "Fresh runtime evidence within 2h is false; this does not block architecture review completion but it blocks confidence in live/canary readiness claims."
+    },
+    {
+      "idea": "Increase trade count by relaxing liquidity/sellability/quote-age thresholds",
+      "reason": "Violates durable net-P&L objective and safety boundary; activity should follow positive edge plus executability, not forced participation."
+    }
+  ],
+  "evidence_gaps": [
+    "Runtime evidence freshness is false for this cycle; profitability/live-readiness cannot be claimed from stale evidence.",
+    "Solana executable quote/liquidity/sellability feature coverage is currently incomplete in the common adapter path.",
+    "Cross-chain forecast calibration evidence is not yet demonstrated as robust out-of-sample on both chain types."
+  ],
+  "review_only": true,
+  "no_live_changes": true
+}
