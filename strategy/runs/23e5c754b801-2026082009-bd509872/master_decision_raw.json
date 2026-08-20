@@ -1,0 +1,171 @@
+{
+  "cycle_id": "23e5c754b801-2026082009-bd509872",
+  "decisions": [
+    {
+      "action": "REWORK",
+      "allowed_files": [
+        "Strategy Lab/SHADOW/net-pnl-reconciliation.json"
+      ],
+      "confidence": 0.94,
+      "disposition": "ACCEPT",
+      "finding_id": "master-net-pnl-reconciliation",
+      "reason": "Code confirms record_window accepts caller-supplied net profit and otherwise deducts only aggregate fees and slippage. EVM realised_net_base excludes the separately calculated profit share and settlement gas. Solana also retains fixed estimated-exit-fee fallbacks, although the claim that 0.00002 SOL is always a vast underestimate is unsupported. Accept comprehensive reconciled SHADOW accounting, not the prescribed API or three-day validation shortcut.",
+      "required_tests": [
+        "python -m pytest -q tests/test_strategy_lab.py tests/test_solana_execution_efficiency.py tests/test_solana_refundable_rent_accounting.py",
+        "Verify reconstructed net includes principal, platform/DEX fees, gas or base/priority/tip fees, slippage, impact, failed-attempt spend, settlement gas and unrecovered rent, with unexplained residual no greater than 5 bps"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:net-pnl-ledger-v1",
+        "gemini:solana-dynamic-priority-fees"
+      ],
+      "strategy": "Strategy Lab cost and outcome accounting",
+      "supporting_agents": [
+        "gpt",
+        "gemini"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "allowed_files": [
+        "Strategy Lab/SHADOW/terminal-outcome-scorecard.json"
+      ],
+      "confidence": 0.96,
+      "disposition": "ACCEPT",
+      "finding_id": "master-terminal-outcome-attribution",
+      "reason": "Code stores only an aggregate execution_failures count, promotion evaluation does not use execution reliability, and EVM exceptions collapse materially different outcomes into REJECTED. A mutually exclusive terminal taxonomy is necessary before promotion evidence is trustworthy.",
+      "required_tests": [
+        "python -m pytest -q tests/test_strategy_lab.py tests/test_market_feature_shadow_executor.py",
+        "Require exactly one terminal class per eligible opportunity, at least 98% classification coverage and less than 2% UNKNOWN before promotion evaluation"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:failure-attribution-v1"
+      ],
+      "strategy": "Outcome attribution and promotion governance",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "allowed_files": [
+        "Strategy Lab/SHADOW/chain-cost-calibration.json"
+      ],
+      "confidence": 0.93,
+      "disposition": "ACCEPT",
+      "finding_id": "master-chain-cost-calibration",
+      "reason": "The shared signal layer uses static 3-5 bps floors while chain, route, congestion and notional costs differ. EVM missing impact and latency fields become zero; Solana leader-event features correctly fail closed because executable quotes are absent. Calibration must preserve abstention and use quote-to-terminal evidence.",
+      "required_tests": [
+        "python -m pytest -q tests/test_cross_chain_strategy_signals.py tests/test_market_feature_shadow_executor.py",
+        "Validate separate chain, route and notional buckets across normal and congested periods; reject eligibility when the conservative net-edge bound is non-positive"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:chain-cost-calibration-v1"
+      ],
+      "strategy": "Cross-chain executable-edge calibration",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "allowed_files": [
+        "Strategy Lab/SHADOW/evm-reconstruction-bias-report.json"
+      ],
+      "confidence": 0.88,
+      "disposition": "DEFER",
+      "finding_id": "master-evm-trade-reconstruction",
+      "reason": "Code intentionally reconstructs only direct native-to-token FIFO trades and therefore excludes token-to-token routes. That limitation can bias leader rankings, but no measured sample establishes the claimed direction or magnitude, and comprehensive historical token valuation is nontrivial. Run a read-only comparison before reworking the strategy.",
+      "required_tests": [
+        "python -m pytest -q tests/test_sibot.py",
+        "Compare direct-native reconstruction with independently priced token-to-token histories over a fixed cohort and report coverage, unmatched inventory, net-PnL and rank divergence"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gemini:evm-comprehensive-trade-reconstruction"
+      ],
+      "strategy": "EVM SiMo leader-history reconstruction",
+      "supporting_agents": [
+        "gemini"
+      ]
+    },
+    {
+      "action": "DORMANT",
+      "allowed_files": [],
+      "confidence": 0.97,
+      "disposition": "REJECT",
+      "finding_id": "master-wallet-cohort-momentum-duplicate",
+      "reason": "This duplicates the existing Flow Acceleration strategy, which already requires independent wallet sources, dispersion, liquidity and positive net edge; repository guidance also already requests profitable-wallet cohort research. The 55% claim and proposed eight-trade threshold have no measured support and are too sparse.",
+      "required_tests": [
+        "python -m pytest -q tests/test_cross_chain_strategy_signals.py tests/test_strategy_lab_cross_chain_research.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:COPILOT-STRAT-001"
+      ],
+      "strategy": "Profitable-wallet cohort momentum signal",
+      "supporting_agents": [
+        "copilot"
+      ]
+    },
+    {
+      "action": "DORMANT",
+      "allowed_files": [],
+      "confidence": 0.99,
+      "disposition": "REJECT",
+      "finding_id": "master-new-liquidity-filter-duplicate",
+      "reason": "The checked-out source already implements New Liquidity Quality using pool age, liquidity, sellability, dispersion and positive net edge. The proposed thresholds and profitability hypothesis are unsupported, so creating another strategy would be duplicative.",
+      "required_tests": [
+        "python -m pytest -q tests/test_cross_chain_strategy_signals.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:COPILOT-STRAT-002"
+      ],
+      "strategy": "New-liquidity quality filter for early-pool tokens",
+      "supporting_agents": [
+        "copilot"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "allowed_files": [
+        "Strategy Lab/SHADOW/existing-strategy-evidence-report.json"
+      ],
+      "confidence": 0.98,
+      "disposition": "ACCEPT",
+      "finding_id": "master-existing-shadow-evidence",
+      "reason": "With no fresh strategy_lab_windows evidence, no strategy can be promoted. Code enforces at least three windows and eight trades, but those are minimum gates rather than sufficient profitability proof; complete cost, reliability and out-of-sample requirements must also pass.",
+      "required_tests": [
+        "Query strategy_lab_windows and report windows, eligible opportunities, trades, participation, reconciled net profit, profit factor and execution reliability per strategy and chain",
+        "python -m pytest -q tests/test_strategy_lab.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:COPILOT-STRAT-003"
+      ],
+      "strategy": "Existing SHADOW strategy governance",
+      "supporting_agents": [
+        "copilot",
+        "gpt"
+      ]
+    }
+  ],
+  "draft_pr_only": true,
+  "evidence_sha256": "bd509872ef90dd09242f1c0041b96198975a7544cd7d782897aebb310c138e5b",
+  "implementation_allowed": false,
+  "live_auto_deploy": false,
+  "schema_version": 1,
+  "source_commit": "23e5c754b801b834894cb562649ba1ad4b716ff5",
+  "status": "DRAFT_SHADOW_CHANGE",
+  "summary": "Architecture-only evidence supports draft SHADOW accounting, failure-attribution and chain-cost calibration work. Profitability, promotion and live readiness remain unproven. EVM reconstruction needs measured bias evidence. Both proposed new signals duplicate existing Strategy Lab strategies."
+}
