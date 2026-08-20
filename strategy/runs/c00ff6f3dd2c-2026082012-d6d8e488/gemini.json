@@ -1,0 +1,45 @@
+{
+  "cycle_id": "c00ff6f3dd2c-2026082012-d6d8e488",
+  "evidence_gaps": [
+    "Missing sanitised runtime forensics branch and live transaction history",
+    "No telemetry on EVM gas vs actual execution price impact",
+    "No data distinguishing Solana Jupiter routing/slippage execution failures from fundamental market-loss",
+    "Fresh-within-2h runtime evidence is completely absent"
+  ],
+  "evidence_sha256": "d6d8e48800d1e02f44901f12b047a9ab4b2e7131743164b0a088dafeb8723938",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "EVM",
+        "SOLANA"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "None to live capital. SHADOW tracking may consume additional RPC throughput if not bounded.",
+      "evidence": [
+        {
+          "detail": "CROSS_DEX_V2_ARBITRAGE_CANDIDATE is shadow-only and relies on expected_gross_profit_base against gas/slippage.",
+          "path": "learnerbot/full_power_scanner.py"
+        }
+      ],
+      "expected_effect": "Provide isolated data separating strategy/market opportunities from EVM/Solana infrastructure/execution failure rates.",
+      "id": "prop-cross-dex-shadow",
+      "minimum_observation": "250 SHADOW opportunities or 72 hours",
+      "rationale": "Before promoting cross-DEX strategies to canary, we must quantify actual gas priority fees, execution failure rates, and slippage vs the projected gross spread. Raw win count is irrelevant if execution costs consume the edge.",
+      "shadow_test": "Measure expected vs realised execution fee, track slippage delta, and count infrastructure failures (RPC/node) vs strategy market-loss over 250 shadow triggers.",
+      "strategy": "CROSS_DEX_V2_ARBITRAGE",
+      "suggested_files": [
+        "learnerbot/full_power_scanner.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "c00ff6f3dd2c579403075af3b70825e8f3cbc917",
+  "status": "HEALTHY",
+  "summary": "Architecture-only review completed. No fresh runtime forensics available. Evaluated multi-chain strategy codebase. Found strong structural separation for EVM cross-DEX atomic execution and Solana Jupiter routing, but lack the runtime evidence to confirm durable money-weighted NET P&L after fees, slippage, and price impact. Must distinguish structural strategy edge from execution/RPC failure. Cannot claim profitability or canary readiness without runtime metrics."
+}
