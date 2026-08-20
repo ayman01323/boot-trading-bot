@@ -1,0 +1,109 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "review_only": true,
+  "no_live_changes": true,
+  "cycle_id": "0f6320ac911d-2026082015-5cd2f9b7",
+  "source_commit": "0f6320ac911d26deb8f1827b228e6b8243cb6aad",
+  "evidence_sha256": "5cd2f9b726b8510f1f19effe4d463c11377647e1d7d10f3c70b659af1665392c",
+  "fresh_runtime_evidence": false,
+  "status": "CHANGES_PROPOSED",
+  "reviewed_at": "2026-08-20T15:19:14Z",
+  "runtime_evidence_gaps": [
+    "No runtime evidence bundle was available within the 2-hour freshness window. Profitability, canary or live-readiness claims are therefore withheld.",
+    "Shadow window metrics (opportunities, eligible_opportunities, trades, net_profit, profit_factor) are absent for all strategies.",
+    "Execution failure and signal_skip rates are unknown without a fresh evidence file.",
+    "Per-chain cost breakdowns (Solana priority fees, EVM gas, slippage) are unverified at this cycle."
+  ],
+  "proposals": [
+    {
+      "id": "CSP-001",
+      "title": "Strengthen net-edge guard in cross_chain_strategy_signals to require strictly positive net_edge_bps before emitting a signal",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.88,
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "rationale": "cross_chain_strategy_signals.py exposes a net_edge_bps property that can be zero or negative when costs exceed gross_edge_bps. Downstream callers are not all guarded by an explicit positive-net-edge check before acting on the signal. Adding a validated emit_signal helper that raises or returns None when net_edge_bps <= 0 closes the gap without altering any live execution path.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "net_edge_bps computed as gross minus costs; no validator enforces >0 before signal emission"
+        }
+      ],
+      "shadow_test": "In SHADOW mode feed MarketFeatures instances with net_edge_bps <= 0 (costs >= gross) and assert that the proposed guard prevents signal emission; assert that signals with net_edge_bps > MIN_EDGE_THRESHOLD do pass. Measure false-suppression rate against historical Solana and EVM shadow windows.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "CSP-002",
+      "title": "Add chain-specific latency_reserve_bps defaults to MarketFeatures to prevent EVM/Solana cost underestimation",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.85,
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "rationale": "MarketFeatures.latency_reserve_bps defaults to Decimal('0'). On Solana, MEV competition means a nonzero latency reserve is warranted; on EVM, gas price variance and block-time uncertainty similarly require a reserve. A chain-specific factory method or post-init validation that sets a minimum latency_reserve_bps per chain_type would reduce silent cost underestimation in shadow windows.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "latency_reserve_bps defaults to Decimal('0') regardless of chain_type; no minimum is enforced"
+        }
+      ],
+      "shadow_test": "Create shadow windows on SOLANA and EVM with latency_reserve_bps=0 vs a calibrated minimum; compare net_profit distributions. Accept the change if mean net_edge_bps decreases by no more than 15% and the false-positive trade rate drops.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "CSP-003",
+      "title": "Require MIN_ELIGIBLE_OPPORTUNITIES before promoting a SHADOW strategy to PROMOTION_CANDIDATE",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.87,
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "rationale": "strategy_lab.py defines MIN_ELIGIBLE_OPPORTUNITIES=10 and MIN_ELIGIBLE_PARTICIPATION=0.20, but the promotion path in strategy_lab_research.py and shadow_strategy_executor.py should explicitly verify both thresholds before setting status to PROMOTION_CANDIDATE. Without this check, a strategy with few observed opportunities could be promoted on a small lucky sample.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_ELIGIBLE_OPPORTUNITIES and MIN_ELIGIBLE_PARTICIPATION are defined but enforcement in promotion path needs explicit verification"
+        },
+        {
+          "path": "learnerbot/shadow_strategy_executor.py",
+          "note": "promotion logic should gate on both eligible_opportunities and participation rate"
+        }
+      ],
+      "shadow_test": "Run SHADOW evaluation windows on a synthetic strategy where eligible_opportunities < MIN_ELIGIBLE_OPPORTUNITIES and assert status never reaches PROMOTION_CANDIDATE. Run a second window meeting all thresholds and assert promotion is permitted.",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ]
+    },
+    {
+      "id": "CSP-004",
+      "title": "RESEARCH_MORE: collect multi-wallet cohort profitability evidence via Dune for liquidity-confirmed momentum hypothesis",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.72,
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "rationale": "The bot's strategy.py learn_patterns function builds route fingerprints from transaction history, but confidence and replicability scores have not been validated against an independent multi-wallet cohort on-chain. A Dune query over publicly observed DEX wallets that share the same route structure would either corroborate or refute the fingerprint-based confidence formula.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy.py",
+          "note": "learn_patterns scores confidence from repeat_component + wallet_component + proof_component; no external cohort validation present"
+        }
+      ],
+      "shadow_test": "After collecting Dune cohort data for at least 3 independent wallets and 2 distinct time windows on both Solana and EVM, compare externally measured profit_factor against bot-computed confidence scores. Accept the formula if Spearman correlation > 0.6 out-of-sample.",
+      "research_plan": "Query Dune public datasets for wallets executing the same DEX route fingerprints observed by the bot. Extract gross_profit, gross_loss, fee_paid per wallet per route. Compute external profit_factor. Cross-reference with bot strategy_patterns table.",
+      "research_tools": ["Dune", "DEX Screener API", "DefiLlama"],
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py"
+      ]
+    }
+  ]
+}
