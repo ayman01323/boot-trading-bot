@@ -1,0 +1,145 @@
+name: Multi-AI Strategy Review
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: multi-ai-strategy-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Review latest sanitised loss forensics
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependency
+        run: python -m pip install --disable-pip-version-check "requests>=2.32,<3"
+
+      - name: Validate reviewer syntax
+        run: python -m py_compile learnerbot/multi_ai_strategy_review.py
+
+      - name: Fetch latest source report
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin audit-status:audit-status
+          git fetch --force origin ai-reviews:ai-reviews || true
+          git show audit-status:latest_loss_forensics.json > /tmp/latest_loss_forensics.json
+
+          python - <<'PY' > /tmp/source_meta.env
+          import hashlib, json, time
+          p = '/tmp/latest_loss_forensics.json'
+          report = json.load(open(p, encoding='utf-8'))
+          canonical = json.dumps(report, sort_keys=True, separators=(',', ':'), default=str)
+          print('SOURCE_HASH=' + hashlib.sha256(canonical.encode()).hexdigest())
+          generated = int(report.get('generated_epoch') or 0)
+          age = max(0, int(time.time()) - generated) if generated else 10**9
+          print('SOURCE_AGE_SECONDS=' + str(age))
+          PY
+          source /tmp/source_meta.env
+
+          previous=""
+          if git show ai-reviews:reviews/latest_run_summary.json > /tmp/previous.json 2>/dev/null; then
+            previous="$(python - <<'PY'
+          import json
+          try:
+              print(json.load(open('/tmp/previous.json', encoding='utf-8')).get('source_report_sha256') or '')
+          except Exception:
+              print('')
+          PY
+          )"
+          fi
+
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+          echo "source_age_seconds=${SOURCE_AGE_SECONDS}" >> "$GITHUB_OUTPUT"
+          if [[ "$SOURCE_AGE_SECONDS" -gt 14400 ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=source report older than 4 hours" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$previous" && "$previous" == "$SOURCE_HASH" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=source report already reviewed" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run GPT, Gemini and Claude reviews plus GPT synthesis
+        if: steps.source.outputs.skip != 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_REVIEW_MODEL: ${{ vars.OPENAI_REVIEW_MODEL || 'gpt-5.6-terra' }}
+          OPENAI_SYNTH_MODEL: ${{ vars.OPENAI_SYNTH_MODEL || 'gpt-5.6' }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.5-flash' }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL || 'claude-sonnet-5' }}
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/ai-review
+          python learnerbot/multi_ai_strategy_review.py \
+            --report /tmp/latest_loss_forensics.json \
+            --output-dir /tmp/ai-review
+
+      - name: Enforce research-only boundary
+        if: steps.source.outputs.skip != 'true'
+        run: |
+          python - <<'PY'
+          import json
+          p = json.load(open('/tmp/ai-review/consensus.json', encoding='utf-8'))
+          decision = (p.get('consensus') if p.get('ok') else p.get('fallback')) or {}
+          assert decision.get('live_auto_deploy') is False, 'live_auto_deploy must be false'
+          assert decision.get('draft_pr_only') is True, 'draft_pr_only must be true'
+          print('Safety gate passed: no automatic live deployment.')
+          PY
+
+      - name: Publish reviews to dedicated branch
+        if: steps.source.outputs.skip != 'true'
+        shell: bash
+        env:
+          SOURCE_HASH: ${{ steps.source.outputs.source_hash }}
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +'%Y%m%d_%H%M%S')"
+          git config user.name "multi-ai-review-bot"
+          git config user.email "multi-ai-review-bot@users.noreply.github.com"
+          git switch ai-reviews
+
+          mkdir -p "reviews/runs/${stamp}" reviews
+          cp /tmp/ai-review/*.json "reviews/runs/${stamp}/"
+          cp /tmp/ai-review/consensus.json reviews/latest_consensus.json
+          cp /tmp/ai-review/run_summary.json reviews/latest_run_summary.json
+          cp /tmp/ai-review/review_openai.json reviews/latest_openai.json
+          cp /tmp/ai-review/review_gemini.json reviews/latest_gemini.json
+          cp /tmp/ai-review/review_anthropic.json reviews/latest_anthropic.json
+          printf '%s\n' "$SOURCE_HASH" > reviews/latest_source_sha256.txt
+          printf '%s\n' "$stamp" > reviews/latest_run_utc.txt
+
+          git add reviews
+          if git diff --cached --quiet; then
+            echo "No review changes to publish."
+            exit 0
+          fi
+          git commit -m "AI strategy review ${stamp}"
+          git push origin HEAD:ai-reviews
+
+      - name: Explain skipped run
+        if: steps.source.outputs.skip == 'true'
+        run: echo "Review skipped - ${{ steps.source.outputs.skip_reason }}"

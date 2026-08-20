@@ -1,0 +1,275 @@
+name: AI Candidate Implementation
+
+on:
+  schedule:
+    - cron: "43 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ai-candidate-implementation
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: Turn approved AI consensus into tested draft PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out latest main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Read latest AI consensus
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin ai-reviews:ai-reviews
+          git show ai-reviews:reviews/latest_consensus.json > /tmp/consensus.json
+          git show ai-reviews:reviews/latest_run_summary.json > /tmp/run_summary.json
+          stamp="$(git show ai-reviews:reviews/latest_run_utc.txt | tr -d '\r\n')"
+          git show "ai-reviews:reviews/runs/${stamp}/source_report.json" > /tmp/source_report.json
+
+          python - <<'PY' > /tmp/gate.env
+          import json
+          consensus_payload = json.load(open('/tmp/consensus.json', encoding='utf-8'))
+          summary = json.load(open('/tmp/run_summary.json', encoding='utf-8'))
+          if consensus_payload.get('ok'):
+              c = consensus_payload.get('consensus') or {}
+          else:
+              c = consensus_payload.get('fallback') or {}
+          eligible = bool(
+              c.get('implementation_candidate') is True
+              and c.get('live_auto_deploy') is False
+              and c.get('draft_pr_only') is True
+              and c.get('status') in {'CODE_CHANGE_CANDIDATE', 'PAUSE_AND_FIX'}
+          )
+          source_hash = str(summary.get('source_report_sha256') or '')
+          print('ELIGIBLE=' + ('true' if eligible else 'false'))
+          print('SOURCE_HASH=' + source_hash)
+          print('STATUS=' + str(c.get('status') or 'UNKNOWN'))
+          PY
+          source /tmp/gate.env
+          echo "eligible=${ELIGIBLE}" >> "$GITHUB_OUTPUT"
+          echo "source_hash=${SOURCE_HASH}" >> "$GITHUB_OUTPUT"
+          echo "status=${STATUS}" >> "$GITHUB_OUTPUT"
+
+      - name: Deduplicate candidate
+        if: steps.gate.outputs.eligible == 'true'
+        id: dedupe
+        shell: bash
+        env:
+          SOURCE_HASH: ${{ steps.gate.outputs.source_hash }}
+        run: |
+          set -euo pipefail
+          short="${SOURCE_HASH:0:12}"
+          echo "short=${short}" >> "$GITHUB_OUTPUT"
+          skip=false
+          for prefix in candidate reviewed failed; do
+            if git ls-remote --exit-code --heads origin "refs/heads/ai/${prefix}-${short}" >/dev/null 2>&1; then
+              skip=true
+              echo "Existing ai/${prefix}-${short}; skipping repeat implementation."
+            fi
+          done
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Set up Node for Codex CLI
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install test dependencies and Codex
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest
+          codex --version
+
+      - name: Create isolated implementation branch
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        id: branch
+        shell: bash
+        env:
+          SHORT: ${{ steps.dedupe.outputs.short }}
+        run: |
+          set -euo pipefail
+          branch="ai/candidate-${SHORT}"
+          git switch -c "$branch"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare evidence for Codex
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          cp /tmp/consensus.json .ai_consensus.json
+          cp /tmp/source_report.json .ai_source_report.json
+          cat > /tmp/codex_prompt.txt <<'PROMPT'
+          You are the implementation agent for a multi-AI trading-bot review.
+
+          Read .ai_consensus.json and .ai_source_report.json first, then inspect the repository.
+
+          Implement only accepted recommendations that the consensus classifies as CODE or CONFIG,
+          and only where the repository evidence supports the change. Treat the consensus as a
+          proposed engineering scope, not as proof that the strategy will be profitable.
+
+          Mandatory boundaries:
+          - Do not buy or sell any asset and do not submit blockchain transactions.
+          - Do not change private keys, wallet addresses, seed/signing material, API credentials,
+            Telegram authentication, RPC credentials, or user identity/permission controls.
+          - Do not change capital balances or silently increase position size/risk limits.
+          - Do not enable a live mode that is currently disabled.
+          - Do not remove simulation, sellability, liquidity, slippage, profit, nonce, MEV,
+            atomicity, canary, stop-loss, circuit-breaker, or execution safety checks.
+          - Do not modify VPS deployment workflows or GitHub secret handling.
+          - Prefer a minimal patch. Add or update tests that prove the intended behaviour.
+          - Preserve existing behaviour outside the accepted recommendation scope.
+          - If the recommendation cannot be implemented safely or is unsupported by the code,
+            make no code changes rather than guessing.
+
+          The objective is to reduce avoidable realised losses and improve evidence-backed net P&L
+          after costs. Do not optimise win count alone and do not promise profit.
+
+          Run the most relevant local tests before finishing. Do not commit, push, merge, or deploy.
+          PROMPT
+
+      - name: Let Codex implement the candidate
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        id: codex
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        shell: bash
+        run: |
+          set +e
+          codex exec --sandbox workspace-write --ask-for-approval never --ephemeral - < /tmp/codex_prompt.txt
+          rc=$?
+          rm -f .ai_consensus.json .ai_source_report.json
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Detect implementation diff
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true'
+        id: diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet && [[ -z "$(git status --porcelain)" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git status --short
+            git diff --stat
+          fi
+
+      - name: Mark safely reviewed when no patch is needed
+        if: steps.gate.outputs.eligible == 'true' && steps.dedupe.outputs.skip != 'true' && steps.diff.outputs.changed == 'false'
+        shell: bash
+        env:
+          SHORT: ${{ steps.dedupe.outputs.short }}
+        run: |
+          git push origin HEAD:"refs/heads/ai/reviewed-${SHORT}"
+          echo "Codex made no supported change; recorded reviewed marker."
+
+      - name: Enforce sensitive-file and diff-size guard
+        if: steps.diff.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(git status --porcelain | sed 's/^...//' | sed 's/.* -> //' || true)"
+          printf '%s\n' "$files"
+          if printf '%s\n' "$files" | grep -E '(^|/)(\.env|id_rsa|.*private.*key.*|.*seed.*|.*mnemonic.*)$|^\.github/workflows/(deploy-vps|server-ops)\.yml$' >/dev/null; then
+            echo "Refusing AI patch touching a protected file."
+            exit 1
+          fi
+          count="$(printf '%s\n' "$files" | sed '/^$/d' | wc -l)"
+          if [[ "$count" -gt 12 ]]; then
+            echo "Refusing unusually broad AI patch: ${count} files."
+            exit 1
+          fi
+          lines="$(git diff --numstat | awk '{a+=$1; d+=$2} END {print a+d+0}')"
+          if [[ "$lines" -gt 2000 ]]; then
+            echo "Refusing unusually large AI patch: ${lines} changed lines."
+            exit 1
+          fi
+
+      - name: Run mandatory regression gate
+        if: steps.diff.outputs.changed == 'true'
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q learnerbot scripts tests
+          pytest -x -vv tests/test_imports.py tests/test_main_import_order.py
+          pytest -x -vv \
+            tests/test_solana_live_canary.py \
+            tests/test_solana_execution_safety.py \
+            tests/test_solana_profit_guard.py \
+            tests/test_sibot_profit_guard.py \
+            tests/test_profit_control_loop.py \
+            tests/test_transaction_audit.py \
+            tests/test_loss_forensics_github_export.py \
+            tests/test_multi_ai_strategy_review.py
+
+      - name: Commit tested patch
+        if: steps.diff.outputs.changed == 'true' && success()
+        id: commit
+        shell: bash
+        env:
+          SOURCE_HASH: ${{ steps.gate.outputs.source_hash }}
+        run: |
+          set -euo pipefail
+          git config user.name "ai-strategy-implementation-bot"
+          git config user.email "ai-strategy-implementation-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "AI candidate from ${SOURCE_HASH:0:12}"
+          git push -u origin "${{ steps.branch.outputs.branch }}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Open draft pull request only
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_HASH: ${{ steps.gate.outputs.source_hash }}
+          STATUS: ${{ steps.gate.outputs.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/pr-body.md <<EOF
+          This draft was generated from the evidence-weighted multi-AI consensus for source report \`${SOURCE_HASH}\`.
+
+          Consensus status: **${STATUS}**
+
+          Safety boundary:
+          - Codex was limited to workspace writes.
+          - No merge or deployment was authorised.
+          - Protected credential/deployment files were blocked.
+          - A mandatory Python/Solana safety regression gate passed before push.
+          - This PR still requires human review before it can reach \`main\`.
+
+          Profitability is not guaranteed. The proposed change should be evaluated by shadow/replay and subsequent realised net-P&L evidence.
+          EOF
+          gh pr create \
+            --draft \
+            --base main \
+            --head "${{ steps.branch.outputs.branch }}" \
+            --title "AI strategy candidate ${SOURCE_HASH:0:12}" \
+            --body-file /tmp/pr-body.md
+
+      - name: Explain ineligible/no-op run
+        if: steps.gate.outputs.eligible != 'true'
+        run: echo "Latest consensus does not authorise a code/config candidate. No implementation attempted."
