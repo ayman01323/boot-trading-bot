@@ -9,6 +9,10 @@ on:
         description: 'Optional Copilot strategy report PR number'
         required: false
         type: string
+      cycle_id:
+        description: 'Optional immutable strategy cycle id; validated against the Copilot report files'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -25,18 +29,69 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Resolve latest cycle and completed Copilot report PR from main
+      - name: Resolve completed Copilot report PR by immutable cycle
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           INPUT_PR: ${{ inputs.copilot_pr_number }}
+          INPUT_CYCLE: ${{ inputs.cycle_id }}
         shell: bash
         run: |
           set -euo pipefail
-          cycle="$(gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
-            --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
-          test -n "$cycle"
+          pr="${INPUT_PR:-}"
+          cycle="${INPUT_CYCLE:-}"
+
+          cycle_from_report_pair() {
+            local candidate="$1" required_cycle="${2:-}"
+            local json_path='' md_path='' resolved=''
+            local -a files=()
+            mapfile -t files < <(gh pr diff "$candidate" --name-only 2>/dev/null | sed '/^$/d' || true)
+            [[ ${#files[@]} -eq 2 ]] || return 1
+            for path in "${files[@]}"; do
+              case "$path" in
+                .ai/strategy/copilot/*.json) [[ -z "$json_path" ]] || return 1; json_path="$path" ;;
+                .ai/strategy/copilot/*.md) [[ -z "$md_path" ]] || return 1; md_path="$path" ;;
+                *) return 1 ;;
+              esac
+            done
+            [[ -n "$json_path" && -n "$md_path" && "${json_path%.json}" == "${md_path%.md}" ]] || return 1
+            resolved="${json_path##*/}"
+            resolved="${resolved%.json}"
+            [[ "$resolved" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || return 1
+            [[ -z "$required_cycle" || "$resolved" == "$required_cycle" ]] || return 1
+            printf '%s\n' "$resolved"
+          }
+
+          if [[ -n "$pr" ]]; then
+            cross="$(gh pr view "$pr" --json isCrossRepository --jq '.isCrossRepository')"
+            [[ "$cross" != "true" ]] || { echo 'Refusing fork report PR.' >&2; exit 2; }
+            cycle="$(cycle_from_report_pair "$pr" "$cycle")" || {
+              echo "PR #${pr} does not contain exactly one matching Copilot JSON/Markdown report pair." >&2
+              exit 2
+            }
+          else
+            while IFS= read -r candidate; do
+              [[ -n "$candidate" ]] || continue
+              cross="$(gh pr view "$candidate" --json isCrossRepository --jq '.isCrossRepository')"
+              [[ "$cross" != "true" ]] || continue
+              candidate_cycle="$(cycle_from_report_pair "$candidate" "$cycle")" || continue
+              if gh api -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${candidate_cycle}/master_decision.json?ref=ai-reviews" \
+                  >/dev/null 2>&1; then
+                continue
+              fi
+              pr="$candidate"
+              cycle="$candidate_cycle"
+              break
+            done < <(gh pr list --state open --limit 100 --json number --jq '.[].number')
+          fi
+
+          if [[ -z "$pr" ]]; then
+            echo "No unresolved PR with an exact Copilot report pair is ready; reconciler will retry."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${cycle}/master_decision.json?ref=ai-reviews" \
@@ -46,19 +101,6 @@ jobs:
             exit 0
           fi
 
-          pr="${INPUT_PR:-}"
-          if [[ -z "$pr" ]]; then
-            pr="$(gh pr list --state open --search "Copilot hourly strategy review ${cycle} in:title" \
-              --limit 5 --json number,title --jq '.[0].number // empty')"
-          fi
-          if [[ -z "$pr" ]]; then
-            echo "No completed Copilot report PR yet for ${cycle}; reconciler will retry."
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          cross="$(gh pr view "$pr" --json isCrossRepository --jq '.isCrossRepository')"
-          [[ "$cross" != "true" ]] || { echo 'Refusing fork report PR.' >&2; exit 2; }
           head_sha="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
           echo "found=true" >> "$GITHUB_OUTPUT"
           echo "number=$pr" >> "$GITHUB_OUTPUT"

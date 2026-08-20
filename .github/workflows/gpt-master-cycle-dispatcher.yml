@@ -19,34 +19,57 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Find current Copilot report PR and dispatch GPT Master
+      - name: Find an unresolved exact Copilot report pair and dispatch GPT Master
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           set -euo pipefail
 
-          cycle="$(gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
-            --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
-          test -n "$cycle"
+          cycle_from_report_pair() {
+            local candidate="$1" json_path='' md_path='' resolved=''
+            local -a files=()
+            mapfile -t files < <(gh pr diff "$candidate" --name-only 2>/dev/null | sed '/^$/d' || true)
+            [[ ${#files[@]} -eq 2 ]] || return 1
+            for path in "${files[@]}"; do
+              case "$path" in
+                .ai/strategy/copilot/*.json) [[ -z "$json_path" ]] || return 1; json_path="$path" ;;
+                .ai/strategy/copilot/*.md) [[ -z "$md_path" ]] || return 1; md_path="$path" ;;
+                *) return 1 ;;
+              esac
+            done
+            [[ -n "$json_path" && -n "$md_path" && "${json_path%.json}" == "${md_path%.md}" ]] || return 1
+            resolved="${json_path##*/}"
+            resolved="${resolved%.json}"
+            [[ "$resolved" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || return 1
+            printf '%s\n' "$resolved"
+          }
 
-          if gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${cycle}/master_decision.json?ref=ai-reviews" \
-              >/dev/null 2>&1; then
-            echo "Master decision already exists for ${cycle}."
-            exit 0
-          fi
+          pr=''
+          cycle=''
+          while IFS= read -r candidate; do
+            [[ -n "$candidate" ]] || continue
+            cross="$(gh pr view "$candidate" --json isCrossRepository --jq '.isCrossRepository')"
+            [[ "$cross" != "true" ]] || continue
+            candidate_cycle="$(cycle_from_report_pair "$candidate")" || continue
+            if gh api -H 'Accept: application/vnd.github+json' \
+                "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${candidate_cycle}/master_decision.json?ref=ai-reviews" \
+                >/dev/null 2>&1; then
+              continue
+            fi
+            pr="$candidate"
+            cycle="$candidate_cycle"
+            break
+          done < <(gh pr list --state open --limit 100 --json number --jq '.[].number')
 
-          # Copilot controls its PR wording, so discover by the immutable cycle id only.
-          pr="$(gh pr list --state open --search "${cycle} in:title" --limit 20 \
-            --json number,title --jq '.[0].number // empty')"
           if [[ -z "$pr" ]]; then
-            echo "No open Copilot report PR containing cycle ${cycle}; retry on next dispatcher tick."
+            echo "No unresolved PR with an exact Copilot report pair is ready; retry on next dispatcher tick."
             exit 0
           fi
 
           echo "Dispatching GPT Master for cycle=${cycle} copilot_pr=${pr}"
           gh workflow run gpt-master-strategy-action.yml \
             --ref main \
-            -f copilot_pr_number="$pr"
+            -f copilot_pr_number="$pr" \
+            -f cycle_id="$cycle"
