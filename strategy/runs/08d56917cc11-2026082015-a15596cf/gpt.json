@@ -1,0 +1,137 @@
+{
+  "cycle_id": "08d56917cc11-2026082015-a15596cf",
+  "evidence_gaps": [
+    "Fresh-within-two-hours runtime forensics are unavailable; evidence.json reports MISSING_RUNTIME_FORENSICS.",
+    "No realized, money-weighted net-P&L series by strategy and chain after all entry and exit costs.",
+    "No Solana priority-fee, base-fee, refundable/non-refundable rent, realized price-impact, landing-rate and exit-failure distributions.",
+    "No EVM EIP-1559 gas, builder/private-order-flow payment, revert, replacement, nonce and failed-transaction cost distributions.",
+    "No out-of-sample comparison of predicted edge versus realized executable net edge by route and trade size.",
+    "No complete terminal outcome ledger separating STRATEGY/MARKET losses from EXECUTION/INFRASTRUCTURE failures and UNKNOWN outcomes.",
+    "No evidence of exit sellability under stressed liquidity, congestion and rapid adverse movement.",
+    "Before promotion, require fresh runtime evidence, cost completeness and reconciliation, statistically adequate out-of-sample observations, positive money-weighted net P&L with a conservative uncertainty bound, and acceptable execution-failure rates for each chain independently."
+  ],
+  "evidence_sha256": "a15596cf06a38c462769f6d05526175f7fe7b60374393371de15794581437be0",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.96,
+      "downside_risk": "Potential opportunities remain untraded; this is preferable to deploying unmeasured negative edge.",
+      "evidence": [
+        {
+          "detail": "Solana leader events receive zero current edge, liquidity, sellability and cost features, outcome_available=false, and needs_quote_feature_adapter=true instead of invented executable edge.",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "Quote/simulation observations are explicitly marked promotion_evidence=false and cannot submit live orders.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        }
+      ],
+      "expected_effect": "Prevents unsupported Solana trades and false promotion conclusions until complete executable economics exist.",
+      "id": "keep-solana-fail-closed-shadow",
+      "minimum_observation": "At least 200 eligible and 200 rejected observations across 30 days and multiple congestion regimes, with every attempted simulation assigned a terminal outcome.",
+      "rationale": "Abstention is appropriate because historical leader success does not prove follower edge after Jupiter price impact, slippage, priority fees, rent effects, latency and failed execution.",
+      "shadow_test": "Replay fresh Solana opportunities with timestamped entry and exit quotes, realized price impact, base and priority fees, rent deltas, confirmation latency and failures. Stop if any missing cost is treated as zero or if a signal becomes promotion evidence without an out-of-sample realized exit.",
+      "strategy": "Solana fail-closed Strategy Lab evaluation",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.93,
+      "downside_risk": "Conservative uncertainty reserves may suppress genuinely profitable low-margin opportunities.",
+      "evidence": [
+        {
+          "detail": "Both chains share fixed 4-6 bps minimum net-edge thresholds even though their execution costs and failure modes differ.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "Generated EVM route rows set estimated_gas_base to zero while simulation_ok=false, so scanner gross spreads are not executable net returns.",
+          "path": "learnerbot/full_power_scanner.py"
+        },
+        {
+          "detail": "EVM net edge subtracts supplied gas, builder fees, slippage, price impact and latency reserve, but cannot protect against upstream zero or underestimated values.",
+          "path": "learnerbot/market_feature_adapter.py"
+        }
+      ],
+      "expected_effect": "Fewer false-positive signals and improved money-weighted net P&L by abstaining when the lower confidence bound of executable edge is non-positive.",
+      "id": "chain-specific-executable-edge-reserve",
+      "minimum_observation": "At least 500 timestamped opportunities per chain, 100 executable simulations per route family, and coverage of normal and high-congestion periods over at least 30 days.",
+      "rationale": "Positive executable edge must exceed chain-, route-, size- and congestion-specific cost uncertainty. Solana requires priority-fee, account/rent and landing-risk reserves; EVM requires current EIP-1559 gas, builder/private-order-flow costs, revert probability and replacement costs.",
+      "shadow_test": "For each chain and route-size bucket, compare predicted net edge against realized or counterfactual executable net after all costs. Admit only when the conservative lower bound is positive. Stop the test for a bucket if cost completeness is below 99%, calibration error exceeds the proposed reserve, or cumulative money-weighted net is non-positive.",
+      "strategy": "Cross-chain executable-edge gating",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.91,
+      "downside_risk": "Incorrect attribution rules could hide market losses as infrastructure failures; immutable raw evidence and an UNKNOWN class are necessary.",
+      "evidence": [
+        {
+          "detail": "Stored outcomes are current quote/simulation economics only; no realized out-of-sample lifecycle or loss-cause field is present.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        },
+        {
+          "detail": "Simulation, broadcast response, swap-event validation and wallet reconciliation expose distinct infrastructure and execution failure points.",
+          "path": "learnerbot/solana_live_executor.py"
+        },
+        {
+          "detail": "EVM entries and exits estimate or record gas and realized proceeds, but strategy-market loss versus execution-infrastructure failure is not represented as a common Strategy Lab outcome taxonomy.",
+          "path": "learnerbot/sibot.py"
+        }
+      ],
+      "expected_effect": "Enables accurate money-weighted net-P&L analysis, failure-adjusted expectancy and targeted remediation without optimizing win count.",
+      "id": "shadow-loss-cause-attribution",
+      "minimum_observation": "At least 300 terminal outcomes per chain, including at least 30 execution/infrastructure failures or 60 days of observation, with money-weighted results reported by strategy, route, size and failure class.",
+      "rationale": "STRATEGY/MARKET loss means a successfully executable position lost after complete costs. EXECUTION/INFRASTRUCTURE failure means quote expiry, simulation rejection, revert, non-landing, RPC failure, reconciliation failure or inability to exit. Combining them obscures whether selection or delivery should change.",
+      "shadow_test": "Assign every signal a terminal class: STRATEGY_MARKET_WIN, STRATEGY_MARKET_LOSS, EXECUTION_INFRA_FAILURE, or UNKNOWN, while retaining gross return and every cost component. Stop if terminal coverage is below 99%, reconciliation does not match wallet deltas, or changing attribution changes aggregate cash P&L.",
+      "strategy": "Realized outcome and failure attribution",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/market_feature_adapter.py"
+      ]
+    }
+  ],
+  "provider": "gpt",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any current strategy to CANARY or LIVE.",
+      "reason": "Fresh runtime forensics and realized out-of-sample money-weighted net P&L are unavailable."
+    },
+    {
+      "idea": "Rank or tune strategies by raw win rate.",
+      "reason": "Win rate ignores loss magnitude, capital weighting and total execution costs."
+    },
+    {
+      "idea": "Lower liquidity, sellability, simulation or positive-edge gates to increase trade count.",
+      "reason": "More trades without positive executable edge would increase exposure to adverse selection and execution loss."
+    },
+    {
+      "idea": "Treat quote-simulated profit as realized profitability.",
+      "reason": "It excludes post-decision market movement, landing failures, realized impact and exit economics."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "08d56917cc11168b5644cc72b5b0b69ed693b919",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. The SHADOW framework correctly abstains when Solana executable-edge inputs are absent and prevents simulated quotes from becoming promotion evidence. However, shared static edge floors are not sufficient for chain-specific economics, EVM opportunity rows can carry zero gas estimates, and durable realized outcome attribution is absent. No profitability, CANARY-readiness, or LIVE-readiness conclusion is permitted."
+}

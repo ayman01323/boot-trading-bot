@@ -1,0 +1,74 @@
+{
+  "cycle_id": "08d56917cc11-2026082015-a15596cf",
+  "evidence_gaps": [
+    "Missing fresh runtime forensics (evidence.json reports MISSING_RUNTIME_FORENSICS).",
+    "Lack of live slippage, price impact, and execution failure metrics for both SOLANA and EVM.",
+    "No out-of-sample validation of predictive model probability calibration.",
+    "Absence of money-weighted net P&L metrics factoring in exact priority fees and gas costs."
+  ],
+  "evidence_sha256": "a15596cf06a38c462769f6d05526175f7fe7b60374393371de15794581437be0",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Shadow tracking consumes API/RPC capacity but avoids live capital risk.",
+      "evidence": [
+        {
+          "detail": "Implementation of forecasted_positive_net_edge relies on static calibration thresholds (forecast_probability >= 0.65) that require live out-of-sample data.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Will gather empirical evidence on probability calibration, actual net edge vs forecasted edge, and cross-chain cost variance.",
+      "id": "shadow-forecast-net-edge",
+      "minimum_observation": "100 eligible opportunities per chain",
+      "rationale": "The predictive strategy overrides raw edge calculations with model probability and uncertainty. Without runtime forensics, model calibration against real chain-specific execution costs (slippage, priority fees, MEV) is unverified.",
+      "shadow_test": "Execute strategy in SHADOW mode for at least 100 eligible opportunities. Monitor probability calibration (Brier score) and simulated net P&L. Stop if simulated net edge consistently falls below 0 after costs.",
+      "strategy": "Forecasted Positive Net Edge",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Feature computation latency may increase quote_age_ms, causing the signal to lag behind the optimal entry point.",
+      "evidence": [
+        {
+          "detail": "liquidity_confirmed_momentum sets strict thresholds for momentum_z (>= 1.0) and flow_acceleration_z (>= 0.5) to confirm edge.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Assess if liquidity confirmations genuinely reduce execution failure rates compared to raw price momentum on Solana.",
+      "id": "shadow-liquidity-momentum",
+      "minimum_observation": "50 simulated trades",
+      "rationale": "Solana momentum strategies are highly sensitive to priority fees and rapid liquidity changes. We must verify if the flow_acceleration_z and liquidity_score thresholds accurately filter toxic flow before considering live deployment.",
+      "shadow_test": "Run SHADOW mode on Solana for 50 trades, capturing real-time quote age, slippage and execution success rates. Stop tracking if quote age averages above 2000ms.",
+      "strategy": "Liquidity Confirmed Momentum",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote Dislocation Mean Reversion to CANARY or LIVE",
+      "reason": "Strictly prohibited by review rules when fresh runtime forensics are missing. Cannot claim profitability or canary-readiness without empirical evidence."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "08d56917cc11168b5644cc72b5b0b69ed693b919",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only review of strategy laboratory and execution rules due to missing fresh runtime forensics. The architecture correctly separates economic signals from chain-specific execution, maintaining shadow safety. No claims of profitability, canary-readiness, or live-readiness can be made. Proposing continued SHADOW testing of predictive and momentum strategies to gather required cost and execution evidence."
+}
