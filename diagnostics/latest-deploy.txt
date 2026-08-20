@@ -1,21 +1,21 @@
-requested_sha=9faf8d3363fa750c1bba543d48336a44b15a012e
+requested_sha=7c73a321e61d5f4c7e24d8da298ec4dff7cf98ff
 deploy_outcome=failure
 deploy_exit=10
-run_id=32375327183
-utc=2026-08-20T13:38:46Z
+run_id=32375435832
+utc=2026-08-20T13:40:11Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-20T13:37:44Z BEGIN current=c00ff6f3dd2c579403075af3b70825e8f3cbc917 requested=9faf8d3363fa750c1bba543d48336a44b15a012e
+2026-08-20T13:39:07Z BEGIN current=c00ff6f3dd2c579403075af3b70825e8f3cbc917 requested=7c73a321e61d5f4c7e24d8da298ec4dff7cf98ff
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   096d0e2..9faf8d3  main       -> origin/main
-Updating c00ff6f..9faf8d3
+   9faf8d3..7c73a32  main       -> origin/main
+Updating c00ff6f..7c73a32
 Fast-forward
  .github/workflows/ai-resilient-pipeline-ci.yml     |  82 ++++
  .github/workflows/engineering-agent-retry.yml      | 276 +++++++++++++
  .../engineering-copilot-assignment-reconciler.yml  | 185 +++++++++
  .../strategy-approved-change-promoter.yml          | 411 +++++++++++++++++++
- .../strategy-review-after-main-change.yml          |  30 ++
+ .../strategy-review-after-main-change.yml          |  31 ++
  .github/workflows/strategy-source-master.yml       | 314 +++++++++++++++
  .github/workflows/strategy-source-research.yml     | 359 +++++++++++++++++
  .github/workflows/weekly-resilient-master.yml      | 438 +++++++++++++++++++++
@@ -31,7 +31,7 @@ Fast-forward
  tests/test_ai_resilient_workflows.py               |  57 +++
  tests/test_strategy_canary_source_guard_patch.py   |  43 ++
  tests/test_strategy_source_governance.py           |  93 +++++
- 20 files changed, 3407 insertions(+), 9 deletions(-)
+ 20 files changed, 3408 insertions(+), 9 deletions(-)
  create mode 100644 .github/workflows/ai-resilient-pipeline-ci.yml
  create mode 100644 .github/workflows/engineering-agent-retry.yml
  create mode 100644 .github/workflows/engineering-copilot-assignment-reconciler.yml
@@ -67,7 +67,7 @@ _ test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources
         assert {"Dune", "DEX Screener API", "Etherscan API V2", "GitHub public code search", "DefiLlama", "Jupiter"} <= names
 >       assert all(row["safe_mode"].startswith(("READ_ONLY", "QUOTE")) for row in PUBLIC_RESEARCH_TOOLS)
 E       assert False
-E        +  where False = all(<generator object test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources.<locals>.<genexpr> at 0x7f99012992a0>)
+E        +  where False = all(<generator object test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources.<locals>.<genexpr> at 0x7f97930a52a0>)
 
 tests/test_strategy_lab_cross_chain_research.py:167: AssertionError
 _ test_source_policy_rejects_single_agent_low_confidence_or_execution_permission _
@@ -121,13 +121,13 @@ learnerbot/strategy_source_contract.py:56: ValueError
 =========================== short test summary info ============================
 FAILED tests/test_strategy_lab_cross_chain_research.py::test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources
 FAILED tests/test_strategy_source_governance.py::test_source_policy_rejects_single_agent_low_confidence_or_execution_permission
-2 failed, 408 passed, 1 warning in 31.89s
-2026-08-20T13:38:23Z TESTS FAILED; service remains on old running process
+2 failed, 408 passed, 1 warning in 35.98s
+2026-08-20T13:39:49Z TESTS FAILED; service remains on old running process
 HEAD is now at c00ff6f Fix GPT Master report reconciliation across Copilot cycles (#132)
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-20T13:38:39Z
+UTC: 2026-08-20T13:40:06Z
 branch: main
 sha:    c00ff6f3dd2c579403075af3b70825e8f3cbc917
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -138,15 +138,14 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Thu 2026-08-20 11:34:22 BST; 3h 4min ago
+     Active: active (running) since Thu 2026-08-20 11:34:22 BST; 3h 5min ago
    Main PID: 262290 (python)
       Tasks: 19 (limit: 5869)
-     Memory: 680.0M (peak: 793.3M)
-        CPU: 2h 13min 55.185s
+     Memory: 628.7M (peak: 793.3M)
+        CPU: 2h 14min 29.239s
      CGroup: /system.slice/learnerbot.service
              └─262290 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 20 14:36:44 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=45.426
 Aug 20 14:36:53 mint.yesgoodwill.com python[262290]: [research:arbitrum] {'evidence_rows': 8553, 'behaviours': 7, 'wallet_behaviour_rows': 619}
 Aug 20 14:36:53 mint.yesgoodwill.com python[262290]: [copy-check:arbitrum] {'evaluated': 619, 'passed': 0, 'disabled': False}
 Aug 20 14:36:58 mint.yesgoodwill.com python[262290]: [scan:polygon] 92082466..92082475 tx=790
@@ -156,3 +155,4 @@ Aug 20 14:37:25 mint.yesgoodwill.com python[262290]: [learn:polygon] patterns=23
 Aug 20 14:37:35 mint.yesgoodwill.com python[262290]: [research:polygon] {'evidence_rows': 40762, 'behaviours': 7, 'wallet_behaviour_rows': 1023}
 Aug 20 14:37:35 mint.yesgoodwill.com python[262290]: [copy-check:polygon] {'evaluated': 1023, 'passed': 0, 'disabled': False}
 Aug 20 14:37:39 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=54.535
+Aug 20 14:38:54 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=73.535
