@@ -103,13 +103,8 @@ jobs:
           PY
           fi
 
-          EVIDENCE_SHA="$(python - <<'PY'
-          import hashlib,json
-          p=json.load(open('.strategy_cycle/evidence.json'))
-          raw=json.dumps(p,sort_keys=True,separators=(',',':'),default=str).encode()
-          print(hashlib.sha256(raw).hexdigest())
-          PY
-          )"
+          # Bind every agent and the cycle id to the exact bytes they received.
+          EVIDENCE_SHA="$(sha256sum .strategy_cycle/evidence.json | awk '{print $1}')"
           HOUR_KEY="$(date -u +'%Y%m%d%H')"
           CYCLE_ID="${SOURCE_SHA:0:12}-${HOUR_KEY}-${EVIDENCE_SHA:0:8}"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
@@ -138,6 +133,13 @@ jobs:
           Runtime evidence source: ${EVIDENCE_SOURCE}; fresh-within-2h=${EVIDENCE_FRESH}.
           If fresh runtime evidence is unavailable, you MAY suggest code/SHADOW hypotheses but MUST NOT claim a strategy is
           profitable, canary-ready or live-ready. Explicitly list evidence needed before promotion.
+
+          REVIEW STATUS SEMANTICS ARE STRICT:
+          - Missing or stale runtime forensics ALONE does NOT make this review INCOMPLETE.
+          - If you successfully inspect the repository/evidence and produce a complete architecture-only review, use HEALTHY
+            or CHANGES_PROPOSED, list the runtime evidence gaps, and keep profitability/CANARY/LIVE claims prohibited.
+          - Use INCOMPLETE only when the review itself could not be completed, parsed or validated.
+          - evidence_sha256 is the SHA-256 of the exact bytes of .strategy_cycle/evidence.json; do not canonicalise/re-hash JSON.
 
           REPORT ONLY. Do not edit tracked code, trade, deploy, change capital/risk/live settings, touch secrets/wallets/signing,
           auto-add assets, weaken execution/sellability/liquidity/simulation protection, or use external web research.
@@ -347,7 +349,10 @@ jobs:
           Fresh runtime evidence within 2h: \`${EVIDENCE_FRESH}\`
 
           REPORT ONLY. Inspect the source independently and optimise durable NET P&L after all costs, not win count.
-          If runtime evidence is not fresh, do not claim profitability/canary/live readiness.
+          If runtime evidence is not fresh, do not claim profitability/canary/live readiness. Missing/stale runtime evidence
+          alone is NOT a reason to set status=INCOMPLETE: if the architecture review is complete use HEALTHY or CHANGES_PROPOSED
+          and list the runtime evidence gaps. Use INCOMPLETE only if the review itself cannot be completed or validated.
+          The evidence SHA-256 above hashes the exact evidence file bytes; do not canonicalise/re-hash the JSON.
           Do not trade, deploy, change live/risk/capital settings, touch secrets/wallets/signing, or implement code.
 
           Create a draft PR containing exactly:
