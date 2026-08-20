@@ -35,7 +35,7 @@ def _https(value: Any) -> bool:
         return False
 
 
-def _validate_source_row(row: dict, *, prefix: str) -> None:
+def _validate_source_row(row: dict, *, prefix: str, enforce_operational_flags: bool = True) -> None:
     if not isinstance(row, dict):
         raise ValueError(f"{prefix} must be an object")
     for key in ("id", "name", "source_class", "official_url", "publisher", "intended_use", "trust_basis"):
@@ -50,10 +50,22 @@ def _validate_source_row(row: dict, *, prefix: str) -> None:
         raise ValueError(f"{prefix} needs chain_scope")
     if any(str(x).upper() not in {"SOLANA", "EVM", "CEX", "GENERAL"} for x in chains):
         raise ValueError(f"{prefix} has unsupported chain scope")
-    if row.get("research_only") is not True:
-        raise ValueError(f"{prefix} must be research_only=true")
-    if row.get("automatic_execution_allowed") is not False:
-        raise ValueError(f"{prefix} automatic_execution_allowed must be false")
+
+    # Agent reports are an input contract and therefore fail validation when they
+    # request operational use.  GPT Master output is different: it is passed through
+    # a deterministic policy gate, so unsafe boolean values must remain parseable in
+    # order for the gate to mark them explicitly ineligible instead of crashing the
+    # whole reconciliation cycle.
+    if not isinstance(row.get("research_only"), bool):
+        raise ValueError(f"{prefix} research_only must be boolean")
+    if not isinstance(row.get("automatic_execution_allowed"), bool):
+        raise ValueError(f"{prefix} automatic_execution_allowed must be boolean")
+    if enforce_operational_flags:
+        if row.get("research_only") is not True:
+            raise ValueError(f"{prefix} must be research_only=true")
+        if row.get("automatic_execution_allowed") is not False:
+            raise ValueError(f"{prefix} automatic_execution_allowed must be false")
+
     if _num(row.get("confidence"), -1) < 0 or _num(row.get("confidence"), -1) > 1:
         raise ValueError(f"{prefix} confidence must be 0..1")
     risks = row.get("risks")
@@ -89,7 +101,7 @@ def validate_agent_report(report: dict, *, provider: str | None = None, cycle_id
         raise ValueError("source_recommendations must be a list")
     seen = set()
     for idx, row in enumerate(rows):
-        _validate_source_row(row, prefix=f"source_recommendations[{idx}]")
+        _validate_source_row(row, prefix=f"source_recommendations[{idx}]", enforce_operational_flags=True)
         sid = str(row.get("id") or "").strip()
         if sid in seen:
             raise ValueError("source recommendation IDs must be unique")
@@ -118,7 +130,10 @@ def validate_master_decision(decision: dict, *, cycle_id: str | None = None,
     if not isinstance(rows, list):
         raise ValueError("source_decisions must be a list")
     for idx, row in enumerate(rows):
-        _validate_source_row(row, prefix=f"source_decisions[{idx}]")
+        # Keep structural/schema validation strict, but allow unsafe row-level
+        # operational booleans to reach enforce_source_policy(), which rejects them
+        # deterministically and records the reason instead of aborting the workflow.
+        _validate_source_row(row, prefix=f"source_decisions[{idx}]", enforce_operational_flags=False)
         if str(row.get("disposition") or "") not in DISPOSITIONS:
             raise ValueError("invalid source disposition")
         agents = row.get("supporting_agents")
