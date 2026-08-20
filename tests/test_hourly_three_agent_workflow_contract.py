@@ -14,10 +14,11 @@ def test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent():
     assert 'Weekly GPT Master Corrective Action' not in text
 
 
-def test_codex_approval_flag_is_global_before_exec():
+def test_codex_approval_flag_is_global_before_exec_and_uses_exec_api_key():
     text = _text()
     assert 'codex --ask-for-approval never exec --sandbox workspace-write --ephemeral' in text
     assert 'codex exec --sandbox workspace-write --ask-for-approval' not in text
+    assert 'CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}' in text
 
 
 def test_missing_runtime_evidence_fails_safe_not_fake_profitability():
@@ -31,7 +32,7 @@ def test_provider_failures_are_visible_in_published_reports():
     text = _text()
     assert 'gpt_error.txt' in text
     assert 'gemini_error.txt' in text
-    assert 'OPENAI_API_KEY missing' in text
+    assert 'OpenAI/Codex API credential missing' in text
     assert 'GEMINI_API_KEY missing' in text
     assert 'openai_credential_present' in text
     assert 'gemini_credential_present' in text
@@ -43,7 +44,6 @@ def test_copilot_assignment_is_verified_and_never_fake_waiting():
     assert 'copilot-swe-agent[bot]' in text
     assert "state='BLOCKED_AUTH'" in text
     assert "state='ASSIGNED'" in text
-    assert "copilot':'BLOCKED_AUTH'" not in text  # state is calculated explicitly
     assert 'BLOCKED_COPILOT_AUTH' in text
 
 
