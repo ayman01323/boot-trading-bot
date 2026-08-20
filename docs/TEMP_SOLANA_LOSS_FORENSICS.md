@@ -1,0 +1,1 @@
+Temporary investigation branch only. The added CI probe reads public Solana chain data anchored on the reported exit transaction. It does not sign, broadcast, change trading settings, or access private keys. Do not merge this branch.
