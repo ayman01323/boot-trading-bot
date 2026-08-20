@@ -117,6 +117,50 @@ def fetch_defillama_context(session: requests.Session) -> dict:
     )
 
 
+def _compact_defillama_dexs(payload: Any) -> dict:
+    payload = payload if isinstance(payload, dict) else {}
+    protocols = payload.get("protocols") if isinstance(payload.get("protocols"), list) else []
+    sortable = [
+        row for row in protocols
+        if isinstance(row, dict) and isinstance(row.get("total24h"), (int, float))
+    ]
+    top = []
+    for row in sorted(sortable, key=lambda r: float(r.get("total24h") or 0), reverse=True)[:12]:
+        top.append({
+            "name": row.get("name"),
+            "display_name": row.get("displayName"),
+            "total24h": row.get("total24h"),
+            "total7d": row.get("total7d"),
+            "change_1d": row.get("change_1d"),
+            "chains": list(row.get("chains") or [])[:12],
+        })
+    return {
+        "total24h": payload.get("total24h"),
+        "total7d": payload.get("total7d"),
+        "protocol_count": len(protocols),
+        "top_dexs_by_24h_volume": top,
+        "all_chains_count": len(payload.get("allChains") or []) if isinstance(payload.get("allChains"), list) else None,
+    }
+
+
+def fetch_defillama_dex_context(session: requests.Session) -> dict:
+    url = "https://api.llama.fi/overview/dexs"
+    payload = _get(
+        session,
+        url,
+        params={"excludeTotalDataChart": "true", "excludeTotalDataChartBreakdown": "true"},
+    ).json()
+    data = _compact_defillama_dexs(payload)
+    return _source(
+        "EXT4",
+        name="DefiLlama DEX volume",
+        source_class="PRIMARY_RAW_DATA",
+        canonical_url=url,
+        data=data,
+        notes="Fresh DEX activity context; volume must still be tested for concentration, executability and net edge after costs.",
+    )
+
+
 def _compact_github(payload: Any) -> dict:
     items = payload.get("items") if isinstance(payload, dict) else []
     out = []
@@ -217,6 +261,7 @@ def collect_external_strategy_research(*, github_token: str | None = None, sessi
         ("EXT1", fetch_defillama_context, {}),
         ("EXT2", fetch_github_research, {"token": token}),
         ("EXT3", fetch_arxiv_research, {}),
+        ("EXT4", fetch_defillama_dex_context, {}),
     )
     try:
         for source_id, fn, kwargs in collectors:
