@@ -1,0 +1,206 @@
+{
+  "schema_version": 1,
+  "provider": "copilot",
+  "scope": "HOURLY_REPORT_PIPELINE_FAILURE_AUDIT",
+  "cycle_id": "128fe91d2a0f-2026082003-425a8d76",
+  "source_commit": "128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+  "audit_created_utc": "2026-08-20T03:37:00Z",
+  "report_only": true,
+  "no_live_changes": true,
+  "hourly_workflow_run_id": 32327544678,
+  "gpt_master_workflow_run_id": 32328146903,
+  "copilot_issue": 107,
+  "copilot_pr": 108,
+
+  "failure_chain_summary": "audit-status branch absent → evidence missing → hourly cycle ran on architecture-only → GPT/Codex sandbox (bwrap/loopback) failure → GPT INCOMPLETE → Gemini CLI ran but extract_strategy_report.py failed (ModuleNotFoundError: learnerbot) → Gemini INCOMPLETE → Copilot issue created but BLOCKED_AUTH (COPILOT_ASSIGN_TOKEN missing) → Copilot manually assigned externally → Copilot PR #108 created → GPT Master triggered but concluded action_required (no jobs executed, no adjudication) → latest_status.json never updated beyond BLOCKED_AUTH → Telegram never received a complete-cycle message.",
+
+  "root_causes": [
+    {
+      "id": "RC-1",
+      "title": "audit-status branch absent — no runtime forensics available",
+      "classification": "PROVEN",
+      "evidence": [
+        "Workflow step 'Resolve source and freshest available evidence' (job 96301731834, step 7): git ls-remote for audit-status branch returned nothing → evidence.json populated with MISSING_RUNTIME_FORENSICS skeleton.",
+        "context.json written to ai-reviews branch recorded evidence_source=architecture-only and evidence_fresh=false.",
+        "Issue #107 body states: 'Fresh runtime evidence within 2h: false'."
+      ],
+      "root_cause": "The VPS runtime forensics process (transaction_audit_worker_patch.py / loss_forensics_github_export.py) was either not running or failed to push to the audit-status branch before the :17 hourly scheduler triggered. Without a live audit-status branch the entire cycle operates on code architecture alone.",
+      "impact": "All three agent reviews were architecture-only. No profitable/loss evidence available. No fresh runtime signal for strategy decisions.",
+      "corrective_action": "Verify VPS process uptime and git-push permissions for audit-status. Add a dead-man alert if audit-status is not updated within 2 hours. Add a separate workflow check that fires a Telegram alert when evidence_status=MISSING_RUNTIME_FORENSICS.",
+      "files": [
+        "learnerbot/transaction_audit_worker_patch.py",
+        "learnerbot/loss_forensics_github_export.py",
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml (step: Resolve source and freshest available evidence)"
+      ],
+      "fix_order": 1
+    },
+    {
+      "id": "RC-2",
+      "title": "GPT/Codex sandbox failure — bwrap cannot nest network namespaces on GitHub Actions runner",
+      "classification": "PROVEN",
+      "evidence": [
+        "Job 96301731834, step 9 ('GPT independent strategy report'): exited non-zero. Contract validation step immediately threw FileNotFoundError: [Errno 2] No such file or directory: '.strategy_cycle/gpt.json'.",
+        "OPENAI_PRESENT=true (API key is present), so the failure is not a missing credential.",
+        "Issue description records known observed evidence: 'Codex local command sandbox / bwrap, loopback RTM_NEWADDR, and failure writing .strategy_cycle/gpt.json'.",
+        "The codex command uses '--sandbox workspace-write'. On ubuntu-latest runners, Codex sandbox uses bwrap (Bubblewrap) for filesystem/network isolation. GitHub Actions runners run inside Docker/VM environments that block nested user namespaces and the RTM_NEWADDR netlink message needed to configure the loopback interface inside bwrap. This causes bwrap to fail before the Codex agent process starts writing outputs.",
+        "gpt_error.txt was either empty or contained only bwrap/loopback error text. Recovery step used fallback 'GPT step failed without stderr', indicating gpt_error.txt was empty after credential-present path was taken."
+      ],
+      "root_cause": "Codex CLI's '--sandbox workspace-write' mode invokes bwrap to create an isolated namespace. GitHub Actions ubuntu-latest runners run in an environment that does not grant the unprivileged user namespace capabilities required by bwrap to configure a loopback interface (RTM_NEWADDR). Codex fails at sandbox setup before any file I/O, so .strategy_cycle/gpt.json is never written.",
+      "impact": "GPT report is INCOMPLETE every cycle run on the default ubuntu-latest runner with --sandbox workspace-write.",
+      "corrective_action": "Replace '--sandbox workspace-write' with '--sandbox none' (disabling Codex's internal bwrap sandbox) and rely on the GitHub Actions job-level sandbox instead, OR switch to the OpenAI Responses API directly via Python (as the Gemini step does) rather than the Codex CLI. The prompt already restricts Codex to writing two files; the bwrap sandbox provides no additional protection in this context.",
+      "files": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml (step: GPT independent strategy report, codex exec invocation)"
+      ],
+      "fix_order": 2,
+      "tests": [
+        "Run the workflow on a fresh branch with '--sandbox none' or API-direct replacement and confirm .strategy_cycle/gpt.json is written and passes validate-agent."
+      ]
+    },
+    {
+      "id": "RC-3",
+      "title": "Gemini extract_strategy_report.py fails — ModuleNotFoundError: No module named 'learnerbot'",
+      "classification": "PROVEN",
+      "evidence": [
+        "Job 96301731834, step 11 ('Gemini independent strategy report'): Gemini CLI ran to completion (only benign warnings: '256-color support not detected' and 'Ripgrep is not available. Falling back to GrepTool.').",
+        "Step exited non-zero because scripts/extract_strategy_report.py raised: ModuleNotFoundError: No module named 'learnerbot' (logged at 2026-08-20T03:17:35.284Z).",
+        "The workflow installs dependencies with 'pip install -r requirements.txt pytest' but does NOT run 'pip install -e .' or equivalent to make the local learnerbot package importable.",
+        "The `from learnerbot.three_agent_strategy_contract import validate_agent_report` import fails because learnerbot is a local package (./learnerbot/) not installed into the Python environment's site-packages."
+      ],
+      "root_cause": "scripts/extract_strategy_report.py imports from the local learnerbot package, which is only available as a source directory. The workflow install step does not install learnerbot as an editable package (pip install -e .), so Python cannot resolve the import.",
+      "impact": "Gemini report is INCOMPLETE every cycle even when the Gemini CLI succeeds and produces valid output. The contract validation and JSON extraction are skipped.",
+      "corrective_action": "Add 'pip install -e .' (or 'PYTHONPATH=. python scripts/extract_strategy_report.py ...') after 'pip install -r requirements.txt' in the workflow install step. Also apply the same fix to the GPT step which calls 'python -m learnerbot.three_agent_strategy_contract validate-agent' after the codex invocation.",
+      "files": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml (step: Install review tools — missing 'pip install -e .')",
+        "scripts/extract_strategy_report.py (imports learnerbot at module level)"
+      ],
+      "fix_order": 3,
+      "tests": [
+        "After adding 'pip install -e .', re-run the workflow and confirm scripts/extract_strategy_report.py runs without ModuleNotFoundError and .strategy_cycle/gemini.json is written.",
+        "Run 'python -m learnerbot.three_agent_strategy_contract validate-agent --help' in CI to assert the module resolves."
+      ]
+    },
+    {
+      "id": "RC-4",
+      "title": "Copilot assignment BLOCKED_AUTH — COPILOT_ASSIGN_TOKEN secret absent or invalid",
+      "classification": "PROVEN",
+      "evidence": [
+        "Job 96301731834, step 13 ('Create and assign Copilot the same strategy cycle'): logged 'Copilot issue #107 assignment state: BLOCKED_AUTH'.",
+        "The step checks steps.creds.outputs.copilot_token (COPILOT_ASSIGN_TOKEN). The credential preflight step (step 6) set copilot_token=false, confirming COPILOT_ASSIGN_TOKEN is not configured.",
+        "The assignment API call branch was skipped because COPILOT_ASSIGN_TOKEN was empty.",
+        "An external human/agent later manually assigned Copilot to issue #107 (confirmed by PR #108 existing and issue #107 showing Copilot in assignees)."
+      ],
+      "root_cause": "COPILOT_ASSIGN_TOKEN is not set as a repository secret. Without it the workflow cannot call the GitHub API assignees endpoint with a token that has sufficient permissions to assign GitHub Copilot (copilot-swe-agent[bot]) to the issue. The default GITHUB_TOKEN does not have the required user/bot assignment scope.",
+      "impact": "Copilot is never automatically assigned. The Copilot report leg depends on external/manual intervention, breaking the fully-automated pipeline. The delay caused the GPT Master to be triggered much later (03:25 vs 03:17).",
+      "corrective_action": "Provision a GitHub personal access token (or a GitHub App installation token) with issues:write scope for copilot-swe-agent[bot] assignment and store it as COPILOT_ASSIGN_TOKEN. Alternatively investigate whether the GitHub Actions workflow token can be granted the required scope for bot assignment via repository settings.",
+      "files": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml (step: Create and assign Copilot, env: COPILOT_ASSIGN_TOKEN)"
+      ],
+      "fix_order": 4,
+      "tests": [
+        "After adding COPILOT_ASSIGN_TOKEN, re-run the workflow and confirm step output shows 'Copilot issue #N assignment state: ASSIGNED'."
+      ]
+    },
+    {
+      "id": "RC-5",
+      "title": "latest_status.json stale — copilot=BLOCKED_AUTH not updated after PR #108 was opened",
+      "classification": "PROVEN",
+      "evidence": [
+        "ai-reviews branch latest_status.json was written by the hourly cycle with state=BLOCKED_COPILOT_AUTH and copilot=BLOCKED_AUTH at 03:17:38Z.",
+        "GPT Master workflow run #32328146903 concluded action_required at 03:25:00Z (created_at == updated_at == run_started_at — no jobs were queued or executed). Therefore the 'Publish all-three completion and GPT master ledger' step (which would have overwritten latest_status.json with state=MASTER_DECIDED and copilot=DONE) never ran.",
+        "Status is therefore frozen at the value written by the hourly cycle, despite PR #108 being fully formed."
+      ],
+      "root_cause": "GPT Master's 'adjudicate' job has the condition: 'if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository'. PR #108's head branch is in the same repo (not a fork), so the condition should evaluate true. However the run concluded action_required with 0 jobs, which in GitHub Actions indicates the environment or deployment protection rules required manual approval before any jobs were permitted to run. Because no jobs ran, latest_status.json was never updated.",
+      "impact": "Telegram and any downstream consumer reading latest_status.json received stale data showing copilot=BLOCKED_AUTH indefinitely. The three-agent completion state appeared incomplete even after all three reports existed.",
+      "corrective_action": "Investigate GitHub environment protection rules on the repository. If the GPT Master workflow uses a 'production' or 'protected' environment that requires manual approval, add an exception for bot-authored PRs from the same repo, or remove the environment requirement from the adjudicate job. If no environment is configured, check repository-level 'Require approval for all outside collaborators' setting which may gate bot PRs.",
+      "files": [
+        ".github/workflows/gpt-master-strategy-action.yml (adjudicate job if-condition and environment/deployment settings)"
+      ],
+      "fix_order": 5,
+      "tests": [
+        "After removing the approval gate, trigger GPT Master via workflow_dispatch on PR #108 and confirm jobs execute and latest_status.json is updated."
+      ]
+    },
+    {
+      "id": "RC-6",
+      "title": "GPT Master immediately action_required — deployment protection or required review approval gate",
+      "classification": "PROVEN",
+      "evidence": [
+        "Workflow run #32328146903: status=completed, conclusion=action_required, created_at=03:25:00Z, updated_at=03:25:00Z, run_started_at=03:25:00Z — zero elapsed time, zero jobs listed.",
+        "The run was triggered by PR event (event=pull_request, triggering actor=Copilot bot). Run concluded before any job was dispatched.",
+        "action_required at t=0 with 0 jobs is the GitHub Actions signal for a workflow blocked by an environment protection rule or a first-time contributor approval requirement."
+      ],
+      "root_cause": "The GitHub repository has a 'Require approval for first-time contributors' or an environment protection rule configured that gates workflow runs triggered by the Copilot bot. Because no human approved the run, it sat in action_required state indefinitely.",
+      "impact": "GPT Master adjudication never executed. Copilot strategy report was never merged or adjudicated. ai-reviews status was never reconciled. The pipeline stalls unless a repository owner manually approves the workflow run.",
+      "corrective_action": "In repository Settings → Actions → General → 'Fork pull request workflows from outside collaborators': change from 'Require approval for all outside collaborators' to 'Require approval for first-time contributors who are new to GitHub' (or 'Not required' for trusted internal bots). Alternatively add the copilot-swe-agent[bot] to the trusted collaborators list or add an explicit workflow_run trigger for GPT Master so it can run on a separate non-PR event that does not require approval.",
+      "files": [
+        ".github/workflows/gpt-master-strategy-action.yml (trigger: pull_request types)",
+        "Repository Settings → Actions → General → Fork pull request approvals"
+      ],
+      "fix_order": 6,
+      "tests": [
+        "After adjusting approval settings, open a new bot PR targeting the same path pattern and confirm GPT Master jobs execute without action_required."
+      ]
+    },
+    {
+      "id": "RC-7",
+      "title": "Telegram visibility gap — no complete-cycle notification sent",
+      "classification": "PROVEN",
+      "evidence": [
+        "transaction_audit_worker_patch.py sends audit documents to Telegram only after the hourly transaction audit completes (send_audit_document). No equivalent end-to-end pipeline completion message is sent for the three-agent strategy cycle.",
+        "GPT Master 'Publish all-three completion and GPT master ledger' step never ran (RC-6), so no completion event was available to trigger a notification.",
+        "There is no Telegram push in hourly-three-agent-strategy-cycle.yml after the final status is written to ai-reviews."
+      ],
+      "root_cause": "Telegram notification for three-agent strategy cycle completion is not implemented. The pipeline relies on ai-reviews branch state being observed externally. When the pipeline partially fails, no alert reaches the operator.",
+      "impact": "Operator has no real-time visibility into pipeline failures. A cycle can silently produce INCOMPLETE reports for an unknown duration.",
+      "corrective_action": "Add a post-run Telegram notification step (always condition) at the end of both hourly-three-agent-strategy-cycle.yml and gpt-master-strategy-action.yml that posts the cycle_id, each agent's status, and any INCOMPLETE reasons to the master chat IDs. Reuse the send_audit_document or a simpler sendMessage endpoint.",
+      "files": [
+        ".github/workflows/hourly-three-agent-strategy-cycle.yml (add final Telegram step)",
+        ".github/workflows/gpt-master-strategy-action.yml (add final Telegram step)",
+        "learnerbot/transaction_audit_worker_patch.py (reference implementation for Telegram send)"
+      ],
+      "fix_order": 7
+    }
+  ],
+
+  "failure_chain": [
+    {"step": 1, "actor": "VPS cron / loss_forensics_github_export.py", "event": "Did not push to audit-status branch", "result": "No forensics available for this cycle"},
+    {"step": 2, "actor": "hourly-three-agent-strategy-cycle.yml :17 scheduler", "event": "Triggered at 2026-08-20T03:14:52Z on commit 128fe91d2a0f", "result": "evidence_source=architecture-only, evidence_fresh=false"},
+    {"step": 3, "actor": "GPT/Codex step (job 96301731834 step 9)", "event": "Codex --sandbox workspace-write failed: bwrap cannot configure loopback (RTM_NEWADDR) in nested namespace on GitHub Actions runner", "result": "gpt.json never written; FileNotFoundError at contract validation"},
+    {"step": 4, "actor": "Recover GPT incomplete report (step 10)", "event": "Recovery fallback wrote INCOMPLETE gpt.json + gpt.md", "result": "GPT report status=INCOMPLETE"},
+    {"step": 5, "actor": "Gemini CLI (step 11)", "event": "Gemini CLI ran OK (256-color/ripgrep warnings only); extract_strategy_report.py raised ModuleNotFoundError: No module named 'learnerbot'", "result": "gemini.json never written"},
+    {"step": 6, "actor": "Recover Gemini incomplete report (step 12)", "event": "Recovery fallback wrote INCOMPLETE gemini.json + gemini.md", "result": "Gemini report status=INCOMPLETE"},
+    {"step": 7, "actor": "Create and assign Copilot (step 13)", "event": "COPILOT_ASSIGN_TOKEN absent; API assignment call skipped; state=BLOCKED_AUTH", "result": "Issue #107 created but Copilot not assigned"},
+    {"step": 8, "actor": "Publish reports step (step 14)", "event": "Wrote ai-reviews with gpt=INCOMPLETE, gemini=INCOMPLETE, copilot=BLOCKED_AUTH; latest_status.json set state=BLOCKED_COPILOT_AUTH", "result": "ai-reviews branch contains two INCOMPLETE reports"},
+    {"step": 9, "actor": "External manual intervention", "event": "Human/automation assigned Copilot to issue #107 outside the pipeline", "result": "Copilot completed PR #108 at 03:21:13Z with exactly two strategy files"},
+    {"step": 10, "actor": "GPT Master workflow run #32328146903", "event": "Triggered by PR #108 open event at 03:25:00Z; concluded action_required with 0 jobs — deployment protection / required approval gate blocked execution", "result": "No adjudication; latest_status.json never reconciled"},
+    {"step": 11, "actor": "ai-reviews latest_status.json", "event": "Remains frozen at copilot=BLOCKED_AUTH, state=BLOCKED_COPILOT_AUTH", "result": "Stale status visible to any downstream consumer"},
+    {"step": 12, "actor": "Telegram", "event": "No complete-cycle notification implemented; operator has no visibility", "result": "Silent failure"}
+  ],
+
+  "fix_order": [
+    {"order": 1, "id": "RC-1", "action": "Fix VPS audit-status push; add dead-man alert for stale audit-status"},
+    {"order": 2, "id": "RC-2", "action": "Replace codex --sandbox workspace-write with --sandbox none OR switch to OpenAI Python API directly"},
+    {"order": 3, "id": "RC-3", "action": "Add 'pip install -e .' to Install review tools step in hourly-three-agent-strategy-cycle.yml"},
+    {"order": 4, "id": "RC-4", "action": "Provision COPILOT_ASSIGN_TOKEN secret with issues:write bot-assignment scope"},
+    {"order": 5, "id": "RC-6", "action": "Adjust repository Actions approval setting to allow copilot-swe-agent[bot] PRs without manual approval"},
+    {"order": 6, "id": "RC-5", "action": "After RC-6 fix: trigger GPT Master via workflow_dispatch on PR #108 to reconcile latest_status.json"},
+    {"order": 7, "id": "RC-7", "action": "Add always-run Telegram notification step to both hourly cycle and GPT Master workflows"}
+  ],
+
+  "end_to_end_verification_plan": [
+    "1. Confirm audit-status branch receives a fresh push within 2h; re-run hourly cycle and verify evidence_source != architecture-only.",
+    "2. With RC-2 fix: run 'codex --sandbox none exec ...' in a workflow_dispatch dry run and confirm .strategy_cycle/gpt.json is created and passes validate-agent.",
+    "3. With RC-3 fix: add 'pip install -e .' to CI job and run 'python scripts/extract_strategy_report.py --help'; confirm no ModuleNotFoundError.",
+    "4. With RC-4 fix: trigger a new hourly cycle and confirm 'Copilot issue assignment state: ASSIGNED' in logs.",
+    "5. With RC-5 (approval gate) fix: open a test PR from copilot-swe-agent[bot] against .ai/strategy/copilot/ path; confirm GPT Master jobs execute (not action_required).",
+    "6. After full cycle completes with all three agents DONE: inspect ai-reviews/strategy/latest_status.json and confirm state=MASTER_DECIDED, gpt=DONE, gemini=DONE, copilot=DONE.",
+    "7. Confirm Telegram master chat receives a pipeline completion (or failure) message for the cycle."
+  ],
+
+  "remaining_unknowns": [
+    "The exact bwrap/loopback error text from the Codex run is not preserved in the workflow logs (gpt_error.txt was empty or truncated by the 1800-char cap; the original codex stderr may have been lost before redirection). HYPOTHESIS classification for bwrap being the exact Codex mechanism is supported by the issue description and known Codex sandbox architecture, but the precise stderr text from this specific run cannot be independently confirmed from available logs.",
+    "The reason audit-status was absent this cycle is not determinable from GitHub workflow logs alone — requires VPS-side process logs (cron job, learnerbot daemon, git push output) which are inaccessible from this audit.",
+    "Whether the GPT Master action_required was caused by (a) 'Require approval for first-time contributors' repository setting, (b) an environment protection rule, or (c) another runner policy cannot be definitively confirmed without access to repository Settings. Evidence strongly supports one of these; exact sub-type is HYPOTHESIS.",
+    "The Gemini CLI gemini_stdout.txt content (what Gemini actually produced before extract_strategy_report.py failed) is not available from the archived logs. If it contained a valid JSON block, the fix is only in the installer step. If it did not, an additional Gemini prompt/model issue also exists."
+  ]
+}
