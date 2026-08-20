@@ -1,0 +1,100 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "review_only": true,
+  "no_live_changes": true,
+  "cycle_id": "c00ff6f3dd2c-2026082011-d6d8e488",
+  "source_commit": "c00ff6f3dd2c579403075af3b70825e8f3cbc917",
+  "evidence_sha256": "d6d8e48800d1e02f44901f12b047a9ab4b2e7131743164b0a088dafeb8723938",
+  "status": "CHANGES_PROPOSED",
+  "reviewed_at": "2026-08-20T11:20:30Z",
+  "runtime_evidence_fresh": false,
+  "runtime_evidence_note": "Runtime evidence is not fresh (>2h). Architecture review completed on source commit c00ff6f3dd2c579403075af3b70825e8f3cbc917. Profitability/live-readiness claims are not made without fresh runtime evidence.",
+  "executive_summary": "Architecture review of source commit c00ff6f3dd2c is complete. The strategy lab enforces SHADOW-first promotion, profit-factor gating (>=1.10), and minimum evaluation windows/trades before promotion. The cross-chain signal adapter exists but relies solely on leader-wallet copying as the primary edge source. Three differentiated strategy proposals are raised for SHADOW evaluation: (1) liquidity-confirmed momentum across both chains, (2) new-pool quality scoring to replace or complement raw leader copying, and (3) profitable-wallet cohort pattern extraction from on-chain data. Runtime evidence is stale; claimed profitability cannot be validated this cycle.",
+  "proposals": [
+    {
+      "id": "LCM-001",
+      "title": "Liquidity-Confirmed Momentum (Solana + EVM)",
+      "action": "NEW_SHADOW",
+      "confidence": 0.72,
+      "chain_scope": ["SOLANA", "EVM"],
+      "hypothesis": "Tokens that have sustained DEX volume growth AND deep liquidity relative to market-cap over a 15–60 min window show positive mean net P&L after swap costs, independently of any leader wallet.",
+      "rationale": "Leader-wallet copying introduces single-point-of-failure risk and execution lag. Liquidity-confirmed momentum is a signal derivable entirely from on-chain pool state (DEX Screener API / Jupiter quote), is independently falsifiable, and has academic precedent on EVM markets. Replicating it on Solana requires a chain-specific fee and price-impact model.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "Existing cross-chain signal adapter; demonstrates the pattern can be wired into the execution path. Currently no volume/liquidity momentum feature is implemented."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_PROFIT_FACTOR=1.10, MIN_EVALUATION_TRADES=8, MIN_EVALUATION_WINDOWS=3 gates are in place for SHADOW promotion."
+        },
+        {
+          "path": "learnerbot/strategy_lab_research.py",
+          "note": "Research helper; no liquidity momentum indicator present — gap to fill."
+        }
+      ],
+      "shadow_test": "Run SHADOW-only for >= 72 h on both chains. Accept if profit_factor >= 1.10 across >= 8 completed trades and >= 10 eligible opportunities with >= 20% participation rate. Reject if profit_factor < 1.0 or largest single loss > 3x average gain after 72 h.",
+      "research_plan": "1. Pull 7-day DEX Screener pool history for top-50 Solana and top-50 EVM tokens by volume. 2. Compute rolling 15-min and 60-min volume-change and liquidity-depth ratio. 3. Backtest entry on momentum threshold, exit at 10 min or 2% adverse move. 4. Measure net P&L after simulated swap fees and price impact.",
+      "research_tools": ["DEX Screener API", "Jupiter quote simulation", "Dune (EVM cohort)"],
+      "asset_requests": [],
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "NPQ-002",
+      "title": "New-Pool Quality Scoring (Solana + EVM)",
+      "action": "NEW_SHADOW",
+      "confidence": 0.68,
+      "chain_scope": ["SOLANA", "EVM"],
+      "hypothesis": "New liquidity pools that satisfy a composite quality score (age < 6 h, locked liquidity, verified contract on EVM, holder count growth, volume/liquidity ratio) show positive net P&L over a 2–4 h hold when entered within the first 30 min of pool creation.",
+      "rationale": "New-pool sniping is a distinct alpha source from leader-copying. Quality gating (sellability check, liquidity lock, initial holder growth) is already partially supported by the platform's preflight checks. This proposal formalises a SHADOW scoring layer rather than bypassing any safety gate.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "FORBIDDEN_SPEC_TERMS and sellability/liquidity checks show the platform already has the concept of pool quality gates."
+        },
+        {
+          "path": "learnerbot/strategy_ai_proposals.py",
+          "note": "AI proposal registry; new-pool quality strategy can be registered as AI_PROPOSED source."
+        }
+      ],
+      "shadow_test": "Shadow-run for >= 48 h on each chain independently. Accept per chain if profit_factor >= 1.15, participation >= 25% of scored qualifying pools, and zero rug-pull execution losses. Reject if any rug-pull loss occurs or profit_factor < 1.0 after 48 h.",
+      "research_plan": "1. Extract last 14 days of new pool creations from Dune (EVM) and DEX Screener (Solana). 2. Score each pool at T+0, T+15, T+30 min. 3. Simulate entry/exit at scored thresholds. 4. Report net P&L, largest loss, and participation rate.",
+      "research_tools": ["Dune", "DEX Screener API", "Etherscan API V2"],
+      "asset_requests": [],
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/strategy_ai_proposals.py",
+        "tests/test_strategy_new_pool_quality.py"
+      ]
+    },
+    {
+      "id": "WCP-003",
+      "title": "Profitable-Wallet Cohort Pattern Extraction (Solana + EVM)",
+      "action": "RESEARCH_MORE",
+      "confidence": 0.61,
+      "chain_scope": ["SOLANA", "EVM"],
+      "hypothesis": "Aggregating repeated route fingerprints across a cohort of independently profitable wallets (not a single selected leader) yields route patterns with higher replication confidence and lower single-wallet dependency than current LEADER_COPY source.",
+      "rationale": "The current strategy.py learn_patterns function already computes cohort-level confidence (wallet_component, repeat_component). Expanding the wallet universe from one selected leader to a Dune-derived cohort of wallets with net positive P&L over 30 days would diversify the edge source without bypassing any existing safety gate.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy.py",
+          "note": "learn_patterns computes wallet_component and replicability; designed to support multiple wallets. Currently constrained by the input wallet set."
+        },
+        {
+          "path": "learnerbot/copy_engine.py",
+          "note": "Current leader-copy engine; single-leader dependency is the gap to address."
+        }
+      ],
+      "shadow_test": "Cannot be fully shadow-tested until cohort wallet data is collected via Dune. RESEARCH_MORE: run Dune query for EVM wallets with >= 20 on-chain swaps and net positive P&L over 30 days. If cohort size >= 10 wallets, re-evaluate as NEW_SHADOW with confidence target >= 0.75.",
+      "research_plan": "1. Build Dune query: EVM DEX trades, group by wallet, net P&L > 0, >= 20 swaps in 30 days, exclude bots/sandwichers. 2. Extract route fingerprints for top-30 wallets. 3. Cross-reference with existing strategy_patterns table. 4. Re-score confidence using wallet_component from strategy.py logic.",
+      "research_tools": ["Dune", "Etherscan API V2", "GitHub public code search"],
+      "asset_requests": [],
+      "suggested_files": []
+    }
+  ]
+}
