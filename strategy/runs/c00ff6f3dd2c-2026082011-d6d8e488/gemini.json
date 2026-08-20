@@ -1,17 +1,47 @@
 {
   "cycle_id": "c00ff6f3dd2c-2026082011-d6d8e488",
   "evidence_gaps": [
-    "Missing runtime forensics branch data (.strategy_cycle/evidence.json indicates MISSING_RUNTIME_FORENSICS).",
-    "Requires out-of-sample SHADOW evidence of actual execution costs (gas/priority fees, slippage, price impact, failure rates) before any strategy can be evaluated for PROMOTION_CANDIDATE."
+    "No sanitised runtime forensics branch available.",
+    "Lack of recent real-world latency, execution failure, and slippage data to validate net_edge_bps calculation accuracy."
   ],
   "evidence_sha256": "d6d8e48800d1e02f44901f12b047a9ab4b2e7131743164b0a088dafeb8723938",
   "no_live_changes": true,
-  "proposals": [],
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Prolonged time in shadow testing could lead to missed market opportunities, but is strictly required to prevent unexpected execution losses.",
+      "evidence": [
+        {
+          "detail": "net_edge_bps calculation cleanly deducts fees_bps, slippage_bps, price_impact_bps, and latency_reserve_bps.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "evidence_status is MISSING_RUNTIME_FORENSICS, necessitating shadow evaluation.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Gathering statistically significant distribution of real vs expected net edge without risking live capital.",
+      "id": "shadow-baseline-eval",
+      "minimum_observation": "3 evaluation windows, >20 eligible opportunities",
+      "rationale": "Without fresh runtime evidence, the execution costs (especially dynamic slippage and priority fees on SOL/EVM) cannot be verified as accurately modeled. Shadow testing is required to gather real-world transaction success rates and execution slippage.",
+      "shadow_test": "Run cross_venue_net_arbitrage in SHADOW mode for minimum 3 evaluation windows to capture at least 20 eligible opportunities, monitoring failure rates and latency-driven signal decay.",
+      "strategy": "cross_venue_net_arbitrage",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
   "provider": "gemini",
   "rejected_ideas": [
     {
-      "idea": "Promote SHADOW strategies to LIVE based on architecture alone.",
-      "reason": "Forbidden by policy. Promotion requires fresh runtime forensics demonstrating money-weighted net P&L after execution costs."
+      "idea": "Promote cross_venue_net_arbitrage to PROMOTION_CANDIDATE immediately.",
+      "reason": "Forbidden by review guidelines due to missing runtime forensics."
     }
   ],
   "review_only": true,
@@ -19,5 +49,5 @@
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "c00ff6f3dd2c579403075af3b70825e8f3cbc917",
   "status": "HEALTHY",
-  "summary": "Architecture review completed. Strategy Lab seeding, metric tracking, and evaluation logic are structurally sound. No runtime forensics are available, so P&L evaluation is deferred."
+  "summary": "Architecture-only review completed. Strategy definitions in cross_chain_strategy_signals.py explicitly separate raw signal edge from infrastructure/execution costs (fees, slippage, price impact, latency reserve). Due to missing runtime forensics, no live claims or readiness assertions can be made."
 }

@@ -1,12 +1,15 @@
 # GPT strategy review
 
-Architecture-only review completed. The repository generally fails closed, keeps SHADOW evaluation non-signing, requires positive estimated edge, and explicitly prevents quote simulations from serving as promotion evidence. However, Strategy Lab accounting does not structurally capture every chain-specific cost and does not separate STRATEGY/MARKET losses from EXECUTION/INFRASTRUCTURE failures. Solana SHADOW observations intentionally lack contemporaneous executable quotes, while EVM SHADOW outcomes are simulations rather than realised fills. Profitability, CANARY readiness and LIVE readiness therefore cannot be claimed.
+Architecture-only review completed. The repository generally fails closed and separates SHADOW research from signing, but its Strategy Lab accounting and promotion-candidate evaluation do not yet prove durable money-weighted net P&L. Runtime forensics are missing, so no strategy is claimed profitable, canary-ready, or live-ready. Solana currently lacks contemporaneous executable-edge SHADOW inputs; EVM has quote/simulation economics but not realised out-of-sample outcomes. Execution/infrastructure failures must be reported separately from strategy/market losses while still charging all economically incurred failure costs to net P&L.
 
-## REWORK — Strategy Lab evaluation and attribution
-Durable money-weighted NET P&L requires immutable, reconcilable cost components and mutually exclusive outcome attribution. An adverse filled trade after complete costs is STRATEGY/MARKET loss; simulation, RPC, stale-blockhash, revert, dropped transaction, quote mismatch or missing confirmation is EXECUTION/INFRASTRUCTURE failure. Failed attempts may still consume gas or priority fees and must reduce net P&L without being mislabeled as market losses.
+## REWORK — Strategy Lab evaluation and lifecycle governance
+Aggregate nominal profit can favor larger or longer-exposed positions and can overstate edge when failed attempts or chain-specific costs are omitted. Classification should identify STRATEGY/MARKET losses separately from EXECUTION/INFRASTRUCTURE failures, while the latter's paid fees and adverse inventory effects remain charged economically.
 
 ## NEW_SHADOW — Solana contemporaneous executable-edge adapter
-Historical leader performance is not an executable Solana signal. A SHADOW-only adapter should obtain contemporaneous round-trip quotes at intended size, signed-transaction simulation results, price impact, platform/swap fees, priority fees, account effects, quote age and sellability before estimating net edge.
+Leader history is not an executable future edge. Solana needs decision-time entry and exit quotes, route liquidity/sellability, impact, platform fee, priority/Jito fee, latency deterioration, and failure probability measured at the intended size.
 
-## SHADOW_MORE — EVM net-edge strategies
-The EVM gates are economically sensible, but simulation cannot establish durable returns under state contention, MEV, inclusion delay, base-fee movement and failed-attempt costs. These effects must be calibrated per chain and route before promotion.
+## SHADOW_MORE — EVM cross-venue and learned-route strategies
+EVM architecture estimates executable economics conservatively, but durable edge requires later outcome capture including base-fee changes, priority fees, reverts, replacement transactions, stale quotes, and opportunity decay.
+
+## KEEP — Chain-specific executability and abstention protections
+These controls embody the required abstention rule and chain-specific economics. No architectural evidence justifies weakening them to increase trade count.
