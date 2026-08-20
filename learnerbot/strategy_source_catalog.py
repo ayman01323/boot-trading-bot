@@ -65,6 +65,13 @@ def _source(
     safe_mode: str = "READ_ONLY_RESEARCH",
     notes: str = "",
 ) -> dict:
+    # PUBLIC_RESEARCH_TOOLS is consumed by generic Strategy Lab code that treats
+    # READ_ONLY_* and QUOTE_* as the only non-execution modes.  Preserve each
+    # catalogue item's descriptive mode while making the non-execution property
+    # explicit and machine-checkable.
+    mode = str(safe_mode or "READ_ONLY_RESEARCH").strip().upper()
+    if not mode.startswith(("READ_ONLY", "QUOTE")):
+        mode = "READ_ONLY_" + mode
     return {
         "tool": name,
         "source_class": source_class,
@@ -73,7 +80,7 @@ def _source(
         "use": use,
         "access": access,
         "trust_basis": trust_basis,
-        "safe_mode": safe_mode,
+        "safe_mode": mode,
         "notes": notes,
     }
 
