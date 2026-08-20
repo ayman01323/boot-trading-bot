@@ -1,15 +1,15 @@
-requested_sha=29f64bc545a29b77e6e373507fe673590675c71b
-deploy_outcome=failure
-deploy_exit=10
-run_id=32375838234
-utc=2026-08-20T13:44:09Z
+requested_sha=193e77234d4d5822b4e470c99de55927089648fa
+deploy_outcome=success
+deploy_exit=0
+run_id=32377173484
+utc=2026-08-20T13:57:54Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-20T13:43:05Z BEGIN current=c00ff6f3dd2c579403075af3b70825e8f3cbc917 requested=29f64bc545a29b77e6e373507fe673590675c71b
+2026-08-20T13:56:58Z BEGIN current=c00ff6f3dd2c579403075af3b70825e8f3cbc917 requested=193e77234d4d5822b4e470c99de55927089648fa
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   1295fc3..29f64bc  main       -> origin/main
-Updating c00ff6f..29f64bc
+   29f64bc..193e772  main       -> origin/main
+Updating c00ff6f..193e772
 Fast-forward
  .github/workflows/ai-resilient-pipeline-ci.yml     |  82 ++++
  .github/workflows/engineering-agent-retry.yml      | 276 +++++++++++++
@@ -23,15 +23,15 @@ Fast-forward
  learnerbot/ai_agent_health_warning_patch.py        | 327 +++++++++++++++
  learnerbot/strategy_canary_source_guard_patch.py   |  78 ++++
  learnerbot/strategy_lab_audit_patch.py             |  24 +-
- learnerbot/strategy_source_catalog.py              | 334 ++++++++++++++++
- learnerbot/strategy_source_contract.py             | 217 ++++++++++
+ learnerbot/strategy_source_catalog.py              | 341 ++++++++++++++++
+ learnerbot/strategy_source_contract.py             | 232 +++++++++++
  learnerbot/strategy_source_extension.py            |  40 ++
  learnerbot/telegram_hi_keefek_patch.py             |   4 +
  tests/test_ai_agent_health_warning.py              |  47 +++
  tests/test_ai_resilient_workflows.py               |  57 +++
  tests/test_strategy_canary_source_guard_patch.py   |  43 ++
  tests/test_strategy_source_governance.py           |  93 +++++
- 20 files changed, 3417 insertions(+), 9 deletions(-)
+ 20 files changed, 3439 insertions(+), 9 deletions(-)
  create mode 100644 .github/workflows/ai-resilient-pipeline-ci.yml
  create mode 100644 .github/workflows/engineering-agent-retry.yml
  create mode 100644 .github/workflows/engineering-copilot-assignment-reconciler.yml
@@ -56,80 +56,42 @@ Fast-forward
 ........................................................................ [ 17%]
 ........................................................................ [ 35%]
 ........................................................................ [ 52%]
-.......................................F...F............................ [ 70%]
+........................................................................ [ 70%]
 ........................................................................ [ 87%]
 ..................................................                       [100%]
-=================================== FAILURES ===================================
-_ test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources _
-
-    def test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources():
-        names = {row["tool"] for row in PUBLIC_RESEARCH_TOOLS}
-        assert {"Dune", "DEX Screener API", "Etherscan API V2", "GitHub public code search", "DefiLlama", "Jupiter"} <= names
->       assert all(row["safe_mode"].startswith(("READ_ONLY", "QUOTE")) for row in PUBLIC_RESEARCH_TOOLS)
-E       assert False
-E        +  where False = all(<generator object test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources.<locals>.<genexpr> at 0x7f26ee0992a0>)
-
-tests/test_strategy_lab_cross_chain_research.py:167: AssertionError
-_ test_source_policy_rejects_single_agent_low_confidence_or_execution_permission _
-
-    def test_source_policy_rejects_single_agent_low_confidence_or_execution_permission():
-        one = enforce_source_policy(_master(supporting_agents=["gpt"]))
-        assert one["approved_source_count"] == 0
-        low = enforce_source_policy(_master(confidence=0.5))
-        assert low["approved_source_count"] == 0
->       live = enforce_source_policy(_master(automatic_execution_allowed=True))
-               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-tests/test_strategy_source_governance.py:92: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-learnerbot/strategy_source_contract.py:132: in enforce_source_policy
-    validate_master_decision(decision)
-learnerbot/strategy_source_contract.py:121: in validate_master_decision
-    _validate_source_row(row, prefix=f"source_decisions[{idx}]")
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-row = {'access_model': 'public API', 'automatic_execution_allowed': True, 'chain_scope': ['EVM', 'SOLANA'], 'confidence': 0.92, ...}
-
-    def _validate_source_row(row: dict, *, prefix: str) -> None:
-        if not isinstance(row, dict):
-            raise ValueError(f"{prefix} must be an object")
-        for key in ("id", "name", "source_class", "official_url", "publisher", "intended_use", "trust_basis"):
-            if not str(row.get(key) or "").strip():
-                raise ValueError(f"{prefix} missing {key}")
-        if str(row.get("source_class") or "") not in SOURCE_CLASSES:
-            raise ValueError(f"{prefix} has invalid source_class")
-        if not _https(row.get("official_url")):
-            raise ValueError(f"{prefix} official_url must be https")
-        chains = row.get("chain_scope")
-        if not isinstance(chains, list) or not chains:
-            raise ValueError(f"{prefix} needs chain_scope")
-        if any(str(x).upper() not in {"SOLANA", "EVM", "CEX", "GENERAL"} for x in chains):
-            raise ValueError(f"{prefix} has unsupported chain scope")
-        if row.get("research_only") is not True:
-            raise ValueError(f"{prefix} must be research_only=true")
-        if row.get("automatic_execution_allowed") is not False:
->           raise ValueError(f"{prefix} automatic_execution_allowed must be false")
-E           ValueError: source_decisions[0] automatic_execution_allowed must be false
-
-learnerbot/strategy_source_contract.py:56: ValueError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_strategy_lab_cross_chain_research.py::test_research_tool_catalogue_covers_wallet_market_code_and_cross_chain_sources
-FAILED tests/test_strategy_source_governance.py::test_source_policy_rejects_single_agent_low_confidence_or_execution_permission
-2 failed, 408 passed, 1 warning in 34.79s
-2026-08-20T13:43:48Z TESTS FAILED; service remains on old running process
-HEAD is now at c00ff6f Fix GPT Master report reconciliation across Copilot cycles (#132)
+410 passed, 1 warning in 31.59s
+2026-08-20T13:57:37Z TESTS PASSED; restarting learnerbot
+2026-08-20T13:57:41Z SUCCESS sha=193e77234d4d5822b4e470c99de55927089648fa version=2.3.10 service=active
+     Active: active (running) since Thu 2026-08-20 14:57:37 BST; 4s ago
+   Main PID: 271056 (python)
+      Tasks: 20 (limit: 5869)
+     Memory: 612.6M (peak: 618.2M)
+        CPU: 3.546s
+     CGroup: /system.slice/learnerbot.service
+             └─271056 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [config] CSVbot configuration loaded/reloaded
+Aug 20 14:57:41 mint.yesgoodwill.com python[271056]: [scan:bsc] 115379502..115379511 tx=510
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-20T13:44:04Z
+UTC: 2026-08-20T13:57:51Z
 branch: main
-sha:    c00ff6f3dd2c579403075af3b70825e8f3cbc917
+sha:    193e77234d4d5822b4e470c99de55927089648fa
 origin: git@github.com:ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -138,21 +100,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Thu 2026-08-20 11:34:22 BST; 3h 9min ago
-   Main PID: 262290 (python)
-      Tasks: 19 (limit: 5869)
-     Memory: 678.5M (peak: 793.3M)
-        CPU: 2h 16min 19.593s
+     Active: active (running) since Thu 2026-08-20 14:57:37 BST; 14s ago
+   Main PID: 271056 (python)
+      Tasks: 20 (limit: 5869)
+     Memory: 630.8M (peak: 664.1M)
+        CPU: 11.958s
      CGroup: /system.slice/learnerbot.service
-             └─262290 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─271056 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 20 14:42:30 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=72.081
-Aug 20 14:43:08 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:13 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:19 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:34 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:42 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:49 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:54 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
-Aug 20 14:43:56 mint.yesgoodwill.com python[262290]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=84.141
-Aug 20 14:43:58 mint.yesgoodwill.com python[262290]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 20 14:57:38 mint.yesgoodwill.com python[271056]: [config] CSVbot configuration loaded/reloaded
+Aug 20 14:57:41 mint.yesgoodwill.com python[271056]: [scan:bsc] 115379502..115379511 tx=510
+Aug 20 14:57:45 mint.yesgoodwill.com python[271056]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:57:49 mint.yesgoodwill.com python[271056]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps
+Aug 20 14:57:49 mint.yesgoodwill.com python[271056]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
