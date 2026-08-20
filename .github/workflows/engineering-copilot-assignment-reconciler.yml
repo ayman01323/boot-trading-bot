@@ -62,8 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           title="Weekly Copilot full-bot bug audit ${SHORT_SHA}"
-          issue="$(gh issue list --state all --search "${title} in:title" --limit 20 --json number,title \
-            --jq '.[] | select(.title == env.title) | .number' 2>/dev/null | head -1 || true)"
+          issue="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
           if [[ -z "$issue" ]]; then
             cat > /tmp/copilot-engineering.md <<EOF
           # Independent Copilot full-bot engineering audit
