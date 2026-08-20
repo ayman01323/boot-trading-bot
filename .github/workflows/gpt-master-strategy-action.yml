@@ -302,8 +302,62 @@ jobs:
 
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_SYNTH_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_SYNTH_MODEL"); fi
-          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
-            < /tmp/master-prompt.txt > /tmp/master.stdout 2> /tmp/master.stderr
+
+          redact_codex_error() {
+            python - <<'PY'
+          import os,pathlib,re
+          source=pathlib.Path('/tmp/master.stderr')
+          raw=source.read_text(errors='replace') if source.exists() else ''
+          key=os.environ.get('CODEX_API_KEY','')
+          if key:
+              raw=raw.replace(key,'<redacted>')
+          raw=re.sub(r'(?i)(authorization:\s*bearer\s+)\S+',r'\1<redacted>',raw)
+          raw=re.sub(r'(?i)\b(sk|sess)-[A-Za-z0-9_-]{8,}\b',lambda m:m.group(1)+'-<redacted>',raw)
+          pathlib.Path('/tmp/master.stderr.sanitized').write_text(raw[-12000:])
+          PY
+          }
+
+          rc=1
+          valid=0
+          for attempt in 1 2 3; do
+            : > /tmp/master.stdout
+            : > /tmp/master.stderr
+            : > /tmp/master.events
+            set +e
+            codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" \
+              --output-last-message /tmp/master.stdout - \
+              < /tmp/master-prompt.txt > /tmp/master.events 2> /tmp/master.stderr
+            rc=$?
+            set -e
+
+            if [[ $rc -eq 0 ]] && python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/master.stdout').read_text(errors='replace')
+          m=re.search(r'MASTER_DECISION_JSON_BEGIN\s*(\{.*?\})\s*MASTER_DECISION_JSON_END',raw,re.S)
+          if not m:
+              raise SystemExit(1)
+          json.loads(m.group(1))
+          PY
+            then
+              valid=1
+              break
+            fi
+
+            redact_codex_error
+            {
+              echo "::warning title=GPT Master synthesis attempt ${attempt} failed::Codex exit code ${rc}; retrying when attempts remain."
+              tail -c 6000 /tmp/master.stderr.sanitized || true
+            } >&2
+            if [[ $attempt -lt 3 ]]; then
+              sleep "$((attempt * 15))"
+            fi
+          done
+
+          if [[ $valid -ne 1 ]]; then
+            echo "::error title=GPT Master synthesis failed::No valid Master JSON after 3 attempts." >&2
+            if [[ $rc -eq 0 ]]; then rc=1; fi
+            exit "$rc"
+          fi
 
           python - <<'PY'
           import json,re,pathlib
@@ -410,4 +464,4 @@ jobs:
 
       - name: Clean workspace
         if: always()
-        run: rm -rf .strategy_master /tmp/master-reviews /tmp/master-prompt.txt /tmp/master.stdout /tmp/master.stderr /tmp/gpt.json /tmp/gemini.json /tmp/context.json /tmp/copilot-strategy.json /tmp/copilot-strategy.md
+        run: rm -rf .strategy_master /tmp/master-reviews /tmp/master-prompt.txt /tmp/master.stdout /tmp/master.stderr /tmp/master.stderr.sanitized /tmp/master.events /tmp/gpt.json /tmp/gemini.json /tmp/context.json /tmp/copilot-strategy.json /tmp/copilot-strategy.md
