@@ -1,0 +1,116 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "cycle_id": "128fe91d2a0f-2026082003-425a8d76",
+  "source_commit": "128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+  "evidence_sha256": "425a8d76e143fb5791f24b49272a10bd5058ac2b64d33c6991062fe2da0ba32b",
+  "review_only": true,
+  "no_live_changes": true,
+  "status": "CHANGES_PROPOSED",
+  "fresh_runtime_evidence": false,
+  "runtime_evidence_note": "No fresh runtime evidence within 2h. Profitability, canary and live-readiness claims are not made. Shadow evidence is required before any promotion.",
+  "summary": "Independent Copilot strategy review at source commit 128fe91d2a0f. Six strategy families exist in cross_chain_strategy_signals.py: cross-venue arbitrage, liquidity-confirmed momentum, dislocation mean-reversion, flow-acceleration, new-liquidity quality, and learned-route replication, plus a forecasted-positive-net-edge composite. Without fresh runtime evidence, no family can be declared profitable or live-ready. Key findings: (1) participation-gate logic exists but shadow evaluation windows and minimum trade thresholds are not yet visibly tied to automated promotion; (2) the forecasted_positive_net_edge signal has no declared train/validation/test split or calibration metric in source; (3) new_liquidity_quality has a pool-age gate but no on-chain sellability check at signal evaluation time; (4) chain-specific cost models (EVM gas, Solana priority fee) are referenced in MarketFeatures but the adequacy of cost modelling for current market conditions is unverifiable without live data.",
+  "proposals": [
+    {
+      "id": "PROP-001",
+      "action": "RESEARCH_MORE",
+      "title": "Collect shadow evaluation data for all six signal families",
+      "description": "No fresh runtime evidence is available. Before any promotion decision, collect at least three evaluation windows and eight trades per family on both Solana and EVM. Record gross P&L, fees, slippage, exit success rate and profit factor per window.",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.92,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "Six strategy signal functions defined; no runtime results attached to this review cycle."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_EVALUATION_WINDOWS=3, MIN_EVALUATION_TRADES=8, MIN_PROFIT_FACTOR=1.10 governance thresholds exist but no current window data provided."
+        }
+      ],
+      "shadow_test": "After three full evaluation windows with at least eight qualifying trades per family on each chain, compare profit_factor against 1.10 threshold and largest_loss against average_gain. Reject promotion if profit_factor < 1.10 or largest_loss > 3x average_gain on a money-weighted basis.",
+      "research_plan": "Query shadow_strategy_executor trade log for each strategy_id. Aggregate by chain. Compute: gross_profit, gross_loss, profit_factor, win_rate, avg_win, avg_loss, max_loss, fee_total, slippage_total, net_pnl. Report per evaluation window.",
+      "research_tools": ["Dune (on-chain cohort verification)", "DEX Screener API (pool liquidity validation)", "DefiLlama (chain TVL/regime context)"],
+      "suggested_files": []
+    },
+    {
+      "id": "PROP-002",
+      "action": "IMPROVE",
+      "title": "Add train/validation/test split and calibration metrics to forecasted_positive_net_edge",
+      "description": "The forecasted_positive_net_edge signal in cross_chain_strategy_signals.py applies a composite score but does not declare a feature set, model family, train/validation/test split, or calibration metric (e.g. Brier score, log loss). Without these, the forecast cannot be validated out-of-sample and lookahead leakage cannot be ruled out.",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.88,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "forecasted_positive_net_edge function at line ~228 produces a StrategySignal using composite scoring but no model metadata, split definition or calibration reference."
+        }
+      ],
+      "shadow_test": "After improvement: run the updated signal against a held-out time-ordered test set (no overlap with training). Brier score must be <= 0.25 and net P&L on test set must be positive after costs. Evaluate separately on Solana and EVM.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/market_feature_adapter.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "PROP-003",
+      "action": "IMPROVE",
+      "title": "Add on-chain sellability check to new_liquidity_quality signal at evaluation time",
+      "description": "new_liquidity_quality gates on pool age but does not verify sellability (i.e. that a successful sell quote can be obtained at the evaluation moment). A token may pass pool-age and liquidity-depth filters yet be unsellable due to honeypot mechanics, transfer taxes, or one-sided liquidity. This check should be a hard gate before the signal is emitted as eligible.",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.85,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "new_liquidity_quality checks pool_age_hours and liquidity_usd but does not call a sellability probe before setting eligible=True."
+        }
+      ],
+      "shadow_test": "In shadow mode, compare exit success rate of new_liquidity_quality trades before and after adding a sellability gate. Expect exit_failure_rate to fall by at least 20 percentage points. Net P&L must improve on a money-weighted basis after costs.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "id": "PROP-004",
+      "action": "RESEARCH_MORE",
+      "title": "Verify chain-specific cost models are current for EVM gas and Solana priority fees",
+      "description": "MarketFeatures includes estimated_fees_bps and price_impact_bps. Without live data it cannot be confirmed whether the fee estimation methodology reflects current EVM base-fee volatility or current Solana priority-fee markets. Stale cost models can make strategies appear profitable in simulation but negative in execution.",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.87,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "MarketFeatures.estimated_fees_bps and net_edge_bps computation used by all signals; source of fee estimate is not visible in signal layer."
+        },
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "note": "Adapter feeds MarketFeatures; needs review to confirm fee model freshness and accuracy."
+        }
+      ],
+      "shadow_test": "Compute mean(executed_fee_bps - estimated_fees_bps) for the last 100 shadow trades on each chain. If bias exceeds 2 bps in either direction, update the fee model and re-run shadow for a full evaluation window before any promotion.",
+      "research_tools": ["Jupiter (Solana quote/fee verification)", "Etherscan API V2 (EVM gas history)", "DefiLlama (DEX fee context)"],
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ]
+    },
+    {
+      "id": "PROP-005",
+      "action": "SHADOW_MORE",
+      "title": "Extend shadow evaluation of learned_route_replication before any promotion consideration",
+      "description": "learned_route_replication extracts profitable route patterns from execution history. This family has the highest latency-sensitivity and the most execution-leakage risk on both EVM and Solana. Additional shadow windows are needed to verify that the route advantage observed in historical data survives real-time execution, MEV competition, and priority fee variation.",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.86,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "learned_route_replication emits eligible=True when route_pattern_confidence > 0.6 and net_edge_bps > threshold, but execution-leakage under competition is not modelled at signal layer."
+        }
+      ],
+      "shadow_test": "Run learned_route_replication in shadow for at least five evaluation windows. Track: simulated_net_pnl vs executed_net_pnl, fill_latency_ms, slippage_vs_quote, priority_fee_variance. Promote only if executed net P&L > 0 and profit_factor >= 1.10 across all five windows on each chain.",
+      "suggested_files": []
+    }
+  ]
+}
