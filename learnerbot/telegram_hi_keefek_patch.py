@@ -82,3 +82,6 @@ def _app_with_hiiii():
 
 
 _cli._app = _app_with_hiiii
+
+# Add MASTER Telegram notifications for BotBuc backup success and hourly failure state.
+from . import backup_telegram_alert_patch  # noqa: E402,F401
