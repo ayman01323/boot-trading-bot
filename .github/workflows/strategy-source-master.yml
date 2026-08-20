@@ -1,0 +1,314 @@
+name: Strategy Source Master Reconciler
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      copilot_pr_number:
+        description: 'Optional Copilot source-research PR number'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: strategy-source-master-reconciler
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Resolve unresolved Copilot source report PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.copilot_pr_number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr="${INPUT_PR:-}"
+          cycle=''
+
+          cycle_from_pr() {
+            local candidate="$1" json_path='' md_path='' resolved=''
+            local -a files=()
+            mapfile -t files < <(gh pr diff "$candidate" --name-only 2>/dev/null | sed '/^$/d' || true)
+            [[ ${#files[@]} -eq 2 ]] || return 1
+            for p in "${files[@]}"; do
+              case "$p" in
+                .ai/source-research/copilot/*.json) json_path="$p" ;;
+                .ai/source-research/copilot/*.md) md_path="$p" ;;
+                *) return 1 ;;
+              esac
+            done
+            [[ -n "$json_path" && -n "$md_path" && "${json_path%.json}" == "${md_path%.md}" ]] || return 1
+            resolved="${json_path##*/}"; resolved="${resolved%.json}"
+            [[ "$resolved" =~ ^[0-9a-f]{12}-[0-9]{8}$ ]] || return 1
+            printf '%s\n' "$resolved"
+          }
+
+          if [[ -n "$pr" ]]; then
+            cross="$(gh pr view "$pr" --json isCrossRepository --jq '.isCrossRepository')"
+            [[ "$cross" != "true" ]] || { echo 'Refusing fork report PR.' >&2; exit 2; }
+            cycle="$(cycle_from_pr "$pr")" || { echo 'Invalid source-report PR shape.' >&2; exit 2; }
+          else
+            while IFS= read -r candidate; do
+              [[ -n "$candidate" ]] || continue
+              cross="$(gh pr view "$candidate" --json isCrossRepository --jq '.isCrossRepository')"
+              [[ "$cross" != "true" ]] || continue
+              candidate_cycle="$(cycle_from_pr "$candidate")" || continue
+              if gh api -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/contents/source-research/runs/${candidate_cycle}/master_decision.json?ref=ai-reviews" \
+                  >/dev/null 2>&1; then
+                continue
+              fi
+              pr="$candidate"; cycle="$candidate_cycle"; break
+            done < <(gh pr list --state open --limit 100 --json number --jq '.[].number')
+          fi
+
+          if [[ -z "$pr" ]]; then
+            echo 'No unresolved Copilot source report is ready.'
+            echo 'found=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          head_sha="$(gh pr view "$pr" --json headRefOid --jq '.headRefOid')"
+          echo 'found=true' >> "$GITHUB_OUTPUT"
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+          echo "cycle=$cycle" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out Copilot report PR
+        if: steps.pr.outputs.found == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        if: steps.pr.outputs.found == 'true'
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        if: steps.pr.outputs.found == 'true'
+        with:
+          node-version: '22'
+
+      - name: Install synthesis tools
+        if: steps.pr.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest
+
+      - name: Validate Copilot source report
+        if: steps.pr.outputs.found == 'true'
+        id: copilot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          CYCLE_HINT: ${{ steps.pr.outputs.cycle }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$(gh pr diff "$PR_NUMBER" --name-only | grep -E '^\.ai/source-research/copilot/[^/]+\.json$' | head -1)"
+          test -n "$report"
+          md="${report%.json}.md"; test -f "$md"
+          python - "$report" <<'PY' > /tmp/source-meta.env
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          print('CYCLE_ID='+str(p.get('cycle_id') or ''))
+          print('SOURCE_SHA='+str(p.get('source_commit') or ''))
+          PY
+          source /tmp/source-meta.env
+          [[ "$CYCLE_ID" == "$CYCLE_HINT" ]]
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.strategy_source_contract validate-agent \
+            --input "$report" --provider copilot --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA"
+          cp "$report" /tmp/copilot-source.json
+          cp "$md" /tmp/copilot-source.md
+          echo "cycle_id=$CYCLE_ID" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch matching GPT and Gemini source reports
+        if: steps.pr.outputs.found == 'true'
+        id: independent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ steps.copilot.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.copilot.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          get_file() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" --jq '.content' | tr -d '\n' | base64 -d > "$2"
+          }
+          root="source-research/runs/${CYCLE_ID}"
+          get_file "${root}/gpt.json" /tmp/gpt-source.json
+          get_file "${root}/gemini.json" /tmp/gemini-source.json
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.strategy_source_contract validate-agent \
+            --input /tmp/gpt-source.json --provider gpt --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA"
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.strategy_source_contract validate-agent \
+            --input /tmp/gemini-source.json --provider gemini --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA"
+          python - <<'PY'
+          import json
+          ps=[json.load(open('/tmp/gpt-source.json')),json.load(open('/tmp/gemini-source.json')),json.load(open('/tmp/copilot-source.json'))]
+          bad=[p['provider'] for p in ps if p.get('status')=='INCOMPLETE']
+          if bad: raise SystemExit('Incomplete source reports: '+','.join(bad))
+          PY
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact reviewed source
+        if: steps.independent.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.copilot.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Prepare master source evidence
+        if: steps.independent.outputs.ready == 'true'
+        shell: bash
+        run: |
+          mkdir -p .source_master
+          cp /tmp/gpt-source.json .source_master/gpt.json
+          cp /tmp/gemini-source.json .source_master/gemini.json
+          cp /tmp/copilot-source.json .source_master/copilot.json
+
+      - name: GPT Master reconcile reliable sources
+        if: steps.independent.outputs.ready == 'true'
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_SOURCE_MASTER_MODEL: ${{ vars.OPENAI_SOURCE_MASTER_MODEL }}
+          CYCLE_ID: ${{ steps.copilot.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.copilot.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_API_KEY:-}"
+          cat > /tmp/source-master-prompt.txt <<EOF
+          You are GPT MASTER for Strategy Lab research-source governance. Read .source_master/gpt.json,
+          .source_master/gemini.json and .source_master/copilot.json plus learnerbot/strategy_source_catalog.py.
+
+          Reconcile equivalent recommendations. Verify disputed sources against canonical public documentation when network
+          access is available. Evidence quality outranks majority vote. ACCEPT only sources useful for primary/raw market data,
+          official APIs/WebSockets, reputable open-source quant/backtesting/execution infrastructure, on-chain infrastructure
+          or serious academic research. REJECT influencer/social trade calls, anonymous signal sellers, closed-source black
+          boxes, duplicate catalogue entries without a correction, and unverifiable marketing claims. DEFER where provenance,
+          licensing, data quality, cost or security cannot be established.
+
+          This is research governance only. Never install packages, execute external code, connect accounts, use credentials,
+          submit transactions, alter LIVE/risk/capital settings, or authorise deployment.
+
+          Return exactly one JSON object between SOURCE_MASTER_JSON_BEGIN and SOURCE_MASTER_JSON_END:
+          {
+            "schema_version":1,
+            "scope":"STRATEGY_SOURCE_MASTER",
+            "cycle_id":"${CYCLE_ID}",
+            "source_commit":"${SOURCE_SHA}",
+            "summary":"...",
+            "source_decisions":[{
+              "id":"stable-id",
+              "name":"...",
+              "source_class":"PRIMARY_RAW_DATA|OFFICIAL_API_WEBSOCKET|OPEN_SOURCE_DATA_LIBRARY|OPEN_SOURCE_BACKTEST_FRAMEWORK|OPEN_SOURCE_EXECUTION_FRAMEWORK|ONCHAIN_INFRASTRUCTURE|ACADEMIC_RESEARCH",
+              "official_url":"https://...",
+              "publisher":"...",
+              "chain_scope":["SOLANA","EVM","CEX","GENERAL"],
+              "access_model":"...",
+              "intended_use":"...",
+              "trust_basis":"...",
+              "risks":["..."],
+              "disposition":"ACCEPT|REJECT|DEFER",
+              "reason":"...",
+              "supporting_agents":["gpt","gemini","copilot"],
+              "confidence":0.0,
+              "research_only":true,
+              "automatic_execution_allowed":false
+            }],
+            "research_only":true,
+            "no_live_changes":true
+          }
+          EOF
+          model_args=()
+          if [[ -n "${OPENAI_SOURCE_MASTER_MODEL:-}" ]]; then model_args=(-m "$OPENAI_SOURCE_MASTER_MODEL"); fi
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+            < /tmp/source-master-prompt.txt > /tmp/source-master.stdout 2> /tmp/source-master.stderr
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/source-master.stdout').read_text(errors='replace')
+          m=re.search(r'SOURCE_MASTER_JSON_BEGIN\s*(\{.*?\})\s*SOURCE_MASTER_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Source master JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.source_master/master_decision_raw.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.strategy_source_contract gate-master \
+            --input .source_master/master_decision_raw.json --output .source_master/master_decision.json \
+            --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA"
+          python - <<'PY'
+          import json,pathlib
+          p=json.load(open('.source_master/master_decision.json'))
+          pathlib.Path('.source_master/approved_sources.json').write_text(json.dumps({
+            'cycle_id':p['cycle_id'],'source_commit':p['source_commit'],
+            'approved_sources':p.get('approved_sources',[]),
+            'approved_source_count':p.get('approved_source_count',0),
+            'research_only':True,'no_live_changes':True,
+          },indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish Copilot report and source consensus
+        if: steps.independent.outputs.ready == 'true'
+        env:
+          CYCLE_ID: ${{ steps.copilot.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.copilot.outputs.source_sha }}
+          REPORT_PR: ${{ steps.pr.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/source-master-ai-reviews
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          git worktree add --detach /tmp/source-master-ai-reviews origin/ai-reviews
+          dest="/tmp/source-master-ai-reviews/source-research/runs/${CYCLE_ID}"
+          mkdir -p "$dest" /tmp/source-master-ai-reviews/source-research
+          cp /tmp/copilot-source.json "$dest/copilot.json"
+          cp /tmp/copilot-source.md "$dest/copilot.md"
+          cp .source_master/master_decision_raw.json "$dest/master_decision_raw.json"
+          cp .source_master/master_decision.json "$dest/master_decision.json"
+          cp .source_master/approved_sources.json "$dest/approved_sources.json"
+          cp .source_master/approved_sources.json /tmp/source-master-ai-reviews/source-research/latest_approved_sources.json
+          cp .source_master/master_decision.json /tmp/source-master-ai-reviews/source-research/latest_master_decision.json
+          python - <<'PY' > "$dest/status.json"
+          import json,os
+          print(json.dumps({
+            'cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],
+            'gpt':'DONE','gemini':'DONE','copilot':'DONE','state':'COMPLETE',
+            'three_agent_reports_complete':True,'master_decision_available':True,
+            'copilot_report_pr':int(os.environ['REPORT_PR']),
+            'research_only':True,'no_live_changes':True,
+          },indent=2,sort_keys=True))
+          PY
+          cp "$dest/status.json" /tmp/source-master-ai-reviews/source-research/latest_status.json
+          cd /tmp/source-master-ai-reviews
+          git config user.name "strategy-source-master-bot"
+          git config user.email "strategy-source-master-bot@users.noreply.github.com"
+          git add source-research
+          if ! git diff --cached --quiet; then
+            git commit -m "Complete source research ${CYCLE_ID}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Clean source master workspace
+        if: always()
+        run: rm -rf .source_master /tmp/source-master-ai-reviews /tmp/source-master-prompt.txt /tmp/copilot-source.json /tmp/copilot-source.md /tmp/gpt-source.json /tmp/gemini-source.json
