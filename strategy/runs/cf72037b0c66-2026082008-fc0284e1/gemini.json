@@ -1,0 +1,73 @@
+{
+  "cycle_id": "cf72037b0c66-2026082008-fc0284e1",
+  "evidence_gaps": [
+    "Missing runtime forensics JSON/branch preventing empirical verification of profit/loss and execution outcomes.",
+    "Solana market features lack an active quote adapter to provide true executable edge and verify priority fee/compute unit costs.",
+    "Missing historical analysis of estimated_gas_base vs actual settled priority fees on EVM to confirm fee economics."
+  ],
+  "evidence_sha256": "fc0284e19819f952d521477192d232b84615314f0638091cb150d1af824ff891",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "An inaccurate quote adapter might underestimate priority fees and price impact on fast Solana blocks, leading to false positive signals that fail execution.",
+      "evidence": [
+        {
+          "detail": "load_solana_market_features sets gross_edge_bps=0 and fees_bps=0, failing the executable edge requirement for all Solana signals",
+          "path": "learnerbot/market_feature_adapter.py"
+        }
+      ],
+      "expected_effect": "Enables proper strategy evaluation and SHADOW testing for Solana by injecting real execution economics instead of zero-edge placeholders.",
+      "id": "solana-quote-feature-adapter",
+      "minimum_observation": "24 hours in SHADOW",
+      "rationale": "Stored leader events do not contain a contemporaneous executable future-return quote. The current architecture evaluates Solana signals to 0 edge, rendering all strategies fail-closed. A Solana-specific quote adapter is needed to generate real-time execution costs (including priority fees and compute units) and slippage to calculate a positive executable net edge.",
+      "shadow_test": "Implement Solana quote adapter and run SHADOW mode for 24h. Verify no signal is approved with zero costs and check that simulated edge matches actual router quotes.",
+      "strategy": "ALL",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab_research.py"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Over-conservative priority fee modelling may unnecessarily suppress valid signals during periods of moderate network congestion.",
+      "evidence": [
+        {
+          "detail": "adapt_evm_opportunity relies on estimated_gas_base and builder_fee_base, which may omit execution-critical maxPriorityFeePerGas spikes",
+          "path": "learnerbot/market_feature_adapter.py"
+        }
+      ],
+      "expected_effect": "Prevents strategy edge from being wiped out by infrastructure costs not tracked in standard gas estimates, ensuring EVM execution viability.",
+      "id": "evm-priority-fee-verification",
+      "minimum_observation": "72 hours in SHADOW",
+      "rationale": "EVM transaction costs are modelled using gas_base and builder_fee_base. In fast markets, priority fee spikes can drastically increase execution costs. We must verify if the incoming CSV opportunities fully encapsulate priority fees to prevent execution failure or margin erosion masquerading as strategy loss.",
+      "shadow_test": "Run SHADOW mode comparing provided EVM opportunity gas_base against real-time settled block maxPriorityFeePerGas during high-volatility periods. Halt strategy if execution slippage exceeds 5%.",
+      "strategy": "ALL",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_lab_research.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote Forecasted Positive Net Edge to CANARY",
+      "reason": "Missing runtime forensics explicitly prohibits any promotion to CANARY or LIVE; we cannot prove durable money-weighted P&L."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "cf72037b0c66d0f39ac92ee8c67699a7b98b9723",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture review of cross-chain strategy signals and market feature adapters. EVM strategies parse baseline execution economics (fees, slippage, price impact) properly, although maxPriorityFeePerGas inclusions must be verified to distinguish execution failure from strategy loss. Solana strategies currently rely on leader events without executable quote adapters, resulting in fail-closed zero net edge evaluations. Runtime forensics are missing, preventing any live or canary promotion."
+}
