@@ -8,12 +8,16 @@ def _text():
     return WORKFLOW.read_text(encoding='utf-8')
 
 
-def test_dispatcher_finds_copilot_pr_by_cycle_not_fixed_title_prefix():
+def test_dispatcher_finds_copilot_pr_by_exact_report_pair_not_mutable_title():
     text = _text()
-    assert '${cycle} in:title' in text
-    assert 'Copilot hourly strategy review ${cycle} in:title' not in text
+    assert 'cycle_from_report_pair' in text
+    assert ' in:title' not in text
+    assert '.ai/strategy/copilot/*.json' in text
+    assert '.ai/strategy/copilot/*.md' in text
+    assert '[[ ${#files[@]} -eq 2 ]]' in text
     assert 'gpt-master-strategy-action.yml' in text
     assert 'copilot_pr_number="$pr"' in text
+    assert 'cycle_id="$cycle"' in text
 
 
 def test_dispatcher_is_default_branch_scheduled_and_report_pipeline_only():
@@ -25,3 +29,20 @@ def test_dispatcher_is_default_branch_scheduled_and_report_pipeline_only():
     assert 'pull-requests: read' in text
     assert 'master_decision.json?ref=ai-reviews' in text
     assert '--ref main' in text
+
+def test_dispatcher_scopes_pre_checkout_gh_commands_to_repository():
+    text = _text()
+    dispatch_step = text.split(
+        '- name: Find an unresolved exact Copilot report pair and dispatch GPT Master', 1
+    )[1]
+    assert 'GH_REPO: ${{ github.repository }}' in dispatch_step
+    assert 'gh pr list' in dispatch_step
+    assert 'gh workflow run gpt-master-strategy-action.yml' in dispatch_step
+
+
+def test_dispatcher_scans_unresolved_cycles_instead_of_only_latest_pointer():
+    text = _text()
+    assert 'gh pr list --state open --limit 100' in text
+    assert 'master_decision.json?ref=ai-reviews' in text
+    assert 'latest_cycle_id.txt' not in text
+    assert 'isCrossRepository' in text
