@@ -1,0 +1,66 @@
+{
+  "cycle_id": "23e5c754b801-2026082009-bd509872",
+  "evidence_gaps": [
+    "Missing active runtime forensics JSON.",
+    "Missing verifiable live PnL execution reports for slippage and fee impact.",
+    "No data on Solana leader front-running or sandwich attack frequency."
+  ],
+  "evidence_sha256": "bd509872ef90dd09242f1c0041b96198975a7544cd7d782897aebb310c138e5b",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Slightly higher RPC load to fetch dynamic priority fees; may reject trades during extreme short-term spikes.",
+      "evidence": [
+        {
+          "detail": "Lines defining 'estimated_exit_fee_sol' defaulting to 0.00002 SOL and usage in 'evaluate_position' via 'proceeds -= _dec(cfg.get(\"estimated_exit_fee_sol\"), \"0.00002\")'.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Realistic PnL accounting during SHADOW evaluation, filtering out marginally profitable copy trades that would fail or lose money live.",
+      "id": "solana-dynamic-priority-fees",
+      "minimum_observation": "3 days of high-activity SHADOW testing",
+      "rationale": "A hardcoded 0.00002 SOL fee vastly underestimates priority fees and Jito tips required for guaranteed execution during network congestion. This artificially inflates SHADOW profitability and risks promoting unprofitable strategies to LIVE execution.",
+      "shadow_test": "Replace hardcoded fee with dynamic priority fee estimate from RPC/Jupiter API, run SHADOW mode for 3 days, and compare PnL divergence.",
+      "strategy": "Solana SiBot Copy Strategy",
+      "suggested_files": [
+        "learnerbot/solana_sibot.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Requires more complex historical pricing logic to value intermediate ERC20 swaps in native terms.",
+      "evidence": [
+        {
+          "detail": "Function 'reconstruct_spot_trades' exclusively matches direct Native <-> Token swaps ('if value > 0 and len(positive) == 1 and not negative:').",
+          "path": "learnerbot/sibot.py"
+        }
+      ],
+      "expected_effect": "Accurate historical win rates and PnL reflecting all trades, preventing copy trading of falsely inflated leaders.",
+      "id": "evm-comprehensive-trade-reconstruction",
+      "minimum_observation": "Historical backfill over 60-day window",
+      "rationale": "Filtering only direct native/token pairings silently drops trades routed through intermediate ERC20s (e.g., USDC, USDT). If a leader regularly exits losing positions to stables, these losses are ignored, creating severe survivorship bias and falsely inflating the leader's win rate and net profit.",
+      "shadow_test": "Deploy an expanded ERC20-pricing script on the current Top 20 EVM leaders to detect missing trades and quantify the PnL/win-rate divergence.",
+      "strategy": "EVM SiMo Leader Selection",
+      "suggested_files": [
+        "learnerbot/sibot.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "23e5c754b801b834894cb562649ba1ad4b716ff5",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed as runtime forensics were unavailable. Identified two critical execution and ranking flaws that risk durable money-weighted NET P&L. Solana's shadow execution relies on a hardcoded, highly optimistic exit fee that ignores priority fees, leading to falsely profitable shadow outcomes. EVM's leader history reconstruction drops all swaps not strictly paired with the native token, risking severe survivorship bias if leaders route losses through stables."
+}
