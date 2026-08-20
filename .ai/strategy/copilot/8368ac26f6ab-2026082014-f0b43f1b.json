@@ -1,0 +1,116 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "cycle_id": "8368ac26f6ab-2026082014-f0b43f1b",
+  "source_commit": "8368ac26f6abfd2d388f925f449bd8c3126496a5",
+  "evidence_sha256": "f0b43f1b6463ce877e806c5eea62f5bac2b382e2fbccbdd3b193bf19fc756d87",
+  "review_only": true,
+  "no_live_changes": true,
+  "status": "CHANGES_PROPOSED",
+  "runtime_evidence_fresh": false,
+  "runtime_evidence_note": "No fresh runtime evidence (within 2h) was available for this cycle. Architecture review is complete; profitability, canary readiness and live readiness cannot be asserted until shadow windows with measurable net P&L are collected. Evidence gaps are listed in each proposal.",
+  "summary": "Architecture review of source commit 8368ac26f6ab. The Strategy Lab framework is correctly structured with SHADOW-first governance and a clean separation from live execution. Three proposals are raised: (1) strengthen net-edge accounting in the cross-chain feature adapter by making fee/slippage/impact costs non-optional and validated before any trade signal is emitted; (2) add a liquidity-confirmed momentum SHADOW strategy on both chains that uses multi-window flow acceleration and DEX volume context to forecast positive net edge after costs; (3) add a mean-reversion/dislocation SHADOW strategy that acts on statistically significant dislocation_z when liquidity and route quality meet minimum thresholds. All proposals are SHADOW-only and require falsifiable shadow evidence before promotion.",
+  "proposals": [
+    {
+      "id": "COPILOT-STRATEGY-001",
+      "title": "Enforce non-optional cost accounting in cross-chain feature adapter before signal emission",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.88,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "MarketFeatures fields fees_bps, slippage_bps, price_impact_bps and latency_reserve_bps all default to Decimal('0'). A caller that omits these fields will produce a net_edge calculation that overstates edge, causing the strategy to see a falsely positive signal. The net-edge logic inside StrategySignalEvaluator subtracts total_cost_bps from gross_edge_bps, but total_cost_bps is zero if the caller never provides real cost data."
+        },
+        {
+          "path": "learnerbot/shadow_strategy_executor.py",
+          "observation": "The shadow executor records net_profit from the MarketFeatures net-edge output but does not independently verify that cost fields were populated before recording a window result. A zero-cost shadow window will show inflated win rates and profit factors."
+        }
+      ],
+      "shadow_test": "After the improvement: set fees_bps=0, slippage_bps=0, price_impact_bps=0 and latency_reserve_bps=0 in a MarketFeatures instance and assert that the signal evaluator rejects or warns (rather than silently producing a positive net-edge result). Separately, pass realistic costs (e.g. fees_bps=30, slippage_bps=20) and assert net_edge = gross_edge - 50 bps. Run these assertions in tests/test_cross_chain_strategy_signals.py. Shadow window profit factors collected before and after the fix should diverge if real costs were previously zero-filled.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "runtime_evidence_needed": [
+        "Shadow window records for any active strategy showing actual fees_bps and slippage_bps values vs zero; expected source: strategy_lab_windows table metadata_json column.",
+        "Execution log showing actual gas/fee paid versus what was recorded in net_profit for at least 20 shadow trades."
+      ]
+    },
+    {
+      "id": "COPILOT-STRATEGY-002",
+      "title": "Liquidity-confirmed momentum SHADOW strategy (multi-window flow acceleration)",
+      "action": "NEW_SHADOW",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.80,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "MarketFeatures exposes flow_acceleration_z, momentum_z and liquidity_score but no existing strategy in strategy_ai_proposals.py or strategy_lab.py conditions a trade signal on a combination of all three. A strategy that requires momentum_z > 1.5 AND flow_acceleration_z > 1.0 AND liquidity_score > 0.6 before computing net edge would restrict participation to higher-quality setups."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "MIN_PROFIT_FACTOR=1.10 and MIN_EVALUATION_TRADES=8 are the promotion thresholds. A new momentum strategy must satisfy these in SHADOW before promotion can even be considered."
+        }
+      ],
+      "hypothesis": "Tokens exhibiting simultaneous positive flow acceleration (flow_acceleration_z > 1.0) and positive price momentum (momentum_z > 1.5) on a pool with adequate liquidity (liquidity_score > 0.6) will produce positive net P&L after all fees, slippage and price-impact costs with a profit factor >= 1.10 over at least 8 shadow trades and 3 evaluation windows.",
+      "falsification_conditions": [
+        "Shadow profit factor < 1.0 over 8+ trades in any single chain type.",
+        "Average net P&L after costs < 0 over the first evaluation window.",
+        "More than 30% of eligible signals result in execution failures."
+      ],
+      "shadow_test": "Register strategy with family=MOMENTUM_FLOW, source=AI_PROPOSED in strategy_lab_registry. Run shadow executor for at least 3 full evaluation windows (minimum 8 shadow trades each). Record gross_profit, gross_loss, fees, slippage_cost and net_profit per window. Assert profit_factor >= 1.10 and net_profit > 0 before requesting promotion. Separate Solana and EVM windows must both pass independently. Use Dune (EVM wallet cohort flow analysis) and DEX Screener API (pool volume acceleration) to validate the signal hypothesis before running shadow.",
+      "research_plan": "1. Query Dune for EVM token pools with documented momentum+flow acceleration events in the last 30 days; record post-event net price change at 5m, 15m and 1h horizons after costs. 2. Query DEX Screener API for pools matching flow_acceleration + liquidity threshold; compute hypothetical net edge after 30bps fees and 20bps slippage. 3. Run shadow for at least 3 windows on Solana and 3 on EVM before comparing profit factors.",
+      "research_tools": ["Dune", "DEX Screener API", "Jupiter"],
+      "suggested_files": [
+        "learnerbot/strategy_ai_proposals.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "runtime_evidence_needed": [
+        "Shadow window results for this strategy after at least 3 evaluation windows on each chain.",
+        "DEX Screener API volume-acceleration data for candidate pools confirming the signal is observable before trade entry."
+      ]
+    },
+    {
+      "id": "COPILOT-STRATEGY-003",
+      "title": "Mean-reversion/dislocation SHADOW strategy (statistically significant dislocation_z with quality gates)",
+      "action": "NEW_SHADOW",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.76,
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "observation": "MarketFeatures exposes dislocation_z (positive or negative, two-sided) and route_replicability. No existing strategy uses dislocation_z. A mean-reversion hypothesis requires |dislocation_z| > 2.0 combined with route_replicability > 0.5 and liquidity_score > 0.5 to ensure the reversion is achievable and not a illiquid trap."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "observation": "strategy_lab_windows tracks largest_loss per window. For a mean-reversion strategy the largest_loss field is the primary falsification signal: if the max drawdown per trade exceeds average expected gain, the strategy is not viable regardless of win rate."
+        }
+      ],
+      "hypothesis": "Tokens/pools exhibiting statistically significant price dislocation (|dislocation_z| > 2.0) with adequate liquidity (liquidity_score > 0.5) and route replicability (route_replicability > 0.5) will revert towards the mean within the observation window, producing positive net P&L after all costs. This holds independently on Solana and EVM but requires chain-specific cost calibration.",
+      "falsification_conditions": [
+        "Largest loss in any shadow window exceeds 3x the average net gain per trade.",
+        "Shadow profit factor < 1.0 over 8+ trades.",
+        "Dislocation events do not reverse within the expected horizon in more than 50% of cases."
+      ],
+      "shadow_test": "Register strategy with family=MEAN_REVERSION, source=AI_PROPOSED. Run shadow executor for at least 3 windows. Assert |dislocation_z| > 2.0 at entry. Assert profit_factor >= 1.10 and largest_loss < 3 * average_net_gain over all shadow windows. Solana and EVM shadow windows must be evaluated independently. Use DefiLlama for TVL/liquidity regime context and DEX Screener API for dislocation event frequency.",
+      "research_plan": "1. Use DEX Screener API to identify historical dislocation events (price deviation > 2 sigma from 1h VWAP) for liquid pools. 2. Compute hypothetical net P&L for mean-reversion entries at dislocation peak with realistic costs. 3. Use DefiLlama to confirm TVL stability during dislocation events (avoid dislocation caused by rug/exit liquidity). 4. Run shadow on both chains.",
+      "research_tools": ["DEX Screener API", "DefiLlama", "Dune"],
+      "suggested_files": [
+        "learnerbot/strategy_ai_proposals.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "runtime_evidence_needed": [
+        "Shadow window results after at least 3 evaluation windows on each chain.",
+        "Historical dislocation frequency and post-event reversion magnitude from DEX Screener API for candidate pools."
+      ]
+    }
+  ],
+  "differentiation_from_leader_copy": "All three proposals derive signal from the bot's own market feature data (flow_acceleration_z, momentum_z, dislocation_z, liquidity_score, route_replicability) rather than from copying any individual leader wallet. Proposals 2 and 3 are differentiated hypotheses that could operate simultaneously without correlation to a single wallet's behaviour.",
+  "cost_accounting_note": "Net P&L assessment is blocked by stale runtime evidence. Proposals 1 addresses a potential cost-inflation defect that would invalidate shadow window profit factors. Until COPILOT-STRATEGY-001 is verified, all shadow window results must be treated as potentially overstated.",
+  "created_at": "2026-08-20T14:53:30Z"
+}
