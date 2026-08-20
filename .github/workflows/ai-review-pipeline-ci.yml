@@ -112,6 +112,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "${CODEX_API_KEY:-}" ]]; then
+            echo 'OPENAI_API_KEY is unavailable; skipping optional independent GPT recovery review.'
+            exit 0
+          fi
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
           cat > /tmp/gpt-recovery-prompt.txt <<'EOF'
@@ -139,6 +143,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo 'GEMINI_API_KEY is unavailable; skipping optional independent Gemini recovery review.'
+            exit 0
+          fi
           prompt='Independently review .github/workflows/hourly-three-agent-strategy-cycle.yml, .github/workflows/gpt-master-strategy-action.yml, .github/workflows/strategy-copilot-assignment-reconciler.yml, .github/workflows/strategy-resilient-master.yml and tests/test_strategy_resilient_agent_workflows.py for the Strategy Copilot BLOCKED_AUTH / GPT Master stoppage incident. Read only; do not edit. Check auth fallback, delayed assignment verification, same-cycle binding, partial-agent master safety, duplicate adjudication, and confirm no LIVE/capital/signing/safety bypass. End with exactly one line beginning AGENT_RECOVERY_GEMINI: followed by PASS or FAIL and a concise reason.'
           gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
             -p "$prompt" > /tmp/gemini-recovery-review.txt
