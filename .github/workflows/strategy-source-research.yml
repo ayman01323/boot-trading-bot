@@ -1,0 +1,359 @@
+name: Strategy Lab Source Research
+
+on:
+  schedule:
+    - cron: '37 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: strategy-lab-source-research
+  cancel-in-progress: false
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    steps:
+      - name: Check out current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install research tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest @google/gemini-cli@latest
+          codex --version
+          gemini --version
+
+      - name: Build immutable source-research cycle
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .source_cycle
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          DAY_KEY="$(date -u +'%Y%m%d')"
+          CYCLE_ID="${SOURCE_SHA:0:12}-${DAY_KEY}"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "cycle_id=$CYCLE_ID" >> "$GITHUB_OUTPUT"
+          python - <<'PY' > .source_cycle/current_catalogue.json
+          import json
+          from learnerbot.strategy_source_catalog import source_catalogue
+          print(json.dumps(source_catalogue(),indent=2,sort_keys=True))
+          PY
+
+      - name: Fetch previously approved source registry if available
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/source-research/latest_approved_sources.json?ref=ai-reviews" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > .source_cycle/previous_approved.json; then
+            test -s .source_cycle/previous_approved.json || echo '{"approved_sources":[]}' > .source_cycle/previous_approved.json
+          else
+            echo '{"approved_sources":[]}' > .source_cycle/previous_approved.json
+          fi
+
+      - name: Prepare independent source-research prompt
+        env:
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+        shell: bash
+        run: |
+          cat > .source_cycle/prompt.txt <<EOF
+          You are one of three INDEPENDENT research-source reviewers for Strategy Lab in a crypto trading bot.
+          Read learnerbot/strategy_source_catalog.py, .source_cycle/current_catalogue.json and
+          .source_cycle/previous_approved.json first.
+
+          Search the public web for RELIABLE SOURCES that can improve strategy discovery, backtesting, simulation or
+          execution modelling. Prioritise primary/raw data, official exchange/protocol APIs and WebSockets, canonical
+          open-source quant/algo/backtesting/execution frameworks, on-chain infrastructure, and serious academic research.
+          Use canonical publisher/project documentation or canonical repositories whenever possible. Do NOT use influencers,
+          social-media trade calls, anonymous signal services, closed-source black-box bots, affiliate reviews or unsupported
+          marketing claims as evidence.
+
+          The current catalogue already includes Binance Public Data, Tardis.dev, Cryptofeed, CCXT/CCXT Pro, Freqtrade,
+          Jesse, Backtrader, VectorBT, Hummingbot, Web3.py, ethers.js, Foundry, The Graph, Flashbots, QuantConnect/LEAN,
+          SSRN, arXiv, Dune, DEX Screener, Etherscan V2, DefiLlama, Jupiter and GitHub public code search. Do not recommend
+          duplicates merely to create activity. Find genuinely useful additions, corrections or replacements, and explicitly
+          reject weak candidates.
+
+          For every proposed source verify as much as possible: canonical URL/publisher, what exact data/method it contributes,
+          access/auth/rate-limit/cost model, history/granularity/latency where relevant, licence/terms/security risks, and how
+          it would be used in READ-ONLY research or SHADOW design. If browsing/network access is unavailable or a fact cannot
+          be verified, say so and do not invent it.
+
+          This is SOURCE RESEARCH ONLY. Never install a package, execute third-party code, connect an exchange account, use
+          private credentials, submit a transaction, edit LIVE settings, or recommend automatic LIVE activation.
+
+          Return no more than 6 new/corrective source recommendations. Required JSON:
+          {
+            "schema_version":1,
+            "provider":"PROVIDER",
+            "cycle_id":"${CYCLE_ID}",
+            "source_commit":"${SOURCE_SHA}",
+            "scope":"STRATEGY_SOURCE_RESEARCH",
+            "status":"HEALTHY|CHANGES_PROPOSED|INCOMPLETE",
+            "summary":"...",
+            "source_recommendations":[{
+              "id":"stable-id",
+              "name":"...",
+              "source_class":"PRIMARY_RAW_DATA|OFFICIAL_API_WEBSOCKET|OPEN_SOURCE_DATA_LIBRARY|OPEN_SOURCE_BACKTEST_FRAMEWORK|OPEN_SOURCE_EXECUTION_FRAMEWORK|ONCHAIN_INFRASTRUCTURE|ACADEMIC_RESEARCH",
+              "official_url":"https://...",
+              "publisher":"...",
+              "chain_scope":["SOLANA","EVM","CEX","GENERAL"],
+              "access_model":"...",
+              "intended_use":"...",
+              "trust_basis":"...",
+              "risks":["..."],
+              "confidence":0.0,
+              "research_only":true,
+              "automatic_execution_allowed":false
+            }],
+            "rejected_sources":[{"name":"...","reason":"..."}],
+            "research_gaps":["..."],
+            "research_only":true,
+            "no_live_changes":true
+          }
+          EOF
+
+      - name: GPT independent source report
+        id: gpt
+        continue-on-error: true
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_SOURCE_RESEARCH_MODEL: ${{ vars.OPENAI_SOURCE_RESEARCH_MODEL }}
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .source_cycle/prompt.txt > /tmp/gpt-source-prompt.txt
+          cat >> /tmp/gpt-source-prompt.txt <<'EOF'
+          Your final response must contain exactly one JSON report between:
+          SOURCE_RESEARCH_JSON_BEGIN
+          {required JSON object}
+          SOURCE_RESEARCH_JSON_END
+          EOF
+          model_args=()
+          if [[ -n "${OPENAI_SOURCE_RESEARCH_MODEL:-}" ]]; then model_args=(-m "$OPENAI_SOURCE_RESEARCH_MODEL"); fi
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+            < /tmp/gpt-source-prompt.txt > .source_cycle/gpt_stdout.txt 2> .source_cycle/gpt_stderr.txt
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('.source_cycle/gpt_stdout.txt').read_text(errors='replace')
+          m=re.search(r'SOURCE_RESEARCH_JSON_BEGIN\s*(\{.*?\})\s*SOURCE_RESEARCH_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT source research JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.source_cycle/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.source_cycle/gpt.md').write_text('# GPT source research\n\n'+p.get('summary','')+'\n')
+          PY
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.strategy_source_contract validate-agent \
+            --input .source_cycle/gpt.json --provider gpt --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA"
+
+      - name: Recover GPT source report if incomplete
+        if: steps.gpt.outcome != 'success'
+        env:
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,pathlib
+          p={"schema_version":1,"provider":"gpt","cycle_id":os.environ['CYCLE_ID'],"source_commit":os.environ['SOURCE_SHA'],
+             "scope":"STRATEGY_SOURCE_RESEARCH","status":"INCOMPLETE","summary":"GPT source research did not complete.",
+             "source_recommendations":[],"rejected_sources":[],"research_gaps":["Inspect Actions logs."],
+             "research_only":True,"no_live_changes":True}
+          pathlib.Path('.source_cycle/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.source_cycle/gpt.md').write_text('# GPT source research\n\nINCOMPLETE\n')
+          PY
+
+      - name: Gemini independent source report
+        id: gemini
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_SOURCE_RESEARCH_MODEL: ${{ vars.GEMINI_SOURCE_RESEARCH_MODEL || 'gemini-3.1-pro-preview' }}
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gemini"/' .source_cycle/prompt.txt > /tmp/gemini-source-prompt.txt
+          cat >> /tmp/gemini-source-prompt.txt <<'EOF'
+          End with exactly one JSON report between SOURCE_RESEARCH_JSON_BEGIN and SOURCE_RESEARCH_JSON_END.
+          EOF
+          gemini --approval-mode=plan --skip-trust --model "$GEMINI_SOURCE_RESEARCH_MODEL" --output-format text \
+            -p "$(cat /tmp/gemini-source-prompt.txt)" > .source_cycle/gemini_stdout.txt 2> .source_cycle/gemini_stderr.txt
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('.source_cycle/gemini_stdout.txt').read_text(errors='replace')
+          m=re.search(r'SOURCE_RESEARCH_JSON_BEGIN\s*(\{.*?\})\s*SOURCE_RESEARCH_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Gemini source research JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.source_cycle/gemini.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.source_cycle/gemini.md').write_text('# Gemini source research\n\n'+p.get('summary','')+'\n')
+          PY
+          PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.strategy_source_contract validate-agent \
+            --input .source_cycle/gemini.json --provider gemini --cycle-id "$CYCLE_ID" --source-commit "$SOURCE_SHA"
+
+      - name: Recover Gemini source report if incomplete
+        if: steps.gemini.outcome != 'success'
+        env:
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,pathlib
+          p={"schema_version":1,"provider":"gemini","cycle_id":os.environ['CYCLE_ID'],"source_commit":os.environ['SOURCE_SHA'],
+             "scope":"STRATEGY_SOURCE_RESEARCH","status":"INCOMPLETE","summary":"Gemini source research did not complete.",
+             "source_recommendations":[],"rejected_sources":[],"research_gaps":["Inspect Actions logs."],
+             "research_only":True,"no_live_changes":True}
+          pathlib.Path('.source_cycle/gemini.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.source_cycle/gemini.md').write_text('# Gemini source research\n\nINCOMPLETE\n')
+          PY
+
+      - name: Create or reuse Copilot source-research issue and assign agent
+        id: copilot
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="Copilot Strategy Lab source research ${CYCLE_ID}"
+          issue="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number --jq '.[0].number // empty')"
+          if [[ -z "$issue" ]]; then
+            cat > /tmp/copilot-source.md <<EOF
+          # Independent Strategy Lab source research
+          Cycle: \`${CYCLE_ID}\`
+          Source commit: \`${SOURCE_SHA}\`
+
+          Research reliable public sources that can improve Strategy Lab. Prefer primary/raw data, official APIs/WebSockets,
+          canonical open-source quant/backtesting/execution frameworks, on-chain infrastructure and academic research. Reject
+          influencers, anonymous signal services, closed-source black boxes and unverifiable marketing claims. Read
+          \`learnerbot/strategy_source_catalog.py\` first and do not duplicate existing sources without a correction reason.
+
+          REPORT ONLY. Do not install or execute third-party code, use credentials, connect exchange accounts, trade, deploy or
+          alter LIVE/risk/capital settings.
+
+          Create a draft PR containing exactly:
+          - \`.ai/source-research/copilot/${CYCLE_ID}.json\`
+          - \`.ai/source-research/copilot/${CYCLE_ID}.md\`
+
+          JSON must use provider=copilot, scope=STRATEGY_SOURCE_RESEARCH, exact cycle/source, research_only=true and
+          no_live_changes=true, with the same source_recommendations schema used by learnerbot.strategy_source_contract.
+          EOF
+            url="$(gh issue create --title "$title" --body-file /tmp/copilot-source.md)"
+            issue="${url##*/}"
+          fi
+
+          assigned=false
+          if gh issue view "$issue" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true; then
+            assigned=true
+          elif [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            payload="$(python - "$GITHUB_REPOSITORY" <<'PY'
+          import json,sys
+          print(json.dumps({
+            'assignees':['copilot-swe-agent[bot]'],
+            'agent_assignment':{
+              'target_repo':sys.argv[1],
+              'base_branch':'main',
+              'custom_instructions':'Research sources only. Produce exactly the two requested report files; do not modify trading code or live settings.',
+              'custom_agent':'',
+              'model':''
+            }
+          }))
+          PY
+          )"
+            set +e
+            GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh api --method POST \
+              -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "/repos/${GITHUB_REPOSITORY}/issues/${issue}/assignees" --input - <<< "$payload"
+            rc=$?
+            set -e
+            if [[ $rc -eq 0 ]] && gh issue view "$issue" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true; then
+              assigned=true
+            fi
+          fi
+          echo "issue=$issue" >> "$GITHUB_OUTPUT"
+          echo "assigned=$assigned" >> "$GITHUB_OUTPUT"
+
+      - name: Publish first two reports and source-research status
+        env:
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          COPILOT_ISSUE: ${{ steps.copilot.outputs.issue }}
+          COPILOT_ASSIGNED: ${{ steps.copilot.outputs.assigned }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/source-ai-reviews
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          git worktree add --detach /tmp/source-ai-reviews origin/ai-reviews
+          dest="/tmp/source-ai-reviews/source-research/runs/${CYCLE_ID}"
+          mkdir -p "$dest" /tmp/source-ai-reviews/source-research
+          cp .source_cycle/gpt.json "$dest/gpt.json"
+          cp .source_cycle/gpt.md "$dest/gpt.md"
+          cp .source_cycle/gemini.json "$dest/gemini.json"
+          cp .source_cycle/gemini.md "$dest/gemini.md"
+          python - <<'PY' > "$dest/status.json"
+          import json,os
+          print(json.dumps({
+            'cycle_id':os.environ['CYCLE_ID'],
+            'source_commit':os.environ['SOURCE_SHA'],
+            'gpt':'DONE',
+            'gemini':'DONE',
+            'copilot':'WAITING' if os.environ.get('COPILOT_ASSIGNED')=='true' else 'ASSIGNMENT_NEEDS_ATTENTION',
+            'copilot_issue':int(os.environ['COPILOT_ISSUE']) if os.environ.get('COPILOT_ISSUE','').isdigit() else None,
+            'state':'WAITING_FOR_COPILOT',
+            'research_only':True,
+            'no_live_changes':True,
+          },indent=2,sort_keys=True))
+          PY
+          cp "$dest/status.json" /tmp/source-ai-reviews/source-research/latest_status.json
+          printf '%s\n' "$CYCLE_ID" > /tmp/source-ai-reviews/source-research/latest_cycle.txt
+          cd /tmp/source-ai-reviews
+          git config user.name "strategy-source-research-bot"
+          git config user.email "strategy-source-research-bot@users.noreply.github.com"
+          git add source-research
+          if ! git diff --cached --quiet; then
+            git commit -m "Strategy source research ${CYCLE_ID}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Clean source research workspace
+        if: always()
+        run: rm -rf .source_cycle /tmp/source-ai-reviews /tmp/gpt-source-prompt.txt /tmp/gemini-source-prompt.txt /tmp/copilot-source.md
