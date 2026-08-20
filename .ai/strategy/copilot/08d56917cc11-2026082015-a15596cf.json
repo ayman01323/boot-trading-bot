@@ -1,0 +1,90 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "cycle_id": "08d56917cc11-2026082015-a15596cf",
+  "source_commit": "08d56917cc11168b5644cc72b5b0b69ed693b919",
+  "evidence_sha256": "a15596cf06a38c462769f6d05526175f7fe7b60374393371de15794581437be0",
+  "review_only": true,
+  "no_live_changes": true,
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architectural review of the Strategy Lab and execution pipeline at source commit 08d56917cc11. No fresh runtime evidence (within 2 h) is available; profitability and canary/live readiness cannot be asserted. The existing strategy framework is sound in its safety separation (SHADOW-first, preflight, simulation gates), but several structural gaps reduce durable net P&L confidence and increase operational risk. Three proposals are raised: (1) introduce a calibrated positive-edge forecast layer to gate entries on net-cost-adjusted expected value rather than raw price direction; (2) add a cross-chain cost normalisation step so EVM and Solana opportunities are compared on equivalent net-P&L terms before a route is selected; (3) strengthen shadow-window sampling governance so a strategy cannot exit SHADOW on a sample smaller than the documented MIN_EVALUATION_TRADES / MIN_ELIGIBLE_OPPORTUNITIES thresholds.",
+  "runtime_evidence_fresh": false,
+  "runtime_evidence_gap": "No runtime evidence file with a timestamp within 2 h of the review cycle was supplied. Gross P&L, profit factor, execution failure rates, and opportunity participation rates cannot be verified for this cycle. These gaps must be closed before any strategy can be declared LIVE-ready.",
+  "proposals": [
+    {
+      "id": "COPILOT-STRAT-01",
+      "title": "Calibrated positive-edge forecast gate",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.78,
+      "hypothesis": "Entries gated on a calibrated expected-value forecast (net of fees, slippage and gas) rather than raw directional signal will reduce loss-making trades and improve profit factor without reducing eligible opportunity participation below 20 %.",
+      "shadow_test": "Run the enhanced strategy in SHADOW for at least 3 evaluation windows each containing ≥ 8 trades. Pass threshold: profit factor ≥ 1.10 and money-weighted net P&L > 0 after all recorded costs. Fail if profit factor < 1.05 or participation rate < 0.20 on eligible opportunities.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_PROFIT_FACTOR = 1.10 and MIN_ELIGIBLE_PARTICIPATION = 0.20 are defined but there is no pre-entry expected-value gate; all positive-edge filtering is post-hoc in window evaluation."
+        },
+        {
+          "path": "learnerbot/strategy_ai_proposals.py",
+          "note": "AI proposals are accepted into the registry with no calibration check on predicted edge vs. actual costs."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/strategy_lab_research.py"
+      ],
+      "research_plan": "Collect shadow trade outcomes per strategy family for the last 30 days from the strategy_lab_windows table. Compute money-weighted net P&L and profit factor per family. Cross-reference with opportunity eligibility logs to measure participation rate. Identify families with profit factor < 1.05 as primary candidates for forecast gating.",
+      "research_tools": ["Dune", "DEX Screener API", "Jupiter"]
+    },
+    {
+      "id": "COPILOT-STRAT-02",
+      "title": "Cross-chain cost normalisation before route selection",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.82,
+      "hypothesis": "Normalising EVM gas costs and Solana priority fees to a common net-P&L unit before route selection will prevent systematically over-selecting the cheaper-quoted but higher-cost chain, improving average trade net P&L.",
+      "shadow_test": "Run both Solana and EVM shadow strategies through the normalised cost path for ≥ 3 evaluation windows each containing ≥ 8 trades per chain. Pass threshold: average net P&L per trade improves by ≥ 5 % vs. the preceding window on at least one chain without degrading the other below its current baseline profit factor.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "Cross-chain signal generation does not apply a shared cost-normalisation step; EVM and Solana routes are evaluated in their native fee units."
+        },
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "Profit factor thresholds are chain-agnostic but the underlying P&L inputs are not cost-normalised across chains."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ],
+      "research_plan": "Extract per-trade gas/fee records from both chains for the last 60 days. Build a cost normalisation mapping (SOL priority fee ↔ ETH gas in USD). Run a shadow replay comparing routed net P&L before and after normalisation.",
+      "research_tools": ["Etherscan API V2", "Jupiter", "DefiLlama"]
+    },
+    {
+      "id": "COPILOT-STRAT-03",
+      "title": "Enforce minimum sample-size gates before SHADOW promotion",
+      "action": "SHADOW_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.88,
+      "hypothesis": "Enforcing strict enforcement of MIN_EVALUATION_WINDOWS (3), MIN_EVALUATION_TRADES (8) and MIN_ELIGIBLE_OPPORTUNITIES (10) as hard blocking gates in the promotion path will prevent under-sampled strategies from reaching PROBATION or ACTIVE status prematurely, reducing out-of-sample loss events.",
+      "shadow_test": "Audit the promotion path in strategy_lab.py. Verify that no strategy reaches PROBATION without satisfying all three numeric thresholds. Introduce a regression test that attempts promotion with n=7 trades and asserts it is rejected. Pass: test suite green; no existing ACTIVE strategy has a window count below MIN_EVALUATION_WINDOWS.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_EVALUATION_WINDOWS, MIN_EVALUATION_TRADES and MIN_ELIGIBLE_OPPORTUNITIES are defined as module constants but the promotion logic does not check all three atomically before advancing status."
+        },
+        {
+          "path": "tests/test_strategy_lab.py",
+          "note": "Existing tests do not cover the edge case where all three sampling thresholds are individually met but the combined atomic check is bypassed via partial window completion."
+        }
+      ],
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab.py"
+      ],
+      "research_plan": "Read the full promote_strategy() / evaluate_and_promote() code path in strategy_lab.py. Map each threshold constant to its check site. Identify any code path where a strategy can advance without all three being satisfied.",
+      "research_tools": []
+    }
+  ]
+}
