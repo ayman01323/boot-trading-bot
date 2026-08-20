@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "provider": "copilot",
+  "cycle_id": "23aef48455dd-2026082015-39789ab3",
+  "source_commit": "23aef48455dda6ec931f4883010f846cdddc4591",
+  "evidence_sha256": "39789ab373d13905bc2d5f78009c6d1bb06f49f2855cc43fa270a65b75126e92",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "status": "CHANGES_PROPOSED",
+  "summary": "The Strategy Lab architecture is SHADOW-safe and cross-chain-governed, but the hourly review inputs would be more durable with recency-aware scorecards and freshness metadata. Fresh runtime evidence is stale, so this cycle cannot justify profitability or live-readiness claims.",
+  "proposals": [
+    {
+      "id": "p1",
+      "action": "IMPROVE",
+      "strategy": "Strategy Lab portfolio evaluation freshness",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "detail": "strategy_metrics() aggregates all stored strategy_lab_windows rows for a strategy, and evaluate_strategy() uses those lifetime totals to drive REWORK/REPLACE/PROMOTION_CANDIDATE decisions."
+        },
+        {
+          "path": "learnerbot/strategy_lab_audit_patch.py",
+          "detail": "build_loss_forensics_with_strategy_lab() calls portfolio_report(app) inside the hourly export path, so the hourly review inherits lifetime-aggregate decisioning."
+        },
+        {
+          "path": "docs/STRATEGY_LAB.md",
+          "detail": "The hourly review specification expects reviewers to judge which strategies generated opportunities, participated, and made or lost money after costs in the reviewed evidence window."
+        }
+      ],
+      "rationale": "Lifetime aggregation can mask regime shifts. A previously good strategy can continue to look strong after recent deterioration, and a recovering strategy can remain buried under old losses. For hourly durable-net-P&L review, recent/trailing evidence should be visible alongside lifetime totals.",
+      "expected_effect": "Reduce stale-history bias in REWORK/REPLACE/PROMOTION_CANDIDATE calls by adding recent per-chain trailing-window performance and participation views next to the lifetime baseline.",
+      "downside_risk": "Short recency windows can under-sample quiet but valid strategies, so recent slices should complement rather than replace the lifetime scorecard.",
+      "shadow_test": "For each strategy and chain, compare lifetime-only decisions versus decisions that also require positive trailing net P&L and profit factor on recent windows such as 3/24/72-hour slices. Keep the change only if forward shadow review reduces stale-candidate reversals without reducing participation in newly profitable opportunities.",
+      "minimum_observation": "At least 3 recent windows and 8 trades per reviewed strategy-chain slice before using recency-aware promotion or replacement signals.",
+      "confidence": 0.91,
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "id": "p2",
+      "action": "IMPROVE",
+      "strategy": "Recency and dispersion metadata for research cohorts",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab_research.py",
+          "detail": "profitable_wallet_research() ranks positive wallets by aggregate net/profit factor and learned_pattern_portability() ranks classes by replicability, but neither report includes last-seen timestamps, recent-window counts, or recent-vs-historical dispersion."
+        },
+        {
+          "path": "learnerbot/strategy_internal_learning.py",
+          "detail": "sibot_observed_wallet_learning() returns timestamps for recent copy recommendations, but behaviour_rankings and copy_wallet_candidates omit freshness fields in the sanitised summary."
+        },
+        {
+          "path": "tests/test_strategy_internal_learning.py",
+          "detail": "The seeded internal-learning tables include updated_at data, yet the report contract currently validates anonymisation and research-only behavior rather than freshness propagation."
+        }
+      ],
+      "rationale": "When fresh runtime evidence is unavailable, research cohorts need explicit freshness and dispersion metadata so the reviewer can distinguish durable multi-window behavior from stale all-time winners and avoid overweighting a single historical regime.",
+      "expected_effect": "Improve confidence calibration for new SHADOW hypotheses by surfacing whether supporting wallets, patterns, and behaviors are recent, repeated, and stable across more than one window or regime.",
+      "downside_risk": "Additional metadata increases report size and can down-rank infrequent but real edges if freshness thresholds are applied too mechanically.",
+      "shadow_test": "Add recent-window counts, last-seen timestamps, and dispersion summaries to cohort outputs, then compare whether hypotheses generated from freshness-aware cohorts produce better next-window net P&L and fewer false-positive proposals than hypotheses generated from all-time aggregates alone.",
+      "minimum_observation": "At least 3 observation windows or equivalent recent-count and last-seen evidence for each cited wallet cohort, learned pattern, or SiBot behavior before elevating it to a new cross-chain hypothesis.",
+      "confidence": 0.87,
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/strategy_internal_learning.py",
+        "tests/test_strategy_lab_cross_chain_research.py",
+        "tests/test_strategy_internal_learning.py"
+      ]
+    }
+  ],
+  "rejected_ideas": [
+    {
+      "idea": "Claim profitability, canary readiness, or live readiness from this cycle alone.",
+      "reason": "Fresh runtime evidence within 2h is false, so architecture inspection can guide SHADOW research but cannot prove current live edge."
+    },
+    {
+      "idea": "Port a single-chain profitable-wallet or learned-pattern signal directly to both chains without separate executable quote, liquidity, sellability, and cost validation.",
+      "reason": "Cross-chain governance explicitly requires chain-specific execution and cost assumptions and forbids inferring live readiness from one chain's results alone."
+    }
+  ],
+  "evidence_gaps": [
+    "Fresh runtime evidence within 2h is false, so this review cannot claim current profitability, canary readiness, or live readiness.",
+    "The repository snapshot available for review does not contain the raw sanitised evidence package bytes for this cycle, only the exact source commit and evidence SHA-256 metadata, so findings are limited to source-architecture inspection and documented governance paths."
+  ],
+  "review_only": true,
+  "no_live_changes": true
+}
