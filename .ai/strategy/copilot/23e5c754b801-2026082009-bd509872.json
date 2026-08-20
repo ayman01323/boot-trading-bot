@@ -1,0 +1,103 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "cycle_id": "23e5c754b801-2026082009-bd509872",
+  "source_commit": "23e5c754b801b834894cb562649ba1ad4b716ff5",
+  "evidence_sha256": "bd509872ef90dd09242f1c0041b96198975a7544cd7d782897aebb310c138e5b",
+  "review_only": true,
+  "no_live_changes": true,
+  "status": "CHANGES_PROPOSED",
+  "reviewed_at": "2026-08-20T10:19:27Z",
+  "fresh_runtime_evidence": false,
+  "runtime_evidence_gaps": [
+    "No live or canary trade evidence within the 2-hour window; profitability, participation rates and net P&L after costs cannot be confirmed from runtime data alone.",
+    "strategy_lab_windows table contents unknown — shadow evaluation counts, profit factors and eligible-opportunity participation metrics are unavailable.",
+    "No EVM or Solana execution logs provided for this cycle."
+  ],
+  "architecture_summary": "The repository implements a dual-chain (Solana + EVM) trading bot with a Strategy Laboratory pattern. New strategies start in SHADOW, require a minimum number of evaluation windows and trades, and can only be promoted after measured out-of-sample evidence. Execution safety gates (simulation/preflight, slippage, sellability, liquidity checks, circuit breakers) are structurally present. AI proposals are validated against a schema that blocks credential and deployment-instruction injection.",
+  "proposals": [
+    {
+      "id": "COPILOT-STRAT-001",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "name": "Profitable-wallet cohort momentum signal",
+      "hypothesis": "Tokens that appear repeatedly in the recent buy history of a cohort of independently profitable wallets (each verifiably net-positive over >= 30 days, money-weighted) exhibit short-term positive price momentum sufficient to recover round-trip costs on at least 55% of eligible trades.",
+      "differentiation": "Uses a multi-wallet cohort rather than a single leader; the signal is the intersection of independently profitable behaviour, not a copy of one wallet's positions.",
+      "confidence": 0.45,
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "Strategy Lab SHADOW infrastructure exists and enforces MIN_PROFIT_FACTOR, MIN_ELIGIBLE_PARTICIPATION, and MIN_EVALUATION_TRADES before promotion."
+        },
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "Cross-chain signal adapter layer present, supporting both Solana and EVM; entry point for new signal families."
+        },
+        {
+          "path": "learnerbot/strategy_ai_proposals.py",
+          "note": "AI proposal ingestion validates schema and blocks credential/deployment injection. Multi-wallet cohort proposal would pass schema validation."
+        }
+      ],
+      "shadow_test": "Register strategy with SHADOW status; after >= 8 trades across >= 3 evaluation windows on each chain, measure money-weighted net P&L after fees/gas/slippage. Falsified if profit_factor < 1.10 or eligible-opportunity participation < 0.20.",
+      "research_plan": "1. Use Dune to build a cohort of >= 20 wallets with verifiable 30-day net-positive money-weighted P&L on both Solana and EVM. 2. Identify tokens present in >= 3 cohort wallets' recent buys within a 4-hour window. 3. Shadow-simulate entry/exit on those tokens for 2 weeks. 4. Compare simulated gross P&L against estimated round-trip costs (DEX fees, gas, slippage from Jupiter/DEX Screener quotes).",
+      "research_tools": ["Dune", "DEX Screener API", "Jupiter", "Etherscan API V2"],
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab_research.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true
+    },
+    {
+      "id": "COPILOT-STRAT-002",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "name": "New-liquidity quality filter for early-pool tokens",
+      "hypothesis": "Tokens whose liquidity pools are <= 6 hours old, have >= $50k locked liquidity, pass sellability simulation, show >= 3x volume-to-liquidity ratio within the first hour, and whose deployer address has no prior rug-pull association exhibit a short-term positive net edge after costs in at least 50% of shadow trades.",
+      "differentiation": "Focuses on objective, measurable pool-quality metrics rather than leader-wallet copying. Does not rely on any single wallet's behaviour.",
+      "confidence": 0.40,
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "Pool-age, liquidity and sellability checks are referenced as standard execution gates; the strategy would compose these existing checks into a novel entry filter."
+        },
+        {
+          "path": "learnerbot/fast_market.py",
+          "note": "Fast-market module exists, suggesting low-latency market data is available for new-pool detection."
+        }
+      ],
+      "shadow_test": "Register strategy with SHADOW status. For each qualifying new pool, record shadow entry/exit and measure net P&L after fees. Falsified if profit_factor < 1.10 after >= 10 eligible opportunities, or if >= 30% of trades result in exit failure or sellability gate block.",
+      "research_plan": "1. Use DEX Screener API to identify new pools meeting age, liquidity and volume criteria on Solana and EVM. 2. Cross-reference deployer addresses against known rug-pull lists (Dune, public blocklists). 3. Run 2-week shadow simulation. 4. Measure slippage, gas/priority cost and actual exit prices versus simulated.",
+      "research_tools": ["DEX Screener API", "Dune", "Jupiter", "Etherscan API V2"],
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_strategy_new_liquidity.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true
+    },
+    {
+      "id": "COPILOT-STRAT-003",
+      "action": "SHADOW_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "name": "Existing SHADOW strategies: extend evaluation window",
+      "hypothesis": "Any SHADOW strategy in the registry that has fewer than the minimum required evaluation windows (MIN_EVALUATION_WINDOWS=3) or fewer than MIN_EVALUATION_TRADES=8 should continue to accumulate shadow evidence before any promotion decision is made.",
+      "differentiation": "Not a new strategy; a governance recommendation to prevent premature promotion.",
+      "confidence": 0.90,
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_lab.py",
+          "note": "MIN_EVALUATION_WINDOWS=3 and MIN_EVALUATION_TRADES=8 are defined. Without runtime evidence it cannot be confirmed whether any SHADOW strategy currently meets these thresholds."
+        }
+      ],
+      "shadow_test": "Confirm via strategy_lab_windows query that each SHADOW strategy has completed >= 3 evaluation windows and >= 8 trades before any promotion candidate review. Falsified if a strategy is promoted before these thresholds are met.",
+      "research_plan": "Query strategy_lab_windows for all SHADOW strategies at source commit. Report evaluation window count, trade count, profit factor and eligible-participation rate per strategy.",
+      "research_tools": ["Dune"],
+      "suggested_files": [],
+      "risk_class": "LOW",
+      "shadow_only": true
+    }
+  ]
+}
