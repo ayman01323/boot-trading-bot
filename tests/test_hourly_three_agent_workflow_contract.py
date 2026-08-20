@@ -23,11 +23,21 @@ def test_gpt_uses_no_bwrap_workspace_sandbox_and_no_persisted_github_credentials
     assert 'STRATEGY_REVIEW_JSON_BEGIN' in text
 
 
-def test_missing_runtime_evidence_fails_safe_not_fake_profitability():
+def test_missing_runtime_evidence_fails_safe_without_marking_complete_architecture_review_incomplete():
     text = _text()
     assert 'MISSING_RUNTIME_FORENSICS' in text
     assert 'do not claim live profitability or canary readiness' in text
     assert 'EVIDENCE_FRESH="false"' in text
+    assert 'Missing or stale runtime forensics ALONE does NOT make this review INCOMPLETE' in text
+    assert 'use HEALTHY' in text and 'CHANGES_PROPOSED' in text
+    assert 'Use INCOMPLETE only when the review itself could not be completed, parsed or validated' in text
+
+
+def test_evidence_digest_binds_exact_file_bytes():
+    text = _text()
+    assert "sha256sum .strategy_cycle/evidence.json" in text
+    assert 'do not canonicalise/re-hash JSON' in text
+    assert "json.dumps(p,sort_keys=True,separators=(',',':')" not in text
 
 
 def test_gemini_extraction_has_repo_pythonpath_and_phase_diagnostics():
@@ -47,6 +57,8 @@ def test_copilot_assignment_matches_real_bot_handle_and_state_can_reconcile():
     assert "state='AWAITING_ASSIGNMENT'" in text
     assert "state='ASSIGNED'" in text
     assert 'WAITING_FOR_COPILOT_ASSIGNMENT' in text
+    assert 'Missing/stale runtime evidence' in text
+    assert 'alone is NOT a reason to set status=INCOMPLETE' in text
 
 
 def test_strategy_reviews_remain_report_only_and_no_live_auto_deploy():
