@@ -14,11 +14,13 @@ def test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent():
     assert 'Weekly GPT Master Corrective Action' not in text
 
 
-def test_codex_approval_flag_is_global_before_exec_and_uses_exec_api_key():
+def test_gpt_uses_no_bwrap_workspace_sandbox_and_no_persisted_github_credentials():
     text = _text()
-    assert 'codex --ask-for-approval never exec --sandbox workspace-write --ephemeral' in text
-    assert 'codex exec --sandbox workspace-write --ask-for-approval' not in text
+    assert 'persist-credentials: false' in text
+    assert 'codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral' in text
+    assert '--sandbox workspace-write' not in text
     assert 'CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}' in text
+    assert 'STRATEGY_REVIEW_JSON_BEGIN' in text
 
 
 def test_missing_runtime_evidence_fails_safe_not_fake_profitability():
@@ -28,23 +30,23 @@ def test_missing_runtime_evidence_fails_safe_not_fake_profitability():
     assert 'EVIDENCE_FRESH="false"' in text
 
 
-def test_provider_failures_are_visible_in_published_reports():
+def test_gemini_extraction_has_repo_pythonpath_and_phase_diagnostics():
     text = _text()
-    assert 'gpt_error.txt' in text
-    assert 'gemini_error.txt' in text
-    assert 'OpenAI/Codex API credential missing' in text
-    assert 'GEMINI_API_KEY missing' in text
-    assert 'openai_credential_present' in text
-    assert 'gemini_credential_present' in text
+    assert 'PYTHONPATH="$GITHUB_WORKSPACE" python scripts/extract_strategy_report.py' in text
+    assert 'gemini_cli_error.txt' in text
+    assert 'gemini_extract_error.txt' in text
+    assert 'gemini_validate_error.txt' in text
+    assert 'Gemini execution/extraction/validation failed' in text
 
 
-def test_copilot_assignment_is_verified_and_never_fake_waiting():
+def test_copilot_assignment_matches_real_bot_handle_and_state_can_reconcile():
     text = _text()
     assert 'COPILOT_ASSIGN_TOKEN' in text
     assert 'copilot-swe-agent[bot]' in text
-    assert "state='BLOCKED_AUTH'" in text
+    assert 'test("copilot"; "i")' in text
+    assert "state='AWAITING_ASSIGNMENT'" in text
     assert "state='ASSIGNED'" in text
-    assert 'BLOCKED_COPILOT_AUTH' in text
+    assert 'WAITING_FOR_COPILOT_ASSIGNMENT' in text
 
 
 def test_strategy_reviews_remain_report_only_and_no_live_auto_deploy():
