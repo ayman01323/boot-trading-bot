@@ -1,0 +1,137 @@
+name: Read-only 7-day profit diagnostics
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  profit_7d:
+    if: >-
+      github.head_ref == 'agent/profit-7d-diagnostics' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Seven-day sanitised profit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/root/multichain-learning-bot-v2.2-fast-direct-market
+          PY="$ROOT/.venv/bin/python"
+          echo "UTC_NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          echo "WINDOW=7d"
+          echo "RUNNER_USER=$(id -un)"
+          if [[ ! -x "$PY" || ! -d "$ROOT/data" ]]; then
+            echo "DIRECT_PRODUCTION_READ=no"
+            echo "Filtered 7-day profit-control/service lines follow:"
+            journalctl -u learnerbot.service --since '7 days ago' --no-pager 2>/dev/null \
+              | grep -Ei 'profit-control|profit_control|realised|realized|LIVE SELL|net_sol|gross_profit|gross_loss|loss-forensics' \
+              | tail -n 1000 || true
+            exit 0
+          fi
+          echo "DIRECT_PRODUCTION_READ=yes"
+          cd "$ROOT"
+          "$PY" - <<'PY'
+          import json, sqlite3, time
+          from decimal import Decimal, InvalidOperation
+          from pathlib import Path
+
+          root = Path('/root/multichain-learning-bot-v2.2-fast-direct-market')
+          data = root / 'data'
+          now = int(time.time())
+          cutoff = now - 7 * 86400
+
+          def d(v):
+              try:
+                  return Decimal(str(v or 0))
+              except (InvalidOperation, ValueError, TypeError):
+                  return Decimal(0)
+
+          def ro(path):
+              c = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=10)
+              c.row_factory = sqlite3.Row
+              c.execute('PRAGMA busy_timeout=10000')
+              return c
+
+          out = {
+              'window_start_epoch': cutoff,
+              'window_end_epoch': now,
+              'window_seconds': now-cutoff,
+              'solana_live': {'available': False},
+              'sqlite_profit_candidates': [],
+          }
+
+          sol = data / 'solana_sibot.sqlite3'
+          if sol.exists():
+              c = ro(sol)
+              try:
+                  tables = {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+                  if 'positions' in tables:
+                      cols = {r[1] for r in c.execute('pragma table_info(positions)')}
+                      needed = {'mode','status','closed_at','realised_net_sol'}
+                      if needed.issubset(cols):
+                          rows = c.execute("select realised_net_sol,exit_reason,closed_at from positions where mode='LIVE' and status='CLOSED' and coalesce(closed_at,0)>=? order by closed_at", (cutoff,)).fetchall()
+                          vals = [d(r['realised_net_sol']) for r in rows]
+                          wins = [v for v in vals if v > 0]
+                          losses = [-v for v in vals if v < 0]
+                          gp = sum(wins, Decimal(0)); gl = sum(losses, Decimal(0)); net = gp-gl
+                          pf = (gp/gl) if gl > 0 else (Decimal(99) if gp > 0 else Decimal(0))
+                          reasons = {}
+                          for r in rows:
+                              k = str(r['exit_reason'] or 'UNKNOWN')
+                              reasons[k] = reasons.get(k,0)+1
+                          open_rows = []
+                          if {'unrealised_net_sol','entry_cost_sol'}.issubset(cols):
+                              open_rows = c.execute("select unrealised_net_sol,entry_cost_sol from positions where mode='LIVE' and status='OPEN'").fetchall()
+                          out['solana_live'] = {
+                              'available': True,
+                              'closed_trades': len(vals),
+                              'wins': len(wins),
+                              'losses': len(losses),
+                              'win_rate_pct': str((Decimal(len(wins))*100/Decimal(len(vals))) if vals else Decimal(0)),
+                              'gross_profit_sol': str(gp),
+                              'gross_loss_sol': str(gl),
+                              'net_realised_sol': str(net),
+                              'profit_factor': str(pf),
+                              'average_win_sol': str(gp/len(wins)) if wins else '0',
+                              'average_loss_sol': str(gl/len(losses)) if losses else '0',
+                              'open_live_positions': len(open_rows),
+                              'open_unrealised_net_sol': str(sum((d(r['unrealised_net_sol']) for r in open_rows), Decimal(0))),
+                              'exit_reason_counts': reasons,
+                          }
+              finally:
+                  c.close()
+
+          # Sanitised schema discovery only: no wallet IDs, addresses, tx hashes or row data.
+          time_names = {'created_at','updated_at','timestamp','time_epoch','observed_at_epoch','event_ts','entry_ts','closed_at','fetched_at','seen_at','sell_ts','exit_ts'}
+          for db in sorted(data.glob('*.sqlite3')):
+              try:
+                  c = ro(db)
+                  try:
+                      tables = [r[0] for r in c.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%'")]
+                      for table in tables:
+                          cols = [r[1] for r in c.execute(f'pragma table_info("{table}")')]
+                          lower = [x.lower() for x in cols]
+                          pnl_cols = [cols[i] for i,x in enumerate(lower) if any(k in x for k in ('profit','loss','pnl','net_','realised','realized'))]
+                          time_cols = [cols[i] for i,x in enumerate(lower) if x in time_names]
+                          mode_cols = [cols[i] for i,x in enumerate(lower) if x in ('mode','status','chain','chain_slug')]
+                          if pnl_cols:
+                              out['sqlite_profit_candidates'].append({
+                                  'db': db.name,
+                                  'table': table,
+                                  'pnl_columns': pnl_cols[:20],
+                                  'time_columns': time_cols[:10],
+                                  'mode_status_columns': mode_cols[:10],
+                              })
+                  finally:
+                      c.close()
+              except Exception as exc:
+                  out['sqlite_profit_candidates'].append({'db': db.name, 'error': type(exc).__name__})
+
+          print('PROFIT7D_JSON_BEGIN')
+          print(json.dumps(out, indent=2, sort_keys=True))
+          print('PROFIT7D_JSON_END')
+          PY
