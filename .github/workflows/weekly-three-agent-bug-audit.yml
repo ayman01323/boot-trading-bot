@@ -306,20 +306,30 @@ jobs:
         id: copilot
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ github.token }}
+          # github.token cannot assign @copilot; a user-scoped PAT is required.
+          # Fall back to github.token so the step can still create the issue body
+          # (assignment will simply be skipped and flagged in the kickoff record).
+          GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || github.token }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           SHORT_SHA: ${{ steps.source.outputs.short }}
         shell: bash
         run: |
           set -euo pipefail
           title="Weekly Copilot full-bot bug audit ${SHORT_SHA}"
+          has_assign_token="false"
+          [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && has_assign_token="true"
           existing="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number,state --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             issue="$existing"
             state="$(gh issue view "$issue" --json state --jq '.state')"
             if [[ "$state" == "CLOSED" ]]; then gh issue reopen "$issue"; fi
-            gh issue edit "$issue" --add-assignee "@copilot"
-            echo "Reused and assigned issue #${issue} to Copilot."
+            if [[ "${has_assign_token}" == "true" ]]; then
+              gh issue edit "$issue" --add-assignee "@copilot"
+              echo "Reused and assigned issue #${issue} to Copilot."
+            else
+              echo "WARNING: COPILOT_ASSIGN_TOKEN not set; issue #${issue} reused but @copilot assignment skipped." >&2
+            fi
           else
             cat > /tmp/copilot-issue.md <<EOF
           # Weekly independent Copilot full-bot bug audit
@@ -345,29 +355,46 @@ jobs:
 
           Never trade, deploy, edit secrets/signing/wallet material, change capital, or weaken safety controls.
           EOF
-            url="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md --assignee "@copilot")"
-            issue="${url##*/}"
-            echo "Created and assigned issue #${issue} to Copilot."
+            if [[ "${has_assign_token}" == "true" ]]; then
+              url="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md --assignee "@copilot")"
+              issue="${url##*/}"
+              echo "Created and assigned issue #${issue} to Copilot."
+            else
+              url="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md)"
+              issue="${url##*/}"
+              echo "WARNING: COPILOT_ASSIGN_TOKEN not set; created issue #${issue} without @copilot assignment." >&2
+              echo "Add a user-scoped PAT as the COPILOT_ASSIGN_TOKEN repository secret to enable auto-assignment." >&2
+            fi
           fi
           echo "number=${issue}" >> "$GITHUB_OUTPUT"
+          echo "has_assign_token=${has_assign_token}" >> "$GITHUB_OUTPUT"
 
       - name: Record Copilot kickoff status
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           ISSUE_NUMBER: ${{ steps.copilot.outputs.number }}
           COPILOT_OUTCOME: ${{ steps.copilot.outcome }}
+          HAS_ASSIGN_TOKEN: ${{ steps.copilot.outputs.has_assign_token }}
         shell: bash
         run: |
           python - <<'PY'
           import json, os
           issue=os.environ.get('ISSUE_NUMBER','').strip()
           outcome=os.environ.get('COPILOT_OUTCOME','failure')
+          has_token=os.environ.get('HAS_ASSIGN_TOKEN','false').lower()=='true'
+          if outcome=='success' and not has_token:
+              stage='COPILOT_ASSIGNMENT_NEEDS_TOKEN'
+          elif outcome=='success':
+              stage='WAITING_FOR_COPILOT_REPORT_PR'
+          else:
+              stage='COPILOT_ASSIGNMENT_NEEDS_ATTENTION'
           p={
             "source_commit":os.environ['SOURCE_SHA'],
             "issue_number":int(issue) if issue.isdigit() else None,
             "assignment_outcome":outcome,
+            "has_copilot_assign_token":has_token,
             "expected_report_path":".ai/weekly/copilot/"+os.environ['SOURCE_SHA']+".json",
-            "stage":"WAITING_FOR_COPILOT_REPORT_PR" if outcome=='success' else "COPILOT_ASSIGNMENT_NEEDS_ATTENTION",
+            "stage":stage,
           }
           open('.weekly_audit/copilot_assignment.json','w',encoding='utf-8').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
           PY
