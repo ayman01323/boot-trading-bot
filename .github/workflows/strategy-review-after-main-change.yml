@@ -5,6 +5,9 @@ on:
     branches:
       - main
       - 'agent/force-strategy-review*'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
@@ -17,6 +20,10 @@ concurrency:
 
 jobs:
   dispatch:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.head_ref == 'agent/force-strategy-review-now' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
