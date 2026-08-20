@@ -130,7 +130,10 @@ from . import telegram_hi_keefek_patch  # noqa: F401
 from . import solana_emergency_liquidity_unwind_patch  # noqa: F401
 # Critical EVM safety fix: native transfers must include the validated destination in the signed transaction.
 from . import evm_transfer_native_hotfix_patch  # noqa: F401
+# Alert ACTIVE MASTER Telegram accounts when AI-provider monthly usage reaches 80% or 100%.
+from . import provider_credit_telegram_patch  # noqa: F401
 # This is deliberately the final import before CLI: refuse startup if any feature or presentation layer displaced an audited trading hook.
 from . import trading_runtime_invariant_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
+
