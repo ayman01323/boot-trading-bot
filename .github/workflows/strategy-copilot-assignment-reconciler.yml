@@ -1,0 +1,234 @@
+name: Strategy Copilot Assignment Reconciler
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      cycle_id:
+        description: 'Optional strategy cycle id; defaults to latest cycle'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: strategy-copilot-assignment-reconciler
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Resolve immutable strategy cycle
+        id: cycle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_CYCLE: ${{ inputs.cycle_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cycle="${INPUT_CYCLE:-}"
+          if [[ -z "$cycle" ]]; then
+            set +e
+            cycle="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
+              --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n')"
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 || -z "$cycle" ]]; then
+              echo 'No strategy cycle exists yet.'
+              echo 'found=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          [[ "$cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || { echo 'Invalid cycle id.' >&2; exit 2; }
+          echo 'found=true' >> "$GITHUB_OUTPUT"
+          echo "id=$cycle" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve or create the cycle Copilot issue
+        if: steps.cycle.outputs.found == 'true'
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ steps.cycle.outputs.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="strategy/runs/${CYCLE_ID}"
+          context="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/${root}/context.json?ref=ai-reviews" \
+            --jq '.content' | tr -d '\n' | base64 -d)"
+          source_sha="$(python -c 'import json,sys; print(json.loads(sys.stdin.read()).get("source_commit", ""))' <<< "$context")"
+          evidence_sha="$(python -c 'import json,sys; print(json.loads(sys.stdin.read()).get("evidence_sha256", ""))' <<< "$context")"
+          evidence_fresh="$(python -c 'import json,sys; print(json.loads(sys.stdin.read()).get("evidence_fresh", "false"))' <<< "$context")"
+          test -n "$source_sha"; test -n "$evidence_sha"
+
+          title="Copilot hourly strategy review ${CYCLE_ID}"
+          issue="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+          if [[ -z "$issue" ]]; then
+            cat > /tmp/copilot-strategy.md <<EOF
+          # Independent hourly Strategy Lab review
+          Cycle: \`${CYCLE_ID}\`
+          Source commit: \`${source_sha}\`
+          Evidence SHA-256: \`${evidence_sha}\`
+          Fresh runtime evidence within 2h: \`${evidence_fresh}\`
+
+          REPORT ONLY. Inspect the source independently and optimise durable NET P&L after all costs, not win count.
+          Do not trade, deploy, alter live/risk/capital settings, touch secrets/wallets/signing, or implement code.
+          Missing runtime evidence does not by itself make the review INCOMPLETE.
+
+          Create a draft PR containing exactly:
+          - \`.ai/strategy/copilot/${CYCLE_ID}.json\`
+          - \`.ai/strategy/copilot/${CYCLE_ID}.md\`
+
+          JSON must satisfy THREE_AGENT_STRATEGY_REVIEW with provider=copilot, exact cycle/source/evidence,
+          review_only=true and no_live_changes=true.
+          EOF
+            url="$(gh issue create --title "$title" --body-file /tmp/copilot-strategy.md)"
+            issue="${url##*/}"
+          else
+            state="$(gh issue view "$issue" --json state --jq '.state')"
+            [[ "$state" != 'CLOSED' ]] || gh issue reopen "$issue" >/dev/null
+          fi
+          echo "number=$issue" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "evidence_sha=$evidence_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Assign Copilot with standard REST fallback and delayed verification
+        if: steps.cycle.outputs.found == 'true'
+        id: assign
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          is_assigned() {
+            # GitHub currently normalises the requested copilot-swe-agent[bot]
+            # assignee to the display/login value "Copilot" on issues. Accept only
+            # those two exact identities; do not treat arbitrary "*copilot*" users
+            # as proof that the coding agent was assigned.
+            gh issue view "$ISSUE" --json assignees \
+              --jq '[.assignees[].login | ascii_downcase] | any(. == "copilot" or . == "copilot-swe-agent[bot]")' \
+              | grep -q true
+          }
+
+          state='AWAITING_ASSIGNMENT'
+          reason='Copilot assignment has not completed yet.'
+          if is_assigned; then
+            state='ASSIGNED'
+            reason='Copilot is already assigned.'
+          elif [[ -z "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            state='BLOCKED_AUTH'
+            reason='COPILOT_ASSIGN_TOKEN repository secret is missing.'
+          else
+            # agent_assignment is optional in GitHub's Copilot assignment API. Use the
+            # ordinary assignee payload first because it is the most stable endpoint;
+            # Copilot then uses the issue body and main as its default task context.
+            payload='{"assignees":["copilot-swe-agent[bot]"]}'
+            set +e
+            output="$(GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh api --method POST \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/assignees" --input - <<< "$payload" 2>&1)"
+            rc=$?
+            set -e
+
+            if [[ $rc -ne 0 ]]; then
+              # Last safe fallback: the workflow token has issues:write. This does not
+              # expose or replace the user-scoped token and only attempts assignment.
+              set +e
+              fallback="$(gh api --method POST -H 'Accept: application/vnd.github+json' \
+                "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/assignees" --input - <<< "$payload" 2>&1)"
+              fallback_rc=$?
+              set -e
+              output="primary=${output:0:450}; fallback=${fallback:0:450}"
+              [[ $fallback_rc -eq 0 ]] && rc=0
+            fi
+
+            for delay in 0 5 10 20; do
+              [[ "$delay" == 0 ]] || sleep "$delay"
+              if is_assigned; then
+                state='ASSIGNED'
+                reason='Copilot assignment verified after REST assignment/retry.'
+                break
+              fi
+            done
+            if [[ "$state" != 'ASSIGNED' ]]; then
+              state='BLOCKED_AUTH'
+              reason="Copilot assignment could not be verified: ${output:0:900}"
+            fi
+          fi
+
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          printf '%s' "$reason" > /tmp/strategy-copilot-reason.txt
+          echo "Strategy Copilot issue #${ISSUE}: ${state}"
+
+      - name: Publish reconciled assignment state and repair stale latest status
+        if: steps.cycle.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ steps.cycle.outputs.id }}
+          SOURCE_SHA: ${{ steps.issue.outputs.source_sha }}
+          EVIDENCE_SHA: ${{ steps.issue.outputs.evidence_sha }}
+          ISSUE: ${{ steps.issue.outputs.number }}
+          STATE: ${{ steps.assign.outputs.state }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          reason="$(cat /tmp/strategy-copilot-reason.txt 2>/dev/null || true)"
+          python - "$CYCLE_ID" "$SOURCE_SHA" "$EVIDENCE_SHA" "$ISSUE" "$STATE" "$reason" <<'PY' > /tmp/strategy-copilot-assignment.json
+          import json,sys,time
+          cycle,source,evidence,issue,state,reason=sys.argv[1:7]
+          print(json.dumps({
+            'cycle_id':cycle,'source_commit':source,'evidence_sha256':evidence,
+            'issue_number':int(issue),'assignment_state':state,'reason':reason,
+            'checked_epoch':int(time.time()),'token_name':'COPILOT_ASSIGN_TOKEN',
+            'expected_report_path':f'.ai/strategy/copilot/{cycle}.json'
+          },indent=2,sort_keys=True))
+          PY
+
+          put_file() {
+            local path="$1" file="$2" message="$3"
+            local api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+            local current sha encoded
+            current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+            sha="$(printf '%s' "$current" | python -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+            encoded="$(base64 -w0 "$file")"
+            python - "$encoded" "$sha" "$message" <<'PY' > /tmp/put.json
+          import json,sys
+          p={'message':sys.argv[3],'content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+            gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input /tmp/put.json >/dev/null
+          }
+
+          put_file "strategy/runs/${CYCLE_ID}/copilot_assignment_reconciled.json" /tmp/strategy-copilot-assignment.json \
+            "Reconcile strategy Copilot assignment ${CYCLE_ID}"
+
+          latest="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" --jq '.content' \
+            | tr -d '\n' | base64 -d | tr -d '\r\n')"
+          if [[ "$latest" == "$CYCLE_ID" ]]; then
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_status.json?ref=ai-reviews" --jq '.content' \
+              | tr -d '\n' | base64 -d > /tmp/latest-status.json
+            python - "$STATE" "$ISSUE" "$reason" <<'PY'
+          import json,sys
+          path='/tmp/latest-status.json'; p=json.load(open(path)); state,issue,reason=sys.argv[1:4]
+          if not p.get('master_decision_available'):
+              p['copilot']='WAITING' if state=='ASSIGNED' else ('WAITING_ASSIGNMENT' if state=='AWAITING_ASSIGNMENT' else 'BLOCKED_AUTH')
+              p['copilot_issue']=int(issue)
+              p['copilot_assignment_reason']=reason
+              p['state']='WAITING_FOR_COPILOT' if state=='ASSIGNED' else ('WAITING_FOR_COPILOT_ASSIGNMENT' if state=='AWAITING_ASSIGNMENT' else 'BLOCKED_COPILOT_AUTH')
+          open(path,'w').write(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+            put_file "strategy/latest_status.json" /tmp/latest-status.json "Repair latest strategy Copilot assignment status"
+          fi
