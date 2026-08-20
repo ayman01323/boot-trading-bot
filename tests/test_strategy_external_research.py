@@ -41,6 +41,17 @@ class FakeSession:
                 {"name": "Solana", "tvl": 500.0, "tokenSymbol": "SOL", "gecko_id": "solana"},
                 {"name": "Base", "tvl": 200.0, "tokenSymbol": None, "gecko_id": None},
             ])
+        if url.endswith("/overview/dexs"):
+            return FakeResponse(payload={
+                "total24h": 2500.0,
+                "total7d": 15000.0,
+                "allChains": ["Ethereum", "Solana", "Base"],
+                "protocols": [
+                    {"name": "DEX A", "displayName": "DEX A", "total24h": 1500.0, "total7d": 9000.0, "change_1d": 10.0, "chains": ["Ethereum", "Base"]},
+                    {"name": "DEX B", "displayName": "DEX B", "total24h": 1000.0, "total7d": 6000.0, "change_1d": -3.0, "chains": ["Solana"]},
+                ],
+                "totalDataChart": [[1, 999999999]],
+            })
         if "/search/repositories" in url:
             return FakeResponse(payload={
                 "total_count": 1,
@@ -85,7 +96,7 @@ def test_safe_url_is_strict_allowlist():
 def test_external_pack_is_bounded_hashed_and_research_only():
     session = FakeSession()
     pack = collect_external_strategy_research(github_token="TOP-SECRET", session=session)
-    assert pack["source_ids"] == ["EXT1", "EXT2", "EXT3"]
+    assert pack["source_ids"] == ["EXT1", "EXT2", "EXT3", "EXT4"]
     assert len(pack["evidence_sha256"]) == 64
     assert pack["research_only"] is True
     assert pack["live_execution_authorised"] is False
@@ -109,7 +120,7 @@ def test_github_token_is_used_only_as_request_header():
 def test_partial_source_failure_is_recorded_not_fatal():
     session = FakeSession(arxiv_status=503)
     pack = collect_external_strategy_research(session=session)
-    assert [row["source_id"] for row in pack["sources"]] == ["EXT1", "EXT2"]
+    assert [row["source_id"] for row in pack["sources"]] == ["EXT1", "EXT2", "EXT4"]
     assert pack["errors"][0]["source_id"] == "EXT3"
     assert pack["live_execution_authorised"] is False
 
@@ -121,3 +132,8 @@ def test_defillama_payload_is_compacted_not_dumped_wholesale():
     names = {row["name"] for row in defi["data"]["focus_chains"]}
     assert {"Ethereum", "Solana", "Base"} <= names
     assert defi["data"]["chain_count"] == 3
+
+    dexs = next(row for row in pack["sources"] if row["source_id"] == "EXT4")
+    assert dexs["data"]["total24h"] == 2500.0
+    assert dexs["data"]["top_dexs_by_24h_volume"][0]["name"] == "DEX A"
+    assert "totalDataChart" not in json.dumps(dexs["data"])
