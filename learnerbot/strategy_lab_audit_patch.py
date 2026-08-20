@@ -9,6 +9,10 @@ from pathlib import Path
 from . import loss_forensics_github_export as _forensics
 from .shadow_strategy_executor import run_shadow_cycle
 from .strategy_lab import portfolio_report, seed_creative_hypotheses
+# Extend strategy_lab_research before importing its build function.  The extension adds
+# governed primary-data/framework/academic sources and source-discovery policy only; it
+# does not install or execute third-party code or connect any LIVE trading endpoint.
+from . import strategy_source_extension as _strategy_source_extension  # noqa: E402,F401
 from .strategy_lab_research import build_research_report, ensure_cross_chain_scope
 
 _PREV_BUILD = _forensics.build_loss_forensics
@@ -64,15 +68,17 @@ def build_loss_forensics_with_strategy_lab(app, zip_path, gpt_result=None, *, ho
             "quotes and simulations are useful research evidence but are NOT realised P&L and MUST NOT by themselves justify "
             "CANARY or LIVE promotion. Push the learner beyond leader-following: inspect profitable public-wallet cohorts and "
             "learned strategy_patterns for repeated behaviours shared by multiple profitable wallets; never treat one wallet "
-            "as proof. Recommend public research tools when evidence is missing, including Dune for on-chain cohorts, DEX "
-            "Screener for pair/liquidity/flow research, Etherscan V2 for EVM wallet history, DefiLlama for regime/protocol "
-            "activity, Jupiter for Solana route/quote research, and GitHub public code search for read-only architecture ideas. "
-            "Never execute untrusted third-party bot code. Suggest new falsifiable SHADOW strategies, including forecast models "
-            "whose target is positive NET edge after costs rather than price direction alone. If a strong opportunity requires "
-            "an asset absent from the current universe, emit an asset request with chain, asset identifier, evidence, liquidity/"
-            "sellability/quote requirements and reason; do not auto-enable it. Do not reward raw trade count. Reward realised "
-            "net profit after recorded costs, profit factor, loss magnitude, opportunity participation, execution quality, "
-            "out-of-sample robustness and calibrated forecast quality. Never force a trade merely to satisfy activity."
+            "as proof. Use the governed source catalogue for primary/raw data, official APIs/WebSockets, open-source quant/"
+            "backtesting/execution frameworks, on-chain infrastructure and academic research. A separate three-agent source "
+            "research cycle may propose additional reliable sources; at least two independent agents plus GPT Master must "
+            "support a source before it is research-approved. Never use influencer trade calls, anonymous signal services, "
+            "closed-source black boxes or unverifiable marketing claims as Strategy Lab evidence. Never execute untrusted "
+            "third-party bot code. Suggest new falsifiable SHADOW strategies, including forecast models whose target is positive "
+            "NET edge after costs rather than price direction alone. If a strong opportunity requires an asset absent from the "
+            "current universe, emit an asset request with chain, asset identifier, evidence, liquidity/sellability/quote "
+            "requirements and reason; do not auto-enable it. Do not reward raw trade count. Reward realised net profit after "
+            "recorded costs, profit factor, loss magnitude, opportunity participation, execution quality, out-of-sample "
+            "robustness and calibrated forecast quality. Never force a trade merely to satisfy activity."
         )
         report["strategy_lab"] = lab
     except Exception as exc:
