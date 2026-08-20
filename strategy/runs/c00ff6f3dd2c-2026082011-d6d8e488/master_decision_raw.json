@@ -1,0 +1,144 @@
+{
+  "cycle_id": "c00ff6f3dd2c-2026082011-d6d8e488",
+  "decisions": [
+    {
+      "action": "REWORK",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_strategy_lab.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ],
+      "confidence": 0.96,
+      "disposition": "ACCEPT",
+      "finding_id": "cost-complete-strategy-ledger",
+      "reason": "Code confirms default net profit deducts only recorded fees and slippage, while promotion evaluation lacks explicit cost-completeness, chain segmentation, exposure duration, wallet reconciliation, and failure-cost checks. This can overstate strategy evidence. Any change must remain SHADOW-only.",
+      "required_tests": [
+        "pytest -q tests/test_strategy_lab.py tests/test_market_feature_shadow_executor.py"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:net-pnl-ledger-v2"
+      ],
+      "strategy": "Strategy Lab evaluation and lifecycle governance",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "allowed_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "tests/test_cross_chain_strategy_signals.py"
+      ],
+      "confidence": 0.95,
+      "disposition": "ACCEPT",
+      "finding_id": "cross-chain-executable-outcome-evidence",
+      "reason": "The proposals share one evidence objective and are consolidated. Solana currently emits unavailable zero-valued economics and fails closed; EVM records quote-derived simulated outcomes rather than later realised counterfactuals. SHADOW collection is warranted, but Gemini's three-window, twenty-opportunity minimum is insufficient and no promotion may follow without fresh, cost-reconciled out-of-sample evidence.",
+      "required_tests": [
+        "pytest -q tests/test_market_feature_shadow_executor.py tests/test_cross_chain_strategy_signals.py",
+        "Require at least 30 independent hourly windows and chain-segmented, fully costed observations before lifecycle reconsideration"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:solana-executable-edge-shadow",
+        "gpt:evm-realised-shadow-outcomes",
+        "gemini:shadow-baseline-eval"
+      ],
+      "strategy": "Cross-chain contemporaneous executable-edge and outcome capture",
+      "supporting_agents": [
+        "gpt",
+        "gemini"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "allowed_files": [],
+      "confidence": 0.98,
+      "disposition": "ACCEPT",
+      "finding_id": "retain-fail-closed-execution-gates",
+      "reason": "Source inspection confirms positive-edge, freshness, liquidity, sellability, simulation, impact, and fee protections. No measured evidence supports relaxing them to increase participation.",
+      "required_tests": [
+        "pytest -q tests/test_cross_chain_strategy_signals.py tests/test_solana_execution_safety.py tests/test_solana_execution_validation.py"
+      ],
+      "risk_class": "LOW",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:retain-fail-closed-execution"
+      ],
+      "strategy": "Chain-specific executability and abstention protections",
+      "supporting_agents": [
+        "gpt",
+        "gemini"
+      ]
+    },
+    {
+      "action": "DORMANT",
+      "allowed_files": [],
+      "confidence": 0.94,
+      "disposition": "REJECT",
+      "finding_id": "duplicate-liquidity-confirmed-momentum",
+      "reason": "Strategy Lab already seeds a materially equivalent Liquidity Confirmed Momentum SHADOW hypothesis. The proposal supplies no repository or runtime measurements establishing a distinct edge, and its small acceptance sample could produce an unsupported profitability claim.",
+      "required_tests": [],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:LCM-001"
+      ],
+      "strategy": "Liquidity Confirmed Momentum",
+      "supporting_agents": [
+        "copilot"
+      ]
+    },
+    {
+      "action": "DORMANT",
+      "allowed_files": [],
+      "confidence": 0.95,
+      "disposition": "REJECT",
+      "finding_id": "duplicate-new-pool-quality",
+      "reason": "Strategy Lab already seeds the equivalent New Liquidity Quality hypothesis with liquidity, sellability, holder/flow dispersion, and execution-quality gates. No measured evidence supports a duplicate implementation, the proposed observation period is sparse, and a zero-rug criterion does not establish positive cost-adjusted returns.",
+      "required_tests": [],
+      "risk_class": "HIGH",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:NPQ-002"
+      ],
+      "strategy": "New-Pool Quality Scoring",
+      "supporting_agents": [
+        "copilot"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "allowed_files": [],
+      "confidence": 0.88,
+      "disposition": "DEFER",
+      "finding_id": "wallet-cohort-universe-research",
+      "reason": "The code already groups route fingerprints across multiple wallets and rewards multi-wallet evidence, so the proposed cohort logic is partly present. Expansion of the input universe may be useful, but no cohort dataset, selection-bias analysis, independent out-of-sample results, or fully costed replication evidence is available.",
+      "required_tests": [
+        "pytest -q tests/test_strategy_lab_cross_chain_research.py"
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "copilot:WCP-003"
+      ],
+      "strategy": "Profitable-wallet cohort pattern extraction",
+      "supporting_agents": [
+        "copilot"
+      ]
+    }
+  ],
+  "draft_pr_only": true,
+  "evidence_sha256": "d6d8e48800d1e02f44901f12b047a9ab4b2e7131743164b0a088dafeb8723938",
+  "implementation_allowed": false,
+  "live_auto_deploy": false,
+  "schema_version": 1,
+  "source_commit": "c00ff6f3dd2c579403075af3b70825e8f3cbc917",
+  "status": "DRAFT_SHADOW_CHANGE",
+  "summary": "Architecture-only evidence supports improving cost reconciliation and collecting executable SHADOW outcomes while retaining fail-closed gates. No profitability, promotion, or live-readiness claim is supported. Two proposed strategies duplicate existing Strategy Lab hypotheses; wallet-cohort expansion requires more evidence."
+}
