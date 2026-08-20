@@ -1,0 +1,214 @@
+name: Immediate Three-Agent Program Audit
+
+on:
+  push:
+    branches:
+      - audit/three-agent-program-20260820-128fe91d
+    paths:
+      - '.ai/audit/RUN_NOW.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  gpt_gemini_audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out frozen production source
+        uses: actions/checkout@v4
+        with:
+          ref: 128fe91d2a0f2095be823d0a11a6f311e5593cfc
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install audit tools
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest @google/gemini-cli@latest
+          codex --version
+          gemini --version
+
+      - name: Deterministic baseline
+        shell: bash
+        run: |
+          set +e
+          python -m compileall -q learnerbot scripts tests > /tmp/compile.log 2>&1
+          echo $? > /tmp/compile.rc
+          timeout 25m pytest -q > /tmp/pytest.log 2>&1
+          echo $? > /tmp/pytest.rc
+          set -e
+          mkdir -p /tmp/program-audit
+          python - <<'PY' > /tmp/program-audit/baseline.json
+          import json, pathlib
+          def tail(p,n=12000):
+              s=pathlib.Path(p).read_text(errors='replace') if pathlib.Path(p).exists() else ''
+              return s[-n:]
+          print(json.dumps({
+            'source_commit':'128fe91d2a0f2095be823d0a11a6f311e5593cfc',
+            'compile_rc':int(pathlib.Path('/tmp/compile.rc').read_text().strip()),
+            'pytest_rc':int(pathlib.Path('/tmp/pytest.rc').read_text().strip()),
+            'compile_tail':tail('/tmp/compile.log'),
+            'pytest_tail':tail('/tmp/pytest.log')
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Build common audit prompt
+        shell: bash
+        run: |
+          cat > /tmp/program-audit/prompt.txt <<'PROMPT'
+          You are an INDEPENDENT engineering auditor of a multi-chain automated trading bot.
+          Audit the ENTIRE checked-out repository at frozen commit 128fe91d2a0f2095be823d0a11a6f311e5593cfc.
+          Inspect EVM and Solana execution, transaction construction, Jupiter quote/order/exit paths, accounting and realised P&L,
+          databases/state/concurrency, retries/timeouts/rate limits, sellability/liquidity guards, Telegram permissions/reporting,
+          Strategy Lab/shadow/canary boundaries, GitHub Actions/deployment, configuration loading, error handling and tests.
+          Read /tmp/program-audit/baseline.json. Prioritise concrete software defects that can cause avoidable monetary loss,
+          failed exits, incorrect balances/P&L, unsafe execution, missed trades, corrupted state, silent failures or misleading reports.
+          Do not tune a strategy merely because profit is disappointing. Do not recommend named-asset trades.
+          Every finding must cite concrete file/symbol/line evidence. Distinguish proven defects from hypotheses.
+          P0=immediate capital/security/data-integrity catastrophe; P1=serious correctness/safety defect;
+          P2=material reliability defect; P3=lower-risk bug/test/maintainability issue.
+          REPORT ONLY. Do not trade, deploy, push, commit, alter settings, touch secrets/wallet/signing material, or weaken safety gates.
+          Do not use network tools or external websites; inspect only this checkout and the supplied baseline.
+
+          Return one JSON object with this exact top-level shape:
+          {
+            "schema_version":1,
+            "provider":"PROVIDER",
+            "source_commit":"128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+            "scope":"FULL_REPOSITORY_BUG_AUDIT",
+            "status":"CLEAN|ISSUES_FOUND|INCOMPLETE",
+            "summary":"...",
+            "findings":[{
+              "id":"stable-id","severity":"P0|P1|P2|P3","category":"CORRECTNESS|SAFETY|EXECUTION|ACCOUNTING|CONCURRENCY|DATA|NETWORK|CONFIG|SECURITY|TESTS|PERFORMANCE|MAINTAINABILITY",
+              "title":"...","evidence":[{"file":"path","line":0,"symbol":"...","detail":"..."}],
+              "impact":"...","root_cause":"...","corrective_action":"...","tests_required":["..."],
+              "confidence":0.0,"deterministic_evidence":false
+            }],
+            "refusals_or_limits":["..."],"report_only":true,"no_live_changes":true
+          }
+          PROMPT
+
+      - name: GPT full-program audit
+        id: gpt
+        continue-on-error: true
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gpt"/' /tmp/program-audit/prompt.txt > /tmp/gpt-prompt.txt
+          cat >> /tmp/gpt-prompt.txt <<'EOF'
+          Inspect deeply using local repository tools. Your FINAL answer must contain exactly:
+          PROGRAM_AUDIT_JSON_BEGIN
+          {the required JSON object}
+          PROGRAM_AUDIT_JSON_END
+          EOF
+          model_args=()
+          if [[ -n "${OPENAI_WEEKLY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_WEEKLY_AUDIT_MODEL"); fi
+          set +e
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - < /tmp/gpt-prompt.txt > /tmp/program-audit/gpt.stdout 2> /tmp/program-audit/gpt.stderr
+          rc=$?
+          set -e
+          echo "$rc" > /tmp/program-audit/gpt.rc
+          git restore --source=HEAD --staged --worktree . || true
+          git clean -fdx || true
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/program-audit/gpt.stdout').read_text(errors='replace')
+          m=re.search(r'PROGRAM_AUDIT_JSON_BEGIN\s*(\{.*\})\s*PROGRAM_AUDIT_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT report markers missing')
+          p=json.loads(m.group(1));
+          assert p.get('provider')=='gpt' and p.get('source_commit')=='128fe91d2a0f2095be823d0a11a6f311e5593cfc' and p.get('scope')=='FULL_REPOSITORY_BUG_AUDIT'
+          pathlib.Path('/tmp/program-audit/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# GPT full-program audit','',p.get('summary','')]
+          for f in p.get('findings') or []: lines += ['',f"## {f.get('severity')} — {f.get('title')}",f.get('impact',''),'',f"Corrective action: {f.get('corrective_action','')}"]
+          pathlib.Path('/tmp/program-audit/gpt.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Gemini full-program audit
+        id: gemini
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_AUDIT_MODEL: ${{ vars.GEMINI_AUDIT_MODEL || 'gemini-3.1-pro-preview' }}
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gemini"/' /tmp/program-audit/prompt.txt > /tmp/gemini-prompt.txt
+          cat >> /tmp/gemini-prompt.txt <<'EOF'
+          Inspect deeply using local read-only repository tools. Your FINAL answer must contain exactly:
+          PROGRAM_AUDIT_JSON_BEGIN
+          {the required JSON object}
+          PROGRAM_AUDIT_JSON_END
+          EOF
+          gemini --approval-mode=plan --skip-trust --model "$GEMINI_AUDIT_MODEL" --output-format text -p "$(cat /tmp/gemini-prompt.txt)" > /tmp/program-audit/gemini.stdout 2> /tmp/program-audit/gemini.stderr
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/program-audit/gemini.stdout').read_text(errors='replace')
+          m=re.search(r'PROGRAM_AUDIT_JSON_BEGIN\s*(\{.*\})\s*PROGRAM_AUDIT_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Gemini report markers missing')
+          p=json.loads(m.group(1));
+          assert p.get('provider')=='gemini' and p.get('source_commit')=='128fe91d2a0f2095be823d0a11a6f311e5593cfc' and p.get('scope')=='FULL_REPOSITORY_BUG_AUDIT'
+          pathlib.Path('/tmp/program-audit/gemini.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# Gemini full-program audit','',p.get('summary','')]
+          for f in p.get('findings') or []: lines += ['',f"## {f.get('severity')} — {f.get('title')}",f.get('impact',''),'',f"Corrective action: {f.get('corrective_action','')}"]
+          pathlib.Path('/tmp/program-audit/gemini.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Build fail-visible status
+        if: always()
+        env:
+          GPT_OUTCOME: ${{ steps.gpt.outcome }}
+          GEMINI_OUTCOME: ${{ steps.gemini.outcome }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,pathlib
+          root=pathlib.Path('/tmp/program-audit'); root.mkdir(exist_ok=True)
+          p={'source_commit':'128fe91d2a0f2095be823d0a11a6f311e5593cfc','gpt':os.environ.get('GPT_OUTCOME'),'gemini':os.environ.get('GEMINI_OUTCOME'),'copilot_issue':109,'state':'WAITING_FOR_COPILOT' if os.environ.get('GPT_OUTCOME')=='success' and os.environ.get('GEMINI_OUTCOME')=='success' else 'PROVIDER_FAILURE','report_only':True,'no_live_changes':True}
+          (root/'status.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish audit reports to ai-reviews
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/program-ai-reviews
+          git worktree add --detach /tmp/program-ai-reviews origin/ai-reviews
+          dest=/tmp/program-ai-reviews/program-audit/runs/128fe91d2a0f2095be823d0a11a6f311e5593cfc
+          mkdir -p "$dest" /tmp/program-ai-reviews/program-audit
+          cp /tmp/program-audit/baseline.json "$dest/baseline.json"
+          cp /tmp/program-audit/status.json "$dest/status.json"
+          for f in gpt.json gpt.md gemini.json gemini.md gpt.stderr gemini.stderr; do [[ -f "/tmp/program-audit/$f" ]] && cp "/tmp/program-audit/$f" "$dest/$f"; done
+          cp /tmp/program-audit/status.json /tmp/program-ai-reviews/program-audit/latest_status.json
+          printf '%s\n' '128fe91d2a0f2095be823d0a11a6f311e5593cfc' > /tmp/program-ai-reviews/program-audit/latest_source_commit.txt
+          cd /tmp/program-ai-reviews
+          git config user.name immediate-program-audit-bot
+          git config user.email immediate-program-audit-bot@users.noreply.github.com
+          git add program-audit
+          if ! git diff --cached --quiet; then
+            git commit -m 'Immediate GPT Gemini program audit 128fe91d2a0f'
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
