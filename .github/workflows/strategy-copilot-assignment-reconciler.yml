@@ -110,7 +110,13 @@ jobs:
         run: |
           set -euo pipefail
           is_assigned() {
-            gh issue view "$ISSUE" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true
+            # GitHub currently normalises the requested copilot-swe-agent[bot]
+            # assignee to the display/login value "Copilot" on issues. Accept only
+            # those two exact identities; do not treat arbitrary "*copilot*" users
+            # as proof that the coding agent was assigned.
+            gh issue view "$ISSUE" --json assignees \
+              --jq '[.assignees[].login | ascii_downcase] | any(. == "copilot" or . == "copilot-swe-agent[bot]")' \
+              | grep -q true
           }
 
           state='AWAITING_ASSIGNMENT'
