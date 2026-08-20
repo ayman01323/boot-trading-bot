@@ -310,19 +310,21 @@ jobs:
           # Fall back to github.token so the step can still create the issue body
           # (assignment will simply be skipped and flagged in the kickoff record).
           GH_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN || github.token }}
-          HAS_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN != '' }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           SHORT_SHA: ${{ steps.source.outputs.short }}
         shell: bash
         run: |
           set -euo pipefail
           title="Weekly Copilot full-bot bug audit ${SHORT_SHA}"
+          has_assign_token="false"
+          [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && has_assign_token="true"
           existing="$(gh issue list --state all --search "${title} in:title" --limit 1 --json number,state --jq '.[0].number // empty')"
           if [[ -n "$existing" ]]; then
             issue="$existing"
             state="$(gh issue view "$issue" --json state --jq '.state')"
             if [[ "$state" == "CLOSED" ]]; then gh issue reopen "$issue"; fi
-            if [[ "${HAS_ASSIGN_TOKEN}" == "true" ]]; then
+            if [[ "${has_assign_token}" == "true" ]]; then
               gh issue edit "$issue" --add-assignee "@copilot"
               echo "Reused and assigned issue #${issue} to Copilot."
             else
@@ -353,7 +355,7 @@ jobs:
 
           Never trade, deploy, edit secrets/signing/wallet material, change capital, or weaken safety controls.
           EOF
-            if [[ "${HAS_ASSIGN_TOKEN}" == "true" ]]; then
+            if [[ "${has_assign_token}" == "true" ]]; then
               url="$(gh issue create --title "$title" --body-file /tmp/copilot-issue.md --assignee "@copilot")"
               issue="${url##*/}"
               echo "Created and assigned issue #${issue} to Copilot."
@@ -365,13 +367,14 @@ jobs:
             fi
           fi
           echo "number=${issue}" >> "$GITHUB_OUTPUT"
+          echo "has_assign_token=${has_assign_token}" >> "$GITHUB_OUTPUT"
 
       - name: Record Copilot kickoff status
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           ISSUE_NUMBER: ${{ steps.copilot.outputs.number }}
           COPILOT_OUTCOME: ${{ steps.copilot.outcome }}
-          HAS_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN != '' }}
+          HAS_ASSIGN_TOKEN: ${{ steps.copilot.outputs.has_assign_token }}
         shell: bash
         run: |
           python - <<'PY'
