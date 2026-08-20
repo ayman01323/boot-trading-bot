@@ -92,7 +92,7 @@ jobs:
           fi
           echo "number=$issue" >> "$GITHUB_OUTPUT"
 
-      - name: Assign Copilot with user-scoped token and verify
+      - name: Assign Copilot with user-scoped token and delayed verification
         if: steps.source.outputs.found == 'true'
         id: assign
         env:
@@ -104,9 +104,17 @@ jobs:
           set -euo pipefail
           reason=''
           state='AWAITING_ASSIGNMENT'
+
           is_assigned() {
-            gh issue view "$ISSUE" --json assignees --jq '[.assignees[].login] | any(. | test("copilot"; "i"))' | grep -q true
+            # GitHub can normalise copilot-swe-agent[bot] to the display/login
+            # value "Copilot" after assignment. Accept only those two exact
+            # identities so an unrelated account containing "copilot" cannot
+            # create a false positive.
+            gh issue view "$ISSUE" --json assignees \
+              --jq '[.assignees[].login | ascii_downcase] | any(. == "copilot" or . == "copilot-swe-agent[bot]")' \
+              | grep -q true
           }
+
           if is_assigned; then
             state='ASSIGNED'
             reason='Copilot is already assigned.'
@@ -114,7 +122,7 @@ jobs:
             state='BLOCKED_AUTH'
             reason='COPILOT_ASSIGN_TOKEN repository secret is missing.'
           else
-            payload="$(python - "$GITHUB_REPOSITORY" <<'PY'
+            agent_payload="$(python - "$GITHUB_REPOSITORY" <<'PY'
           import json,sys
           print(json.dumps({
             'assignees':['copilot-swe-agent[bot]'],
@@ -128,21 +136,51 @@ jobs:
           }))
           PY
           )"
+            simple_payload='{"assignees":["copilot-swe-agent[bot]"]}'
+
             set +e
             output="$(GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh api --method POST \
               -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
-              "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/assignees" --input - <<< "$payload" 2>&1)"
+              "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/assignees" --input - <<< "$agent_payload" 2>&1)"
             rc=$?
             set -e
-            if [[ $rc -eq 0 ]] && is_assigned; then
-              state='ASSIGNED'
-              reason='Copilot assignment verified with COPILOT_ASSIGN_TOKEN.'
-            else
-              state='BLOCKED_AUTH'
-              reason="Copilot assignment API failed: ${output:0:800}"
+
+            if [[ $rc -ne 0 ]]; then
+              set +e
+              fallback="$(GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh api --method POST \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "/repos/${GITHUB_REPOSITORY}/issues/${ISSUE}/assignees" --input - <<< "$simple_payload" 2>&1)"
+              fallback_rc=$?
+              set -e
+              output="primary=${output:0:450}; simple_fallback=${fallback:0:450}"
+              [[ $fallback_rc -eq 0 ]] && rc=0
+            fi
+
+            # GitHub assignment propagation is eventually consistent. Do not call a
+            # successful API submission BLOCKED_AUTH just because the assignee is not
+            # immediately visible.
+            for delay in 0 5 10 20; do
+              [[ "$delay" == 0 ]] || sleep "$delay"
+              if is_assigned; then
+                state='ASSIGNED'
+                reason='Copilot assignment verified after REST assignment and delayed checks.'
+                break
+              fi
+            done
+
+            if [[ "$state" != 'ASSIGNED' ]]; then
+              if [[ $rc -eq 0 ]]; then
+                state='AWAITING_ASSIGNMENT'
+                reason='Copilot assignment API accepted the request, but the assignee is not visible yet; the 10-minute reconciler will retry verification.'
+              else
+                state='BLOCKED_AUTH'
+                reason="Copilot assignment API failed: ${output:0:800}"
+              fi
             fi
           fi
+
           echo "state=$state" >> "$GITHUB_OUTPUT"
           printf '%s' "$reason" > /tmp/copilot-assignment-reason.txt
           echo "Engineering Copilot issue #${ISSUE}: ${state}"
