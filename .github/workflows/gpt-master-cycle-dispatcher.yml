@@ -1,0 +1,52 @@
+name: GPT Master Cycle Dispatcher
+
+on:
+  schedule:
+    - cron: '3-59/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gpt-master-cycle-dispatcher
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Find current Copilot report PR and dispatch GPT Master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cycle="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
+            --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
+          test -n "$cycle"
+
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${cycle}/master_decision.json?ref=ai-reviews" \
+              >/dev/null 2>&1; then
+            echo "Master decision already exists for ${cycle}."
+            exit 0
+          fi
+
+          # Copilot controls its PR wording, so discover by the immutable cycle id only.
+          pr="$(gh pr list --state open --search "${cycle} in:title" --limit 20 \
+            --json number,title --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            echo "No open Copilot report PR containing cycle ${cycle}; retry on next dispatcher tick."
+            exit 0
+          fi
+
+          echo "Dispatching GPT Master for cycle=${cycle} copilot_pr=${pr}"
+          gh workflow run gpt-master-strategy-action.yml \
+            --ref main \
+            -f copilot_pr_number="$pr"
