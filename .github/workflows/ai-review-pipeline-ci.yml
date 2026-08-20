@@ -37,14 +37,16 @@ jobs:
           gemini --version
 
       - name: Verify GPT credential and Codex non-interactive invocation
+        id: gpt
+        continue-on-error: true
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_STRATEGY_AUDIT_MODEL: ${{ vars.OPENAI_STRATEGY_AUDIT_MODEL }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-            echo 'OPENAI_API_KEY is missing from repository Actions secrets.' >&2
+          if [[ -z "${CODEX_API_KEY:-}" ]]; then
+            echo 'OPENAI_API_KEY source secret is missing from repository Actions secrets.' >&2
             exit 20
           fi
           model_args=()
@@ -54,6 +56,8 @@ jobs:
           grep -q 'AI_PIPELINE_GPT_OK' /tmp/codex-smoke.txt
 
       - name: Verify Gemini credential and read-only invocation
+        id: gemini
+        continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_STRATEGY_MODEL: ${{ vars.GEMINI_STRATEGY_MODEL || 'gemini-3.1-pro-preview' }}
@@ -79,3 +83,15 @@ jobs:
           else
             echo 'WARNING: COPILOT_ASSIGN_TOKEN is not configured; hourly cycles will publish BLOCKED_COPILOT_AUTH until Copilot is assigned by a user-scoped token or manually.'
           fi
+
+      - name: Require both model providers to work
+        env:
+          GPT_OUTCOME: ${{ steps.gpt.outcome }}
+          GEMINI_OUTCOME: ${{ steps.gemini.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GPT smoke outcome: ${GPT_OUTCOME}"
+          echo "Gemini smoke outcome: ${GEMINI_OUTCOME}"
+          [[ "$GPT_OUTCOME" == 'success' ]]
+          [[ "$GEMINI_OUTCOME" == 'success' ]]
