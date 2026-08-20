@@ -1,0 +1,270 @@
+name: Immediate Hourly Report Failure Three-Agent Audit
+
+on:
+  push:
+    branches:
+      - audit/hourly-report-failure-20260820
+    paths:
+      - '.ai/hourly-failure/RUN_NOW.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: immediate-hourly-report-failure-audit
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CYCLE_ID: 128fe91d2a0f-2026082003-425a8d76
+      SOURCE_SHA: 128fe91d2a0f2095be823d0a11a6f311e5593cfc
+      MASTER_RUN_ID: '32328146903'
+      TERM: xterm-256color
+
+    steps:
+      - name: Check out exact failed-cycle source
+        uses: actions/checkout@v4
+        with:
+          ref: 128fe91d2a0f2095be823d0a11a6f311e5593cfc
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install diagnostic agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
+          npm install -g @openai/codex@latest @google/gemini-cli@latest
+          codex --version
+          gemini --version
+          rg --version | head -1
+
+      - name: Assemble identical failure evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=/tmp/hourly-failure-evidence
+          mkdir -p "$root"
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+
+          for f in gpt.json gemini.json context.json; do
+            git show "origin/ai-reviews:strategy/runs/${CYCLE_ID}/${f}" > "$root/${f}" || true
+          done
+          git show origin/ai-reviews:strategy/latest_status.json > "$root/latest_status.json" || true
+
+          set +e
+          git ls-remote --exit-code --heads origin audit-status > "$root/audit_status_branch.txt" 2>&1
+          audit_status_rc=$?
+          set -e
+          printf 'audit_status_branch_rc=%s\n' "$audit_status_rc" >> "$root/audit_status_branch.txt"
+
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${MASTER_RUN_ID}" > "$root/gpt_master_run.json" || true
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/108" > "$root/copilot_pr_108.json" || true
+          gh api "repos/${GITHUB_REPOSITORY}/issues/107" > "$root/copilot_issue_107.json" || true
+          gh run list --workflow hourly-three-agent-strategy-cycle.yml --limit 6 \
+            --json databaseId,status,conclusion,event,createdAt,updatedAt,headSha,displayTitle > "$root/hourly_runs.json" || true
+
+          cp .github/workflows/hourly-three-agent-strategy-cycle.yml "$root/hourly-three-agent-strategy-cycle.yml"
+          cp .github/workflows/gpt-master-strategy-action.yml "$root/gpt-master-strategy-action.yml"
+          cp .github/workflows/hourly-gemini-strategy-review.yml "$root/hourly-gemini-strategy-review.yml"
+          cp learnerbot/loss_forensics_github_export.py "$root/loss_forensics_github_export.py"
+          cp learnerbot/transaction_audit_worker_patch.py "$root/transaction_audit_worker_patch.py"
+
+          cat > "$root/manifest.md" <<EOF
+          # Failed hourly cycle evidence
+          Cycle: ${CYCLE_ID}
+          Frozen source: ${SOURCE_SHA}
+          Failed-cycle observed outcomes:
+          - GPT report status: INCOMPLETE. Recorded failure mentions Codex local command sandbox / bwrap loopback RTM_NEWADDR and inability to write .strategy_cycle/gpt.json.
+          - Gemini report status: INCOMPLETE. Published diagnostic did not expose a useful root cause beyond terminal/ripgrep warnings.
+          - Copilot issue #107 was created and, after external assignment, Copilot completed draft PR #108 with exactly two strategy report files.
+          - ai-reviews latest_status remained BLOCKED_COPILOT_AUTH even after Copilot completed, so the ledger did not reconcile later success.
+          - GPT Master run ${MASTER_RUN_ID} was triggered by PR #108 but ended conclusion=action_required before a useful adjudication job ran.
+          - audit-status has been observed missing; this prevents fresh runtime forensics and forces architecture-only evidence.
+
+          Required audit question: WHY did the hourly end-to-end report pipeline fail, including each independent failure and the dependency chain? Identify exact source/workflow causes, distinguish proven causes from hypotheses, prescribe bounded fixes, and specify tests that prove the complete :17 -> GPT+Gemini -> Copilot -> GPT Master -> ai-reviews/Telegram flow succeeds.
+          EOF
+
+      - name: Build shared diagnostic prompt
+        shell: bash
+        run: |
+          cat > /tmp/hourly-failure-prompt.txt <<'PROMPT'
+          You are one of three INDEPENDENT engineering auditors. Diagnose a failed hourly multi-agent trading-bot report pipeline.
+          This is NOT a strategy-tuning task and NOT a request to trade. It is a software/operations root-cause audit.
+
+          Inspect the exact repository checkout and ALL files under /tmp/hourly-failure-evidence. In particular inspect:
+          - the actual failed GPT and Gemini JSON reports;
+          - latest_status.json;
+          - audit_status_branch.txt;
+          - GPT Master run metadata;
+          - Copilot issue/PR metadata;
+          - hourly-three-agent-strategy-cycle.yml;
+          - gpt-master-strategy-action.yml;
+          - hourly-gemini-strategy-review.yml;
+          - loss_forensics_github_export.py and transaction_audit_worker_patch.py.
+
+          Trace the complete dependency chain:
+          VPS runtime forensics -> audit-status -> :17 scheduler -> GPT -> Gemini -> Copilot issue/assignment -> Copilot report PR -> GPT Master -> ai-reviews state -> Telegram visibility.
+
+          For each failure, determine whether it is PROVEN from evidence or a HYPOTHESIS. Do not blame missing API keys unless evidence proves it. Do not confuse missing fresh runtime evidence with inability to perform architecture-only review. Check whether status publishing can become stale or contradictory after later Copilot success. Check why GPT Master was action_required, including event/permissions/workflow syntax/CLI invocation issues visible in source or metadata.
+
+          Produce a FULL report. Every root cause must have concrete evidence, exact corrective action, exact files/steps affected, and verification tests. Include a recommended fix order that restores the end-to-end pipeline with the fewest moving parts.
+
+          REPORT ONLY. Do not modify tracked files, commit, push, deploy, trade, touch secrets/wallets/signing, change capital/risk settings, or weaken safety controls. Do not use external web research.
+
+          Final JSON shape:
+          {
+            "schema_version":1,
+            "provider":"PROVIDER",
+            "scope":"HOURLY_REPORT_PIPELINE_FAILURE_AUDIT",
+            "cycle_id":"128fe91d2a0f-2026082003-425a8d76",
+            "source_commit":"128fe91d2a0f2095be823d0a11a6f311e5593cfc",
+            "status":"ROOT_CAUSES_FOUND|NO_CAUSE_FOUND|INCOMPLETE",
+            "executive_summary":"...",
+            "root_causes":[{
+              "id":"...",
+              "severity":"P0|P1|P2|P3",
+              "component":"VPS_FORENSICS|SCHEDULER|GPT|GEMINI|COPILOT|GPT_MASTER|STATUS_LEDGER|TELEGRAM|WORKFLOW",
+              "classification":"PROVEN|HYPOTHESIS",
+              "symptom":"...",
+              "evidence":[{"source":"file/run/path","detail":"specific proof"}],
+              "root_cause":"...",
+              "impact":"...",
+              "corrective_action":"...",
+              "exact_files_or_steps":["..."],
+              "tests_required":["..."],
+              "confidence":0.0
+            }],
+            "failure_chain":["ordered dependency explanation"],
+            "fix_order":[{"order":1,"action":"...","why_first":"..."}],
+            "end_to_end_verification":["specific test/check"],
+            "remaining_unknowns":["..."],
+            "report_only":true,
+            "no_live_changes":true
+          }
+          PROMPT
+
+      - name: GPT independent failure audit
+        id: gpt
+        continue-on-error: true
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gpt"/' /tmp/hourly-failure-prompt.txt > /tmp/gpt-hourly-failure-prompt.txt
+          cat >> /tmp/gpt-hourly-failure-prompt.txt <<'EOF'
+          Your FINAL answer must contain exactly one report between:
+          HOURLY_FAILURE_JSON_BEGIN
+          {the required JSON object}
+          HOURLY_FAILURE_JSON_END
+          EOF
+          model_args=()
+          if [[ -n "${OPENAI_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_AUDIT_MODEL"); fi
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+            < /tmp/gpt-hourly-failure-prompt.txt > /tmp/gpt-hourly-failure.stdout 2> /tmp/gpt-hourly-failure.stderr
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/gpt-hourly-failure.stdout').read_text(errors='replace')
+          m=re.search(r'HOURLY_FAILURE_JSON_BEGIN\s*(\{.*\})\s*HOURLY_FAILURE_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT diagnostic JSON markers missing')
+          p=json.loads(m.group(1))
+          assert p.get('provider')=='gpt' and p.get('scope')=='HOURLY_REPORT_PIPELINE_FAILURE_AUDIT'
+          pathlib.Path('/tmp/gpt-hourly-failure.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# GPT hourly report failure audit','',p.get('executive_summary','')]
+          for f in p.get('root_causes') or []:
+              lines += ['',f"## {f.get('severity')} {f.get('id')} — {f.get('component')}",f.get('symptom',''),'',f"Root cause: {f.get('root_cause','')}",f"Fix: {f.get('corrective_action','')}"]
+          pathlib.Path('/tmp/gpt-hourly-failure.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Gemini independent failure audit
+        id: gemini
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_AUDIT_MODEL: ${{ vars.GEMINI_AUDIT_MODEL || 'gemini-3.1-pro-preview' }}
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gemini"/' /tmp/hourly-failure-prompt.txt > /tmp/gemini-hourly-failure-prompt.txt
+          cat >> /tmp/gemini-hourly-failure-prompt.txt <<'EOF'
+          Your FINAL response must contain exactly one report between:
+          HOURLY_FAILURE_JSON_BEGIN
+          {the required JSON object}
+          HOURLY_FAILURE_JSON_END
+          EOF
+          gemini --approval-mode=plan --skip-trust --model "$GEMINI_AUDIT_MODEL" --output-format text \
+            -p "$(cat /tmp/gemini-hourly-failure-prompt.txt)" > /tmp/gemini-hourly-failure.stdout 2> /tmp/gemini-hourly-failure.stderr
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('/tmp/gemini-hourly-failure.stdout').read_text(errors='replace')
+          m=re.search(r'HOURLY_FAILURE_JSON_BEGIN\s*(\{.*\})\s*HOURLY_FAILURE_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Gemini diagnostic JSON markers missing')
+          p=json.loads(m.group(1))
+          assert p.get('provider')=='gemini' and p.get('scope')=='HOURLY_REPORT_PIPELINE_FAILURE_AUDIT'
+          pathlib.Path('/tmp/gemini-hourly-failure.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# Gemini hourly report failure audit','',p.get('executive_summary','')]
+          for f in p.get('root_causes') or []:
+              lines += ['',f"## {f.get('severity')} {f.get('id')} — {f.get('component')}",f.get('symptom',''),'',f"Root cause: {f.get('root_cause','')}",f"Fix: {f.get('corrective_action','')}"]
+          pathlib.Path('/tmp/gemini-hourly-failure.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Publish GPT and Gemini diagnostic reports
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GPT_OUTCOME: ${{ steps.gpt.outcome }}
+          GEMINI_OUTCOME: ${{ steps.gemini.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/hourly-failure-reviews
+          git worktree add --detach /tmp/hourly-failure-reviews origin/ai-reviews
+          dest="/tmp/hourly-failure-reviews/hourly-failure-audit/runs/${CYCLE_ID}"
+          mkdir -p "$dest" /tmp/hourly-failure-reviews/hourly-failure-audit
+          for f in gpt-hourly-failure.json gpt-hourly-failure.md gemini-hourly-failure.json gemini-hourly-failure.md; do
+            [[ -f "/tmp/$f" ]] && cp "/tmp/$f" "$dest/${f#*-hourly-failure.}" || true
+          done
+          python - <<PY > "$dest/status.json"
+          import json
+          print(json.dumps({
+            'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}',
+            'gpt':'${GPT_OUTCOME}','gemini':'${GEMINI_OUTCOME}',
+            'copilot_issue':110,'state':'WAITING_FOR_COPILOT_REPORT',
+            'report_only':True,'no_live_changes':True
+          },indent=2,sort_keys=True))
+          PY
+          cp "$dest/status.json" /tmp/hourly-failure-reviews/hourly-failure-audit/latest_status.json
+          cd /tmp/hourly-failure-reviews
+          git config user.name hourly-failure-audit-bot
+          git config user.email hourly-failure-audit-bot@users.noreply.github.com
+          git add hourly-failure-audit
+          if ! git diff --cached --quiet; then
+            git commit -m "GPT Gemini hourly failure audit ${CYCLE_ID}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
