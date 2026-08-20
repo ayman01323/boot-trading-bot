@@ -47,16 +47,16 @@ jobs:
       - name: Provider credential preflight
         id: creds
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ -n "${OPENAI_API_KEY:-}" ]] && echo 'openai=true' >> "$GITHUB_OUTPUT" || echo 'openai=false' >> "$GITHUB_OUTPUT"
+          [[ -n "${CODEX_API_KEY:-}" ]] && echo 'openai=true' >> "$GITHUB_OUTPUT" || echo 'openai=false' >> "$GITHUB_OUTPUT"
           [[ -n "${GEMINI_API_KEY:-}" ]] && echo 'gemini=true' >> "$GITHUB_OUTPUT" || echo 'gemini=false' >> "$GITHUB_OUTPUT"
           [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && echo 'copilot_token=true' >> "$GITHUB_OUTPUT" || echo 'copilot_token=false' >> "$GITHUB_OUTPUT"
-          echo "OpenAI credential present: $([[ -n "${OPENAI_API_KEY:-}" ]] && echo yes || echo no)"
+          echo "Codex API credential present: $([[ -n "${CODEX_API_KEY:-}" ]] && echo yes || echo no)"
           echo "Gemini credential present: $([[ -n "${GEMINI_API_KEY:-}" ]] && echo yes || echo no)"
           echo "Copilot assignment credential present: $([[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && echo yes || echo no)"
 
@@ -174,7 +174,7 @@ jobs:
         id: gpt
         continue-on-error: true
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_STRATEGY_AUDIT_MODEL: ${{ vars.OPENAI_STRATEGY_AUDIT_MODEL }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
@@ -182,8 +182,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-            echo 'OPENAI_API_KEY_MISSING' > .strategy_cycle/gpt_error.txt
+          if [[ -z "${CODEX_API_KEY:-}" ]]; then
+            echo 'OPENAI_API_KEY_SOURCE_SECRET_MISSING' > .strategy_cycle/gpt_error.txt
             exit 20
           fi
           sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .strategy_cycle/prompt.txt > /tmp/gpt-prompt.txt
@@ -215,8 +215,8 @@ jobs:
           import json,os,re,pathlib
           pth=pathlib.Path('.strategy_cycle/gpt_error.txt')
           raw=pth.read_text(errors='replace')[-1800:] if pth.exists() else ''
-          raw=re.sub(r'sk-[A-Za-z0-9_-]{8,}', '<redacted>', raw)
-          reason='OPENAI_API_KEY missing' if os.environ.get('OPENAI_PRESENT')!='true' else (raw.strip() or 'GPT step failed without stderr')
+          raw=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}', '<redacted>', raw)
+          reason='OpenAI/Codex API credential missing' if os.environ.get('OPENAI_PRESENT')!='true' else (raw.strip() or 'GPT step failed without stderr')
           p={'schema_version':1,'provider':'gpt','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'THREE_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'GPT report failed.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1500]],'review_only':True,'no_live_changes':True}
           pathlib.Path('.strategy_cycle/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
           pathlib.Path('.strategy_cycle/gpt.md').write_text('# GPT strategy review\n\nINCOMPLETE\n\n'+reason[:1500]+'\n')
