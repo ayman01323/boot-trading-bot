@@ -1,0 +1,78 @@
+name: AI Review Pipeline Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/hourly-three-agent-strategy-cycle.yml'
+      - '.github/workflows/ai-review-pipeline-ci.yml'
+      - 'tests/test_hourly_three_agent_workflow_contract.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Workflow contract tests
+        run: pytest -q tests/test_hourly_three_agent_workflow_contract.py
+
+      - name: Install current provider CLIs
+        run: |
+          npm install -g @openai/codex@latest @google/gemini-cli@latest
+          codex --version
+          gemini --version
+
+      - name: Verify GPT credential and Codex non-interactive invocation
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_STRATEGY_AUDIT_MODEL: ${{ vars.OPENAI_STRATEGY_AUDIT_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo 'OPENAI_API_KEY is missing from repository Actions secrets.' >&2
+            exit 20
+          fi
+          model_args=()
+          if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
+          printf 'Inspect nothing. Reply with exactly AI_PIPELINE_GPT_OK and do not run tools.\n' |
+            codex --ask-for-approval never exec --sandbox read-only --ephemeral "${model_args[@]}" - > /tmp/codex-smoke.txt
+          grep -q 'AI_PIPELINE_GPT_OK' /tmp/codex-smoke.txt
+
+      - name: Verify Gemini credential and read-only invocation
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_STRATEGY_MODEL: ${{ vars.GEMINI_STRATEGY_MODEL || 'gemini-3.1-pro-preview' }}
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
+            echo 'GEMINI_API_KEY is missing from repository Actions secrets.' >&2
+            exit 20
+          fi
+          gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
+            -p 'Inspect nothing. Reply with exactly AI_PIPELINE_GEMINI_OK and do not run tools.' > /tmp/gemini-smoke.txt
+          grep -q 'AI_PIPELINE_GEMINI_OK' /tmp/gemini-smoke.txt
+
+      - name: Copilot assignment credential status
+        env:
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            echo 'COPILOT_ASSIGN_TOKEN is configured.'
+          else
+            echo 'WARNING: COPILOT_ASSIGN_TOKEN is not configured; hourly cycles will publish BLOCKED_COPILOT_AUTH until Copilot is assigned by a user-scoped token or manually.'
+          fi
