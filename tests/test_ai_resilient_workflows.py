@@ -16,6 +16,10 @@ def test_engineering_copilot_reconciler_uses_user_scoped_assignment_token():
     assert "agent_assignment" in text
     assert "base_branch':'main'" in text
     assert "assignment_state" in text
+    assert "for delay in 0 5 10 20" in text
+    assert 'any(. == "copilot" or . == "copilot-swe-agent[bot]")' in text
+    assert "state='AWAITING_ASSIGNMENT'" in text
+    assert "API accepted the request" in text
 
 
 def test_engineering_agents_retry_every_thirty_minutes_on_same_source():
