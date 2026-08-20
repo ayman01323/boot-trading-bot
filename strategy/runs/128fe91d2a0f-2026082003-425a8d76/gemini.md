@@ -1,0 +1,6 @@
+# Gemini strategy review
+
+INCOMPLETE
+
+Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.
+Ripgrep is not available. Falling back to GrepTool.
