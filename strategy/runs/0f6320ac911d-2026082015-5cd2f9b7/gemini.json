@@ -1,0 +1,107 @@
+{
+  "cycle_id": "0f6320ac911d-2026082015-5cd2f9b7",
+  "evidence_gaps": [
+    "No current sanitised runtime forensics branch was available.",
+    "Lack of live profitability data.",
+    "Missing verifiable metrics for chain-specific slippage, latency reserve impact, and execution failure rates."
+  ],
+  "evidence_sha256": "5cd2f9b726b8510f1f19effe4d463c11377647e1d7d10f3c70b659af1665392c",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "High rate of failed transactions leading to gas/priority fee drain without realised edge.",
+      "evidence": [
+        {
+          "detail": "Cross Venue Net Arbitrage requires validation of assumed net_edge_bps against real chain-specific fees and slippage.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Quantified latency-driven slippage costs and realistic execution failure rates before canary promotion.",
+      "id": "prop-cross-venue-arb",
+      "minimum_observation": "24 hours",
+      "rationale": "Arbitrage strategies are highly sensitive to latency and execution costs. Without runtime forensics, we must validate whether the expected net edge survives actual chain conditions, particularly Solana priority fees and EVM gas dynamics.",
+      "shadow_test": "Simulate trades over a 24h window recording quoted vs. realised outcomes to measure deviation and execution failure rate. Stop if deviation > 50%.",
+      "strategy": "Cross Venue Net Arbitrage",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.75,
+      "downside_risk": "Replicating stale routes could lead to systematic adverse selection and net losses.",
+      "evidence": [
+        {
+          "detail": "strategy.py tracks learned pattern replicability.",
+          "path": "learnerbot/strategy.py"
+        },
+        {
+          "detail": "learned_route_replication logic depends on historical net positive average.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Determines if route replication has persistent forward edge or is purely a historical artifact.",
+      "id": "prop-learned-route",
+      "minimum_observation": "3 days",
+      "rationale": "Copying historical routes risks decay as market participants adapt. We need to shadow test if the historical average net bps persists in forward (out-of-sample) testing.",
+      "shadow_test": "Record shadow replication of historical routes and measure net edge after actual observed gas fees over a 3-day window. Abort if net edge goes negative.",
+      "strategy": "Learned Route Replication",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy.py"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Model overfitting leading to false positives and eroded capital in live environments.",
+      "evidence": [
+        {
+          "detail": "FORECAST_RESEARCH_SPEC defines requirements for out-of-sample forward testing and calibration.",
+          "path": "learnerbot/strategy_lab_research.py"
+        }
+      ],
+      "expected_effect": "Establishes baseline Brier score and precision/recall metrics for positive net edge predictions.",
+      "id": "prop-forecasted-edge",
+      "minimum_observation": "48 hours",
+      "rationale": "Forecasts require explicit out-of-sample forward testing to ensure uncertainty calibration is accurate and not overconfident in noisy markets.",
+      "shadow_test": "Evaluate shadow signals over 48h using strict time-ordered separation; require minimum 30 eligible opportunities. Measure probability calibration.",
+      "strategy": "Forecasted Positive Net Edge",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab_research.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Auto-enable new assets for New Liquidity Quality strategy",
+      "reason": "Violates bot policy of not auto-adding assets without human/lab approval, rigorous liquidity validation, and risk classification."
+    },
+    {
+      "idea": "Promote Profitable Wallet Pattern Transfer directly to LIVE",
+      "reason": "Violates the strict policy that every new strategy and cross-chain port must start in SHADOW and requires chain-specific cost models to be verified."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "0f6320ac911d26deb8f1827b228e6b8243cb6aad",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only review of cross-chain strategies and lab design. No live runtime forensics were provided, so no claims on live profitability or canary readiness can be made. Shadow testing is proposed for key hypotheses to gather necessary execution and cost-model evidence."
+}
