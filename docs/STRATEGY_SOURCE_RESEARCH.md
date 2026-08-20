@@ -19,9 +19,10 @@ they have already formed a strategy view.
 
 The initial fresh collectors are intentionally small and auditable:
 
-- **EXT1 — DefiLlama:** selected chain TVL / market-regime context from the public DefiLlama API;
+- **EXT1 — DefiLlama chain TVL:** selected chain TVL / market-regime context from the public DefiLlama API;
 - **EXT2 — GitHub:** public repository metadata from GitHub repository search for architecture/methodology research only;
-- **EXT3 — arXiv:** recent quantitative cryptocurrency research metadata/abstracts through the arXiv API.
+- **EXT3 — arXiv:** recent quantitative cryptocurrency research metadata/abstracts through the arXiv API;
+- **EXT4 — DefiLlama DEX volume:** compact current DEX-volume/activity context with large historical charts excluded.
 
 Every collected source records a source ID, canonical URL, UTC retrieval time, SHA-256 of the compacted source data,
 source class and safety flags. The combined pack also has an evidence SHA-256. Source failures are recorded rather than
