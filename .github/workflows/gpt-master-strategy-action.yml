@@ -345,16 +345,21 @@ jobs:
 
             redact_codex_error
             {
-              echo "::warning title=GPT Master synthesis attempt ${attempt} failed::Codex exit code ${rc}; retrying when attempts remain."
+              echo "::warning title=GPT Master synthesis attempt ${attempt} failed::Codex exit code ${rc}."
               tail -c 6000 /tmp/master.stderr.sanitized || true
             } >&2
+
+            if grep -qiE 'no credits remaining|insufficient_quota|billing_hard_limit_reached|invalid_api_key|authentication_error|incorrect api key|status code: (401|403)' /tmp/master.stderr.sanitized; then
+              echo "::error title=Non-retryable OpenAI API failure::Check API credits, billing and key validity before rerunning." >&2
+              break
+            fi
             if [[ $attempt -lt 3 ]]; then
               sleep "$((attempt * 15))"
             fi
           done
 
           if [[ $valid -ne 1 ]]; then
-            echo "::error title=GPT Master synthesis failed::No valid Master JSON after 3 attempts." >&2
+            echo "::error title=GPT Master synthesis failed::No valid Master JSON was produced." >&2
             if [[ $rc -eq 0 ]]; then rc=1; fi
             exit "$rc"
           fi
