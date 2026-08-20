@@ -1,0 +1,254 @@
+name: Master Failure Three-Agent Audit
+
+on:
+  push:
+    branches:
+      - audit/master-failure-20260820
+    paths:
+      - audit-trigger.md
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: master-failure-three-agent-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out isolated audit branch without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: audit/master-failure-20260820
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install audit provider CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep jq
+          npm install -g @openai/codex@latest @google/gemini-cli@latest
+          codex --version
+          gemini --version
+
+      - name: Collect the same current failure evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .master_failure
+          cycle='cf72037b0c66-2026082008-fc0284e1'
+          root="strategy/runs/${cycle}"
+          get_ai_file() {
+            local path="$1" out="$2"
+            if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" \
+              --jq '.content' > /tmp/encoded.txt 2>/tmp/gherr.txt; then
+              tr -d '\n' < /tmp/encoded.txt | base64 -d > "$out"
+            else
+              printf '%s\n' 'MISSING' > "$out"
+            fi
+          }
+          get_ai_file strategy/latest_status.json .master_failure/latest_status.json
+          get_ai_file "${root}/gpt.json" .master_failure/gpt.json
+          get_ai_file "${root}/gemini.json" .master_failure/gemini.json
+          get_ai_file "${root}/context.json" .master_failure/context.json
+          get_ai_file "${root}/master_decision.json" .master_failure/master_decision.json
+          gh pr view 120 --json number,title,state,isDraft,headRefName,headRefOid,baseRefName,author,files \
+            > .master_failure/copilot_pr120.json
+          gh pr diff 120 --name-only > .master_failure/copilot_pr120_files.txt
+          gh issue view 119 --json number,title,state,assignees > .master_failure/copilot_issue119.json
+          {
+            echo '# Current Master failure evidence'
+            echo
+            echo 'Source main commit expected: eeb90b3d572d2935fe4d04b7609bb2ebb254a523'
+            echo 'Reviewed hourly cycle: cf72037b0c66-2026082008-fc0284e1'
+            echo 'Known facts: GPT DONE; Gemini DONE; Copilot report PR #120 exists; master_decision.json has not appeared; latest status remained unreconciled at request time.'
+            echo
+            echo 'Inspect these repository files directly:'
+            echo '- .github/workflows/gpt-master-strategy-action.yml'
+            echo '- .github/workflows/gpt-master-cycle-dispatcher.yml'
+            echo '- .github/workflows/hourly-three-agent-strategy-cycle.yml'
+            echo '- tests/test_gpt_master_strategy_reconciler.py'
+            echo '- tests/test_gpt_master_cycle_dispatcher.py'
+            echo
+            echo 'Collected runtime/GitHub metadata is in .master_failure/*.json and *.txt.'
+          } > .master_failure/evidence.md
+
+      - name: Prepare root-cause prompt
+        shell: bash
+        run: |
+          cat > .master_failure/prompt.txt <<'EOF'
+          You are an independent engineering auditor. Diagnose why the GPT Master stage of this GitHub Actions hourly AI pipeline is not completing.
+
+          Inspect the checked-out repository, especially:
+          - .github/workflows/gpt-master-strategy-action.yml
+          - .github/workflows/gpt-master-cycle-dispatcher.yml
+          - .github/workflows/hourly-three-agent-strategy-cycle.yml
+          - tests/test_gpt_master_strategy_reconciler.py
+          - tests/test_gpt_master_cycle_dispatcher.py
+          - .master_failure/evidence.md
+          - .master_failure/latest_status.json
+          - .master_failure/gpt.json
+          - .master_failure/gemini.json
+          - .master_failure/context.json
+          - .master_failure/master_decision.json
+          - .master_failure/copilot_pr120.json
+          - .master_failure/copilot_pr120_files.txt
+          - .master_failure/copilot_issue119.json
+
+          Current source commit is eeb90b3d572d2935fe4d04b7609bb2ebb254a523.
+          Current hourly cycle is cf72037b0c66-2026082008-fc0284e1.
+          GPT and Gemini reports are complete. Copilot produced report-only PR #120. Yet master_decision.json was absent and latest_status was stale/unreconciled.
+
+          Determine the full failure chain, not just the first symptom. For every finding distinguish PROVEN from HYPOTHESIS. Check:
+          1. Whether the dispatcher can find PR #120 and whether its schedule/permissions/gh workflow run command can dispatch the Master workflow.
+          2. Whether workflow_dispatch input is actually available in gpt-master-strategy-action.yml and whether the Master resolves the correct PR.
+          3. Checkout/ref safety and whether Copilot's PR contains exactly the two allowed report files.
+          4. Contract validation against GPT/Gemini/Copilot cycle/source/evidence hashes.
+          5. Codex Master invocation/auth/sandbox/output extraction.
+          6. Deterministic policy gate.
+          7. Publishing to ai-reviews, including git credentials/rebase/push conflicts.
+          8. Why latest_status still says Copilot waiting even after PR #120 exists.
+          9. Any GitHub Actions approval/action_required behaviour still relevant.
+          10. The smallest safe repair and an end-to-end test that proves it.
+
+          REPORT ONLY. Do not edit tracked files, deploy, trade, or change live/risk/capital/wallet/signing settings. Do not use external web research.
+
+          Return exactly one JSON report between these markers:
+          MASTER_FAILURE_AUDIT_JSON_BEGIN
+          {
+            "provider":"PROVIDER",
+            "source_commit":"eeb90b3d572d2935fe4d04b7609bb2ebb254a523",
+            "cycle_id":"cf72037b0c66-2026082008-fc0284e1",
+            "status":"COMPLETE|INCOMPLETE",
+            "summary":"...",
+            "findings":[{
+              "severity":"P0|P1|P2|P3",
+              "symptom":"...",
+              "evidence":["specific file/step/fact"],
+              "proven_or_hypothesis":"PROVEN|HYPOTHESIS",
+              "root_cause":"...",
+              "impact":"...",
+              "exact_fix":"...",
+              "files_or_steps":["..."],
+              "tests":["..."],
+              "confidence":0.0
+            }],
+            "fix_order":["..."],
+            "proof_of_success":["three_agent_reports_complete=true","master_decision_available=true","master_decision.json exists","Telegram reads reconciled state"],
+            "report_only":true,
+            "no_live_changes":true
+          }
+          MASTER_FAILURE_AUDIT_JSON_END
+          EOF
+
+      - name: GPT independent Master failure audit
+        id: gpt
+        continue-on-error: true
+        env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_STRATEGY_AUDIT_MODEL: ${{ vars.OPENAI_STRATEGY_AUDIT_MODEL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${CODEX_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .master_failure/prompt.txt > /tmp/gpt-master-failure-prompt.txt
+          model_args=()
+          if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
+          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+            < /tmp/gpt-master-failure-prompt.txt > .master_failure/gpt_stdout.txt 2> .master_failure/gpt_stderr.txt
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('.master_failure/gpt_stdout.txt').read_text(errors='replace')
+          m=re.search(r'MASTER_FAILURE_AUDIT_JSON_BEGIN\s*(\{.*?\})\s*MASTER_FAILURE_AUDIT_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT audit JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.master_failure/gpt_report.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# GPT Master failure audit','',p.get('summary','')]
+          for i,f in enumerate(p.get('findings') or [],1):
+              lines += ['',f"## {i}. {f.get('severity')} — {f.get('proven_or_hypothesis')}",f.get('root_cause',''),'',f"Fix: {f.get('exact_fix','')}"]
+          pathlib.Path('.master_failure/gpt_report.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Gemini independent Master failure audit
+        id: gemini
+        continue-on-error: true
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_STRATEGY_MODEL: ${{ vars.GEMINI_STRATEGY_MODEL || 'gemini-3.1-pro-preview' }}
+          GEMINI_CLI_TRUST_WORKSPACE: 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          sed 's/"provider":"PROVIDER"/"provider":"gemini"/' .master_failure/prompt.txt > /tmp/gemini-master-failure-prompt.txt
+          gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
+            -p "$(cat /tmp/gemini-master-failure-prompt.txt)" > .master_failure/gemini_stdout.txt 2> .master_failure/gemini_stderr.txt
+          python - <<'PY'
+          import json,re,pathlib
+          raw=pathlib.Path('.master_failure/gemini_stdout.txt').read_text(errors='replace')
+          m=re.search(r'MASTER_FAILURE_AUDIT_JSON_BEGIN\s*(\{.*?\})\s*MASTER_FAILURE_AUDIT_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Gemini audit JSON markers missing')
+          p=json.loads(m.group(1))
+          pathlib.Path('.master_failure/gemini_report.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# Gemini Master failure audit','',p.get('summary','')]
+          for i,f in enumerate(p.get('findings') or [],1):
+              lines += ['',f"## {i}. {f.get('severity')} — {f.get('proven_or_hypothesis')}",f.get('root_cause',''),'',f"Fix: {f.get('exact_fix','')}"]
+          pathlib.Path('.master_failure/gemini_report.md').write_text('\n'.join(lines)+'\n')
+          PY
+
+      - name: Enforce report-only workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- . ':(exclude)audit-trigger.md'; then
+            echo 'AI audit modified tracked repository files; refusing publication.' >&2
+            exit 2
+          fi
+
+      - name: Publish GPT and Gemini audit reports to isolated branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ai/master-failure/gpt .ai/master-failure/gemini
+          if [[ -s .master_failure/gpt_report.json ]]; then
+            cp .master_failure/gpt_report.json .ai/master-failure/gpt/cf72037b0c66-2026082008-fc0284e1.json
+            cp .master_failure/gpt_report.md .ai/master-failure/gpt/cf72037b0c66-2026082008-fc0284e1.md
+          else
+            printf '{"provider":"gpt","status":"INCOMPLETE","summary":"GPT targeted audit failed to produce a valid report","report_only":true,"no_live_changes":true}\n' > .ai/master-failure/gpt/cf72037b0c66-2026082008-fc0284e1.json
+          fi
+          if [[ -s .master_failure/gemini_report.json ]]; then
+            cp .master_failure/gemini_report.json .ai/master-failure/gemini/cf72037b0c66-2026082008-fc0284e1.json
+            cp .master_failure/gemini_report.md .ai/master-failure/gemini/cf72037b0c66-2026082008-fc0284e1.md
+          else
+            printf '{"provider":"gemini","status":"INCOMPLETE","summary":"Gemini targeted audit failed to produce a valid report","report_only":true,"no_live_changes":true}\n' > .ai/master-failure/gemini/cf72037b0c66-2026082008-fc0284e1.json
+          fi
+          gh auth setup-git
+          git config user.name 'master-failure-audit-bot'
+          git config user.email 'master-failure-audit-bot@users.noreply.github.com'
+          git add .ai/master-failure
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish GPT Gemini Master failure audit reports'
+            git push origin HEAD:audit/master-failure-20260820
+          fi
