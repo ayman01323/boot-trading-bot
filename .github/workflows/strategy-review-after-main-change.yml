@@ -24,6 +24,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Every main change gets a fresh exact-source strategy review before any new strategy approval can be reused.
           sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
           echo "Current main: ${sha}"
           gh workflow run hourly-three-agent-strategy-cycle.yml --ref main
