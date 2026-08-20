@@ -2,7 +2,9 @@ name: Fresh Strategy Review After Main Change
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'agent/force-strategy-review*'
   workflow_dispatch:
 
 permissions:
@@ -24,7 +26,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Every main change gets a fresh exact-source strategy review before any new strategy approval can be reused.
+          # Every main change and explicit force-review trigger launches a fresh exact-main strategy cycle.
           sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
           echo "Current main: ${sha}"
           gh workflow run hourly-three-agent-strategy-cycle.yml --ref main
