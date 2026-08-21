@@ -1,0 +1,123 @@
+name: AI Provider API Preflight
+
+on:
+  push:
+    paths:
+      - '.github/ai-provider-preflight.trigger'
+  workflow_dispatch:
+  schedule:
+    - cron: '11 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-provider-api-preflight
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Check provider APIs without exposing credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=/tmp/ai-provider-preflight-${GITHUB_RUN_ID}
+          rm -rf "$tmp" && mkdir -p "$tmp"
+
+          check_openai() {
+            if [[ -z "${OPENAI_API_KEY:-}" ]]; then printf '0\nMISSING_SECRET\n' > "$tmp/openai.result"; return; fi
+            set +e
+            code="$(curl -sS -o "$tmp/openai.body" -w '%{http_code}' \
+              https://api.openai.com/v1/models \
+              -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+              -H 'Accept: application/json')"
+            rc=$?
+            set -e
+            printf '%s\n%s\n' "${code:-0}" "$rc" > "$tmp/openai.result"
+          }
+
+          check_anthropic() {
+            if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then printf '0\nMISSING_SECRET\n' > "$tmp/anthropic.result"; return; fi
+            set +e
+            code="$(curl -sS -o "$tmp/anthropic.body" -w '%{http_code}' \
+              https://api.anthropic.com/v1/models \
+              -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+              -H 'anthropic-version: 2023-06-01' \
+              -H 'Accept: application/json')"
+            rc=$?
+            set -e
+            printf '%s\n%s\n' "${code:-0}" "$rc" > "$tmp/anthropic.result"
+          }
+
+          check_deepseek() {
+            if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then printf '0\nMISSING_SECRET\n' > "$tmp/deepseek.result"; return; fi
+            set +e
+            code="$(curl -sS -o "$tmp/deepseek.body" -w '%{http_code}' \
+              https://api.deepseek.com/models \
+              -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+              -H 'Accept: application/json')"
+            rc=$?
+            set -e
+            printf '%s\n%s\n' "${code:-0}" "$rc" > "$tmp/deepseek.result"
+          }
+
+          check_openai
+          check_anthropic
+          check_deepseek
+
+          python3 - "$tmp" <<'PY' > "$tmp/status.json"
+          import json,re,sys,time,pathlib
+          root=pathlib.Path(sys.argv[1])
+          def one(name):
+              lines=(root/f'{name}.result').read_text(errors='replace').splitlines()
+              code=int(lines[0] or 0) if lines and lines[0].isdigit() else 0
+              marker=lines[1] if len(lines)>1 else ''
+              p=root/f'{name}.body'
+              raw=p.read_text(errors='replace')[-2500:] if p.exists() else ''
+              raw=re.sub(r'(?i)(api[_ -]?key|authorization|bearer|token)[^\n\"]*','[REDACTED]',raw)
+              detail=''
+              models=[]
+              try:
+                  body=json.loads(raw) if raw else {}
+                  if isinstance(body,dict):
+                      err=body.get('error')
+                      if isinstance(err,dict): detail=str(err.get('message') or err.get('type') or '')[:900]
+                      elif err: detail=str(err)[:900]
+                      data=body.get('data') or []
+                      if isinstance(data,list):
+                          models=[str(x.get('id')) for x in data if isinstance(x,dict) and x.get('id')][:30]
+              except Exception:
+                  detail=raw[:900]
+              if marker=='MISSING_SECRET': state='MISSING_SECRET'
+              elif 200 <= code < 300: state='WORKING'
+              elif code in {401,403}: state='AUTH_FAILED'
+              elif code in {402}: state='BILLING_BLOCKED'
+              elif code==429: state='RATE_OR_QUOTA_LIMITED'
+              elif code>=500: state='PROVIDER_ERROR'
+              else: state='FAILED'
+              return {'state':state,'http_status':code,'detail':detail,'models':models}
+          print(json.dumps({'checked_epoch':int(time.time()),'openai':one('openai'),'anthropic':one('anthropic'),'deepseek':one('deepseek')},indent=2,sort_keys=True))
+          PY
+
+          path='health/provider_api_preflight.json'
+          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+          current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+          sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$tmp/status.json")"
+          python3 - "$encoded" "$sha" <<'PY' > "$tmp/put.json"
+          import json,sys
+          p={'message':'Update AI provider API preflight','content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+          gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input "$tmp/put.json" >/dev/null
+          cat "$tmp/status.json"
+          rm -rf "$tmp"
