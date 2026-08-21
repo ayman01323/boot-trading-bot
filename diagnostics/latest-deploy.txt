@@ -1,90 +1,71 @@
-requested_sha=213e17b1928cfbcc15178cb8e56ad6d63dc2b266
-deploy_outcome=failure
-deploy_exit=10
-run_id=32475748840
-utc=2026-08-21T11:08:40Z
+requested_sha=4cad0ac970ca2649adb18c0ba02b2d01b69ced53
+deploy_outcome=success
+deploy_exit=0
+run_id=32477024444
+utc=2026-08-21T11:25:15Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T11:07:31Z BEGIN current=c1d8bbf8270854dfcb32e2def8fe51922b76698f requested=213e17b1928cfbcc15178cb8e56ad6d63dc2b266
+2026-08-21T11:24:18Z BEGIN current=c1d8bbf8270854dfcb32e2def8fe51922b76698f requested=4cad0ac970ca2649adb18c0ba02b2d01b69ced53
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   8846ac6..213e17b  main       -> origin/main
-Updating c1d8bbf..213e17b
+   213e17b..4cad0ac  main       -> origin/main
+Updating c1d8bbf..4cad0ac
 Fast-forward
- .github/workflows/claude-fourth-strategy-agent.yml      | 2 +-
- .github/workflows/claude-vps-analysis-retry.yml         | 4 ++--
- .github/workflows/hourly-three-agent-strategy-cycle.yml | 2 +-
- 3 files changed, 4 insertions(+), 4 deletions(-)
+ .github/workflows/claude-fourth-strategy-agent.yml |   2 +-
+ .github/workflows/claude-vps-analysis-retry.yml    |   4 +-
+ .../hourly-three-agent-strategy-cycle.yml          |   2 +-
+ learnerbot/__main__.py                             |   3 +
+ learnerbot/telegram_strategy_lab_report_patch.py   | 121 +++++++++++++++++++++
+ tests/test_claude_vps_analysis_retry.py            |   5 +-
+ tests/test_hourly_three_agent_strategy_workflow.py |   3 +-
+ tests/test_hourly_three_agent_workflow_contract.py |   4 +-
+ tests/test_telegram_strategy_lab_report.py         |  53 +++++++++
+ 9 files changed, 190 insertions(+), 7 deletions(-)
+ create mode 100644 learnerbot/telegram_strategy_lab_report_patch.py
+ create mode 100644 tests/test_telegram_strategy_lab_report.py
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-.................F......................................FF.............. [ 15%]
+........................................................................ [ 15%]
 ........................................................................ [ 30%]
-........................................................................ [ 46%]
+........................................................................ [ 45%]
 ........................................................................ [ 61%]
 ........................................................................ [ 76%]
-........................................................................ [ 92%]
-....................................                                     [100%]
-=================================== FAILURES ===================================
-___________ test_claude_vps_analysis_retry_is_read_only_and_bounded ____________
-
-    def test_claude_vps_analysis_retry_is_read_only_and_bounded() -> None:
-        text = (ROOT / '.github/workflows/claude-vps-analysis-retry.yml').read_text(encoding='utf-8')
-        assert 'runs-on: [self-hosted, linux, x64, boot-vps]' in text
-        assert 'sudo /usr/local/sbin/status-boot-trading-bot' in text
-        assert '--permission-mode plan' in text
-        assert '--max-turns 3' in text
-        assert 'Do not use tools; answer from the supplied context only.' in text
-        assert 'claude_analysis_available' in text
-        assert 'claude_analysis_turn_limit' in text
-        assert "d.get('action')=='inspect'" in text
-        assert "d.get('status')=='SUCCESS'" in text
-        assert '[REDACTED SENSITIVE LINE]' in text
-    
-        sudo_lines = [line.strip() for line in text.splitlines() if line.strip().startswith('sudo ')]
->       assert sudo_lines == ['sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-retry-status.txt 2>&1']
-E       AssertionError: assert ['sudo /usr/l...2>&1 || true'] == ['sudo /usr/l...tus.txt 2>&1']
-E         
-E         At index 0 diff: 'sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-retry-status.txt 2>&1 || true' != 'sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-retry-status.txt 2>&1'
-E         Use -v to get more diff
-
-tests/test_claude_vps_analysis_retry.py:20: AssertionError
-_ test_hourly_three_agent_strategy_cycle_is_independent_of_weekly_engineering __
-
-    def test_hourly_three_agent_strategy_cycle_is_independent_of_weekly_engineering():
-        text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "hourly-three-agent-strategy-cycle.yml").read_text(encoding="utf-8")
-    
->       assert "cron: '17 * * * *'" in text
-E       assert "cron: '17 * * * *'" in "name: Hourly Three-Agent Strategy Cycle\n\non:\n  schedule:\n    - cron: '17 */4 * * *'\n  workflow_dispatch:\n\nperm...       run: rm -rf .strategy_cycle /tmp/hourly-ai-reviews /tmp/gpt-prompt.txt /tmp/gemini-prompt.txt /tmp/copilot.md\n"
-
-tests/test_hourly_three_agent_strategy_workflow.py:7: AssertionError
-______ test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent ______
-
-    def test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent():
-        text = _text()
->       assert "cron: '17 * * * *'" in text
-E       assert "cron: '17 * * * *'" in "name: Hourly Three-Agent Strategy Cycle\n\non:\n  schedule:\n    - cron: '17 */4 * * *'\n  workflow_dispatch:\n\nperm...       run: rm -rf .strategy_cycle /tmp/hourly-ai-reviews /tmp/gpt-prompt.txt /tmp/gemini-prompt.txt /tmp/copilot.md\n"
-
-tests/test_hourly_three_agent_workflow_contract.py:13: AssertionError
+........................................................................ [ 91%]
+.......................................                                  [100%]
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_claude_vps_analysis_retry.py::test_claude_vps_analysis_retry_is_read_only_and_bounded
-FAILED tests/test_hourly_three_agent_strategy_workflow.py::test_hourly_three_agent_strategy_cycle_is_independent_of_weekly_engineering
-FAILED tests/test_hourly_three_agent_workflow_contract.py::test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent
-3 failed, 465 passed, 1 warning in 38.95s
-2026-08-21T11:08:19Z TESTS FAILED; service remains on old running process
-HEAD is now at c1d8bbf Merge PR #206: retry bounded Claude VPS analysis
+471 passed, 1 warning in 33.37s
+2026-08-21T11:24:59Z TESTS PASSED; restarting learnerbot
+2026-08-21T11:25:03Z SUCCESS sha=4cad0ac970ca2649adb18c0ba02b2d01b69ced53 version=2.3.10 service=active
+     Active: active (running) since Fri 2026-08-21 12:24:59 BST; 4s ago
+   Main PID: 360608 (python)
+      Tasks: 20 (limit: 5869)
+     Memory: 531.0M (peak: 542.9M)
+        CPU: 3.442s
+     CGroup: /system.slice/learnerbot.service
+             └─360608 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [telegram-account] tid=461513364 role=USER status=ACTIVE can_auto=true evm_wallet=false evm_signing_file=false sol_wallet=true sol_signing=true sol_live=false sibot_on=true sibot_auto=false evm_exec_24h=0 sol_buy_24h=0 sol_sell_24h=0 mirroring=false
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [config] CSVbot configuration loaded/reloaded
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T11:08:36Z
+UTC: 2026-08-21T11:25:13Z
 branch: main
-sha:    c1d8bbf8270854dfcb32e2def8fe51922b76698f
+sha:    4cad0ac970ca2649adb18c0ba02b2d01b69ced53
 origin: git@github.com:ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -93,21 +74,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 11:50:50 BST; 17min ago
-   Main PID: 353692 (python)
+     Active: active (running) since Fri 2026-08-21 12:24:59 BST; 14s ago
+   Main PID: 360608 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 645.9M (peak: 749.8M)
-        CPU: 13min 16.077s
+     Memory: 591.1M (peak: 611.3M)
+        CPU: 11.959s
      CGroup: /system.slice/learnerbot.service
-             └─353692 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─360608 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 12:07:39 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:07:44 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:07:48 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:07:52 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:08:03 mint.yesgoodwill.com python[353692]: [learn:base] patterns=537
-Aug 21 12:08:08 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:08:11 mint.yesgoodwill.com python[353692]: [fast-market-scan] direct=4 merged=4 eligible=4 auto-events=0 seconds=79.693
-Aug 21 12:08:12 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:08:15 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:08:18 mint.yesgoodwill.com python[353692]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 21 12:24:59 mint.yesgoodwill.com python[360608]: [config] CSVbot configuration loaded/reloaded
+Aug 21 12:25:04 mint.yesgoodwill.com python[360608]: [scan:bsc] 115379902..115379911 tx=586
+Aug 21 12:25:05 mint.yesgoodwill.com python[360608]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:25:08 mint.yesgoodwill.com python[360608]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:25:12 mint.yesgoodwill.com python[360608]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
+Aug 21 12:25:12 mint.yesgoodwill.com python[360608]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
