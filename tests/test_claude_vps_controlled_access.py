@@ -90,6 +90,34 @@ def test_claude_runs_on_vps_only_against_redacted_context_in_plan_mode() -> None
     assert 'LIVE risk gates' in text
 
 
+def test_post_deploy_proof_consumes_inspect_only_without_new_deploy_authority() -> None:
+    text = _text(".github/workflows/deploy-vps.yml")
+    marker = 'name: Publish queued Claude VPS inspect proof'
+    assert marker in text
+    tail = text.split(marker, 1)[1]
+    assert "action=='inspect'" in tail
+    assert 'nonce>seen' in tail
+    assert 'sudo /usr/local/sbin/status-boot-trading-bot' in tail
+    assert '/tmp/claude-vps-npm-' in tail
+    assert '--permission-mode plan' in tail
+    assert 'vps/claude/latest.json' in tail
+    assert 'automatic_trigger_inspect_only' in tail
+    assert 'mnemonic|seed phrase' in tail
+    assert '[REDACTED SENSITIVE LINE]' in tail
+    assert "'wallet_or_private_key_access':False" in tail
+    assert "'automatic_trigger_inspect_only':True" in tail
+    for forbidden in (
+        'deploy-boot-trading-bot',
+        '-f action=deploy',
+        'PRIVATE_KEY',
+        '/root/.ssh',
+        'id_rsa',
+        'WALLET_PRIVATE_KEY',
+        "'wallet_or_private_key_access':True",
+    ):
+        assert forbidden not in tail
+
+
 def test_master_prompt_adapter_accepts_only_bounded_vps_fields() -> None:
     text = _text("scripts/resilient_selected_master_v2.py")
     assert 'CLAUDE_VPS_CONTEXT_PATH' in text
