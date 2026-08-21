@@ -1,15 +1,15 @@
-requested_sha=c24ee33053bb4cac21d84e8af5ce1f95090a23b9
-deploy_outcome=failure
-deploy_exit=10
-run_id=32479674104
-utc=2026-08-21T12:00:03Z
+requested_sha=127196a61c627e0f082b535f8eea5686ea71391c
+deploy_outcome=success
+deploy_exit=0
+run_id=32479941932
+utc=2026-08-21T12:03:12Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T11:58:57Z BEGIN current=a3070d0617a6ac6b10e0db67f8894f76eb282e5a requested=c24ee33053bb4cac21d84e8af5ce1f95090a23b9
+2026-08-21T12:02:11Z BEGIN current=a3070d0617a6ac6b10e0db67f8894f76eb282e5a requested=127196a61c627e0f082b535f8eea5686ea71391c
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   afd9d17..c24ee33  main       -> origin/main
-Updating a3070d0..c24ee33
+   c24ee33..127196a  main       -> origin/main
+Updating a3070d0..127196a
 Fast-forward
  .github/copilot-instructions.md                    |  12 ++
  .github/workflows/claude-vps-analysis-retry.yml    |  16 +-
@@ -30,9 +30,9 @@ Fast-forward
  tests/test_claude_vps_control_kick.py              |  11 +-
  tests/test_claude_vps_controlled_access.py         |  15 +-
  tests/test_engineering_cost_bandwidth_audit.py     |  83 +++++++++++
- tests/test_hourly_strategy_cycle_cost_gate.py      |  75 ++++++++++
+ tests/test_hourly_strategy_cycle_cost_gate.py      |  76 ++++++++++
  tests/test_telegram_four_agent_strategy_patch.py   |  70 +++++++++
- 21 files changed, 922 insertions(+), 77 deletions(-)
+ 21 files changed, 923 insertions(+), 77 deletions(-)
  create mode 100644 .github/workflows/engineering-vps-resource-snapshot.yml
  create mode 100644 AGENTS.md
  create mode 100644 CLAUDE.md
@@ -44,40 +44,46 @@ Fast-forward
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-..................................................................F..... [ 14%]
+........................................................................ [ 14%]
 ........................................................................ [ 28%]
 ........................................................................ [ 43%]
 ........................................................................ [ 57%]
 ........................................................................ [ 72%]
 ........................................................................ [ 86%]
 ...................................................................      [100%]
-=================================== FAILURES ===================================
-____________________ test_workflow_has_expected_step_count _____________________
-
-    def test_workflow_has_expected_step_count():
-        names = re.findall(r"(?m)^\s{6}- name: .+$", _text())
->       assert len(names) == 16
-E       AssertionError: assert 14 == 16
-E        +  where 14 = len(['      - name: Check out exact current main without persisted GitHub credentials', '      - name: Install review tool... evidence', '      - name: Evaluate paid-AI cost gate', '      - name: Skip paid AI review -- no material change', ...])
-
-tests/test_hourly_strategy_cycle_cost_gate.py:22: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_hourly_strategy_cycle_cost_gate.py::test_workflow_has_expected_step_count
-1 failed, 498 passed, 1 warning in 36.21s
-2026-08-21T11:59:41Z TESTS FAILED; service remains on old running process
-HEAD is now at a3070d0 Port strategy_ai_cost_gate.py: material-change gating logic for paid AI reviews
+499 passed, 1 warning in 37.53s
+2026-08-21T12:02:56Z TESTS PASSED; restarting learnerbot
+2026-08-21T12:03:00Z SUCCESS sha=127196a61c627e0f082b535f8eea5686ea71391c version=2.3.10 service=active
+     Active: active (running) since Fri 2026-08-21 13:02:56 BST; 4s ago
+   Main PID: 369672 (python)
+      Tasks: 20 (limit: 5869)
+     Memory: 599.0M (peak: 646.5M)
+        CPU: 3.482s
+     CGroup: /system.slice/learnerbot.service
+             └─369672 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [config] CSVbot configuration loaded/reloaded
+Aug 21 13:03:00 mint.yesgoodwill.com python[369672]: [scan:bsc] 115379932..115379941 tx=654
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T11:59:57Z
+UTC: 2026-08-21T12:03:10Z
 branch: main
-sha:    a3070d0617a6ac6b10e0db67f8894f76eb282e5a
+sha:    127196a61c627e0f082b535f8eea5686ea71391c
 origin: git@github.com:ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -86,21 +92,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 12:39:19 BST; 20min ago
-   Main PID: 364862 (python)
+     Active: active (running) since Fri 2026-08-21 13:02:56 BST; 14s ago
+   Main PID: 369672 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 576.8M (peak: 781.7M)
-        CPU: 15min 21.934s
+     Memory: 618.5M (peak: 646.5M)
+        CPU: 11.939s
      CGroup: /system.slice/learnerbot.service
-             └─364862 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─369672 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 12:57:15 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:57:18 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:57:22 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:57:28 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:58:10 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=3 merged=3 eligible=3 auto-events=0 seconds=66.379
-Aug 21 12:59:07 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:59:07 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=55.866
-Aug 21 12:59:14 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:59:18 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 12:59:21 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 21 13:02:57 mint.yesgoodwill.com python[369672]: [config] CSVbot configuration loaded/reloaded
+Aug 21 13:03:00 mint.yesgoodwill.com python[369672]: [scan:bsc] 115379932..115379941 tx=654
+Aug 21 13:03:07 mint.yesgoodwill.com python[369672]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
