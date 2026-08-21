@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from learnerbot import ai_master_control as control
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -10,8 +8,21 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
+def _control_namespace() -> dict:
+    # ai_master_control's final import installs the full runtime health/Telegram
+    # stack. The sanitiser itself is stdlib-only, so execute only that module body
+    # before the installer import for a dependency-free unit test.
+    text = _text("learnerbot/ai_master_control.py")
+    marker = "# Install the multi-agent AI health/reporting layer"
+    prefix = text.split(marker, 1)[0]
+    ns = {"__name__": "bridge_control_unit", "__file__": str(ROOT / "learnerbot/ai_master_control.py")}
+    exec(compile(prefix, str(ROOT / "learnerbot/ai_master_control.py"), "exec"), ns)
+    return ns
+
+
 def test_control_sanitises_bounded_deepseek_requests():
-    value = control.sanitise(
+    control = _control_namespace()
+    value = control["sanitise"](
         {
             "deepseek_github_action": "draft_fix",
             "deepseek_github_action_nonce": "7",
@@ -28,7 +39,8 @@ def test_control_sanitises_bounded_deepseek_requests():
 
 
 def test_invalid_deepseek_actions_are_downgraded_to_none():
-    value = control.sanitise(
+    control = _control_namespace()
+    value = control["sanitise"](
         {
             "deepseek_github_action": "merge",
             "deepseek_vps_action": "shell",
