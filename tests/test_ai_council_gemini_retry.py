@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from learnerbot import ai_council
+from learnerbot import ai_council_http_patch
+
+
+def _legacy_call_provider(provider: str, prompt: str):
+    """Exercise the preserved CLI provider path, not the installed live HTTP patch."""
+    return ai_council_http_patch._BASE_CALL_PROVIDER(provider, prompt)
 
 
 def test_gemini_council_defaults_to_flash_and_retries_429(monkeypatch):
@@ -22,7 +28,7 @@ def test_gemini_council_defaults_to_flash_and_retries_429(monkeypatch):
 
     monkeypatch.setattr(ai_council, "_run", fake_run)
 
-    rc, out, err = ai_council.call_provider("gemini", "hello")
+    rc, out, err = _legacy_call_provider("gemini", "hello")
 
     assert rc == 0
     assert out == "GEMINI_OK"
@@ -42,7 +48,7 @@ def test_gemini_council_model_override_wins(monkeypatch):
         return 0, "OK", ""
 
     monkeypatch.setattr(ai_council, "_run", fake_run)
-    assert ai_council.call_provider("gemini", "hello") == (0, "OK", "")
+    assert _legacy_call_provider("gemini", "hello") == (0, "OK", "")
 
 
 def test_gemini_non_429_error_is_not_retried(monkeypatch):
@@ -55,7 +61,7 @@ def test_gemini_non_429_error_is_not_retried(monkeypatch):
         return 1, "", "HTTP 400 invalid request"
 
     monkeypatch.setattr(ai_council, "_run", fake_run)
-    rc, out, err = ai_council.call_provider("gemini", "hello")
+    rc, out, err = _legacy_call_provider("gemini", "hello")
 
     assert rc == 1
     assert out == ""
