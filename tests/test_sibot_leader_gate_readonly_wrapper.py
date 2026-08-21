@@ -59,6 +59,7 @@ def test_root_wrapper_uses_isolated_code_config_and_database_snapshots():
     assert "source.backup(destination)" in text
     assert "?mode=ro" in text
     assert "SIBOT_GATE_SNAPSHOT=1" in text
+    assert r'BOOT_GIT_SHA="\$DEPLOYED_SHA"' in text
     assert "env -i" in text
     assert r'"\$SNAPSHOT/\$REPORT_SCRIPT"' in text
 
