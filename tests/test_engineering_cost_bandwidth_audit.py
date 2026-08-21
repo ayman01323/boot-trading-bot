@@ -80,3 +80,6 @@ def test_all_agent_instruction_surfaces_require_operational_efficiency_review() 
         assert 'api' in body and 'cost' in body
         assert 'bandwidth' in body
         assert 'disk' in body
+        assert 'engineering audit' in body
+        assert 'wallet' in body
+        assert 'simulation' in body or 'safety' in body
