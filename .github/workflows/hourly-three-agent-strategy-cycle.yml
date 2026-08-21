@@ -15,7 +15,127 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run_ai: ${{ steps.cost_gate.outputs.run_ai }}
+      reason: ${{ steps.cost_gate.outputs.reason }}
+      material_sha: ${{ steps.cost_gate.outputs.material_sha }}
+      source_sha: ${{ steps.cost_gate.outputs.source_sha }}
+    steps:
+      - name: Check out current main for free evidence gate
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve evidence and deterministic paid-AI gate
+        id: cost_gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          STRATEGY_AI_FORCE_REFRESH_SECONDS: ${{ vars.STRATEGY_AI_FORCE_REFRESH_SECONDS || '21600' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .strategy_gate
+          SOURCE_SHA="$(git rev-parse HEAD)"
+
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" \
+              > /tmp/gate-evidence-file.json 2>/dev/null; then
+            jq -r '.content' /tmp/gate-evidence-file.json | tr -d '\n' | base64 -d > .strategy_gate/evidence.json
+          else
+            python - "$SOURCE_SHA" <<'PY' > .strategy_gate/evidence.json
+          import json,sys
+          print(json.dumps({
+            'schema_version':1,
+            'generated_epoch':0,
+            'generated_utc':'',
+            'evidence_status':'MISSING_RUNTIME_FORENSICS',
+            'source_commit':sys.argv[1],
+          },indent=2,sort_keys=True))
+          PY
+          fi
+
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/cost_gate/latest.json?ref=ai-reviews" \
+              > /tmp/gate-state-file.json 2>/dev/null; then
+            jq -r '.content' /tmp/gate-state-file.json | tr -d '\n' | base64 -d > .strategy_gate/previous.json
+          else
+            printf '{}\n' > .strategy_gate/previous.json
+          fi
+
+          EVENT_NAME="$EVENT_NAME" SOURCE_SHA="$SOURCE_SHA" \
+          STRATEGY_AI_FORCE_REFRESH_SECONDS="$STRATEGY_AI_FORCE_REFRESH_SECONDS" \
+          python - <<'PY' > .strategy_gate/result.env
+          import json,os
+          from learnerbot.strategy_ai_cost_gate import evaluate_cost_gate
+          evidence=json.load(open('.strategy_gate/evidence.json'))
+          previous=json.load(open('.strategy_gate/previous.json'))
+          result=evaluate_cost_gate(
+              source_commit=os.environ['SOURCE_SHA'],
+              evidence=evidence,
+              previous_state=previous,
+              manual=os.environ.get('EVENT_NAME')=='workflow_dispatch',
+              force_refresh_seconds=int(os.environ.get('STRATEGY_AI_FORCE_REFRESH_SECONDS') or 21600),
+          )
+          json.dump(result,open('.strategy_gate/result.json','w'),indent=2,sort_keys=True)
+          print('RUN_AI=' + ('true' if result['run_ai'] else 'false'))
+          print('REASON=' + result['reason'])
+          print('MATERIAL_SHA=' + result['material_sha256'])
+          print('SOURCE_SHA=' + result['source_commit'])
+          PY
+          source .strategy_gate/result.env
+          echo "run_ai=$RUN_AI" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "material_sha=$MATERIAL_SHA" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "Strategy AI cost gate: run_ai=$RUN_AI reason=$REASON material=${MATERIAL_SHA:0:12}"
+
+      - name: Persist paid-AI attempt checkpoint
+        if: steps.cost_gate.outputs.run_ai == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.cost_gate.outputs.source_sha }}
+          MATERIAL_SHA: ${{ steps.cost_gate.outputs.material_sha }}
+          GATE_REASON: ${{ steps.cost_gate.outputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/strategy-cost-gate
+          git worktree add --detach /tmp/strategy-cost-gate origin/ai-reviews
+          mkdir -p /tmp/strategy-cost-gate/strategy/cost_gate
+          python - <<'PY' > /tmp/strategy-cost-gate/strategy/cost_gate/latest.json
+          import json,os,time
+          print(json.dumps({
+            'schema_version':1,
+            'last_ai_attempt_epoch':int(time.time()),
+            'last_ai_attempt_source_commit':os.environ['SOURCE_SHA'],
+            'last_ai_attempt_material_sha256':os.environ['MATERIAL_SHA'],
+            'last_ai_attempt_reason':os.environ['GATE_REASON'],
+            'attempt_state':'REQUESTED',
+            'force_refresh_seconds':21600,
+            'note':'This checkpoint suppresses duplicate paid reviews of unchanged evidence. It does not change trading, LIVE, risk, signing or exits.'
+          },indent=2,sort_keys=True))
+          PY
+          cd /tmp/strategy-cost-gate
+          git config user.name 'strategy-ai-cost-gate'
+          git config user.email 'strategy-ai-cost-gate@users.noreply.github.com'
+          git add strategy/cost_gate/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Strategy AI cost-gate attempt ${SOURCE_SHA:0:12}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
   review:
+    needs: gate
+    if: needs.gate.outputs.run_ai == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -103,7 +223,6 @@ jobs:
           PY
           fi
 
-          # Bind every agent and the cycle id to the exact bytes they received.
           EVIDENCE_SHA="$(sha256sum .strategy_cycle/evidence.json | awk '{print $1}')"
           HOUR_KEY="$(date -u +'%Y%m%d%H')"
           CYCLE_ID="${SOURCE_SHA:0:12}-${HOUR_KEY}-${EVIDENCE_SHA:0:8}"
@@ -115,8 +234,8 @@ jobs:
 
       - name: Prepare common strategy prompt
         env:
-          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
           EVIDENCE_SOURCE: ${{ steps.meta.outputs.evidence_source }}
           EVIDENCE_FRESH: ${{ steps.meta.outputs.evidence_fresh }}
@@ -143,6 +262,7 @@ jobs:
 
           REPORT ONLY. Do not edit tracked code, trade, deploy, change capital/risk/live settings, touch secrets/wallets/signing,
           auto-add assets, weaken execution/sellability/liquidity/simulation protection, or use external web research.
+          Return no more than 3 proposals. Keep the summary, rationale, evidence details and rejected ideas concise.
 
           Required JSON:
           {
@@ -199,14 +319,12 @@ jobs:
           EOF
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
-
           set +e
           codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
             < /tmp/gpt-prompt.txt > .strategy_cycle/gpt_stdout.txt 2> .strategy_cycle/gpt_error.txt
           rc=$?
           set -e
           [[ $rc -eq 0 ]] || exit "$rc"
-
           python - <<'PY'
           import json,re,pathlib
           raw=pathlib.Path('.strategy_cycle/gpt_stdout.txt').read_text(errors='replace')
@@ -268,14 +386,12 @@ jobs:
           {required JSON object}
           STRATEGY_REVIEW_JSON_END
           EOF
-
           set +e
           gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
             -p "$(cat /tmp/gemini-prompt.txt)" > .strategy_cycle/gemini_stdout.txt 2> .strategy_cycle/gemini_cli_error.txt
           cli_rc=$?
           set -e
           [[ $cli_rc -eq 0 ]] || exit "$cli_rc"
-
           set +e
           PYTHONPATH="$GITHUB_WORKSPACE" python scripts/extract_strategy_report.py \
             --input .strategy_cycle/gemini_stdout.txt --output .strategy_cycle/gemini.json \
@@ -284,12 +400,10 @@ jobs:
           extract_rc=$?
           set -e
           [[ $extract_rc -eq 0 ]] || exit "$extract_rc"
-
           PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract validate-agent \
             --input .strategy_cycle/gemini.json --provider gemini --cycle-id "$CYCLE_ID" \
             --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA" \
             > .strategy_cycle/gemini_validate_stdout.txt 2> .strategy_cycle/gemini_validate_error.txt
-
           python - <<'PY'
           import json
           p=json.load(open('.strategy_cycle/gemini.json'))
@@ -354,6 +468,7 @@ jobs:
           and list the runtime evidence gaps. Use INCOMPLETE only if the review itself cannot be completed or validated.
           The evidence SHA-256 above hashes the exact evidence file bytes; do not canonicalise/re-hash the JSON.
           Do not trade, deploy, change live/risk/capital settings, touch secrets/wallets/signing, or implement code.
+          Return no more than 3 proposals and keep the report concise.
 
           Create a draft PR containing exactly:
           - \`.ai/strategy/copilot/${CYCLE_ID}.json\`
@@ -415,6 +530,8 @@ jobs:
           COPILOT_TOKEN_PRESENT: ${{ steps.creds.outputs.copilot_token }}
           COPILOT_ISSUE: ${{ steps.copilot.outputs.issue }}
           COPILOT_STATE: ${{ steps.copilot.outputs.state }}
+          COST_GATE_REASON: ${{ needs.gate.outputs.reason }}
+          COST_GATE_MATERIAL_SHA: ${{ needs.gate.outputs.material_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -437,7 +554,8 @@ jobs:
             'evidence_source':'${EVIDENCE_SOURCE}','evidence_fresh':'${EVIDENCE_FRESH}','base_kind':'HOURLY_CURRENT_MAIN',
             'openai_credential_present':'${OPENAI_PRESENT}','gemini_credential_present':'${GEMINI_PRESENT}',
             'copilot_assignment_token_present':'${COPILOT_TOKEN_PRESENT}','copilot_issue':'${COPILOT_ISSUE}',
-            'copilot_assignment_state':'${COPILOT_STATE}'
+            'copilot_assignment_state':'${COPILOT_STATE}','cost_gate_reason':'${COST_GATE_REASON}',
+            'cost_gate_material_sha256':'${COST_GATE_MATERIAL_SHA}'
           },indent=2,sort_keys=True))
           PY
 
@@ -463,7 +581,7 @@ jobs:
           git config user.email 'hourly-three-agent-strategy-bot@users.noreply.github.com'
           git add strategy
           if ! git diff --cached --quiet; then
-            git commit -m "Start hourly three-agent strategy cycle ${CYCLE_ID}"
+            git commit -m "Start gated three-agent strategy cycle ${CYCLE_ID}"
             git fetch origin ai-reviews
             git rebase origin/ai-reviews
             git push origin HEAD:ai-reviews
@@ -471,4 +589,4 @@ jobs:
 
       - name: Clean workspace
         if: always()
-        run: rm -rf .strategy_cycle /tmp/hourly-ai-reviews /tmp/gpt-prompt.txt /tmp/gemini-prompt.txt /tmp/copilot.md
+        run: rm -rf .strategy_cycle /tmp/hourly-ai-reviews /tmp/gpt-prompt.txt /tmp/gemini-prompt.txt /tmp/copilot.md /tmp/strategy-cost-gate .strategy_gate
