@@ -9,15 +9,24 @@ on:
       - 'learnerbot/telegram_ai_reports_menu_patch.py'
       - 'scripts/resilient_selected_master.py'
       - 'scripts/resilient_selected_master_v2.py'
+      - 'scripts/weekly_bug_audit_baseline.py'
       - '.github/workflows/selected-ai-master.yml'
       - '.github/workflows/publish-ai-master-control.yml'
       - '.github/workflows/telegram-ai-cycle-dispatcher.yml'
       - '.github/workflows/claude-vps-controlled-ops.yml'
       - '.github/workflows/claude-vps-control-kick.yml'
+      - '.github/workflows/claude-vps-analysis-retry.yml'
+      - '.github/workflows/engineering-vps-resource-snapshot.yml'
       - '.github/workflows/claude-fourth-engineering-agent.yml'
+      - '.github/copilot-instructions.md'
+      - 'AGENTS.md'
+      - 'GEMINI.md'
+      - 'CLAUDE.md'
       - 'tests/test_selected_ai_master_control.py'
       - 'tests/test_claude_vps_controlled_access.py'
       - 'tests/test_claude_vps_control_kick.py'
+      - 'tests/test_claude_vps_analysis_retry.py'
+      - 'tests/test_engineering_cost_bandwidth_audit.py'
   workflow_dispatch:
 
 permissions:
@@ -40,9 +49,16 @@ jobs:
             learnerbot/ai_master_control.py \
             learnerbot/ai_four_agent_health_patch.py \
             scripts/resilient_selected_master.py \
-            scripts/resilient_selected_master_v2.py
-      - name: Run selected-master and Claude VPS regression tests
-        run: pytest -q tests/test_selected_ai_master_control.py tests/test_claude_vps_controlled_access.py tests/test_claude_vps_control_kick.py
+            scripts/resilient_selected_master_v2.py \
+            scripts/weekly_bug_audit_baseline.py
+      - name: Run selected-master, Claude VPS and resource-efficiency regressions
+        run: |
+          pytest -q \
+            tests/test_selected_ai_master_control.py \
+            tests/test_claude_vps_controlled_access.py \
+            tests/test_claude_vps_control_kick.py \
+            tests/test_claude_vps_analysis_retry.py \
+            tests/test_engineering_cost_bandwidth_audit.py
       - name: Verify legacy masters delegate instead of adjudicating independently
         run: |
           set -euo pipefail

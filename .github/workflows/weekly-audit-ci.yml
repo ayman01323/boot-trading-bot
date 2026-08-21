@@ -6,8 +6,12 @@ on:
       - '.github/workflows/weekly-three-agent-bug-audit.yml'
       - '.github/workflows/weekly-gpt-corrective-action.yml'
       - '.github/workflows/ai-engineering-audit-trigger.yml'
+      - '.github/workflows/engineering-vps-resource-snapshot.yml'
       - '.github/workflows/weekly-audit-ci.yml'
       - '.github/copilot-instructions.md'
+      - 'AGENTS.md'
+      - 'GEMINI.md'
+      - 'CLAUDE.md'
       - 'learnerbot/weekly_bug_audit_contract.py'
       - 'learnerbot/ai_ops_status.py'
       - 'learnerbot/telegram_ai_ops_patch.py'
@@ -15,6 +19,7 @@ on:
       - 'scripts/weekly_bug_audit_baseline.py'
       - 'tests/test_weekly_bug_audit_contract.py'
       - 'tests/test_ai_ops_status.py'
+      - 'tests/test_engineering_cost_bandwidth_audit.py'
       - 'docs/WEEKLY_THREE_AGENT_BUG_AUDIT.md'
   push:
     branches:
@@ -24,6 +29,7 @@ on:
       - '.github/workflows/weekly-three-agent-bug-audit.yml'
       - '.github/workflows/weekly-gpt-corrective-action.yml'
       - '.github/workflows/ai-engineering-audit-trigger.yml'
+      - '.github/workflows/engineering-vps-resource-snapshot.yml'
       - '.github/workflows/weekly-audit-ci.yml'
       - 'learnerbot/weekly_bug_audit_contract.py'
       - 'learnerbot/ai_ops_status.py'
@@ -32,6 +38,7 @@ on:
       - 'scripts/weekly_bug_audit_baseline.py'
       - 'tests/test_weekly_bug_audit_contract.py'
       - 'tests/test_ai_ops_status.py'
+      - 'tests/test_engineering_cost_bandwidth_audit.py'
   workflow_dispatch:
 
 permissions:
@@ -57,9 +64,14 @@ jobs:
             learnerbot/telegram_account_roles_patch.py \
             scripts/weekly_bug_audit_baseline.py \
             tests/test_weekly_bug_audit_contract.py \
-            tests/test_ai_ops_status.py
-      - name: Run weekly audit policy and AI operations tests
-        run: pytest -x -vv tests/test_weekly_bug_audit_contract.py tests/test_ai_ops_status.py
+            tests/test_ai_ops_status.py \
+            tests/test_engineering_cost_bandwidth_audit.py
+      - name: Run weekly audit policy, AI operations and cost/resource tests
+        run: |
+          pytest -x -vv \
+            tests/test_weekly_bug_audit_contract.py \
+            tests/test_ai_ops_status.py \
+            tests/test_engineering_cost_bandwidth_audit.py
       - name: Dry-run deterministic repository baseline
         shell: bash
         run: |
@@ -76,8 +88,15 @@ jobs:
           import json
           p=json.load(open('/tmp/weekly-baseline.json',encoding='utf-8'))
           assert p['scope']=='FULL_REPOSITORY_BUG_AUDIT_BASELINE'
+          assert p['schema_version'] >= 2
           assert p['tracked_file_count'] > 0
           assert p['source_commit']
           assert p['privacy']['tracked_files_only'] is True
+          ops=p['operational_efficiency_audit']
+          assert ops['required'] is True
+          assert set(ops['domains']) == {'api_cost','server_bandwidth','disk_usage'}
+          assert ops['advisory_only'] is True
+          assert 'static_workflow_summary' in ops
+          assert 'live_vps_resource_snapshot' in ops
           print('WEEKLY_AUDIT_BASELINE_OK')
           PY

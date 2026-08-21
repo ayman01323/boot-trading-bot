@@ -1,11 +1,13 @@
 name: Claude VPS Controlled Operations
 
 on:
+  # Hourly is only a fallback for control records written outside the normal
+  # Telegram publisher. Real changed Telegram requests dispatch this workflow
+  # immediately from publish-ai-master-control.yml.
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '13 * * * *'
   workflow_run:
     workflows:
-      - "Publish Telegram AI Master Control"
       - "Deploy BOOT to VPS"
     types: [completed]
   workflow_dispatch:
@@ -34,7 +36,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Resolve bounded VPS request
@@ -76,7 +78,7 @@ jobs:
               nonce=max(nonce,seen)+1
               requested_by='github-workflow-dispatch'
           run=(action in allowed and action!='none' and nonce>seen and selected)
-          # Automatic upstream workflow completions may consume inspection requests only.
+          # Automatic deployment completion may consume inspection requests only.
           # Existing scheduled/manual paths retain their prior bounded test/deploy behavior.
           if event=='workflow_run' and action!='inspect':
               run=False
@@ -200,7 +202,10 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${ANTHROPIC_API_KEY:-}"
-          npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-install.log 2>&1
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-install.log 2>&1
+          fi
+          claude --version
           cat > /tmp/claude-vps-prompt.txt <<EOF
           You are Claude acting as the selected engineering MASTER's bounded VPS observer.
           Requested VPS action: ${ACTION}; deterministic action return code: ${ACTION_RC}.
@@ -211,7 +216,7 @@ jobs:
 
           $(cat /tmp/claude-vps-context.txt)
           EOF
-          claude -p --permission-mode plan --max-turns 1 --output-format text --model "${CLAUDE_VPS_MODEL:-sonnet}" \
+          claude -p --permission-mode plan --max-turns 3 --output-format text --model "${CLAUDE_VPS_MODEL:-sonnet}" \
             "$(cat /tmp/claude-vps-prompt.txt)" > /tmp/claude-vps-analysis.txt 2>/tmp/claude-vps-error.txt
 
       - name: Publish sanitised VPS result to ai-reviews

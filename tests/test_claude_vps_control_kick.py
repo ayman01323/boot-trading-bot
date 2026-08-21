@@ -5,18 +5,19 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_kick_workflow_only_dispatches_bounded_processor() -> None:
+def test_kick_workflow_is_manual_only_and_dispatches_bounded_processor() -> None:
     text = (ROOT / ".github/workflows/claude-vps-control-kick.yml").read_text(encoding="utf-8")
-    assert 'workflows:' in text
-    assert '"Publish Telegram AI Master Control"' in text
-    assert '"Deploy BOOT to VPS"' in text
+    assert 'workflow_dispatch:' in text
+    assert 'workflow_run:' not in text
+    assert '"Publish Telegram AI Master Control"' not in text
+    assert '"Deploy BOOT to VPS"' not in text
     assert 'actions: write' in text
     assert 'contents: read' in text
     assert 'gh workflow run claude-vps-controlled-ops.yml' in text
     assert '-f action=none' in text
     assert 'runs-on: ubuntu-latest' in text
 
-    # The kick workflow cannot itself inspect, test, deploy, use sudo, choose a SHA,
+    # The manual fallback cannot itself inspect, test, deploy, use sudo, choose a SHA,
     # or reach wallet/signing material. It only wakes the already bounded processor.
     forbidden = (
         'sudo ',
