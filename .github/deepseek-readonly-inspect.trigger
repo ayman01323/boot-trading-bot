@@ -1,2 +1,0 @@
-trigger DeepSeek read-only main verification for 3daf3bca847888733be3bc21be75b42ca82f1b85
-synchronise event 2
