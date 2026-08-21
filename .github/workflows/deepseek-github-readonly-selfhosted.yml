@@ -22,6 +22,7 @@ concurrency:
 
 jobs:
   inspect:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 30
     steps:
@@ -32,168 +33,218 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Capture bounded inspection task
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib
+          event = json.load(open(os.environ['GITHUB_EVENT_PATH'], encoding='utf-8'))
+          task = ''
+          if isinstance(event.get('pull_request'), dict):
+              task = str(event['pull_request'].get('body') or '')
+          if not task and isinstance(event.get('inputs'), dict):
+              task = str(event['inputs'].get('task') or '')
+          task = task.strip()[:1600] or (
+              'Report current GitHub main SHA, whether repository tests passed, '
+              'the test pass count if available, and operational warnings.'
+          )
+          pathlib.Path('/tmp/deepseek-ro-task.txt').write_text(task, encoding='utf-8')
+          PY
+
       - name: Collect deterministic read-only repository status
         id: collect
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
-          git status --porcelain > /tmp/deepseek-ro-git-status.txt
-          git log -1 --format='%H %s' > /tmp/deepseek-ro-git-head.txt
+          printf '%s\n' "$source_sha" > /tmp/deepseek-ro-sha.txt
 
           py='python3'
           if [[ -x /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python ]]; then
             py='/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python'
           fi
 
+          git status --porcelain > /tmp/deepseek-ro-status-before.txt
           set +e
-          "$py" -m compileall -q learnerbot scripts tests > /tmp/deepseek-ro-compile.txt 2>&1
-          compile_rc=$?
-          "$py" -m pytest -q > /tmp/deepseek-ro-tests.txt 2>&1
+          PYTHONDONTWRITEBYTECODE=1 "$py" -m pytest -q > /tmp/deepseek-ro-tests.txt 2>&1
           test_rc=$?
           set -e
-          echo "compile_rc=$compile_rc" >> "$GITHUB_OUTPUT"
+          git status --porcelain > /tmp/deepseek-ro-status-after.txt
+          if [[ -s /tmp/deepseek-ro-status-after.txt ]]; then
+            clean_rc=1
+          else
+            clean_rc=0
+          fi
           echo "test_rc=$test_rc" >> "$GITHUB_OUTPUT"
+          echo "clean_rc=$clean_rc" >> "$GITHUB_OUTPUT"
 
           python3 - <<'PY'
-          import pathlib,re
-          parts=[]
-          for title,path,limit in (
-              ('GIT HEAD','/tmp/deepseek-ro-git-head.txt',1200),
-              ('GIT STATUS','/tmp/deepseek-ro-git-status.txt',3000),
-              ('COMPILE','/tmp/deepseek-ro-compile.txt',4000),
-              ('PYTEST','/tmp/deepseek-ro-tests.txt',12000),
-          ):
-              p=pathlib.Path(path)
-              text=p.read_text(encoding='utf-8',errors='replace')[-limit:] if p.exists() else ''
-              text=re.sub(r'(?i)(api[_ -]?key|private[_ -]?key|authorization|bearer|password|mnemonic|seed phrase|secret=|token=)[^\n]*','[REDACTED SENSITIVE LINE]',text)
-              text=re.sub(r'sk-[A-Za-z0-9_-]{12,}','<redacted-key>',text)
-              text=re.sub(r'github_pat_[A-Za-z0-9_]+','<redacted-github-token>',text)
-              text=re.sub(r'gh[pousr]_[A-Za-z0-9]+','<redacted-github-token>',text)
-              parts.append(f'=== {title} ===\n{text}')
-          pathlib.Path('/tmp/deepseek-github-readonly-context.txt').write_text('\n\n'.join(parts)+'\n',encoding='utf-8')
+          import pathlib, re
+          def safe(path, limit):
+              p = pathlib.Path(path)
+              text = p.read_text(encoding='utf-8', errors='replace')[-limit:] if p.exists() else ''
+              text = re.sub(
+                  r'(?i)(api[_ -]?key|private[_ -]?key|authorization|bearer|password|mnemonic|seed phrase|secret=|token=)[^\n]*',
+                  '[REDACTED SENSITIVE LINE]',
+                  text,
+              )
+              text = re.sub(r'sk-[A-Za-z0-9_-]{12,}', '<redacted-key>', text)
+              text = re.sub(r'github_pat_[A-Za-z0-9_]+', '<redacted-github-token>', text)
+              text = re.sub(r'gh[pousr]_[A-Za-z0-9]+', '<redacted-github-token>', text)
+              return text
+          parts = [
+              '=== CURRENT MAIN SHA ===\n' + safe('/tmp/deepseek-ro-sha.txt', 200),
+              '=== PYTEST ===\n' + safe('/tmp/deepseek-ro-tests.txt', 12000),
+              '=== WORKTREE AFTER TEST ===\n' + safe('/tmp/deepseek-ro-status-after.txt', 3000),
+          ]
+          pathlib.Path('/tmp/deepseek-ro-context.txt').write_text('\n\n'.join(parts) + '\n', encoding='utf-8')
           PY
 
-      - name: DeepSeek analyse sanitised status context only
+      - name: Ask DeepSeek using sanitised context only
         id: deepseek
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_GITHUB_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/deepseek-readonly-no-runtime.env
           SOURCE_SHA: ${{ steps.collect.outputs.source_sha }}
-          COMPILE_RC: ${{ steps.collect.outputs.compile_rc }}
           TEST_RC: ${{ steps.collect.outputs.test_rc }}
-          TASK: ${{ github.event.pull_request.body || inputs.task || 'Report current main SHA, test status/pass count, and operational warnings.' }}
-          DISABLE_AUTOUPDATER: '1'
+          CLEAN_RC: ${{ steps.collect.outputs.clean_rc }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
-          if ! command -v claude >/dev/null 2>&1; then
-            npm install -g @anthropic-ai/claude-code@latest >/tmp/deepseek-ro-install.log 2>&1
+          py='python3'
+          if [[ -x /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python ]]; then
+            py='/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python'
           fi
-          sandbox="/tmp/deepseek-github-readonly-${GITHUB_RUN_ID}"
-          rm -rf "$sandbox" && mkdir -p "$sandbox"
-          cp /tmp/deepseek-github-readonly-context.txt "$sandbox/context.txt"
-          python3 - <<'PY'
-          import os,pathlib
-          task=(os.environ.get('TASK') or '').strip()[:1600]
-          prompt=f'''🔴 AGENT: DEEPSEEK\nYou are a bounded read-only repository status analyst.\nExact current-main SHA: {os.environ.get('SOURCE_SHA','')}\nCompile return code: {os.environ.get('COMPILE_RC','')}\nPytest return code: {os.environ.get('TEST_RC','')}\nRequested task: {task}\n\nUse only the sanitised context supplied below. Report the current SHA, whether tests passed, the pass count if shown, and concrete operational warnings. Do not edit files, request secrets, deploy, trade, change LIVE/ARMED/risk/capital settings, access wallet/signing material, or infer information not present in context. Start exactly with: 🔴 AGENT: DEEPSEEK'''
-          pathlib.Path(os.environ['SANDBOX']).joinpath('prompt.txt').write_text(prompt,encoding='utf-8')
-          PY
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_GITHUB_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
-          SOURCE_SHA: ${{ steps.collect.outputs.source_sha }}
-          COMPILE_RC: ${{ steps.collect.outputs.compile_rc }}
-          TEST_RC: ${{ steps.collect.outputs.test_rc }}
-          TASK: ${{ github.event.pull_request.body || inputs.task || 'Report current main SHA, test status/pass count, and operational warnings.' }}
-          SANDBOX: /tmp/deepseek-github-readonly-${{ github.run_id }}
-          DISABLE_AUTOUPDATER: '1'
-          ANTHROPIC_BASE_URL: https://api.deepseek.com/anthropic
-          ANTHROPIC_AUTH_TOKEN: ${{ secrets.DEEPSEEK_API_KEY }}
-          ANTHROPIC_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
-        run: |
-          set -euo pipefail
-          cd "$SANDBOX"
-          unset ANTHROPIC_API_KEY || true
-          claude -p --permission-mode plan --max-turns 2 --output-format text \
-            "$(cat prompt.txt)\n\n$(cat context.txt)" > analysis.txt 2> error.txt
-          cp analysis.txt /tmp/deepseek-github-readonly-analysis.txt
-          cp error.txt /tmp/deepseek-github-readonly-error.txt
-          cd /
-          rm -rf "$SANDBOX"
+          "$py" - <<'PY'
+          import os, pathlib
+          from learnerbot.ai_council_http_patch import call_provider
 
-      - name: Publish sanitised DeepSeek GitHub result to ai-reviews
+          task = pathlib.Path('/tmp/deepseek-ro-task.txt').read_text(encoding='utf-8', errors='replace')
+          context = pathlib.Path('/tmp/deepseek-ro-context.txt').read_text(encoding='utf-8', errors='replace')
+          prompt = '\n'.join([
+              'You are DEEPSEEK acting as a bounded read-only repository status analyst.',
+              'Exact current-main SHA: ' + os.environ.get('SOURCE_SHA', ''),
+              'Pytest return code: ' + os.environ.get('TEST_RC', ''),
+              'Worktree-clean return code: ' + os.environ.get('CLEAN_RC', ''),
+              'Requested task:',
+              task,
+              '',
+              'Use ONLY the sanitised status context below. Report:',
+              '1. current main SHA;',
+              '2. whether tests passed;',
+              '3. test pass count if shown;',
+              '4. concrete warnings/errors relevant to operation.',
+              '',
+              'Do not request secrets, edit files, create PRs, merge, deploy, restart services, trade,',
+              'change LIVE/ARMED/risk/capital settings, access wallet/signing material, or infer facts',
+              'not present in the context. Start exactly with: 🔴 AGENT: DEEPSEEK',
+              '',
+              'SANITISED CONTEXT:',
+              context,
+          ])
+          rc, out, err = call_provider('deepseek', prompt)
+          out = str(out or '').strip()
+          if out and not out.startswith('🔴 AGENT: DEEPSEEK'):
+              out = '🔴 AGENT: DEEPSEEK\n\n' + out
+          pathlib.Path('/tmp/deepseek-ro-analysis.txt').write_text(out, encoding='utf-8')
+          pathlib.Path('/tmp/deepseek-ro-error.txt').write_text(str(err or ''), encoding='utf-8')
+          pathlib.Path('/tmp/deepseek-ro-provider-rc.txt').write_text(str(int(rc)), encoding='utf-8')
+          raise SystemExit(0 if int(rc) == 0 and out else 1)
+          PY
+
+      - name: Publish sanitised DeepSeek result to ai-reviews
         if: always() && steps.collect.outputs.source_sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.collect.outputs.source_sha }}
-          COMPILE_RC: ${{ steps.collect.outputs.compile_rc }}
           TEST_RC: ${{ steps.collect.outputs.test_rc }}
-          DEEPSEEK_OUTCOME: ${{ steps.deepseek.outcome }}
-          TASK: ${{ github.event.pull_request.body || inputs.task || 'Report current main SHA, test status/pass count, and operational warnings.' }}
+          CLEAN_RC: ${{ steps.collect.outputs.clean_rc }}
           RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY' > /tmp/deepseek-github-result.json
-          import json,os,pathlib,re,time
-          def read(path,limit):
-              p=pathlib.Path(path)
-              return p.read_text(encoding='utf-8',errors='replace')[-limit:] if p.exists() else ''
-          tests=read('/tmp/deepseek-ro-tests.txt',12000)
-          analysis=read('/tmp/deepseek-github-readonly-analysis.txt',1800).strip()
+          import json, os, pathlib, re, time
+
+          def read(path, limit):
+              p = pathlib.Path(path)
+              return p.read_text(encoding='utf-8', errors='replace')[-limit:] if p.exists() else ''
+
+          tests = read('/tmp/deepseek-ro-tests.txt', 12000)
+          analysis = read('/tmp/deepseek-ro-analysis.txt', 1800).strip()
+          error = read('/tmp/deepseek-ro-error.txt', 800).strip()
+          provider_rc_text = read('/tmp/deepseek-ro-provider-rc.txt', 20).strip()
+          try:
+              provider_rc = int(provider_rc_text)
+          except Exception:
+              provider_rc = 999
           if not analysis:
-              analysis=read('/tmp/deepseek-github-readonly-error.txt',1000).strip() or 'DeepSeek analysis unavailable.'
-          analysis=re.sub(r'(?i)(api[_ -]?key|private[_ -]?key|authorization|bearer|token)[^\n]*','[REDACTED]',analysis)
-          m=re.search(r'(\d+) passed',tests)
-          pass_count=int(m.group(1)) if m else None
-          compile_rc=int(os.environ.get('COMPILE_RC') or 999)
-          test_rc=int(os.environ.get('TEST_RC') or 999)
-          deepseek_ok=os.environ.get('DEEPSEEK_OUTCOME')=='success'
-          out={
-              'schema_version':1,
-              'provider':'deepseek',
-              'generated_epoch':int(time.time()),
-              'source_commit':os.environ.get('SOURCE_SHA','')[:40],
-              'workflow_run_id':int(os.environ.get('RUN_ID') or 0),
-              'action':'inspect',
-              'status':'SUCCESS' if compile_rc==0 and test_rc==0 and deepseek_ok else 'FAILED',
-              'task':str(os.environ.get('TASK') or '')[:800],
-              'summary':analysis[:1800],
-              'compile_return_code':compile_rc,
-              'test_return_code':test_rc,
-              'test_pass_count':pass_count,
-              'security':{
-                  'context_only':True,
-                  'repository_editing':False,
-                  'draft_pr':False,
-                  'self_merge':False,
-                  'deploy':False,
-                  'wallet_or_private_key_access':False,
-                  'live_or_risk_bypass':False,
+              analysis = '🔴 AGENT: DEEPSEEK\n\nDeepSeek analysis unavailable: ' + (error or 'provider call failed')
+          analysis = re.sub(
+              r'(?i)(api[_ -]?key|private[_ -]?key|authorization|bearer|token)[^\n]*',
+              '[REDACTED]',
+              analysis,
+          )
+          m = re.search(r'(\d+) passed', tests)
+          pass_count = int(m.group(1)) if m else None
+          task = read('/tmp/deepseek-ro-task.txt', 800).strip()
+          test_rc = int(os.environ.get('TEST_RC') or 999)
+          clean_rc = int(os.environ.get('CLEAN_RC') or 999)
+          status = 'SUCCESS' if test_rc == 0 and clean_rc == 0 and provider_rc == 0 else 'FAILED'
+          out = {
+              'schema_version': 1,
+              'provider': 'deepseek',
+              'generated_epoch': int(time.time()),
+              'source_commit': os.environ.get('SOURCE_SHA', '')[:40],
+              'workflow_run_id': int(os.environ.get('RUN_ID') or 0),
+              'action': 'inspect',
+              'status': status,
+              'task': task,
+              'summary': analysis[:1800],
+              'test_return_code': test_rc,
+              'test_pass_count': pass_count,
+              'worktree_clean': clean_rc == 0,
+              'provider_return_code': provider_rc,
+              'security': {
+                  'context_only': True,
+                  'repository_editing': False,
+                  'draft_pr_only': False,
+                  'self_merge': False,
+                  'deploy_from_github_workflow': False,
+                  'wallet_or_private_key_access': False,
+                  'live_or_risk_bypass': False,
               },
           }
-          print(json.dumps(out,indent=2,sort_keys=True))
+          print(json.dumps(out, indent=2, sort_keys=True))
           PY
-          gh auth setup-git
-          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
-          rm -rf /tmp/deepseek-github-ro-ai-reviews
-          git worktree add --detach /tmp/deepseek-github-ro-ai-reviews origin/ai-reviews
-          mkdir -p /tmp/deepseek-github-ro-ai-reviews/github/deepseek
-          cp /tmp/deepseek-github-result.json /tmp/deepseek-github-ro-ai-reviews/github/deepseek/latest.json
-          cd /tmp/deepseek-github-ro-ai-reviews
-          git config user.name 'DeepSeek'
-          git config user.email 'deepseek-agent@users.noreply.github.com'
-          git add github/deepseek/latest.json
-          if ! git diff --cached --quiet; then
-            git commit -m $'Record read-only DeepSeek GitHub inspection\n\nAI-Agent: DEEPSEEK'
-            git fetch origin ai-reviews
-            git rebase origin/ai-reviews
-            git push origin HEAD:ai-reviews
+
+          api="repos/${GITHUB_REPOSITORY}/contents/github/deepseek/latest.json"
+          existing_sha=''
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" > /tmp/deepseek-ro-existing.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s /tmp/deepseek-ro-existing.json ]]; then
+            existing_sha="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/deepseek-ro-existing.json')).get('sha') or '')
+          PY
+            )"
           fi
+          python3 - "$existing_sha" <<'PY' > /tmp/deepseek-ro-put.json
+          import base64, json, sys
+          raw = open('/tmp/deepseek-github-result.json', 'rb').read()
+          out = {
+              'message': 'Record read-only DeepSeek GitHub inspection\n\nAI-Agent: DEEPSEEK',
+              'content': base64.b64encode(raw).decode(),
+              'branch': 'ai-reviews',
+          }
+          if sys.argv[1]:
+              out['sha'] = sys.argv[1]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/deepseek-ro-put.json >/dev/null
