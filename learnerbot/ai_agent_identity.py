@@ -8,6 +8,7 @@ AGENT_IDENTITIES: Mapping[str, dict[str, str]] = {
     "gemini": {"emoji": "🔵", "name": "GEMINI", "pr_prefix": "[GEMINI]"},
     "copilot": {"emoji": "🟡", "name": "COPILOT", "pr_prefix": "[COPILOT]"},
     "claude": {"emoji": "🟣", "name": "CLAUDE", "pr_prefix": "[CLAUDE]"},
+    "deepseek": {"emoji": "🔴", "name": "DEEPSEEK", "pr_prefix": "[DEEPSEEK]"},
 }
 
 
