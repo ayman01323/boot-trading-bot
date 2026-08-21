@@ -1,0 +1,103 @@
+requested_sha=dfaa2c9e013bd1502a64583fc6ae6147268f97bd
+deploy_outcome=failure
+deploy_exit=10
+run_id=32487748622
+utc=2026-08-21T13:37:34Z
+
+=== SERVER STATUS ===
+=== BOOT SERVER STATUS ===
+UTC: 2026-08-21T13:37:34Z
+branch: main
+sha:    89061556be74c3e786de8eb999e96d03f330fb39
+origin: git@github.com:ayman01323/boot-trading-bot.git
+version: 2.3.10
+
+tracked changes:
+
+service:
+● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
+     Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
+     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 46min ago
+   Main PID: 377581 (python)
+      Tasks: 20 (limit: 5869)
+     Memory: 599.6M (peak: 781.6M)
+        CPU: 31min 21.758s
+     CGroup: /system.slice/learnerbot.service
+             └─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+
+Aug 21 14:28:02 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:28:09 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:28:14 mint.yesgoodwill.com python[377581]: [research:polygon] {'evidence_rows': 44696, 'behaviours': 7, 'wallet_behaviour_rows': 1034}
+Aug 21 14:28:15 mint.yesgoodwill.com python[377581]: [copy-check:polygon] {'evaluated': 1034, 'passed': 0, 'disabled': False}
+Aug 21 14:28:38 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=56.106
+Aug 21 14:30:10 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=3 merged=3 eligible=3 auto-events=0 seconds=90.732
+Aug 21 14:31:51 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=3 merged=3 eligible=3 auto-events=0 seconds=100.688
+Aug 21 14:33:37 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=104.527
+Aug 21 14:34:30 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=50.760
+Aug 21 14:36:41 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=3 merged=3 eligible=3 auto-events=0 seconds=130.077
+
+=== DEPLOY OUTPUT (tail) ===
+2026-08-21T13:36:46Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=dfaa2c9e013bd1502a64583fc6ae6147268f97bd
+From github.com:ayman01323/boot-trading-bot
+ * branch            main       -> FETCH_HEAD
+   a5ad3a8..dfaa2c9  main       -> origin/main
+Updating 8906155..dfaa2c9
+Fast-forward
+ .../workflows/deepseek-github-controlled-ops.yml   | 238 +++++++++++++++
+ .github/workflows/deepseek-vps-controlled-ops.yml  | 251 ++++++++++++++++
+ .github/workflows/deploy-current-main-direct.yml   |  83 +++++
+ .github/workflows/engineering-agent-retry.yml      |   3 +-
+ .github/workflows/weekly-three-agent-bug-audit.yml |   5 +-
+ learnerbot/ai_council.py                           | 303 +++++++++++++++++++
+ learnerbot/telegram_ai_council_patch.py            | 334 +++++++++++++++++++++
+ learnerbot/telegram_ai_council_rate_limit_patch.py |  52 ++++
+ learnerbot/telegram_five_agent_patch.py            | 111 ++++++-
+ learnerbot/telegram_solana_force_exit_patch.py     |   6 +
+ tests/test_deepseek_controlled_access.py           |  78 +++++
+ tests/test_telegram_user_menu_compact.py           |  77 +++++
+ 12 files changed, 1523 insertions(+), 18 deletions(-)
+ create mode 100644 .github/workflows/deepseek-github-controlled-ops.yml
+ create mode 100644 .github/workflows/deepseek-vps-controlled-ops.yml
+ create mode 100644 .github/workflows/deploy-current-main-direct.yml
+ create mode 100644 learnerbot/ai_council.py
+ create mode 100644 learnerbot/telegram_ai_council_patch.py
+ create mode 100644 learnerbot/telegram_ai_council_rate_limit_patch.py
+ create mode 100644 tests/test_deepseek_controlled_access.py
+
+[notice] A new release of pip available: 22.3.1 -> 26.2.1
+[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
+........................................................F............... [ 13%]
+........................................................................ [ 27%]
+........................................................................ [ 41%]
+........................................................................ [ 54%]
+........................................................................ [ 68%]
+........................................................................ [ 82%]
+........................................................................ [ 95%]
+......................                                                   [100%]
+=================================== FAILURES ===================================
+________ test_deepseek_is_sanitised_control_option_and_telegram_visible ________
+
+    def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
+        control = _text("learnerbot/ai_master_control.py")
+        publisher = _text(".github/workflows/publish-ai-master-control.yml")
+        ui = _text("learnerbot/telegram_five_agent_patch.py")
+        assert '"deepseek"' in control
+        assert "'deepseek'" in publisher
+        assert '_PROVIDER_LABELS["deepseek"] = "DeepSeek"' in ui
+        assert 'aicfg:master:{lane}:deepseek' in ui
+        assert "five_agent_reports_complete" in ui
+>       assert "DeepSeek ✅" in ui
+E       AssertionError: assert 'DeepSeek ✅' in 'from __future__ import annotations\n\nfrom . import ai_four_agent_health_patch as _health5\nfrom . import ai_ops_stat...d,desc in _tgops.AI_MASTER_COMMANDS\n    )\n    _tgops._five_agent_strategy_telegram_installed = True\n\n\ninstall()\n'
+
+tests/test_deepseek_fifth_agent.py:73: AssertionError
+=============================== warnings summary ===============================
+.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
+  /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_deepseek_fifth_agent.py::test_deepseek_is_sanitised_control_option_and_telegram_visible
+1 failed, 525 passed, 1 warning in 40.14s
+2026-08-21T13:37:34Z TESTS FAILED; service remains on old running process
+HEAD is now at 8906155 Use Gemini 3.7 Flash for hourly strategy reviews
