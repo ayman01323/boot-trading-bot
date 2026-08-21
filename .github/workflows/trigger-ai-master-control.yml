@@ -1,0 +1,32 @@
+name: Trigger Telegram AI Master Control
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/ai-master-control.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: trigger-ai-master-control
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch existing sanitised publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run publish-ai-master-control.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main
+          echo 'Dispatched Publish Telegram AI Master Control on main.'
