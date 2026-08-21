@@ -68,9 +68,11 @@ def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
     assert '"deepseek"' in control
     assert "'deepseek'" in publisher
     assert '_PROVIDER_LABELS["deepseek"] = "DeepSeek"' in ui
+    assert '"deepseek": "DeepSeek"' in ui
     assert 'aicfg:master:{lane}:deepseek' in ui
     assert "five_agent_reports_complete" in ui
-    assert "DeepSeek ✅" in ui
+    assert "Blocked: Authentication" in ui
+    assert "Progress:" in ui and "of 5 completed" in ui
     # Sanitised control never carries provider credentials.
     assert "DEEPSEEK_API_KEY" not in control
 
