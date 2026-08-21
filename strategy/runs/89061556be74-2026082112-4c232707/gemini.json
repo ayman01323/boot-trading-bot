@@ -1,0 +1,144 @@
+{
+  "cycle_id": "89061556be74-2026082112-4c232707",
+  "evidence_gaps": [
+    "No active or fresh runtime forensics package (.strategy_cycle/evidence.json) is available (evidence_status is MISSING_RUNTIME_FORENSICS).",
+    "To promote any strategy to CANARY or LIVE, we require continuous execution and scorecard metrics, including: (1) simulated/shadow net P&L after fees/slippage, (2) verified win rates and profit factors over a minimum of 3 observation windows and 8 trades, (3) execution failure logs/latency audits, and (4) RPC pricing and token-sellability confirmations."
+  ],
+  "evidence_sha256": "4c232707aed36e6cc8977e92c5c2a373e902ed4c033a6178c3bc58047df29b11",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.7,
+      "downside_risk": "Frontrunning/sandwich attacks during high congestion, prolonged spread widening during structural collapses, and potential priority gas fee overhead.",
+      "evidence": [
+        {
+          "detail": "validate_ai_strategy_proposal registers declarative hypotheses only",
+          "path": "learnerbot/strategy_ai_proposals.py"
+        },
+        {
+          "detail": "register_strategy registers new strategies starting strictly in SHADOW",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Provide a new, uncorrelated source of positive-edge spot trades during highly volatile/fast market regimes with no dependency on wallet tracking.",
+      "id": "dynamic-spread-execution",
+      "minimum_observation": "12 observation windows, 30 simulated trades, and verified profit factor >= 1.10.",
+      "rationale": "By relying on direct on-chain liquidity indicators and execution spread divergence instead of individual wallets or raw price momentum, the bot can discover uncorrelated micro-arbitrage or slippage reversion opportunities that bypass copy-trading latency limits.",
+      "shadow_test": "Simulate entry signals on tick data, recording spreads exceeding 3 standard deviations from the trailing 1-hour average. Record exit simulated prices, and measure simulated net P&L after subtracting typical priority fees, router fees, and 0.15% average slippage/impact. Stop shadow testing if cumulative hypothetical loss exceeds 10% of virtual allocation.",
+      "strategy": "Dynamic Spread Execution",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_ai_proposals.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Execution delay (latency leakage) turning a theoretical net edge into a realized loss in highly competitive/crowded routes.",
+      "evidence": [
+        {
+          "detail": "seed_creative_hypotheses seeds Cross Venue Net Arbitrage",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Establish reliable historical execution metrics (slippage, network latency) across Solana and EVM DEX pools.",
+      "id": "cross-venue-net-arbitrage-shadow",
+      "minimum_observation": "At least 3 observation windows and 8 simulated trades with verified profit factor >= 1.10.",
+      "rationale": "Verify executable cross-venue discrepancies under live conditions before any live execution adapters are implemented. Given that we have no fresh runtime evidence, this strategy must continue shadow testing to establish a baseline for actual transaction-flow latency and net profit after fees.",
+      "shadow_test": "Record shadow windows, measuring opportunities and actual execution latency against the target pools, and track simulated net P&L after subtracting priority fees, 0.1% price impact, and slippage. Stop if simulated losses exceed 5% of virtual capital.",
+      "strategy": "Cross Venue Net Arbitrage",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.75,
+      "downside_risk": "Routes may become highly competitive or crowded by other bots, leading to rapid margin decay.",
+      "evidence": [
+        {
+          "detail": "learn_patterns populates strategy_patterns",
+          "path": "learnerbot/strategy.py"
+        },
+        {
+          "detail": "seed_creative_hypotheses seeds Learned Route Replication",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Discover persistent structural routes independent of specific wallet leaders, reducing single-point-of-failure copy risks.",
+      "id": "learned-route-replication-shadow",
+      "minimum_observation": "At least 3 observation windows and 8 simulated trades with verified profit factor >= 1.10.",
+      "rationale": "Verify if historical profitable routes (stored in strategy_patterns database) remain replicable when replayed without following a specific leader wallet. Continuing shadow testing will verify whether public route re-evaluations remain profitable under changing market conditions.",
+      "shadow_test": "Replay identified high-replicability route patterns from strategy_patterns table on fresh block data. Simulate executions and measure net P&L after fee/gas deductions. Stop if profit factor drops below 1.0.",
+      "strategy": "Learned Route Replication",
+      "suggested_files": [
+        "learnerbot/strategy.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Wallet leaders turning unprofitable, changing their strategies, or executing illiquid swaps that cannot be safely reproduced.",
+      "evidence": [
+        {
+          "detail": "reconstruct_spot_trades builds wallet histories after gas",
+          "path": "learnerbot/sibot.py"
+        },
+        {
+          "detail": "refresh_wallet_history and classify_swap rebuild on-chain signatures",
+          "path": "learnerbot/solana_sibot.py"
+        },
+        {
+          "detail": "leader_copy_strategy_id registers copy strategy",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py"
+        }
+      ],
+      "expected_effect": "Gather robust, out-of-sample data on top-ranked wallets, ensuring their realized win rate remains >= 55% and net profit after real gas is positive before allowing live promotions.",
+      "id": "sibot-leader-copy-shadow",
+      "minimum_observation": "Continuous shadow testing across 60 days of history, at least 50 closed simulated trades per chain, and win rate >= 55%.",
+      "rationale": "Maintain leader-copying shadow metrics under Strategy Lab registry across all enabled EVM and Solana chains to verify net profit after gas/fees. Given that fresh runtime evidence is unavailable, we must gather more shadow performance and exit data to confirm leader reliability.",
+      "shadow_test": "Track leader-copy simulated positions, checking round-trip sellability and entry deterioration (<= 1.5%). Record hypothetical execution and exit metrics. Stop shadow tracking for any leader wallet whose trailing 10-trade win rate falls below 50%.",
+      "strategy": "SiBot Leader Copy",
+      "suggested_files": [
+        "learnerbot/sibot.py",
+        "learnerbot/solana_sibot.py",
+        "learnerbot/strategy_lab_live_recording_patch.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Force automated execution frequency targets in the Strategy Laboratory to meet a minimum trades-per-hour quota.",
+      "reason": "As defined in docs/STRATEGY_LAB.md, active does not mean forced trading. Forcing every strategy to trade under unfavorable market conditions would turn an activity target into a loss-generating quota and directly degrade the money-weighted net P&L after fees."
+    },
+    {
+      "idea": "Allow executing arbitrary Python scripts or code snippets proposed by AI strategy agents directly inside the live engine.",
+      "reason": "This violates the platform's security boundaries and sandboxing principles. As structured in learnerbot/strategy_ai_proposals.py, AI proposals must remain strictly declarative data/hypotheses to prevent any execution of malicious code, secret extraction, or accidental deployment modifications."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "89061556be74c3e786de8eb999e96d03f330fb39",
+  "status": "HEALTHY",
+  "summary": "A complete, architecture-only strategy review of the trading bot repository and strategy cycle evidence. Because .strategy_cycle/evidence.json reports MISSING_RUNTIME_FORENSICS, we strictly enforce the prohibition of any live or canary profitability claims. The core architecture of the Strategy Laboratory (strategy_lab.py) and the copy-trading engines (sibot.py and solana_sibot.py) is robust, providing clean sandboxing of shadow research. We propose shadow-testing existing built-in families (Cross Venue Net Arbitrage, Learned Route Replication, and SiBot Leader Copy) to gather out-of-sample metrics, alongside proposing a new uncorrelated spread-imbalance shadow strategy, ensuring that all live safety and capital gates remain fully intact."
+}
