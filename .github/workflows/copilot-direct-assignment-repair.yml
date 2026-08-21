@@ -1,0 +1,80 @@
+name: Copilot Direct Assignment Repair
+
+on:
+  schedule:
+    - cron: '2,12,22,32,42,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+concurrency:
+  group: copilot-direct-assignment-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Repair latest engineering and strategy Copilot assignments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read_text() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n' || true
+          }
+
+          assigned() {
+            local issue="$1"
+            gh issue view "$issue" --json assignees \
+              --jq '[.assignees[].login | ascii_downcase] | any(. == "copilot" or . == "copilot-swe-agent[bot]")' \
+              | grep -q true
+          }
+
+          assign_direct() {
+            local issue="$1" label="$2"
+            [[ "$issue" =~ ^[0-9]+$ ]] || { echo "${label}: no issue number"; return 0; }
+            if assigned "$issue"; then
+              echo "${label}: Copilot already assigned to issue #${issue}."
+              return 0
+            fi
+            set +e
+            if [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+              GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh issue edit "$issue" --add-assignee '@copilot' >/tmp/copilot-direct.out 2>/tmp/copilot-direct.err
+              rc=$?
+            else
+              rc=1
+            fi
+            if [[ $rc -ne 0 ]]; then
+              gh issue edit "$issue" --add-assignee '@copilot' >/tmp/copilot-direct-fallback.out 2>/tmp/copilot-direct-fallback.err
+              rc=$?
+            fi
+            set -e
+            sleep 3
+            if assigned "$issue"; then
+              echo "${label}: Copilot assignment verified on issue #${issue}."
+            else
+              echo "${label}: assignment still not visible after direct @copilot attempt (rc=${rc})." >&2
+            fi
+          }
+
+          source_sha="$(read_text weekly/latest_source_commit.txt)"
+          if [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            short="${source_sha:0:12}"
+            eng_issue="$(gh issue list --state open --search "Weekly Copilot full-bot bug audit ${short} in:title" --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+            assign_direct "$eng_issue" 'Engineering Copilot'
+          fi
+
+          cycle="$(read_text strategy/latest_cycle_id.txt)"
+          if [[ "$cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
+            strat_issue="$(gh issue list --state open --search "Copilot hourly strategy review ${cycle} in:title" --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null || true)"
+            assign_direct "$strat_issue" 'Strategy Copilot'
+          fi
