@@ -1,0 +1,28 @@
+name: Dispatch DeepSeek Read-Only Verification
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dispatch-deepseek-readonly-once.yml'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch DeepSeek GitHub Read-Only System Inspect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run deepseek-github-readonly-selfhosted.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f task='READ-ONLY SYSTEM TEST. Report current GitHub main SHA, whether dependencies installed successfully, whether repository tests passed, the test pass count if available, and operational warnings. Do not modify code, create or merge PRs, deploy, restart services, change trading settings, or access wallet/signing material.'
