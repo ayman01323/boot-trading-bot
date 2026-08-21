@@ -1,0 +1,54 @@
+{
+  "cycle_id": "442d0450a95d-2026082110-15e9c061",
+  "evidence_gaps": [
+    "No fresh runtime forensics available.",
+    "Missing production net-profit datasets to evaluate real-world trade success rates.",
+    "No explicit execution failure logs on Solana or EVM environments."
+  ],
+  "evidence_sha256": "15e9c06108969faa79fc75313ffd1c758ffd3bc006b754ce6f26b3e597292bca",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Opportunity cost of holding capital in wrapped tokens without executing. No capital loss risk as execution is restricted to SHADOW.",
+      "evidence": [
+        {
+          "detail": "Solana swap executes local simulation enforcing single-signer and captures full wallet deltas to verify economic reality.",
+          "path": "learnerbot/solana_live_executor.py"
+        },
+        {
+          "detail": "EVM simulate_cycle accurately buffers gas reserves (30% above estimated limit) and enforces strict min_net_profit prior to transaction broadcast.",
+          "path": "learnerbot/live_executor.py"
+        }
+      ],
+      "expected_effect": "Builds a dataset of eligible vs ineligible arbitrage opportunities across venues to validate the slippage and gas pricing buffers.",
+      "id": "prop-cross-venue-arb-shadow",
+      "minimum_observation": "10 days or 50 eligible opportunities",
+      "rationale": "The architectural cost protections are robust but we lack runtime forensics to prove that Cross Venue Net Arbitrage can consistently identify setups exceeding these margins in real-world volatile networks.",
+      "shadow_test": "Execute 50 shadow trials targeting positive net margin over padded estimated execution costs. Observe hit rate vs minimum profitability threshold.",
+      "strategy": "Cross Venue Net Arbitrage",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/live_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote 'Learned Route Replication' to PROMOTION_CANDIDATE or LIVE.",
+      "reason": "Missing required sanitised runtime forensics branch. No real-world PnL history exists to prove profitability after fees."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "442d0450a95dc3886973603754f4ade825d6daa9",
+  "status": "HEALTHY",
+  "summary": "Completed an architecture-only strategy review. Execution pathways for both Solana and EVM contain strong pre-flight validation gates that require post-cost profitability before signing. The EVM `simulate_cycle` accurately buffers gas reserves and enforces strict `min_net_profit`. Solana execution validates wallet deltas pre- and post-trade to secure correct economic results. Without runtime evidence, strategies must remain in SHADOW status."
+}
