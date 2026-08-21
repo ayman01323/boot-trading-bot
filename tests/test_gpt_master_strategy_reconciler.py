@@ -50,10 +50,11 @@ def test_selected_master_is_never_direct_live_trading_authority():
 
 def test_selected_master_uses_exact_requested_fallback_priority():
     text = _text(RUNNER)
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "copilot")' in text
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")' in text
     assert 'if preferred in _base.PROVIDERS' in text
     assert 'if provider not in out' in text
     assert '"--plan"' in text
+    assert 'DEEPSEEK_API_KEY' in text
 
 
 def test_selected_master_collects_copilot_report_from_exact_cycle_pr_when_needed():
