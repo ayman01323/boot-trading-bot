@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_claude_workflow_uses_secret_plan_mode_and_same_cycle_identity() -> None:
+def test_claude_workflow_uses_secret_plan_mode_same_cycle_and_clean_workspace() -> None:
     text = (ROOT / ".github/workflows/claude-fourth-strategy-agent.yml").read_text(encoding="utf-8")
     assert "secrets.ANTHROPIC_API_KEY" in text
     assert "@anthropic-ai/claude-code@latest" in text
@@ -15,17 +15,26 @@ def test_claude_workflow_uses_secret_plan_mode_and_same_cycle_identity() -> None
     assert '"scope":"MULTI_AGENT_STRATEGY_REVIEW"' in text
     assert "evidence_sha256" in text
     assert "no_live_changes" in text
-    assert "git status --porcelain" in text
+    # Claude is allowed to create only its temporary report workspace; any tracked
+    # or out-of-scope edit causes the independent review step to fail.
+    assert "['git','status','--porcelain']" in text
+    assert "Claude reviewer changed tracked/out-of-scope files" in text
 
 
-def test_four_agent_master_requires_complete_set_and_three_of_four_policy() -> None:
-    text = (ROOT / ".github/workflows/four-agent-strategy-master.yml").read_text(encoding="utf-8")
-    assert "for provider in gpt gemini copilot claude" in text
-    assert '"four_agent_evidence":true' in text
-    assert "at least 3 of the 4" in text
-    assert "live_auto_deploy" in text
-    assert "MASTER_DECIDED_4_AGENT" in text
-    assert "agents_adjudicated" in text
+def test_legacy_four_agent_master_delegates_to_selected_resilient_master() -> None:
+    legacy = (ROOT / ".github/workflows/four-agent-strategy-master.yml").read_text(encoding="utf-8")
+    selected = (ROOT / ".github/workflows/selected-ai-master.yml").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts/resilient_selected_master.py").read_text(encoding="utf-8")
+    fallback = (ROOT / "scripts/resilient_selected_master_v2.py").read_text(encoding="utf-8")
+
+    assert "selected-ai-master.yml" in legacy
+    assert "lane=strategy" in legacy
+    assert "Four-agent completion is no longer required" in legacy
+    assert "matrix:" in selected and "strategy, engineering" in selected
+    assert 'if [[ "$count" == 0 ]]' in selected
+    assert '"minimum_valid_reports_to_continue": 1' in runner
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "copilot")' in fallback
+    assert '"live_auto_deploy": False' in runner
 
 
 def test_legacy_auto_code_gate_is_disabled_without_four_agent_evidence() -> None:
