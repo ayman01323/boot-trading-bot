@@ -1,30 +1,91 @@
 #!/usr/bin/env python3
 """Read-only per-chain SiBot leader-quality gate funnel report.
 
-The report loads the same patch chain as ``learnerbot/__main__.py`` so the
-thresholds and wrappers it observes match the deployed runtime.  Before any
-report query is executed, the normal database connectors and settings
-initialisers are replaced with read-only equivalents.  This prevents the
-report from creating schemas, switching journal modes, migrating settings, or
-writing marker/config files.
+This diagnostic intentionally refuses to run against the live repository tree.
+The restricted VPS wrapper creates a temporary snapshot containing tracked
+runtime code, a point-in-time copy of the live CSV configuration, and
+consistent backups of the SiBot SQLite databases.  Only that snapshot is
+analysed.
 
-For each enabled chain, the chain's Top-20 ranked wallets are walked through
-the active quality metrics/gates and the first failing stage is counted.
+Within the snapshot the report loads the same patch chain as
+``learnerbot/__main__.py`` so the thresholds and wrappers it observes match
+the deployed runtime.  Normal database connectors and settings initialisers
+are replaced with read-only equivalents before and after the patch-chain load.
 """
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import sys
 from pathlib import Path
 from urllib.parse import quote
 
+if os.getenv("SIBOT_GATE_SNAPSHOT") != "1":
+    print(
+        "Refusing to run SiBot leader-gate report outside the isolated snapshot. "
+        "Use /usr/local/sbin/run-sibot-leader-gate-report via the GitHub workflow.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+# The wrapper deliberately excludes .env from the snapshot.  Disable dotenv
+# loading as a second boundary so this diagnostic never imports production API
+# keys even if an .env file is accidentally introduced into tracked code later.
+import dotenv  # noqa: E402
+
+dotenv.load_dotenv = lambda *args, **kwargs: False
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 MAIN_PY = ROOT / "learnerbot" / "__main__.py"
 
+from learnerbot.config import AppSettings, load_chains  # noqa: E402
+from learnerbot import sibot as _sibot  # noqa: E402
+from learnerbot import solana_sibot as _sol  # noqa: E402
+
 _IMPORT_RE = re.compile(r"^from \. import (\w+)")
+
+
+def _readonly_sqlite(path: Path) -> sqlite3.Connection:
+    """Open an existing SQLite database with SQLite's read-only/query-only gates."""
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        raise FileNotFoundError(f"required database is missing: {p}")
+    uri = f"file:{quote(p.as_posix(), safe='/')}?mode=ro"
+    conn = sqlite3.connect(uri, uri=True, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
+    conn.execute("PRAGMA busy_timeout=30000")
+    return conn
+
+
+def _blocked_config_write(*_args, **_kwargs):
+    raise RuntimeError("SiBot leader-gate report blocked a configuration write")
+
+
+def _install_readonly_guards() -> None:
+    """Disable schema/config initialisation for this report process."""
+
+    def sibot_settings_path(app):
+        return Path(app.csv_dir) / "sibot_settings.csv"
+
+    def solana_settings_path(app):
+        return Path(app.csv_dir) / "solana_settings.csv"
+
+    # Normal production connect() functions create directories, set WAL mode and
+    # execute CREATE TABLE statements.  The diagnostic must never do that, even
+    # to its temporary database copies.
+    _sibot.connect = lambda app: _readonly_sqlite(_sibot.db_path(app))
+    _sol.connect = lambda app: _readonly_sqlite(_sol.db_path(app))
+
+    # Active settings wrappers eventually resolve these module globals and can
+    # run one-time migrations.  Returning the existing path preserves reads of
+    # effective settings while preventing migration/config writes.
+    _sibot.ensure_settings = sibot_settings_path
+    _sol.ensure_settings = solana_settings_path
+    _sibot._atomic_csv = _blocked_config_write
 
 
 def _load_patch_chain() -> None:
@@ -41,11 +102,12 @@ def _load_patch_chain() -> None:
         __import__(f"learnerbot.{module}")
 
 
+# Guard the base modules before patch imports.  Some patches replace these
+# functions, so reapply the guards after the complete runtime composition too.
+_install_readonly_guards()
 _load_patch_chain()
+_install_readonly_guards()
 
-from learnerbot.config import AppSettings, load_chains  # noqa: E402
-from learnerbot import sibot as _sibot  # noqa: E402
-from learnerbot import solana_sibot as _sol  # noqa: E402
 from learnerbot import sibot_profit_guard_patch as _evm_guard  # noqa: E402
 from learnerbot import solana_profit_guard_patch as _sol_guard  # noqa: E402
 
@@ -59,43 +121,6 @@ FUNNEL_STAGES = [
     "recent_profit_factor",
     "positive_net",
 ]
-
-
-def _readonly_sqlite(path: Path) -> sqlite3.Connection:
-    """Open an existing SQLite database with SQLite's read-only/query-only gates."""
-    p = Path(path).expanduser().resolve()
-    if not p.is_file():
-        raise FileNotFoundError(f"required database is missing: {p}")
-    uri = f"file:{quote(p.as_posix(), safe='/')}?mode=ro"
-    conn = sqlite3.connect(uri, uri=True, timeout=30.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA query_only=ON")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
-
-
-def _install_readonly_guards() -> None:
-    """Disable production schema/config initialisation for this report process."""
-
-    def sibot_settings_path(app):
-        return Path(app.csv_dir) / "sibot_settings.csv"
-
-    def solana_settings_path(app):
-        return Path(app.csv_dir) / "solana_settings.csv"
-
-    # Normal production connect() functions create directories, set WAL mode and
-    # execute CREATE TABLE statements.  The report must never do any of that.
-    _sibot.connect = lambda app: _readonly_sqlite(_sibot.db_path(app))
-    _sol.connect = lambda app: _readonly_sqlite(_sol.db_path(app))
-
-    # Active settings wrappers eventually call these names and can run one-time
-    # migrations.  Returning the existing path keeps effective-settings reads
-    # intact while preventing migration/config writes.
-    _sibot.ensure_settings = sibot_settings_path
-    _sol.ensure_settings = solana_settings_path
-
-
-_install_readonly_guards()
 
 
 def _evm_stage_failed(m: dict, cfg: dict) -> str | None:
