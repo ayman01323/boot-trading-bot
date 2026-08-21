@@ -268,3 +268,6 @@ def install() -> None:
 
 
 install()
+
+# Final health presentation layer: compact ENGINEERING/STRATEGY status rows.
+from . import ai_health_compact_report_patch as _compact_health  # noqa: F401,E402
