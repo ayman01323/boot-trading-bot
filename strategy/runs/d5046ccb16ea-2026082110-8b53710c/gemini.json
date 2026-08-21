@@ -1,0 +1,74 @@
+{
+  "cycle_id": "d5046ccb16ea-2026082110-8b53710c",
+  "evidence_gaps": [
+    "No runtime forensics or live execution results available in .strategy_cycle/evidence.json",
+    "Missing empirical data on realized slippage versus expected slippage bounds",
+    "Missing data on realized chain-specific execution costs (actual gas/priority fees vs shadow estimates)",
+    "Lack of separation between strategy/market loss and execution/infrastructure failure in a live environment"
+  ],
+  "evidence_sha256": "8b53710c7b6bfc66f1b5b5de276e279d310cf39ffb6bae217f8105102bb7cdfb",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "May reduce the total number of traded opportunities if standard infra latency is naturally >800ms.",
+      "evidence": [
+        {
+          "detail": "cross_venue_net_arbitrage allows max_quote_age_ms=1500, which is too permissive for high-frequency arbitrage.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Fewer eligible signals but higher probability of successful execution and durable money-weighted NET P&L after fees/slippage.",
+      "id": "prop-arb-quote-age",
+      "minimum_observation": "1000 shadow signals",
+      "rationale": "Cross-venue arbitrage opportunities decay rapidly. Allowing quotes up to 1.5 seconds old exposes the strategy to high infrastructure execution failure rates and extreme slippage, as the remote venue quote will likely have moved by the time the order routes.",
+      "shadow_test": "Simulate signals using max_quote_age_ms=800 and compare quote_simulated_net_base against the 1500ms baseline. Stop if total net bps generated drops by more than 50%.",
+      "strategy": "Cross Venue Net Arbitrage",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.7,
+      "downside_risk": "Could exclude 'slow-burn' tokens that build verifiable structural momentum later in their first day.",
+      "evidence": [
+        {
+          "detail": "new_liquidity_quality accepts pool_age_seconds up to 86400 (24 hours).",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Increases average quality of signals by restricting to the high-momentum early phase of the pool, avoiding late-stage mean reversion.",
+      "id": "prop-new-liq-age",
+      "minimum_observation": "500 shadow signals",
+      "rationale": "A 24-hour window is too wide to capture the pure 'new liquidity' premium, which usually dissipates within the first 1-4 hours as bots, snipers, and scalpers establish equilibrium. After this period, market losses dominate over structural edge.",
+      "shadow_test": "Partition historical shadow outcomes by pool age (e.g., <4h vs 4h-24h) and verify that the net positive edge is concentrated in the <4h segment.",
+      "strategy": "New Liquidity Quality",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote SHADOW strategies to LIVE/CANARY based purely on positive shadow quote_simulated_net_base.",
+      "reason": "Prohibited by review rules due to missing runtime execution evidence; simulation cannot prove live profitability."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "d5046ccb16ead25acf38f8dca5c36dbcb365943f",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only review of cross-chain shadow strategies. The core architecture in learnerbot/cross_chain_strategy_signals.py enforces positive net executable edge correctly, factoring in costs and ensuring minimum quality scores. However, parameter tuning for cross-venue arbitrage and new liquidity could be tightened to reduce execution/infrastructure failure risks related to latency and stale quotes. Due to absent runtime forensics, no claims of profitability, canary readiness, or live readiness are made."
+}
