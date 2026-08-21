@@ -100,6 +100,32 @@ def handle_update(app, update):
         except Exception as exc:
             _ui._send(app, tid, f"❌ <b>Solana force exit</b>\n<code>{html.escape(str(exc)[:400])}</code>")
         return
+    if tid is not None and text.startswith("/solanawriteoff"):
+        try:
+            if not _ui._auth(app, tid):
+                raise ValueError("Not authorised")
+            parts = text.split()
+            if len(parts) != 3 or parts[2].upper() != "CONFIRM":
+                raise ValueError(
+                    "Use /solanawriteoff POSITION_ID CONFIRM -- this records the position as a full "
+                    "realised loss WITHOUT selling anything. Only use it once /solanaforceexit has "
+                    "already failed and you accept the tokens are currently unsellable at any price."
+                )
+            position_id = parts[1]
+            result = _unwind.write_off_unsellable_position(app, tid, position_id)
+            _ui._send(
+                app,
+                tid,
+                "📝 <b>Solana position written off</b>\n"
+                f"Position: <code>{html.escape(position_id)}</code>\n"
+                f"Written off: <b>{html.escape(str(result.get('written_off_cost_sol') or '0'))} SOL</b> "
+                "(recorded as a full realised loss)\n"
+                "No transaction was sent. The tokens remain untouched in the wallet -- only the tracked "
+                "position record was closed, freeing this account's Solana trading capacity slot.",
+            )
+        except Exception as exc:
+            _ui._send(app, tid, f"❌ <b>Solana write-off</b>\n<code>{html.escape(str(exc)[:400])}</code>")
+        return
     return _ORIGINAL_HANDLE_UPDATE(app, update)
 
 

@@ -67,3 +67,54 @@ def test_surfaces_error_from_force_close(tmp_path, monkeypatch):
     update = {"message": {"chat": {"id": 1}, "text": "/solanaforceexit p1 CONFIRM"}}
     report_patch.handle_update(app, update)
     assert sent and "does not belong" in sent[0]
+
+
+def test_write_off_requires_confirm_keyword(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    sent = []
+    monkeypatch.setattr(ui, "_auth", lambda app_, tid: True)
+    monkeypatch.setattr(ui, "_send", lambda app_, tid, text, kb=None: sent.append(text))
+
+    update = {"message": {"chat": {"id": 1}, "text": "/solanawriteoff p1"}}
+    report_patch.handle_update(app, update)
+    assert sent and "CONFIRM" in sent[0]
+
+
+def test_write_off_calls_backend_and_reports_no_transaction_sent(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    sent = []
+    calls = []
+    monkeypatch.setattr(ui, "_auth", lambda app_, tid: True)
+    monkeypatch.setattr(ui, "_send", lambda app_, tid, text, kb=None: sent.append(text))
+
+    def fake_write_off(app_, tid, position_id):
+        calls.append((tid, position_id))
+        return {"position_id": position_id, "written_off_cost_sol": "2.5", "realised_net_sol": "-2.5"}
+
+    from learnerbot import solana_emergency_liquidity_unwind_patch as unwind
+    monkeypatch.setattr(unwind, "write_off_unsellable_position", fake_write_off)
+
+    update = {"message": {"chat": {"id": 42}, "text": "/solanawriteoff p7 CONFIRM"}}
+    report_patch.handle_update(app, update)
+
+    assert calls == [("42", "p7")] or calls == [(42, "p7")]
+    assert sent and "written off" in sent[0]
+    assert "2.5 SOL" in sent[0]
+    assert "No transaction was sent" in sent[0]
+
+
+def test_write_off_surfaces_backend_error(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    sent = []
+    monkeypatch.setattr(ui, "_auth", lambda app_, tid: True)
+    monkeypatch.setattr(ui, "_send", lambda app_, tid, text, kb=None: sent.append(text))
+
+    def fake_write_off(app_, tid, position_id):
+        raise ValueError("Only LIVE positions can be written off")
+
+    from learnerbot import solana_emergency_liquidity_unwind_patch as unwind
+    monkeypatch.setattr(unwind, "write_off_unsellable_position", fake_write_off)
+
+    update = {"message": {"chat": {"id": 1}, "text": "/solanawriteoff p9 CONFIRM"}}
+    report_patch.handle_update(app, update)
+    assert sent and "Only LIVE positions" in sent[0]

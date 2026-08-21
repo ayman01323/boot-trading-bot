@@ -269,3 +269,60 @@ def test_force_close_uses_the_wider_manual_ceiling(monkeypatch, tmp_path):
     result = patch.force_close_live_position(app, "123", "p6")
     assert seen_reasons == [patch._MANUAL_FORCE_REASON]
     assert result["closed"] is True
+
+
+def test_write_off_closes_without_any_swap_and_records_full_loss(tmp_path):
+    app = _app(tmp_path)
+    with closing(patch._sol.connect(app)) as conn:
+        conn.execute(
+            "INSERT INTO positions(position_id,telegram_id,leader_wallet,mint,mode,status,token_amount_raw,"
+            "entry_cost_sol,entry_ts,realised_net_sol,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            ("p7", "123", "leader", "MintDead", "LIVE", "OPEN", "5000", "2.5", 0, "0", 0),
+        )
+        conn.commit()
+
+    result = patch.write_off_unsellable_position(app, "123", "p7")
+    assert result["written_off_cost_sol"] == "2.5"
+    assert result["realised_net_sol"] == "-2.5"
+
+    with closing(patch._sol.connect(app)) as conn:
+        row = dict(conn.execute("SELECT * FROM positions WHERE position_id='p7'").fetchone())
+    assert row["status"] == "CLOSED"
+    assert row["exit_reason"] == "MANUAL_WRITE_OFF_UNSELLABLE"
+    assert row["realised_net_sol"] == "-2.5"
+    # No swap was attempted: token_amount_raw is zeroed in the tracked record only,
+    # never touched on-chain -- this function never builds/signs/broadcasts anything.
+    assert row["token_amount_raw"] == "0"
+
+
+def test_write_off_preserves_any_prior_partial_realised_amount(tmp_path):
+    app = _app(tmp_path)
+    with closing(patch._sol.connect(app)) as conn:
+        conn.execute(
+            "INSERT INTO positions(position_id,telegram_id,leader_wallet,mint,mode,status,token_amount_raw,"
+            "entry_cost_sol,entry_ts,realised_net_sol,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            ("p8", "123", "leader", "MintDead", "LIVE", "OPEN", "2000", "1.0", 0, "0.3", 0),
+        )
+        conn.commit()
+
+    result = patch.write_off_unsellable_position(app, "123", "p8")
+    # Prior realised +0.3 from an earlier partial sell, minus the remaining 1.0 cost basis.
+    assert result["realised_net_sol"] == "-0.7"
+
+
+def test_write_off_requires_matching_owner_live_mode_and_open_status(tmp_path):
+    app = _app(tmp_path)
+    with closing(patch._sol.connect(app)) as conn:
+        conn.execute(
+            "INSERT INTO positions(position_id,telegram_id,leader_wallet,mint,mode,status,token_amount_raw,"
+            "entry_cost_sol,entry_ts,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("p9", "123", "leader", "MintXYZ", "SHADOW", "OPEN", "1000", "1.0", 0, 0),
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="does not belong"):
+        patch.write_off_unsellable_position(app, "999", "p9")
+    with pytest.raises(ValueError, match="Only LIVE positions"):
+        patch.write_off_unsellable_position(app, "123", "p9")
+    with pytest.raises(ValueError, match="Unknown Solana position"):
+        patch.write_off_unsellable_position(app, "123", "does-not-exist")

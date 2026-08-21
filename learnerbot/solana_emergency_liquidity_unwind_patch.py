@@ -364,6 +364,58 @@ def force_close_live_position(app, tid, position_id: str) -> dict:
     return result
 
 
+def write_off_unsellable_position(app, tid, position_id: str) -> dict:
+    """Close the tracked record of a position proven unsellable, without any swap.
+
+    For a position where every slice failed even the widened manual-force
+    ceiling (validated by an actual force_close_live_position attempt), Jupiter
+    is quoting essentially no real liquidity for it. Keeping the DB row OPEN
+    forever only wastes a live-position capacity slot for no benefit -- no
+    transaction is built, signed or broadcast here, and the tokens remain
+    exactly where they are, in the wallet, untouched. If liquidity for that
+    mint ever genuinely recovers, they can still be sold manually outside the
+    bot's tracking.
+
+    Recorded as a full realised loss of the remaining cost basis: the honest,
+    conservative accounting treatment for an asset that currently cannot be
+    liquidated at any price the platform will accept, rather than silently
+    omitting a real economic loss from reporting.
+    """
+    with closing(_sol.connect(app)) as conn:
+        row = conn.execute("SELECT * FROM positions WHERE position_id=?", (str(position_id),)).fetchone()
+    if not row:
+        raise ValueError("Unknown Solana position")
+    position = dict(row)
+    if str(position.get("telegram_id")) != str(tid):
+        raise ValueError("This position does not belong to this account")
+    if str(position.get("mode") or "").upper() != "LIVE":
+        raise ValueError("Only LIVE positions can be written off")
+    if str(position.get("status") or "").upper() != "OPEN":
+        raise ValueError("Position is not open")
+
+    remaining_cost = _sol._dec(position.get("entry_cost_sol"), 0)
+    prior_realised = _sol._dec(position.get("realised_net_sol"), 0)
+    new_realised = prior_realised - remaining_cost
+    now = int(time.time())
+
+    with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
+        conn.execute(
+            """UPDATE positions SET status='CLOSED',token_amount_raw='0',entry_cost_sol='0',
+                   realised_net_sol=?,exit_reason=?,closed_at=?,leader_exit_pending=0,updated_at=?
+               WHERE position_id=? AND telegram_id=? AND status='OPEN' AND mode='LIVE'""",
+            (str(new_realised), "MANUAL_WRITE_OFF_UNSELLABLE", now, now, str(position_id), str(tid)),
+        )
+        conn.commit()
+
+    _clear_backoff(app, str(position_id))
+    return {
+        "position_id": str(position_id),
+        "mint": position.get("mint"),
+        "written_off_cost_sol": str(remaining_cost),
+        "realised_net_sol": str(new_realised),
+    }
+
+
 def install():
     if getattr(_sol, "_emergency_liquidity_unwind_installed", False):
         return
