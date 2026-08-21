@@ -1,20 +1,21 @@
-requested_sha=79f51b5fca922b842daeef92f8121b0aa3d8bfa2
+requested_sha=1ae2c7fd9b314c3527a1fce37860b4e8c8fdb952
 deploy_outcome=failure
 deploy_exit=10
-run_id=32484649091
-utc=2026-08-21T13:01:50Z
+run_id=32485875830
+utc=2026-08-21T13:16:33Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T13:00:46Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=79f51b5fca922b842daeef92f8121b0aa3d8bfa2
+2026-08-21T13:15:27Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=1ae2c7fd9b314c3527a1fce37860b4e8c8fdb952
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   8906155..79f51b5  main       -> origin/main
-Updating 8906155..79f51b5
+   79f51b5..1ae2c7f  main       -> origin/main
+Updating 8906155..1ae2c7f
 Fast-forward
  .../workflows/deepseek-github-controlled-ops.yml   | 238 +++++++++++++++++++
  .github/workflows/deepseek-vps-controlled-ops.yml  | 251 +++++++++++++++++++++
+ .github/workflows/engineering-agent-retry.yml      |  85 +++----
  tests/test_deepseek_controlled_access.py           |  69 ++++++
- 3 files changed, 558 insertions(+)
+ 4 files changed, 601 insertions(+), 42 deletions(-)
  create mode 100644 .github/workflows/deepseek-github-controlled-ops.yml
  create mode 100644 .github/workflows/deepseek-vps-controlled-ops.yml
  create mode 100644 tests/test_deepseek_controlled_access.py
@@ -76,13 +77,13 @@ tests/test_deepseek_controlled_access.py:59: AssertionError
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 FAILED tests/test_deepseek_controlled_access.py::test_deepseek_vps_access_is_manual_restricted_and_current_main_only
-1 failed, 521 passed, 1 warning in 34.88s
-2026-08-21T13:01:29Z TESTS FAILED; service remains on old running process
+1 failed, 521 passed, 1 warning in 36.22s
+2026-08-21T13:16:11Z TESTS FAILED; service remains on old running process
 HEAD is now at 8906155 Use Gemini 3.7 Flash for hourly strategy reviews
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T13:01:45Z
+UTC: 2026-08-21T13:16:27Z
 branch: main
 sha:    89061556be74c3e786de8eb999e96d03f330fb39
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -93,21 +94,22 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 10min ago
+     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 25min ago
    Main PID: 377581 (python)
-      Tasks: 20 (limit: 5869)
-     Memory: 621.4M (peak: 750.8M)
-        CPU: 8min 25.588s
+      Tasks: 21 (limit: 5869)
+     Memory: 606.9M (peak: 771.0M)
+        CPU: 19min 44.360s
      CGroup: /system.slice/learnerbot.service
-             └─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             ├─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─381260 git -C /root/multichain-learning-bot-v2.2-fast-direct-market show refs/remotes/origin/ai-reviews:weekly/latest_source_commit.txt
 
-Aug 21 13:57:15 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 13:57:18 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 13:57:21 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 13:57:25 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 13:57:39 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=37.999
-Aug 21 13:58:20 mint.yesgoodwill.com python[377581]: [power-discovery] v2-added=25 v3-pools=196 products=7954 auto-products=950 rejected=0 seconds=433.100
-Aug 21 13:58:20 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=39.915
-Aug 21 13:59:01 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=39.655
-Aug 21 13:59:58 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=56.158
-Aug 21 14:00:56 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=56.982
+Aug 21 14:12:23 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:12:31 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:12:35 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:12:38 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:12:42 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 14:12:57 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=44.827
+Aug 21 14:12:57 mint.yesgoodwill.com python[377581]: [power-discovery] v2-added=23 v3-pools=194 products=7955 auto-products=951 rejected=0 seconds=432.480
+Aug 21 14:13:44 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=45.825
+Aug 21 14:14:44 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=58.844
+Aug 21 14:16:03 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=76.350
