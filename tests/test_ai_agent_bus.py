@@ -48,7 +48,7 @@ def test_direct_message_calls_only_addressed_agent(monkeypatch: pytest.MonkeyPat
 
     def fake_call(provider: str, prompt: str):
         calls.append(provider)
-        return 0, "Claude received it. ROUTE_TO: GEMINI\nROUTE_QUESTION: unnecessary", ""
+        return 0, "Claude received it.\nROUTE_TO: GEMINI\nROUTE_QUESTION: unnecessary", ""
 
     monkeypatch.setattr(bus, "call_provider", fake_call)
     reply = bus.run_bus(bus.parse_envelope(_message()))
@@ -103,18 +103,34 @@ def test_exact_environment_secret_is_redacted(monkeypatch: pytest.MonkeyPatch) -
     assert "[REDACTED]" in reply
 
 
-def test_copilot_runs_outside_repository_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_copilot_runs_outside_repo_and_without_other_provider_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     original = os.getcwd()
-    seen: dict[str, str] = {}
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret-test")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-secret-test")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret-test")
+    monkeypatch.setenv("COPILOT_ASSIGN_TOKEN", "copilot-token-test")
+    seen: dict[str, object] = {}
 
     def fake_call(provider: str, prompt: str):
         seen["provider"] = provider
         seen["cwd"] = os.getcwd()
+        seen["openai"] = os.environ.get("OPENAI_API_KEY")
+        seen["anthropic"] = os.environ.get("ANTHROPIC_API_KEY")
+        seen["gemini"] = os.environ.get("GEMINI_API_KEY")
+        seen["deepseek"] = os.environ.get("DEEPSEEK_API_KEY")
+        seen["copilot"] = os.environ.get("COPILOT_ASSIGN_TOKEN")
         return 0, "copilot reply", ""
 
     monkeypatch.setattr(bus, "call_provider", fake_call)
     reply = bus.run_bus(bus.parse_envelope(_message(target="COPILOT")))
     assert seen["provider"] == "copilot"
     assert seen["cwd"] != original
+    assert seen["openai"] is None
+    assert seen["anthropic"] is None
+    assert seen["gemini"] is None
+    assert seen["deepseek"] is None
+    assert seen["copilot"] == "copilot-token-test"
+    assert os.environ.get("OPENAI_API_KEY") == "openai-secret-test"
     assert os.getcwd() == original
     assert "status: COMPLETED" in reply
