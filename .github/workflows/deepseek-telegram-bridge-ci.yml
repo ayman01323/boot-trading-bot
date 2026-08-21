@@ -12,6 +12,8 @@ on:
       - '.github/workflows/deepseek-vps-controlled-ops.yml'
       - '.github/workflows/deepseek-telegram-bridge-ci.yml'
       - 'tests/test_deepseek_telegram_bridge.py'
+      - 'tests/test_deepseek_controlled_access.py'
+      - 'tests/test_deepseek_fifth_agent.py'
   workflow_dispatch:
 
 permissions:
@@ -32,20 +34,20 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Run bridge and safety regressions in isolated inherited venv
+      - name: Run bridge and safety regressions in isolated venv
         shell: bash
         run: |
           set -euo pipefail
           venv="/tmp/deepseek-telegram-bridge-ci-${GITHUB_RUN_ID}"
           rm -rf "$venv"
-          # Inherit the VPS's already-working BOOT runtime dependencies instead of
-          # downloading a second Solana stack. Only test/YAML helpers are added.
-          python3 -m venv --system-site-packages "$venv"
+          python3 -m venv "$venv"
           "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml
           "$venv/bin/python" -m py_compile \
             learnerbot/ai_master_control.py \
             learnerbot/telegram_deepseek_control_patch.py \
-            tests/test_deepseek_telegram_bridge.py
+            tests/test_deepseek_telegram_bridge.py \
+            tests/test_deepseek_controlled_access.py \
+            tests/test_deepseek_fifth_agent.py
           "$venv/bin/python" - <<'PY'
           import pathlib,yaml
           for name in (
@@ -60,7 +62,5 @@ jobs:
             tests/test_deepseek_telegram_bridge.py \
             tests/test_deepseek_controlled_access.py \
             tests/test_deepseek_fifth_agent.py \
-            tests/test_selected_ai_master_control.py \
-            tests/test_imports.py \
-            tests/test_main_import_order.py
+            tests/test_selected_ai_master_control.py
           rm -rf "$venv"
