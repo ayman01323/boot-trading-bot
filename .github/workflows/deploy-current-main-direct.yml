@@ -1,9 +1,13 @@
 name: Direct Self-Hosted Deploy Current Main
-# Any approved change merged/pushed to main deploys the exact main SHA through the restricted VPS wrapper.
+# Runtime-affecting main changes deploy through the restricted VPS wrapper.
+# Workflow/diagnostic-only commits do not restart the Telegram bot.
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/**'
+      - 'diagnostics/**'
 
 permissions:
   contents: write
