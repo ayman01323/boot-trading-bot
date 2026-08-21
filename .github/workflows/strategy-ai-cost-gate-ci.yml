@@ -4,10 +4,13 @@ on:
   pull_request:
     paths:
       - 'learnerbot/strategy_ai_cost_gate.py'
+      - 'learnerbot/server_gpt_cost_saver_patch.py'
+      - 'learnerbot/__main__.py'
       - 'tests/test_strategy_ai_cost_gate.py'
       - 'tests/test_strategy_ai_cost_workflow.py'
       - 'tests/test_ai_review_pipeline_cost_control.py'
       - 'tests/test_ci_api_cost_control.py'
+      - 'tests/test_server_gpt_cost_saver.py'
       - '.github/workflows/hourly-three-agent-strategy-cycle.yml'
       - '.github/workflows/ai-review-pipeline-ci.yml'
       - '.github/workflows/ci.yml'
@@ -25,10 +28,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install test runner
-        run: python -m pip install pytest
-      - name: Compile cost gate
-        run: python -m py_compile learnerbot/strategy_ai_cost_gate.py
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Compile cost-control modules
+        run: python -m py_compile learnerbot/strategy_ai_cost_gate.py learnerbot/server_gpt_cost_saver_patch.py
       - name: Run cost control tests
         run: |
           pytest -q \
@@ -36,5 +39,6 @@ jobs:
             tests/test_strategy_ai_cost_workflow.py \
             tests/test_ai_review_pipeline_cost_control.py \
             tests/test_ci_api_cost_control.py \
+            tests/test_server_gpt_cost_saver.py \
             tests/test_hourly_three_agent_strategy_workflow.py \
             tests/test_hourly_three_agent_workflow_contract.py
