@@ -1,0 +1,137 @@
+name: Event-Driven AI Agent Bus
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ai-agent-bus-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    if: >-
+      github.event.issue.number == 333 &&
+      (github.event.comment.user.login == github.repository_owner ||
+       github.event.comment.user.login == 'github-actions[bot]') &&
+      startsWith(github.event.comment.body, 'AI_BUS') &&
+      !startsWith(github.event.comment.body, 'AI_BUS_REPLY')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out trusted current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up isolated Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal provider dependency
+        shell: bash
+        run: python -m pip install --disable-pip-version-check -q python-dotenv
+
+      - name: Materialise and validate bounded bus message
+        id: preflight
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os, pathlib
+          pathlib.Path('/tmp/ai-bus-message.md').write_text(
+              os.environ.get('COMMENT_BODY',''), encoding='utf-8'
+          )
+          PY
+          python scripts/ai_agent_bus.py \
+            --input /tmp/ai-bus-message.md \
+            --output /tmp/unused.md \
+            --preflight > /tmp/ai-bus-preflight.env
+          cat /tmp/ai-bus-preflight.env >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node only when Copilot may be addressed
+        if: steps.preflight.outputs.needs_copilot == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install bounded Copilot CLI only when needed
+        if: steps.preflight.outputs.needs_copilot == 'true'
+        shell: bash
+        run: npm install -g @github/copilot@latest
+
+      - name: Route message to addressed provider(s)
+        id: route
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_COUNCIL_MODEL: ${{ vars.OPENAI_COUNCIL_MODEL || 'gpt-5.6-terra' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_COUNCIL_MODEL: ${{ vars.ANTHROPIC_COUNCIL_MODEL || vars.CLAUDE_MASTER_MODEL || '' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.7-flash' }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/ai-bus-no-runtime.env
+        shell: bash
+        run: |
+          set +e
+          python scripts/ai_agent_bus.py \
+            --input /tmp/ai-bus-message.md \
+            --output /tmp/ai-bus-reply.md \
+            2>/tmp/ai-bus-error.txt
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -ne 0 || ! -s /tmp/ai-bus-reply.md ]]; then
+            cat > /tmp/ai-bus-reply.md <<EOF
+          AI_BUS_REPLY
+          message_id: ${{ steps.preflight.outputs.message_id }}
+          from: BUS
+          to: USER
+          status: BLOCKED
+          provider_calls: 0
+
+          The trusted AI bus could not complete this message. No provider action, deployment, trading action, wallet action, or runtime change was authorised by this failure. Inspect the GitHub Actions run for the bounded router error.
+          EOF
+          fi
+          exit 0
+
+      - name: Post auditable reply to the AI bus issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY' > /tmp/ai-bus-comment.json
+          import json, pathlib
+          body=pathlib.Path('/tmp/ai-bus-reply.md').read_text(encoding='utf-8',errors='replace')
+          print(json.dumps({'body': body}))
+          PY
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            --input /tmp/ai-bus-comment.json >/dev/null
+
+      - name: Publish compact run summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## AI Agent Bus'
+            echo
+            echo "Message ID: \`${{ steps.preflight.outputs.message_id }}\`"
+            echo "Target: **${{ steps.preflight.outputs.target }}**"
+            echo "Mode: **${{ steps.preflight.outputs.mode }}**"
+            echo "Copilot setup needed: **${{ steps.preflight.outputs.needs_copilot }}**"
+            echo "Router return code: **${{ steps.route.outputs.rc }}**"
+          } >> "$GITHUB_STEP_SUMMARY"
