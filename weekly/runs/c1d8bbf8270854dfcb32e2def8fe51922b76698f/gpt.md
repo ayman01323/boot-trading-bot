@@ -1,3 +1,5 @@
-# GPT weekly audit
+# Gpt engineering audit
 
-INCOMPLETE — inspect the workflow log.
+Gpt engineering recovery did not complete.
+
+Status: INCOMPLETE
