@@ -3,12 +3,23 @@ name: Event-Driven AI Agent Bus
 on:
   issue_comment:
     types: [created]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/ai-agent-bus.yml'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_pending.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+      - 'tests/test_ai_agent_bus_delivery_fallback.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/ai-agent-bus.yml'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_pending.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
@@ -17,9 +28,9 @@ permissions:
   contents: read
   issues: write
 
-# Serialise all bus work so an issue_comment event and the polling fallback
-# cannot process the same message at the same time. Every run re-checks the
-# issue before calling a provider, so queued duplicate triggers become no-ops.
+# Serialise all bus work so instant, PR-smoke, push and polling fallbacks cannot
+# process the same message at the same time. Every run re-checks issue #333 by
+# message_id before calling/publishing, so duplicate triggers become no-ops.
 concurrency:
   group: ai-agent-bus
   cancel-in-progress: false
@@ -27,49 +38,49 @@ concurrency:
 jobs:
   route:
     if: >-
-      github.event_name != 'issue_comment' ||
-      (github.event.issue.number == 333 &&
-       (github.event.comment.user.login == github.repository_owner ||
-        github.event.comment.user.login == 'github-actions[bot]'))
-    runs-on: ubuntu-latest
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.number == 333 &&
+        (github.event.comment.user.login == github.repository_owner ||
+         github.event.comment.user.login == 'github-actions[bot]'))) &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
+    env:
+      BUS_VENV: /tmp/ai-agent-bus-${{ github.run_id }}
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
-      - name: Check out trusted current main without persisted credentials
+      - name: Check out trusted bus code without persisted credentials
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
           fetch-depth: 1
           persist-credentials: false
 
       - name: Find latest unanswered AI bus message
         id: pending
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
-            > /tmp/ai-bus-comments.json
-          python scripts/ai_agent_bus_pending.py select \
-            --comments /tmp/ai-bus-comments.json \
+          python3 scripts/ai_agent_bus_pending.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
             --owner "$REPO_OWNER" \
             --message-output /tmp/ai-bus-message.md \
             > /tmp/ai-bus-pending.env
           cat /tmp/ai-bus-pending.env >> "$GITHUB_OUTPUT"
 
-      - name: Set up isolated Python
-        if: steps.pending.outputs.pending == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install minimal provider dependency
+      - name: Build isolated Python environment
         if: steps.pending.outputs.pending == 'true'
         shell: bash
-        run: python -m pip install --disable-pip-version-check -q python-dotenv
+        run: |
+          set -euo pipefail
+          rm -rf "$BUS_VENV"
+          python3 -m venv "$BUS_VENV"
+          "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
 
       - name: Validate bounded bus message
         if: steps.pending.outputs.pending == 'true'
@@ -77,7 +88,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/ai_agent_bus.py \
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
             --input /tmp/ai-bus-message.md \
             --output /tmp/unused.md \
             --preflight > /tmp/ai-bus-preflight.env
@@ -111,7 +122,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          python scripts/ai_agent_bus.py \
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
             --input /tmp/ai-bus-message.md \
             --output /tmp/ai-bus-reply.md \
             2>/tmp/ai-bus-error.txt
@@ -134,30 +145,28 @@ jobs:
       - name: Post auditable reply to the AI bus issue
         if: steps.pending.outputs.pending == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
         shell: bash
         run: |
           set -euo pipefail
-          # Re-check immediately before publishing so a delayed duplicate trigger
+          # Re-check immediately before publishing so delayed duplicate triggers
           # cannot post a second reply for the same message id.
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
-            > /tmp/ai-bus-comments-latest.json
-          if python scripts/ai_agent_bus_pending.py has-reply \
-              --comments /tmp/ai-bus-comments-latest.json \
+          if python3 scripts/ai_agent_bus_pending.py has-reply-live \
+              --repo "$GITHUB_REPOSITORY" \
+              --owner "$REPO_OWNER" \
               --message-id "${{ steps.pending.outputs.message_id }}"; then
             echo "Reply already exists for ${{ steps.pending.outputs.message_id }}; skipping duplicate publish."
             exit 0
           fi
+          python3 scripts/ai_agent_bus_pending.py post-reply \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/ai-bus-reply.md
 
-          python - <<'PY' > /tmp/ai-bus-comment.json
-          import json, pathlib
-          body=pathlib.Path('/tmp/ai-bus-reply.md').read_text(encoding='utf-8',errors='replace')
-          print(json.dumps({'body': body}))
-          PY
-          gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/issues/333/comments" \
-            --input /tmp/ai-bus-comment.json >/dev/null
+      - name: Remove isolated Python environment
+        if: always()
+        shell: bash
+        run: rm -rf "$BUS_VENV"
 
       - name: Publish compact run summary
         if: always()
@@ -166,6 +175,7 @@ jobs:
           {
             echo '## AI Agent Bus'
             echo
+            echo "Event: **${GITHUB_EVENT_NAME}**"
             echo "Pending message: **${{ steps.pending.outputs.pending || 'false' }}**"
             echo "Message ID: \`${{ steps.pending.outputs.message_id || 'none' }}\`"
             echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
