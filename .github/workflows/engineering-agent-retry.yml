@@ -57,11 +57,11 @@ jobs:
             valid=false
             if [[ $rc -eq 0 && -s "$tmp" ]]; then
               status="$(python - "$tmp" <<'PY'
-          import json,sys
-          try:
-              p=json.load(open(sys.argv[1])); print(str(p.get('status') or '').upper())
-          except Exception: print('')
-          PY
+import json,sys
+try:
+    p=json.load(open(sys.argv[1])); print(str(p.get('status') or '').upper())
+except Exception: print('')
+PY
               )"
               [[ "$status" != 'INCOMPLETE' && -n "$status" ]] && valid=true
             fi
@@ -154,13 +154,14 @@ jobs:
         id: gpt
         continue-on-error: true
         env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
           SOURCE_SHA: ${{ steps.meta.outputs.source }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY:-}"
+          test -n "${CODEX_API_KEY:-}"
           sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .engineering_retry/common_prompt.txt > /tmp/retry-gpt-prompt.txt
           cat >> /tmp/retry-gpt-prompt.txt <<'EOF'
           Return exactly one report between ENGINEERING_RETRY_JSON_BEGIN and ENGINEERING_RETRY_JSON_END. Do not write files.
@@ -170,19 +171,19 @@ jobs:
           codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
             < /tmp/retry-gpt-prompt.txt > .engineering_retry/gpt_stdout.txt 2> .engineering_retry/gpt_error.txt
           python - <<'PY'
-          import json,re,pathlib
-          raw=pathlib.Path('.engineering_retry/gpt_stdout.txt').read_text(errors='replace')
-          m=re.search(r'ENGINEERING_RETRY_JSON_BEGIN\s*(\{.*?\})\s*ENGINEERING_RETRY_JSON_END',raw,re.S)
-          if not m: raise SystemExit('GPT engineering retry JSON markers missing')
-          pathlib.Path('.engineering_retry/gpt.json').write_text(json.dumps(json.loads(m.group(1)),indent=2,sort_keys=True)+'\n')
-          PY
+import json,re,pathlib
+raw=pathlib.Path('.engineering_retry/gpt_stdout.txt').read_text(errors='replace')
+m=re.search(r'ENGINEERING_RETRY_JSON_BEGIN\s*(\{.*?\})\s*ENGINEERING_RETRY_JSON_END',raw,re.S)
+if not m: raise SystemExit('GPT engineering retry JSON markers missing')
+pathlib.Path('.engineering_retry/gpt.json').write_text(json.dumps(json.loads(m.group(1)),indent=2,sort_keys=True)+'\n')
+PY
           python -m learnerbot.weekly_bug_audit_contract validate-agent \
             --input .engineering_retry/gpt.json --provider gpt --source-commit "$SOURCE_SHA" >/dev/null
           python - <<'PY'
-          import json
-          p=json.load(open('.engineering_retry/gpt.json'))
-          if p.get('status')=='INCOMPLETE': raise SystemExit('GPT retry returned INCOMPLETE')
-          PY
+import json
+p=json.load(open('.engineering_retry/gpt.json'))
+if p.get('status')=='INCOMPLETE': raise SystemExit('GPT retry returned INCOMPLETE')
+PY
 
       - name: Retry Gemini engineering report
         if: steps.meta.outputs.run == 'true' && contains(steps.meta.outputs.providers, 'gemini')
@@ -207,10 +208,10 @@ jobs:
             --input .engineering_retry/gemini_stdout.txt --output .engineering_retry/gemini.json \
             --provider gemini --source-commit "$SOURCE_SHA" >/dev/null
           python - <<'PY'
-          import json
-          p=json.load(open('.engineering_retry/gemini.json'))
-          if p.get('status')=='INCOMPLETE': raise SystemExit('Gemini retry returned INCOMPLETE')
-          PY
+import json
+p=json.load(open('.engineering_retry/gemini.json'))
+if p.get('status')=='INCOMPLETE': raise SystemExit('Gemini retry returned INCOMPLETE')
+PY
 
       - name: Publish only successful retry reports and retry diagnostics
         if: steps.meta.outputs.run == 'true'
@@ -232,34 +233,34 @@ jobs:
           if [[ "$GPT_OUTCOME" == 'success' && -s .engineering_retry/gpt.json ]]; then
             cp .engineering_retry/gpt.json "$dest/gpt.json"
             python - <<'PY' > "$dest/gpt.md"
-          import json
-          p=json.load(open('.engineering_retry/gpt.json')); print('# GPT engineering retry\n\n'+str(p.get('summary') or ''))
-          PY
+import json
+p=json.load(open('.engineering_retry/gpt.json')); print('# GPT engineering retry\n\n'+str(p.get('summary') or ''))
+PY
           fi
           if [[ "$GEMINI_OUTCOME" == 'success' && -s .engineering_retry/gemini.json ]]; then
             cp .engineering_retry/gemini.json "$dest/gemini.json"
             python - <<'PY' > "$dest/gemini.md"
-          import json
-          p=json.load(open('.engineering_retry/gemini.json')); print('# Gemini engineering retry\n\n'+str(p.get('summary') or ''))
-          PY
+import json
+p=json.load(open('.engineering_retry/gemini.json')); print('# Gemini engineering retry\n\n'+str(p.get('summary') or ''))
+PY
           fi
           python - "$REQUESTED" "$GPT_OUTCOME" "$GEMINI_OUTCOME" <<'PY' > "$dest/agent_retry_status.json"
-          import json,sys,time,pathlib,re
-          requested,gpt,gemini=sys.argv[1:4]
-          def tail(name):
-              p=pathlib.Path('.engineering_retry')/name
-              if not p.exists(): return ''
-              s=p.read_text(errors='replace')[-1200:]
-              s=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}','<redacted>',s)
-              s=re.sub(r'AIza[A-Za-z0-9_-]{20,}','<redacted>',s)
-              return s
-          print(json.dumps({
-            'checked_epoch':int(time.time()),'requested_providers':[x for x in requested.split(',') if x],
-            'gpt_outcome':gpt,'gemini_outcome':gemini,
-            'gpt_reason':tail('gpt_error.txt') if gpt not in {'success','skipped'} else '',
-            'gemini_reason':tail('gemini_error.txt') if gemini not in {'success','skipped'} else '',
-          },indent=2,sort_keys=True))
-          PY
+import json,sys,time,pathlib,re
+requested,gpt,gemini=sys.argv[1:4]
+def tail(name):
+    p=pathlib.Path('.engineering_retry')/name
+    if not p.exists(): return ''
+    s=p.read_text(errors='replace')[-1200:]
+    s=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}','<redacted>',s)
+    s=re.sub(r'AIza[A-Za-z0-9_-]{20,}','<redacted>',s)
+    return s
+print(json.dumps({
+    'checked_epoch':int(time.time()),'requested_providers':[x for x in requested.split(',') if x],
+    'gpt_outcome':gpt,'gemini_outcome':gemini,
+    'gpt_reason':tail('gpt_error.txt') if gpt not in {'success','skipped'} else '',
+    'gemini_reason':tail('gemini_error.txt') if gemini not in {'success','skipped'} else '',
+},indent=2,sort_keys=True))
+PY
           cd /tmp/engineering-retry-reviews
           git config user.name 'engineering-agent-retry-bot'
           git config user.email 'engineering-agent-retry-bot@users.noreply.github.com'
