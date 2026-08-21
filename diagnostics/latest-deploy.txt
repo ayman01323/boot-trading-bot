@@ -1,63 +1,116 @@
-requested_sha=154d417006d3461fa90b89b7c41f6a5cb5b6424d
-deploy_outcome=success
-deploy_exit=0
-run_id=32389617807
-utc=2026-08-20T16:02:48Z
+requested_sha=ed5d57254fdb156f5c7b06dff7eaf237ab5741e5
+deploy_outcome=failure
+deploy_exit=10
+run_id=32454326251
+utc=2026-08-21T06:26:41Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-20T16:01:46Z BEGIN current=23aef48455dda6ec931f4883010f846cdddc4591 requested=154d417006d3461fa90b89b7c41f6a5cb5b6424d
+2026-08-21T06:25:37Z BEGIN current=154d417006d3461fa90b89b7c41f6a5cb5b6424d requested=ed5d57254fdb156f5c7b06dff7eaf237ab5741e5
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   23aef48..154d417  main       -> origin/main
-Updating 23aef48..154d417
+   154d417..ed5d572  main       -> origin/main
+Updating 154d417..ed5d572
 Fast-forward
- .github/workflows/ci.yml                           |   2 +
- .../solana_first_day_strategy_restore_patch.py     | 161 +++++++++++++++++-
- learnerbot/trading_runtime_invariant_patch.py      |  10 +-
- tests/test_solana_first_day_executable_edge.py     | 185 +++++++++++++++++++++
- tests/test_solana_runtime_composition.py           |   8 +-
- 5 files changed, 359 insertions(+), 7 deletions(-)
- create mode 100644 tests/test_solana_first_day_executable_edge.py
+ .github/workflows/polygon-live-forensics-test.yml  |  50 ++
+ .github/workflows/publish-runtime-forensics.yml    |  85 +++
+ .../workflows/trade-strategy-provenance-test.yml   |  38 ++
+ learnerbot/__main__.py                             |  10 +-
+ .../ai_agent_health_master_reconcile_patch.py      | 109 ++++
+ learnerbot/loss_forensics_runtime_bridge_patch.py  |  66 ++
+ learnerbot/polygon_live_enable_migration.py        | 174 ++++++
+ learnerbot/polygon_live_runtime_invariant_patch.py |  25 +
+ learnerbot/telegram_hi_keefek_patch.py             |   2 +
+ learnerbot/trade_provenance.py                     |  64 ++
+ learnerbot/trade_strategy_provenance_patch.py      | 663 +++++++++++++++++++++
+ .../test_ai_agent_health_master_reconcile_patch.py |  97 +++
+ tests/test_polygon_live_and_runtime_forensics.py   | 132 ++++
+ tests/test_trade_strategy_provenance.py            | 335 +++++++++++
+ 14 files changed, 1849 insertions(+), 1 deletion(-)
+ create mode 100644 .github/workflows/polygon-live-forensics-test.yml
+ create mode 100644 .github/workflows/publish-runtime-forensics.yml
+ create mode 100644 .github/workflows/trade-strategy-provenance-test.yml
+ create mode 100644 learnerbot/ai_agent_health_master_reconcile_patch.py
+ create mode 100644 learnerbot/loss_forensics_runtime_bridge_patch.py
+ create mode 100644 learnerbot/polygon_live_enable_migration.py
+ create mode 100644 learnerbot/polygon_live_runtime_invariant_patch.py
+ create mode 100644 learnerbot/trade_provenance.py
+ create mode 100644 learnerbot/trade_strategy_provenance_patch.py
+ create mode 100644 tests/test_ai_agent_health_master_reconcile_patch.py
+ create mode 100644 tests/test_polygon_live_and_runtime_forensics.py
+ create mode 100644 tests/test_trade_strategy_provenance.py
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [ 16%]
-........................................................................ [ 33%]
-........................................................................ [ 50%]
-........................................................................ [ 67%]
-........................................................................ [ 84%]
-...................................................................      [100%]
+FF...................................................................... [ 16%]
+........................................................................ [ 32%]
+........................................................................ [ 49%]
+........................................................................ [ 65%]
+........................................................................ [ 82%]
+........................................................................ [ 98%]
+.....                                                                    [100%]
+=================================== FAILURES ===================================
+_ test_partial_master_is_reported_as_decided_even_when_primary_status_is_stale _
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-279/test_partial_master_is_reporte0')
+
+    def test_partial_master_is_reported_as_decided_even_when_primary_status_is_stale(tmp_path: Path) -> None:
+        _base(tmp_path)
+        _write(
+            tmp_path,
+            f"strategy/runs/{CYCLE}/master_decision.json",
+            {
+                "cycle_id": CYCLE,
+                "source_commit": SOURCE,
+                "evidence_sha256": EVIDENCE,
+                "status": "HUMAN_REVIEW_REQUIRED",
+            },
+        )
+        result = patch._strategy_health_reconciled(tmp_path, 1787270400)
+>       assert result["master"] == "DECIDED_PARTIAL"
+E       AssertionError: assert 'WAITING' == 'DECIDED_PARTIAL'
+E         
+E         - DECIDED_PARTIAL
+E         + WAITING
+
+tests/test_ai_agent_health_master_reconcile_patch.py:78: AssertionError
+_______ test_reconciled_copilot_assignment_overrides_stale_blocked_auth ________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-279/test_reconciled_copilot_assign0')
+
+    def test_reconciled_copilot_assignment_overrides_stale_blocked_auth(tmp_path: Path) -> None:
+        _base(tmp_path)
+        now = 1787270400
+        _write(
+            tmp_path,
+            f"strategy/runs/{CYCLE}/copilot_assignment_reconciled.json",
+            {
+                "assignment_state": "ASSIGNED",
+                "reason": "Copilot assignment verified",
+                "checked_epoch": now - 60,
+            },
+        )
+        result = patch._strategy_health_reconciled(tmp_path, now)
+>       assert result["agents"]["copilot"]["state"] == "WAITING"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       KeyError: 'copilot'
+
+tests/test_ai_agent_health_master_reconcile_patch.py:96: KeyError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-427 passed, 1 warning in 37.90s
-2026-08-20T16:02:31Z TESTS PASSED; restarting learnerbot
-2026-08-20T16:02:35Z SUCCESS sha=154d417006d3461fa90b89b7c41f6a5cb5b6424d version=2.3.10 service=active
-     Active: active (running) since Thu 2026-08-20 17:02:31 BST; 4s ago
-   Main PID: 277699 (python)
-      Tasks: 19 (limit: 5869)
-     Memory: 604.1M (peak: 626.1M)
-        CPU: 3.521s
-     CGroup: /system.slice/learnerbot.service
-             └─277699 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [config] CSVbot configuration loaded/reloaded
-Aug 20 17:02:34 mint.yesgoodwill.com python[277699]: [scan:bsc] 115379562..115379571 tx=432
+=========================== short test summary info ============================
+FAILED tests/test_ai_agent_health_master_reconcile_patch.py::test_partial_master_is_reported_as_decided_even_when_primary_status_is_stale
+FAILED tests/test_ai_agent_health_master_reconcile_patch.py::test_reconciled_copilot_assignment_overrides_stale_blocked_auth
+2 failed, 435 passed, 1 warning in 34.87s
+2026-08-21T06:26:19Z TESTS FAILED; service remains on old running process
+HEAD is now at 154d417 Merge PR #163: require positive follower executable edge
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-20T16:02:45Z
+UTC: 2026-08-21T06:26:36Z
 branch: main
 sha:    154d417006d3461fa90b89b7c41f6a5cb5b6424d
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -68,21 +121,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Thu 2026-08-20 17:02:31 BST; 14s ago
+     Active: active (running) since Thu 2026-08-20 17:02:31 BST; 14h ago
    Main PID: 277699 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 622.5M (peak: 658.5M)
-        CPU: 11.833s
+     Memory: 636.4M (peak: 795.4M)
+        CPU: 10h 15min 45.616s
      CGroup: /system.slice/learnerbot.service
              └─277699 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 20 17:02:32 mint.yesgoodwill.com python[277699]: [config] CSVbot configuration loaded/reloaded
-Aug 20 17:02:34 mint.yesgoodwill.com python[277699]: [scan:bsc] 115379562..115379571 tx=432
-Aug 20 17:02:44 mint.yesgoodwill.com python[277699]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
+Aug 21 07:20:20 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=61.397
+Aug 21 07:21:26 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=64.417
+Aug 21 07:22:21 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=53.936
+Aug 21 07:23:07 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=45.033
+Aug 21 07:23:51 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=42.433
+Aug 21 07:24:41 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=49.061
+Aug 21 07:25:35 mint.yesgoodwill.com python[277699]: [research:base] {'evidence_rows': 604570, 'behaviours': 7, 'wallet_behaviour_rows': 755}
+Aug 21 07:26:01 mint.yesgoodwill.com python[277699]: [copy-check:base] {'evaluated': 755, 'passed': 0, 'disabled': False}
+Aug 21 07:26:06 mint.yesgoodwill.com python[277699]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=84.015
+Aug 21 07:26:34 mint.yesgoodwill.com python[277699]: [power-discovery] v2-added=21 v3-pools=196 products=7913 auto-products=927 rejected=0 seconds=537.953
