@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import resilient_selected_master as _base
@@ -24,17 +26,54 @@ def _provider_order(preferred: str) -> list[str]:
     return out
 
 
-def _bounded_vps_context() -> str:
+def _read_vps_json() -> dict:
     path = str(os.environ.get("CLAUDE_VPS_CONTEXT_PATH") or "").strip()
-    if not path:
-        return ""
+    if path:
+        try:
+            value = json.loads(Path(path).read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+
+    repo = str(os.environ.get("GITHUB_REPOSITORY") or "").strip()
+    token = str(os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or "").strip()
+    if not repo or not token:
+        return {}
+    env = dict(os.environ)
+    env["GH_TOKEN"] = token
     try:
-        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+        cp = subprocess.run(
+            [
+                "gh",
+                "api",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{repo}/contents/vps/claude/latest.json?ref=ai-reviews",
+                "--jq",
+                ".content",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            timeout=15,
+            check=False,
+        )
+        if cp.returncode or not cp.stdout.strip():
+            return {}
+        raw = base64.b64decode("".join(cp.stdout.split())).decode("utf-8", errors="replace")
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else {}
     except Exception:
-        return ""
-    if not isinstance(raw, dict):
+        return {}
+
+
+def _bounded_vps_context() -> str:
+    raw = _read_vps_json()
+    if not raw:
         return ""
     # Only these already-sanitised operational fields may enter MASTER prompts.
+    # Raw action/log tails are deliberately excluded to reduce prompt-injection risk.
     security = raw.get("security") if isinstance(raw.get("security"), dict) else {}
     clean = {
         "generated_epoch": int(raw.get("generated_epoch") or 0),
