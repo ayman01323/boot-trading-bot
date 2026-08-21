@@ -10,6 +10,8 @@ PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude", "deepseek")
 LANES = ("strategy", "engineering")
 CYCLES = ("scheduled", "manual")
 VPS_ACTIONS = ("none", "inspect", "test", "deploy")
+DEEPSEEK_GITHUB_ACTIONS = ("none", "inspect", "test", "draft_fix")
+DEEPSEEK_VPS_ACTIONS = ("none", "inspect", "test", "deploy")
 
 DEFAULT_CONTROL = {
     "schema_version": 1,
@@ -24,6 +26,13 @@ DEFAULT_CONTROL = {
     "claude_vps_action": "none",
     "claude_vps_action_nonce": 0,
     "claude_vps_last_request_epoch": 0,
+    "deepseek_github_action": "none",
+    "deepseek_github_action_nonce": 0,
+    "deepseek_github_task": "",
+    "deepseek_github_last_request_epoch": 0,
+    "deepseek_vps_action": "none",
+    "deepseek_vps_action_nonce": 0,
+    "deepseek_vps_last_request_epoch": 0,
     "updated_epoch": 0,
     "updated_by": "",
 }
@@ -49,6 +58,19 @@ def _bool(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except Exception:
+        return 0
+
+
+def _task(value: Any) -> str:
+    # Telegram tasks are operator instructions, never credentials. Keep the bridge
+    # compact and remove NULs/control padding before GitHub workflow dispatch.
+    return str(value or "").replace("\x00", "").strip()[:800]
+
+
 def sanitise(raw: dict | None) -> dict:
     src = raw if isinstance(raw, dict) else {}
     out = dict(DEFAULT_CONTROL)
@@ -58,24 +80,25 @@ def sanitise(raw: dict | None) -> dict:
         cycle = str(src.get(f"{lane}_cycle") or out[f"{lane}_cycle"]).lower().strip()
         out[f"{lane}_cycle"] = cycle if cycle in CYCLES else "scheduled"
         out[f"{lane}_enabled"] = _bool(src.get(f"{lane}_enabled"), True)
-        try:
-            out[f"{lane}_run_nonce"] = max(0, int(src.get(f"{lane}_run_nonce") or 0))
-        except Exception:
-            out[f"{lane}_run_nonce"] = 0
+        out[f"{lane}_run_nonce"] = _nonnegative_int(src.get(f"{lane}_run_nonce"))
+
     action = str(src.get("claude_vps_action") or "none").lower().strip()
     out["claude_vps_action"] = action if action in VPS_ACTIONS else "none"
-    try:
-        out["claude_vps_action_nonce"] = max(0, int(src.get("claude_vps_action_nonce") or 0))
-    except Exception:
-        out["claude_vps_action_nonce"] = 0
-    try:
-        out["claude_vps_last_request_epoch"] = max(0, int(src.get("claude_vps_last_request_epoch") or 0))
-    except Exception:
-        out["claude_vps_last_request_epoch"] = 0
-    try:
-        out["updated_epoch"] = max(0, int(src.get("updated_epoch") or 0))
-    except Exception:
-        out["updated_epoch"] = 0
+    out["claude_vps_action_nonce"] = _nonnegative_int(src.get("claude_vps_action_nonce"))
+    out["claude_vps_last_request_epoch"] = _nonnegative_int(src.get("claude_vps_last_request_epoch"))
+
+    ds_gh = str(src.get("deepseek_github_action") or "none").lower().strip()
+    out["deepseek_github_action"] = ds_gh if ds_gh in DEEPSEEK_GITHUB_ACTIONS else "none"
+    out["deepseek_github_action_nonce"] = _nonnegative_int(src.get("deepseek_github_action_nonce"))
+    out["deepseek_github_task"] = _task(src.get("deepseek_github_task"))
+    out["deepseek_github_last_request_epoch"] = _nonnegative_int(src.get("deepseek_github_last_request_epoch"))
+
+    ds_vps = str(src.get("deepseek_vps_action") or "none").lower().strip()
+    out["deepseek_vps_action"] = ds_vps if ds_vps in DEEPSEEK_VPS_ACTIONS else "none"
+    out["deepseek_vps_action_nonce"] = _nonnegative_int(src.get("deepseek_vps_action_nonce"))
+    out["deepseek_vps_last_request_epoch"] = _nonnegative_int(src.get("deepseek_vps_last_request_epoch"))
+
+    out["updated_epoch"] = _nonnegative_int(src.get("updated_epoch"))
     out["updated_by"] = str(src.get("updated_by") or "")[:80]
     return out
 
@@ -113,7 +136,7 @@ def save(app, value: dict, *, updated_by: str | int = "") -> dict:
     out["updated_by"] = str(updated_by or "")[:80]
     _atomic_json(_path(app), out)
     # The trading process gets no GitHub credential. A self-hosted Actions job
-    # reads this sanitised bridge and publishes it to ai-reviews.
+    # reads this sanitised bridge and publishes/dispatches only bounded requests.
     try:
         _atomic_json(bridge_path(), out)
         os.chmod(bridge_path(), 0o644)
@@ -174,6 +197,38 @@ def request_vps_action(app, action: str, *, updated_by: str | int = "") -> dict:
     value["claude_vps_action"] = action
     value["claude_vps_action_nonce"] = int(value.get("claude_vps_action_nonce") or 0) + 1
     value["claude_vps_last_request_epoch"] = int(time.time())
+    return save(app, value, updated_by=updated_by)
+
+
+def request_deepseek_github_action(
+    app,
+    action: str,
+    *,
+    task: str = "",
+    updated_by: str | int = "",
+) -> dict:
+    action = str(action).lower().strip()
+    if action not in DEEPSEEK_GITHUB_ACTIONS or action == "none":
+        raise ValueError("unsupported DeepSeek GitHub action")
+    clean_task = _task(task)
+    if action == "draft_fix" and not clean_task:
+        raise ValueError("DeepSeek draft_fix requires a task")
+    value = load(app)
+    value["deepseek_github_action"] = action
+    value["deepseek_github_action_nonce"] = int(value.get("deepseek_github_action_nonce") or 0) + 1
+    value["deepseek_github_task"] = clean_task
+    value["deepseek_github_last_request_epoch"] = int(time.time())
+    return save(app, value, updated_by=updated_by)
+
+
+def request_deepseek_vps_action(app, action: str, *, updated_by: str | int = "") -> dict:
+    action = str(action).lower().strip()
+    if action not in DEEPSEEK_VPS_ACTIONS or action == "none":
+        raise ValueError("unsupported DeepSeek VPS action")
+    value = load(app)
+    value["deepseek_vps_action"] = action
+    value["deepseek_vps_action_nonce"] = int(value.get("deepseek_vps_action_nonce") or 0) + 1
+    value["deepseek_vps_last_request_epoch"] = int(time.time())
     return save(app, value, updated_by=updated_by)
 
 
