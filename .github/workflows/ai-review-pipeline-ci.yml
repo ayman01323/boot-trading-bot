@@ -13,7 +13,19 @@ on:
       - 'tests/test_hourly_three_agent_strategy_workflow.py'
       - 'tests/test_gpt_master_strategy_reconciler.py'
       - 'tests/test_strategy_resilient_agent_workflows.py'
+      - 'tests/test_ai_review_pipeline_cost_control.py'
   workflow_dispatch:
+    inputs:
+      live_provider_check:
+        description: 'Spend API quota on live GPT/Gemini connectivity checks'
+        required: false
+        default: false
+        type: boolean
+      agent_recovery_review:
+        description: 'Spend API quota on independent GPT/Gemini recovery review'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -21,7 +33,7 @@ permissions:
 jobs:
   pipeline:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -31,10 +43,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
 
       - name: Install test dependencies
         run: |
@@ -47,19 +55,34 @@ jobs:
           pytest -q tests/test_hourly_three_agent_workflow_contract.py \
             tests/test_hourly_three_agent_strategy_workflow.py \
             tests/test_gpt_master_strategy_reconciler.py \
-            tests/test_strategy_resilient_agent_workflows.py
+            tests/test_strategy_resilient_agent_workflows.py \
+            tests/test_ai_review_pipeline_cost_control.py
 
       - name: Verify repository Python import path used by Gemini extraction
         run: |
           PYTHONPATH="$GITHUB_WORKSPACE" python scripts/extract_strategy_report.py --help >/dev/null
           PYTHONPATH="$GITHUB_WORKSPACE" python -m learnerbot.three_agent_strategy_contract --help >/dev/null
 
+      - name: Confirm PR validation is API-free
+        if: github.event_name == 'pull_request'
+        run: echo 'Static AI pipeline validation complete; no paid model provider was called.'
+
+  provider_smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.live_provider_check == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Install current provider CLIs
         run: |
           npm install -g @openai/codex@latest @google/gemini-cli@latest
           codex --version
           gemini --version
-
       - name: Verify GPT credential and no-bwrap non-interactive invocation
         id: gpt
         continue-on-error: true
@@ -75,7 +98,6 @@ jobs:
           printf 'Inspect nothing. Reply with exactly AI_PIPELINE_GPT_OK and do not run tools.\n' |
             codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - > /tmp/codex-smoke.txt
           grep -q 'AI_PIPELINE_GPT_OK' /tmp/codex-smoke.txt
-
       - name: Verify Gemini credential and read-only invocation
         id: gemini
         continue-on-error: true
@@ -90,7 +112,6 @@ jobs:
           gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
             -p 'Inspect nothing. Reply with exactly AI_PIPELINE_GEMINI_OK and do not run tools.' > /tmp/gemini-smoke.txt
           grep -q 'AI_PIPELINE_GEMINI_OK' /tmp/gemini-smoke.txt
-
       - name: Require both model providers to work
         env:
           GPT_OUTCOME: ${{ steps.gpt.outcome }}
@@ -103,8 +124,20 @@ jobs:
           [[ "$GPT_OUTCOME" == 'success' ]]
           [[ "$GEMINI_OUTCOME" == 'success' ]]
 
+  agent_recovery:
+    if: github.event_name == 'workflow_dispatch' && inputs.agent_recovery_review == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install current provider CLIs
+        run: npm install -g @openai/codex@latest @google/gemini-cli@latest
       - name: GPT independent agent-recovery review
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.title, 'Copilot assignment')
         continue-on-error: true
         env:
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -112,10 +145,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${CODEX_API_KEY:-}" ]]; then
-            echo 'OPENAI_API_KEY is unavailable; skipping optional independent GPT recovery review.'
-            exit 0
-          fi
+          test -n "${CODEX_API_KEY:-}"
           model_args=()
           if [[ -n "${OPENAI_STRATEGY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_STRATEGY_AUDIT_MODEL"); fi
           cat > /tmp/gpt-recovery-prompt.txt <<'EOF'
@@ -132,9 +162,7 @@ jobs:
             < /tmp/gpt-recovery-prompt.txt > /tmp/gpt-recovery-review.txt
           cat /tmp/gpt-recovery-review.txt
           grep -E 'AGENT_RECOVERY_GPT: (PASS|FAIL)' /tmp/gpt-recovery-review.txt
-
       - name: Gemini independent agent-recovery review
-        if: github.event_name == 'pull_request' && contains(github.event.pull_request.title, 'Copilot assignment')
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -143,10 +171,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${GEMINI_API_KEY:-}" ]]; then
-            echo 'GEMINI_API_KEY is unavailable; skipping optional independent Gemini recovery review.'
-            exit 0
-          fi
+          test -n "${GEMINI_API_KEY:-}"
           prompt='Independently review .github/workflows/hourly-three-agent-strategy-cycle.yml, .github/workflows/gpt-master-strategy-action.yml, .github/workflows/strategy-copilot-assignment-reconciler.yml, .github/workflows/strategy-resilient-master.yml and tests/test_strategy_resilient_agent_workflows.py for the Strategy Copilot BLOCKED_AUTH / GPT Master stoppage incident. Read only; do not edit. Check auth fallback, delayed assignment verification, same-cycle binding, partial-agent master safety, duplicate adjudication, and confirm no LIVE/capital/signing/safety bypass. End with exactly one line beginning AGENT_RECOVERY_GEMINI: followed by PASS or FAIL and a concise reason.'
           gemini --approval-mode=plan --skip-trust --model "$GEMINI_STRATEGY_MODEL" --output-format text \
             -p "$prompt" > /tmp/gemini-recovery-review.txt
