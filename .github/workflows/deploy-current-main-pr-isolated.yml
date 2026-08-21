@@ -14,32 +14,61 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  probe:
-    name: Record isolated deployment request
-    if: >-
-      github.head_ref == 'agent/deploy-current-main' &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    env:
-      TARGET_SHA: ${{ github.event.pull_request.base.sha }}
-    steps:
-      - name: Confirm exact base SHA
-        run: |
-          echo "Isolated deployment requested for ${TARGET_SHA}"
-          test "${#TARGET_SHA}" -eq 40
-
   deploy:
     name: Test and deploy exact PR base on VPS
     if: >-
       github.head_ref == 'agent/deploy-current-main' &&
       github.event.pull_request.head.repo.full_name == github.repository
-    needs: probe
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 25
     env:
       TARGET_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
+      - name: Sync AI Council runtime credentials without logging values
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          target=/var/tmp/boot/ai_council_runtime.env
+          mkdir -p /var/tmp/boot
+          tmp="$(mktemp /var/tmp/boot/.ai-council-runtime.XXXXXX)"
+          TMP="$tmp" python3 - <<'PY'
+          import json, os, pathlib
+          keys = (
+              'OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY',
+              'DEEPSEEK_API_KEY', 'COPILOT_GITHUB_TOKEN', 'COPILOT_ASSIGN_TOKEN',
+          )
+          lines=[]
+          for key in keys:
+              value=str(os.environ.get(key) or '').strip()
+              if value:
+                  lines.append(f'{key}={json.dumps(value)}')
+          pathlib.Path(os.environ['TMP']).write_text('\n'.join(lines)+('\n' if lines else ''),encoding='utf-8')
+          PY
+          chmod 600 "$tmp"
+          mv -f "$tmp" "$target"
+          python3 - "$target" <<'PY'
+          from pathlib import Path
+          import stat,sys
+          p=Path(sys.argv[1])
+          names={line.split('=',1)[0] for line in p.read_text(encoding='utf-8',errors='replace').splitlines() if '=' in line}
+          print('AI Council runtime credentials: ' + ', '.join([
+              'GPT=' + ('present' if 'OPENAI_API_KEY' in names else 'missing'),
+              'Gemini=' + ('present' if 'GEMINI_API_KEY' in names else 'missing'),
+              'Claude=' + ('present' if 'ANTHROPIC_API_KEY' in names else 'missing'),
+              'DeepSeek=' + ('present' if 'DEEPSEEK_API_KEY' in names else 'missing'),
+              'Copilot=' + ('present' if {'COPILOT_GITHUB_TOKEN','COPILOT_ASSIGN_TOKEN'} & names else 'missing'),
+          ]))
+          print('runtime_file_mode=' + oct(stat.S_IMODE(p.stat().st_mode)))
+          PY
+
       - name: Route repository GitHub SSH through port 443 when writable
         shell: bash
         run: |
