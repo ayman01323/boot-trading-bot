@@ -1,11 +1,9 @@
 name: Kick Claude VPS Control Processor
 
+# Manual emergency/fallback wake only. Normal Telegram requests now dispatch the
+# bounded processor only when the sanitised control actually changes, and successful
+# deployments are already handled directly by claude-vps-controlled-ops.yml.
 on:
-  workflow_run:
-    workflows:
-      - "Publish Telegram AI Master Control"
-      - "Deploy BOOT to VPS"
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +16,6 @@ concurrency:
 
 jobs:
   dispatch:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -30,8 +27,6 @@ jobs:
           set -euo pipefail
           # This workflow never chooses a VPS operation. action=none tells the
           # bounded processor to read the sanitised control/nonce from ai-reviews.
-          # The processor itself decides whether there is a new inspect/test/deploy
-          # request and enforces the existing Claude-selected + nonce policy.
           gh workflow run claude-vps-controlled-ops.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref main \

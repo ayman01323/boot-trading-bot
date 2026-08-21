@@ -120,3 +120,15 @@ For this weekly audit:
 - set `provider=copilot`, `scope=FULL_REPOSITORY_BUG_AUDIT`, `report_only=true`, and `no_live_changes=true`;
 - never trade, deploy, edit credentials/secrets, alter wallet/signing material, change capital/live-mode settings, or weaken execution/risk protections;
 - do not implement fixes until a later GPT master-decision workflow has independently adjudicated all three agent reports.
+
+### Operational efficiency is part of the Engineering Audit
+
+The weekly Engineering Audit must also inspect the deterministic baseline's `operational_efficiency_audit` section and, when available, the sanitised VPS snapshot at `ai-reviews:engineering/ops/latest.json`.
+
+Explicitly assess and recommend improvements for:
+
+- **API/model cost** — unnecessary paid GPT/Gemini/Claude/Copilot calls, duplicate reviews/adjudication, excessive provider fan-out, oversized context, unnecessary CLI installs and missing material-change/cache gates;
+- **server bandwidth** — self-hosted workflow cadence, repository checkouts/fetches, repeated npm/pip downloads, RPC/API polling, logs/artifacts and redundant jobs; prefer event-driven, shallow, cached and change-only transfers;
+- **disk usage** — root filesystem use/free space, runner workspaces, caches, logs, databases, worktrees/artifacts and unbounded retention/growth.
+
+Host network counters are host-wide and must not be claimed as bot-only traffic without further evidence. Cost recommendations are report-only and must never weaken wallet/signing, LIVE/ARMED, simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce or execution-reconciliation protections. Never automatically delete wallet material, databases or audit evidence.

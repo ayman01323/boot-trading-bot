@@ -1,16 +1,14 @@
 name: Retry Claude VPS Analysis
 
+# The primary bounded VPS workflow now gives Claude three turns directly. Keep this
+# as an explicit/manual recovery path rather than starting another self-hosted job
+# after every ordinary VPS workflow completion.
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/claude-vps-analysis-retry.yml'
       - 'tests/test_claude_vps_analysis_retry.py'
-  workflow_run:
-    workflows:
-      - "Claude VPS Controlled Operations"
-      - "Deploy BOOT to VPS"
-    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -22,7 +20,6 @@ concurrency:
 
 jobs:
   analyse:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 10
     steps:
@@ -30,7 +27,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Resolve failed inspect commentary only
@@ -104,7 +101,10 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${ANTHROPIC_API_KEY:-}"
-          npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-vps-retry-install.log 2>&1
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-vps-retry-install.log 2>&1
+          fi
+          claude --version
           cat > /tmp/claude-vps-retry-prompt.txt <<EOF
           You are Claude acting only as a bounded VPS health summariser.
           Summarise the deterministic inspection result and redacted fresh status below.

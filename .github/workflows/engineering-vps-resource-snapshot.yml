@@ -1,0 +1,165 @@
+name: Engineering VPS Resource Snapshot
+
+on:
+  schedule:
+    # Four tiny, checkout-free samples per day are enough to expose bandwidth and
+    # disk trends to the weekly Engineering Audit without creating material traffic.
+    - cron: '11 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: engineering-vps-resource-snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Collect non-secret host counters
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/engineering-vps-current.json
+          import json,os,shutil,subprocess,time
+
+          total,used,free=shutil.disk_usage('/')
+          rx=tx=0
+          interfaces={}
+          try:
+              lines=open('/proc/net/dev',encoding='utf-8').read().splitlines()[2:]
+          except Exception:
+              lines=[]
+          for line in lines:
+              if ':' not in line:
+                  continue
+              name,raw=line.split(':',1)
+              name=name.strip()
+              if name=='lo':
+                  continue
+              fields=raw.split()
+              if len(fields)<9:
+                  continue
+              irx=int(fields[0]); itx=int(fields[8])
+              interfaces[name]={'rx_bytes':irx,'tx_bytes':itx}
+              rx += irx; tx += itx
+
+          def du_bytes(path):
+              try:
+                  p=subprocess.run(['du','-sb',path],text=True,capture_output=True,timeout=20)
+                  if p.returncode==0 and p.stdout.strip():
+                      return int(p.stdout.split()[0])
+              except Exception:
+                  pass
+              return None
+
+          runner_root='/opt/actions-runner/_work'
+          bridge_root='/var/tmp/boot'
+          print(json.dumps({
+              'schema_version':1,
+              'generated_epoch':int(time.time()),
+              'scope':'HOST_RESOURCE_COUNTERS_NO_SECRETS',
+              'disk':{
+                  'mount':'/',
+                  'total_bytes':int(total),
+                  'used_bytes':int(used),
+                  'free_bytes':int(free),
+                  'used_percent':round((used/total*100.0) if total else 0.0,2),
+                  'runner_workspace_bytes':du_bytes(runner_root),
+                  'sanitised_bridge_bytes':du_bytes(bridge_root),
+              },
+              'network':{
+                  'scope':'all_non_loopback_host_interfaces_not_bot_attributed',
+                  'rx_bytes_total':rx,
+                  'tx_bytes_total':tx,
+                  'interfaces':interfaces,
+              },
+              'privacy':{
+                  'no_wallet_data':True,
+                  'no_private_keys':True,
+                  'no_api_keys':True,
+                  'no_process_environment':True,
+                  'no_packet_contents':True,
+              },
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Calculate deltas from prior sample
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/engineering/ops/latest.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/engineering-vps-previous.json 2>/dev/null
+          rc=$?
+          set -e
+          [[ $rc -eq 0 && -s /tmp/engineering-vps-previous.json ]] || echo '{}' > /tmp/engineering-vps-previous.json
+
+          python3 - <<'PY'
+          import json,time
+          cur=json.load(open('/tmp/engineering-vps-current.json',encoding='utf-8'))
+          try: prev=json.load(open('/tmp/engineering-vps-previous.json',encoding='utf-8'))
+          except Exception: prev={}
+          now=int(cur.get('generated_epoch') or time.time())
+          then=int(prev.get('generated_epoch') or 0)
+          elapsed=max(0,now-then)
+          cn=cur.get('network') or {}; pn=prev.get('network') or {}
+          crx=int(cn.get('rx_bytes_total') or 0); ctx=int(cn.get('tx_bytes_total') or 0)
+          prx=int(pn.get('rx_bytes_total') or 0); ptx=int(pn.get('tx_bytes_total') or 0)
+          rx_delta=(crx-prx) if elapsed>0 and crx>=prx else None
+          tx_delta=(ctx-ptx) if elapsed>0 and ctx>=ptx else None
+          total_delta=(rx_delta+tx_delta) if rx_delta is not None and tx_delta is not None else None
+          per_hour=(total_delta*3600.0/elapsed) if total_delta is not None and elapsed>0 else None
+          disk_pct=float((cur.get('disk') or {}).get('used_percent') or 0)
+          cur['trend']={
+              'previous_sample_epoch':then or None,
+              'elapsed_seconds':elapsed or None,
+              'rx_delta_bytes':rx_delta,
+              'tx_delta_bytes':tx_delta,
+              'total_network_delta_bytes':total_delta,
+              'network_bytes_per_hour':round(per_hour,2) if per_hour is not None else None,
+              'network_megabytes_per_hour':round(per_hour/1024/1024,3) if per_hour is not None else None,
+          }
+          cur['alerts']={
+              'disk_status':'CRITICAL' if disk_pct>=90 else ('HIGH' if disk_pct>=85 else ('WATCH' if disk_pct>=70 else 'OK')),
+              'disk_used_percent':disk_pct,
+              'bandwidth_status':'MEASURED' if total_delta is not None else 'BASELINE_PENDING',
+              'bandwidth_plan_limit_known':False,
+          }
+          open('/tmp/engineering-vps-final.json','w',encoding='utf-8').write(json.dumps(cur,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish tiny snapshot through GitHub Contents API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/engineering/ops/latest.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" --jq '.sha' 2>/dev/null || true)"
+          python3 - "$existing_sha" <<'PY' > /tmp/engineering-vps-put.json
+          import base64,json,sys
+          raw=open('/tmp/engineering-vps-final.json','rb').read()
+          p={
+              'message':'Update engineering VPS resource snapshot',
+              'content':base64.b64encode(raw).decode(),
+              'branch':'ai-reviews',
+          }
+          if sys.argv[1]: p['sha']=sys.argv[1]
+          print(json.dumps(p))
+          PY
+          gh api -X PUT "$api" --input /tmp/engineering-vps-put.json >/dev/null
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/engineering-vps-final.json'))
+          print('disk_used_percent=',p['disk']['used_percent'])
+          print('disk_free_bytes=',p['disk']['free_bytes'])
+          print('network_megabytes_per_hour=',p['trend']['network_megabytes_per_hour'])
+          print('disk_status=',p['alerts']['disk_status'])
+          PY
