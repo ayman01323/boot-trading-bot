@@ -1,0 +1,135 @@
+{
+  "cycle_id": "0239ee8cb067-2026082110-f0ea489d",
+  "evidence_gaps": [
+    "No runtime forensics evidence exists this cycle (evidence_status=MISSING_RUNTIME_FORENSICS); no measured net P&L, fees paid, or canary/LIVE readiness can be claimed for any strategy or chain.",
+    "learnerbot/market_feature_adapter.py load_solana_market_features hardcodes gross_edge/fees/slippage/price_impact/liquidity/sellability to 0 -- Solana strategy quality is architecturally unmeasurable via the shared cross-chain evaluator until a real quote-time adapter exists.",
+    "learnerbot/strategy_canary.py's realized-trade promotion ladder (the only hardcoded canary readiness bar in the codebase) is scoped to EVM only and contains no Solana logic, despite Solana live execution being independently reachable in code.",
+    "learnerbot/strategy_canary.py:_approval_rows() counts MIN_SUPPORTING_AGENTS=2 only against the legacy set {gpt, gemini, copilot}, omitting 'claude' even though three_agent_strategy_contract.py now defines and requires four providers including claude for the master SHADOW-code-change gate; currently masked because the master gate's own >=3-of-4 threshold guarantees >=2 of the fixed three are present, but the two gates use inconsistent agent sets.",
+    "learnerbot/profit_control_amount_objective_patch.py changes the live success criterion (drops wins>losses, raises PF bar to 1.30) but learnerbot/profit_control_master_summary_patch.py still displays/evaluates the older 'wins>losses AND PF>1.10' text to MASTER Telegram users -- a user-facing reporting/decision-logic mismatch outside Strategy Lab's SHADOW-only scope.",
+    "Self-applying, one-time migration files (polygon_live_enable_migration.py, telegram_676_full_live_migration.py, telegram_676_solana_low_capital_migration.py) hardcode LIVE/AUTO=true for one specific Telegram account on Polygon and Solana, independent of any AI strategy review outcome; this runs unconditionally at startup and is not represented as an operational toggle.",
+    "README.md (v2.2) states 'Solana is not represented as an EVM chain and is not executed by this build', but solana_live_patch.process_leader_event/monitor_positions are unconditionally imported and reachable from __main__.py's startup path and worker threads -- the README's execution-scope claim does not match committed code.",
+    "learnerbot/fee_engine.py models an operator revenue-share ledger and one-time activation fee, not EVM gas, Solana priority fees, DEX swap fee, price impact, or failed-tx cost despite its name; actual chain-specific execution-cost modeling lives in live_executor.py and solana_execution_efficiency_patch.py instead, which future reviewers should know to check directly rather than fee_engine.py."
+  ],
+  "evidence_sha256": "f0ea489d5ba953a9119415d7ae579e781ea728c862bc3312b2da575ae1bcd12a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.45,
+      "downside_risk": "With no runtime evidence this cycle to calibrate failure-rate inputs, a poorly seeded term could be a no-op (if defaulted to 0) or over-penalize legitimate opportunities. Must ship defaulted to 0 and be validated in SHADOW before it can affect any live-adjacent decision.",
+      "evidence": [
+        {
+          "detail": "MarketFeatures.net_edge_bps subtracts gross/fees/slippage/price_impact/latency_reserve but has no term for the probability-weighted cost of a failed/reverted execution attempt.",
+          "path": "learnerbot/cross_chain_strategy_signals.py:64-72"
+        },
+        {
+          "detail": "EVM failed receipts burn real gas (actual_gas=gas_price*gas_used); this cost is only realized post-hoc, never reserved for in the pre-trade edge calc.",
+          "path": "learnerbot/auto_trader.py execute_best_live_opportunity (~line 200-204)"
+        },
+        {
+          "detail": "Solana rejects invalid orders pre-broadcast via simulateTransaction (near-zero failure cost), but a landed-invalid tx still burns base+priority fee -- the two chains' failure-cost profiles differ and neither is represented in the shared evaluator.",
+          "path": "learnerbot/solana_live_executor.py:128-138; learnerbot/solana_execution_efficiency_patch.py _validate_order"
+        }
+      ],
+      "expected_effect": "A more conservative, chain-aware net_edge_bps that discounts opportunities by each chain's historical/simulated execution-failure rate and cost, reducing false-positive 'eligible' signals during RPC/Jupiter instability.",
+      "id": "add-failed-execution-cost-term",
+      "minimum_observation": "14 days or >=200 shadow evaluations per chain, whichever is longer, before the field influences any promotion decision.",
+      "rationale": "The review objective explicitly includes 'failed executions' in durable net P&L. The current bps model implicitly assumes every scored opportunity executes cleanly, which overstates expected edge on both chains, but by different amounts given each chain's distinct failure mechanics.",
+      "shadow_test": "Add expected_failure_cost_bps (default 0) to MarketFeatures and subtract it in net_edge_bps; run run_shadow_cycle for >=14 days on both chains feeding real per-chain historical execution-failure rate/cost from execution_quarantine.py records and Solana live_execution_receipts; compare eligible-signal counts and quote_simulated_net_base with the term on vs off. Stop/fail condition: revert if enabling the term does not measurably change eligibility or scorecard net for either chain after the window.",
+      "strategy": "Cross-chain economic evaluator (all 7 evaluators in cross_chain_strategy_signals.py)",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_cross_chain_strategy_signals.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.5,
+      "downside_risk": "A coarse taxonomy could mislabel ambiguous cases (e.g. a stale quote is both a strategy-filter reject and a latent execution-quality signal); keep categories few and auditable, and keep this SHADOW-only until spot-checked.",
+      "evidence": [
+        {
+          "detail": "scorecard() buckets ineligibility reasons into raw gap names (liquidity_measurement_or_quality, sellability_measurement_or_quality, quote_freshness, forecast_model_or_calibration, solana_current_quote_edge_adapter) with no explicit STRATEGY vs EXECUTION/INFRASTRUCTURE label.",
+          "path": "learnerbot/shadow_strategy_executor.py:202-221"
+        },
+        {
+          "detail": "Realised-trade loss reporting computes gross/net P&L and free-text exit_reason/status counters but performs no STRATEGY/MARKET vs EXECUTION/INFRASTRUCTURE classification either -- this taxonomy does not exist anywhere in the codebase today.",
+          "path": "learnerbot/loss_forensics_github_export.py:47-143"
+        }
+      ],
+      "expected_effect": "Every shadow-cycle reason (and eventually every realised trade) carries an explicit category (STRATEGY_SIGNAL vs EXECUTION_INFRASTRUCTURE vs DATA_GAP), letting the replacement logic and hourly reviews answer the strategy-vs-execution question from data instead of inference.",
+      "id": "strategy-vs-execution-taxonomy-in-shadow-scorecard",
+      "minimum_observation": "7 days and >=100 categorized shadow events per chain.",
+      "rationale": "docs/STRATEGY_LAB.md's own hourly-review checklist asks 'which losses came from strategy selection versus execution' but no deterministic field answers that question today; it is currently re-derived from free text each cycle by whichever AI is reviewing.",
+      "shadow_test": "Add a failure_category enum to SHADOW event/gap records driven purely by existing reason strings (no new data source); run for >=7 days across both chains; manually audit 30 categorized events per chain for correctness before proposing it feed loss_forensics.",
+      "strategy": "Strategy Lab shadow scorecard (all strategies)",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.4,
+      "downside_risk": "This is a research/design gap, not a ready implementation; building a ladder before a real Solana feature adapter exists would just add another hardcoded stub. Any live-arming/gating change is out of scope for a review-only agent regardless.",
+      "evidence": [
+        {
+          "detail": "Comment scopes canary policy to 'the bot's existing exact EVM scanner routes'; the realized-trade CANARY->PROBATION->ACTIVE ladder (3/8 trade thresholds, PF>=1.20) has zero Solana references.",
+          "path": "learnerbot/strategy_canary.py:16-19,96-100"
+        },
+        {
+          "detail": "Solana live order submission is reachable from the main run loop today, gated only by a per-user solana_live_enabled flag and per-order economic checks, not by any realized-trade profit-factor ladder.",
+          "path": "learnerbot/solana_live_patch.py live_enabled/process_leader_event; __main__.py unconditional import of solana_live_patch and solana_execution_efficiency_patch"
+        },
+        {
+          "detail": "Solana features feeding the shared SHADOW evaluator are hardcoded to 0 with outcome_basis SIGNAL_ONLY_MISSING_CURRENT_EXECUTABLE_EDGE, so this framework cannot yet independently validate a Solana strategy's edge even in SHADOW.",
+          "path": "learnerbot/market_feature_adapter.py:269-336 load_solana_market_features"
+        }
+      ],
+      "expected_effect": "Once a real Solana quote-time feature adapter replaces the zeroed stub, a chain-scoped realized-trade ladder could hold Solana strategies to the same money-weighted, cost-inclusive, agent-gated bar as EVM, closing the current asymmetry.",
+      "id": "solana-realized-trade-promotion-ladder-gap",
+      "minimum_observation": "N/A until a real Solana feature adapter exists; re-raise this gap every review cycle until addressed.",
+      "rationale": "Solana can already execute real trades through a path independent of the EVM canary ladder, but has neither a working quote-time SHADOW evaluator nor a realized-trade profit-factor bar analogous to EVM's. This is a structural blind spot for comparing Solana and EVM strategy quality as the review objective requires.",
+      "shadow_test": "Not yet applicable. First deliverable is a real load_solana_market_features implementation fed by actual Jupiter quote responses (not stored leader events), independently validated in SHADOW for >=14 days before any Solana-specific promotion ladder is designed.",
+      "strategy": "Solana strategy promotion path (all Solana-eligible strategies)",
+      "suggested_files": [
+        "docs/STRATEGY_LAB.md",
+        "learnerbot/market_feature_adapter.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Retrofit strategy_canary.py directly this cycle to add Solana trade-count/profit-factor gating.",
+      "reason": "strategy_canary.py sits outside the Strategy Lab/SHADOW auto-edit allow-list defined in three_agent_strategy_contract.py; it is live-adjacent and requires human review, and there is no validated Solana cost/fee data this cycle to calibrate thresholds with."
+    },
+    {
+      "idea": "Tighten or loosen specific min_net_bps/liquidity_score thresholds in cross_chain_strategy_signals.py based on this review.",
+      "reason": "No runtime P&L evidence was available this cycle (evidence_status=MISSING_RUNTIME_FORENSICS); changing numeric thresholds without measured outcomes would be unsupported curve-fitting against architecture alone."
+    },
+    {
+      "idea": "Recommend disabling the single hardcoded LIVE-armed account found in polygon_live_enable_migration.py / telegram_676_* migrations.",
+      "reason": "Changing LIVE/risk/capital settings is explicitly out of scope for a review-only strategy agent; flagged in evidence_gaps for human operator attention instead."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "0239ee8cb067446e1849fbeb36e89b19d0ab62e5",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Evidence this cycle is architecture-only (evidence_status=MISSING_RUNTIME_FORENSICS, bytes verified); no runtime P&L, canary or LIVE-readiness claims are made. The repo already implements a genuinely money-weighted, cost-aware, agent-gated SHADOW->CANARY->PROBATION->ACTIVE lifecycle for EVM strategies (strategy_canary.py, cross_chain_strategy_signals.py, shadow_strategy_executor.py). However static reading found: (1) Solana's shared quote-time feature adapter is hardcoded to zero edge/liquidity/sellability, so no Solana strategy can reach eligible=True through the common evaluator; (2) strategy_canary.py's realized-trade profit-factor promotion ladder scopes itself to EVM only and has zero Solana logic, even though Solana live order submission is independently reachable from the main loop today via a separate per-user gate; (3) neither the SHADOW scorecard nor the realised loss-forensics export implements a STRATEGY/MARKET vs EXECUTION/INFRASTRUCTURE taxonomy, so the objective's required separation is not yet a first-class field anywhere; (4) a stale 3-agent set in strategy_canary.py omits 'claude' relative to the newer four-agent master contract (currently masked, not exploitable); (5) self-applying, one-time migration files hardcode LIVE/AUTO=true for one specific Telegram account on Polygon and Solana, independent of any AI review outcome, which is a fact operators should be aware of when reading the READMEs' 'MASTER LIVE/AUTO OFF by default' framing. Proposals below target Strategy Lab/SHADOW-only files per policy; the live-arming and objective-text findings are reported as evidence gaps rather than code-change proposals because the relevant files sit outside the SHADOW auto-edit allow-list."
+}
