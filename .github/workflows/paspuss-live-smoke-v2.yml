@@ -1,0 +1,116 @@
+name: PasPuss Live Smoke V2
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/paspuss-live-smoke-v2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify grounded live fallback chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import urllib.error
+          import urllib.request
+
+          runtime = pathlib.Path('/var/tmp/ai_council_runtime.env')
+          values = {}
+          for line in runtime.read_text(encoding='utf-8').splitlines():
+              if '=' not in line:
+                  continue
+              k, raw = line.split('=', 1)
+              try:
+                  values[k] = json.loads(raw)
+              except Exception:
+                  values[k] = raw.strip().strip('"')
+
+          question = 'What is the current temperature in London? Answer with the current temperature and brief conditions.'
+          success = False
+
+          okey = str(values.get('OPENAI_API_KEY') or '').strip()
+          if okey:
+              req = urllib.request.Request(
+                  'https://api.openai.com/v1/responses',
+                  data=json.dumps({
+                      'model': 'gpt-5.6',
+                      'input': question,
+                      'tools': [{'type': 'web_search'}],
+                      'tool_choice': 'required',
+                      'max_output_tokens': 300,
+                  }).encode('utf-8'),
+                  headers={'Authorization': f'Bearer {okey}', 'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=90) as resp:
+                      obody = json.loads(resp.read().decode('utf-8'))
+                      ostatus = int(resp.status or 200)
+              except urllib.error.HTTPError as exc:
+                  ostatus = int(exc.code or 500)
+                  obody = json.loads(exc.read().decode('utf-8', errors='replace') or '{}')
+              otext = str(obody.get('output_text') or '').strip()
+              if not otext:
+                  chunks=[]
+                  for item in obody.get('output') or []:
+                      if isinstance(item, dict) and item.get('type') == 'message':
+                          for part in item.get('content') or []:
+                              if isinstance(part, dict) and isinstance(part.get('text'), str):
+                                  chunks.append(part['text'])
+                  otext='\n'.join(chunks).strip()
+              print('openai_status=', ostatus)
+              print('openai_has_output=', bool(otext))
+              success = 200 <= ostatus < 300 and bool(otext)
+
+          if not success:
+              gkey = str(values.get('GEMINI_API_KEY') or '').strip()
+              if not gkey:
+                  print('gemini_key_present=False')
+                  raise SystemExit(1)
+              req = urllib.request.Request(
+                  'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent',
+                  data=json.dumps({
+                      'contents': [{'parts': [{'text': question}]}],
+                      'tools': [{'google_search': {}}],
+                      'generationConfig': {'temperature': 0.1, 'maxOutputTokens': 300},
+                  }).encode('utf-8'),
+                  headers={'x-goog-api-key': gkey, 'Content-Type': 'application/json'},
+                  method='POST',
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=90) as resp:
+                      gbody = json.loads(resp.read().decode('utf-8'))
+                      gstatus = int(resp.status or 200)
+              except urllib.error.HTTPError as exc:
+                  gstatus = int(exc.code or 500)
+                  gbody = json.loads(exc.read().decode('utf-8', errors='replace') or '{}')
+              gtext=[]
+              grounded=False
+              for cand in gbody.get('candidates') or []:
+                  if not isinstance(cand, dict):
+                      continue
+                  for part in (cand.get('content') or {}).get('parts') or []:
+                      if isinstance(part, dict) and isinstance(part.get('text'), str):
+                          gtext.append(part['text'])
+                  meta=cand.get('groundingMetadata') or {}
+                  if isinstance(meta, dict) and (meta.get('webSearchQueries') or meta.get('groundingChunks')):
+                      grounded=True
+              gout='\n'.join(gtext).strip()
+              print('gemini_status=', gstatus)
+              print('gemini_has_output=', bool(gout))
+              print('gemini_grounded=', grounded)
+              success = 200 <= gstatus < 300 and bool(gout) and grounded
+
+          if not success:
+              raise SystemExit(1)
+          PY
