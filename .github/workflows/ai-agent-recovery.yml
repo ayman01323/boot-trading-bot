@@ -1,0 +1,120 @@
+name: AI Agent Recovery
+
+on:
+  push:
+    paths:
+      - '.github/ai-agent-recovery.trigger'
+  schedule:
+    - cron: '5,15,25,35,45,55 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: ai-agent-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Recover missing five-agent review lanes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMMEDIATE: ${{ github.event_name != 'schedule' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read_text() {
+            local path="$1"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n' || true
+          }
+
+          report_status() {
+            local path="$1" tmp
+            tmp="$(mktemp)"
+            set +e
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d > "$tmp" 2>/dev/null
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 || ! -s "$tmp" ]]; then
+              rm -f "$tmp"; echo MISSING; return 0
+            fi
+            python - "$tmp" <<'PY'
+          import json,sys
+          try:
+              p=json.load(open(sys.argv[1])); print(str(p.get('status') or 'MISSING').upper())
+          except Exception:
+              print('MISSING')
+          PY
+            rm -f "$tmp"
+          }
+
+          busy() {
+            local wf="$1" n
+            n="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/runs?per_page=20" \
+              --jq '[.workflow_runs[] | select(.status=="queued" or .status=="in_progress")] | length' 2>/dev/null || echo 0)"
+            [[ "${n:-0}" -gt 0 ]]
+          }
+
+          dispatch() {
+            local wf="$1" key="$2" value="$3" label="$4"
+            if busy "$wf"; then
+              echo "${label}: existing run queued/in progress; not duplicating."
+              return 0
+            fi
+            echo "Dispatching ${label} for ${value}"
+            set +e
+            gh workflow run "$wf" --ref main -f "${key}=${value}"
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 ]]; then
+              echo "${label}: dispatch failed; a later recovery pass will retry." >&2
+            fi
+          }
+
+          source_sha="$(read_text weekly/latest_source_commit.txt)"
+          cycle_id="$(read_text strategy/latest_cycle_id.txt)"
+
+          if [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            gpt="$(report_status "weekly/runs/${source_sha}/gpt.json")"
+            claude="$(report_status "weekly/runs/${source_sha}/claude.json")"
+            deepseek="$(report_status "weekly/runs/${source_sha}/deepseek.json")"
+            copilot="$(report_status "weekly/runs/${source_sha}/copilot.json")"
+            echo "Engineering ${source_sha:0:12}: GPT=${gpt} Claude=${claude} DeepSeek=${deepseek} Copilot=${copilot}"
+
+            if [[ "$IMMEDIATE" == 'true' && ( "$gpt" == 'MISSING' || "$gpt" == 'INCOMPLETE' || "$gpt" == 'FAILED' ) ]]; then
+              dispatch engineering-agent-retry.yml source_commit "$source_sha" 'GPT engineering retry'
+            fi
+            [[ "$claude" != 'MISSING' ]] || dispatch claude-fourth-engineering-agent.yml source_commit "$source_sha" 'Claude engineering'
+            [[ "$deepseek" != 'MISSING' ]] || dispatch deepseek-fifth-engineering-agent.yml source_commit "$source_sha" 'DeepSeek engineering'
+            if [[ "$IMMEDIATE" == 'true' && "$copilot" == 'MISSING' ]]; then
+              dispatch engineering-copilot-assignment-reconciler.yml source_commit "$source_sha" 'Copilot engineering assignment reconciliation'
+            fi
+          else
+            echo 'No valid engineering source is currently published.'
+          fi
+
+          if [[ "$cycle_id" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
+            claude="$(report_status "strategy/runs/${cycle_id}/claude.json")"
+            deepseek="$(report_status "strategy/runs/${cycle_id}/deepseek.json")"
+            copilot="$(report_status "strategy/runs/${cycle_id}/copilot.json")"
+            echo "Strategy ${cycle_id}: Claude=${claude} DeepSeek=${deepseek} Copilot=${copilot}"
+
+            [[ "$claude" != 'MISSING' ]] || dispatch claude-exact-strategy-retry.yml cycle_id "$cycle_id" 'Claude exact-cycle strategy'
+            [[ "$deepseek" != 'MISSING' ]] || dispatch deepseek-fifth-strategy-agent.yml cycle_id "$cycle_id" 'DeepSeek exact-cycle strategy'
+            if [[ "$IMMEDIATE" == 'true' && "$copilot" == 'MISSING' ]]; then
+              dispatch strategy-copilot-assignment-reconciler.yml cycle_id "$cycle_id" 'Copilot strategy assignment reconciliation'
+            fi
+          else
+            echo 'No valid strategy cycle is currently published.'
+          fi
