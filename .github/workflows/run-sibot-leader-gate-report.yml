@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   report:
@@ -43,8 +43,10 @@ jobs:
           cp leader-report-source/scripts/sibot_leader_gate_report.py scripts/sibot_leader_gate_report.py
           test -d "$DATA_DIR"
           test -d "$CSV_DIR"
-          echo "Current main: $(git rev-parse HEAD)"
-          echo "Report source: $(git -C leader-report-source rev-parse HEAD)"
+          git rev-parse HEAD > /tmp/sibot-leader-main-sha.txt
+          git -C leader-report-source rev-parse HEAD > /tmp/sibot-leader-report-source-sha.txt
+          echo "Current main: $(cat /tmp/sibot-leader-main-sha.txt)"
+          echo "Report source: $(cat /tmp/sibot-leader-report-source-sha.txt)"
 
       - name: Build isolated Python environment
         shell: bash
@@ -58,6 +60,8 @@ jobs:
             -r requirements.txt
 
       - name: Run SiBot leader gate report read-only
+        id: gate_report
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -84,8 +88,80 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Publish sanitised result to ai-reviews
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          REPORT_OUTCOME: ${{ steps.gate_report.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/sibot-leader-gate-result.json
+          import json, os, pathlib, time
+
+          def read(path, limit=12000):
+              p = pathlib.Path(path)
+              return p.read_text(encoding='utf-8', errors='replace')[-limit:].strip() if p.exists() else ''
+
+          report = read('/tmp/sibot-leader-gate-report.txt')
+          main_sha = read('/tmp/sibot-leader-main-sha.txt', 80)
+          report_source_sha = read('/tmp/sibot-leader-report-source-sha.txt', 80)
+          outcome = os.environ.get('REPORT_OUTCOME') or 'not-run'
+          status = 'SUCCESS' if outcome == 'success' and report else 'FAILED'
+          if not report:
+              report = 'Report output was not produced. Check the GitHub Actions job for the failing setup step.'
+
+          print(json.dumps({
+              'schema_version': 1,
+              'status': status,
+              'generated_epoch': int(time.time()),
+              'workflow_run_id': int(os.environ.get('RUN_ID') or 0),
+              'current_main_sha': main_sha,
+              'report_source_sha': report_source_sha,
+              'data_source': 'production DATA_DIR/CSV_DIR (read-only)',
+              'account_ids_redacted': True,
+              'report': report,
+          }, indent=2, sort_keys=True))
+          PY
+
+          api="repos/${GITHUB_REPOSITORY}/contents/github/leader-gate/latest.json"
+          existing_sha=''
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" \
+            > /tmp/sibot-leader-existing.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s /tmp/sibot-leader-existing.json ]]; then
+            existing_sha="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/sibot-leader-existing.json')).get('sha') or '')
+          PY
+            )"
+          fi
+
+          python3 - "$existing_sha" <<'PY' > /tmp/sibot-leader-put.json
+          import base64, json, sys
+          raw = open('/tmp/sibot-leader-gate-result.json', 'rb').read()
+          payload = {
+              'message': 'Record read-only SiBot leader gate report',
+              'content': base64.b64encode(raw).decode(),
+              'branch': 'ai-reviews',
+          }
+          if sys.argv[1]:
+              payload['sha'] = sys.argv[1]
+          print(json.dumps(payload))
+          PY
+
+          gh api -X PUT "$api" --input /tmp/sibot-leader-put.json >/dev/null
+
       - name: Remove isolated environment
         if: always()
         shell: bash
         run: |
           rm -rf "$REPORT_VENV"
+
+      - name: Fail workflow if gate report failed
+        if: always() && steps.gate_report.outcome == 'failure'
+        shell: bash
+        run: exit 1
