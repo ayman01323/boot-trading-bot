@@ -14,6 +14,7 @@ LIVE_UNAVAILABLE_TEXT = (
 _FRESH_PATTERNS = (
     r"\bcurrent(?:ly)?\b",
     r"\bright now\b",
+    r"\bnow\b",
     r"\btoday\b",
     r"\btonight\b",
     r"\btomorrow\b",
@@ -34,6 +35,17 @@ _FRESH_PATTERNS = (
     r"\bdelay(?:ed|s)?\b",
     r"\bopen now\b",
     r"\bavailable now\b",
+)
+
+_CLOCK_PATTERNS = (
+    r"\bwhat(?:'s| is)?(?: the)? time\b",
+    r"\btime (?:is it )?(?:in|at)\b",
+    r"\bcurrent time\b",
+    r"\blocal time\b",
+    r"\btime ?zone\b",
+    r"\bwhat(?:'s| is)?(?: the)? date\b",
+    r"\bwhat day is it\b",
+    r"\bdate today\b",
 )
 
 _OFFLINE_REFUSAL_PATTERNS = (
@@ -64,7 +76,8 @@ def _is_final_paspuss_prompt(prompt: str) -> bool:
 
 def _question_requires_live(question: str) -> bool:
     text = str(question or "").lower()
-    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in _FRESH_PATTERNS)
+    patterns = _FRESH_PATTERNS + _CLOCK_PATTERNS
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in patterns)
 
 
 def _needs_web_search(prompt: str) -> bool:
