@@ -18,8 +18,9 @@ def _step_block(name: str) -> str:
 
 
 def test_workflow_has_expected_step_count():
-    names = re.findall(r"(?m)^\s{6}- name: .+$", _text())
-    assert len(names) == 16
+    # The workflow has 14 named steps plus 2 action-only `uses:` steps.
+    steps = re.findall(r"(?m)^\s{6}- (?:name:|uses:).+$", _text())
+    assert len(steps) == 16
 
 
 def test_cost_gate_step_exists_and_reads_evidence():
