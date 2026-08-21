@@ -1,0 +1,152 @@
+{
+  "cycle_id": "79f51b5fca92-2026082113-06d6c8a9",
+  "evidence_gaps": [
+    "No fresh-within-two-hours sanitised runtime forensics (evidence.json reports MISSING_RUNTIME_FORENSICS).",
+    "No closed-loop realised money-weighted P&L matching trade receipts back to Strategy Lab scorecards.",
+    "No decision-time Solana quoting parameters (gross edge, price impact, liquidity, and sellability) for leader events in the feature adapter.",
+    "Wasted EVM gas costs from reverted/replaced transactions and nonce contention are not charged back to strategy IDs.",
+    "No out-of-sample holdout validation dossiers spanning multiple volatility or fee regimes to evaluate strategies before promotion."
+  ],
+  "evidence_sha256": "06d6c8a9a16b216c9f17627c737404df87f8c5a73a5f66f18ed9b7dd6b099095",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "Adds complexity and database write load to the execution path; must use WAL journaling and structured lock scopes to avoid lock contention.",
+      "evidence": [
+        {
+          "detail": "Scorecards are built solely on quote_simulated_net_base from adapted market features, with no mechanism to write back actual realised transaction receipts or outcomes.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        },
+        {
+          "detail": "Contains highly detailed live_execution_receipts tracking (signature, trade_value_lamports, network_fee_lamports, rent_paid_lamports, etc.) that is completely unlinked from Strategy Lab.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py"
+        }
+      ],
+      "expected_effect": "Aligns Strategy Lab scorecards with audited wallet-level and receipt-level realised outcomes, preventing promotion of strategies that excel in idealised simulations but fail under competitive live execution.",
+      "id": "gemini-closed-loop-realised-pnl-v1",
+      "minimum_observation": "At least 30 terminal trade opportunities per strategy across a minimum of 14 days and multiple fee regimes.",
+      "rationale": "Durable strategy ranking requires money-weighted net P&L based on verified wallet cash flows rather than idealised simulation quotes. Incorporating actual transaction execution receipts (net of fees, slippage, and price impact) into the strategy_lab SQLite databases allows the system to compute true out-of-sample returns and cleanly separate strategy/market losses from execution/infrastructure failures.",
+      "shadow_test": "In a 14-day forward shadow testing cycle, verify that 100% of simulated trade outcomes and execution failures are successfully reconciled with receipt data from on-chain transaction logs. Trigger a halt if unreconciled outcomes exceed 1% or if db write latency exceeds 100ms.",
+      "strategy": "Multi-Chain Closed-Loop Realised P&L Attribution",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.92,
+      "downside_risk": "Sequential live API querying to Jupiter on every leader signature can introduce block-time latency and trigger API rate-limiting.",
+      "evidence": [
+        {
+          "detail": "Solana leader events fail-close to zero for gross_edge_bps, liquidity_score, and sellability_score because raw block logs lack contemporaneous market quotes.",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "Requires double sequential API queries to Jupiter to compute contemporaneous round-trip price and slippage for shadow entry validation.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Enables robust, out-of-sample shadow testing of Solana copying and liquidity models using contemporaneous pricing and priority fee parameters.",
+      "id": "gemini-solana-quote-feature-adapter-v1",
+      "minimum_observation": "At least 50 independent leader events across multiple assets over a 14-day observation window.",
+      "rationale": "Without contemporaneous pricing and liquidity quotes, Solana leader events cannot be simulated as executable opportunities in Strategy Lab. Fetching real-time Jupiter quotes at decision-time and populating the market features schema resolves the missing edge gap.",
+      "shadow_test": "Measure contemporaneous quotes for WETH/token and token/WETH pairs at the exact moment of leader BUY events. Reject the opportunity if Jupiter response times exceed 400ms, or if rate-limiting errors occur. Verify that contemporaneous pricing is successfully integrated into the market feature adapter.",
+      "strategy": "Solana Contemporary Quoting Feature Adapter",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.91,
+      "downside_risk": "Dynamic gas volatility might render short-term failure cost models noisy or overly conservative. Must model costs dynamically per chain.",
+      "evidence": [
+        {
+          "detail": "EVM net edge is calculated based on successful quote simulation but does not penalise strategies for gas wasted on reverted/replaced transactions or nonce contention.",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "Tracks execution failures and transaction shape details, but these failed transaction costs are not attributed back to Strategy Lab portfolio metrics.",
+          "path": "learnerbot/live_executor.py"
+        }
+      ],
+      "expected_effect": "Filters out high-frequency strategies whose gross edges are entirely consumed by the gas costs of reverted transactions, optimizing durable net returns.",
+      "id": "gemini-evm-failure-cost-integration-v1",
+      "minimum_observation": "At least 30 route opportunities per EVM chain across 14 days, spanning high and low congestion regimes.",
+      "rationale": "EVM strategies (especially cross-venue arb or learned-route replication) suffer from transaction reverts due to competitive gas pricing or block latency. Charging wasted gas costs from failed, reverted, or replaced transactions back to the initiating strategy prevents unprofitable models from looking profitable on paper.",
+      "shadow_test": "During shadow execution, track and log all failed/reverted transaction gas costs. Attribute these costs directly to the initiating strategy ID in the sqlite registry. Reject strategy promotion if net realised edge is negative after failures are accounted for.",
+      "strategy": "EVM Execution Failure Cost Modeler",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.96,
+      "downside_risk": "Delays the deployment of genuine strategy improvements, but capital-preservation remains the bot's foundational mandate.",
+      "evidence": [
+        {
+          "detail": "Allows stage transition from CANARY to PROBATION with only 3 trades, and from PROBATION to ACTIVE with only 8 trades, which is prone to regime luck.",
+          "path": "learnerbot/strategy_canary.py"
+        },
+        {
+          "detail": "The repository is explicitly marked as MISSING_RUNTIME_FORENSICS, indicating no current live testing outcomes exist.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Significantly reduces false-positive strategy promotions, ensuring only models with a robust out-of-sample edge and tolerable drawdowns reach live production.",
+      "id": "gemini-regime-aware-promotion-gate-v1",
+      "minimum_observation": "A minimum of 14 days and at least 30 completed trades per strategy cohort.",
+      "rationale": "Promotion from canary stages must be governed by statistically significant samples across distinct market/fee regimes to protect capital from overfitting, selection bias, or lucky market streaks.",
+      "shadow_test": "Enforce a strict promotion requirement of at least 30 independent terminal trades across 14 days and two distinct market volatility/fee regimes. Compute the lower confidence bound of net returns and ensure it remains positive before promotion.",
+      "strategy": "Regime-Aware Promotion Governance",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote a strategy to active real-money trading based purely on simulated quote net profit or high win count.",
+      "reason": "Simulated quotes do not suffer from block-inclusion failures, priority fee spikes, or slippage decay. Win counts are highly misleading and can obscure catastrophic tail-losses or high transaction costs."
+    },
+    {
+      "idea": "Bypass simulation, sellability, or route approvals to increase trade frequency when markets are quiet.",
+      "reason": "Forcing trades during zero-edge environments converts active scanning into a guaranteed loss-generating mechanism, violating the core rule that active does not mean forced trading."
+    },
+    {
+      "idea": "Delete historical wallet database entries or audit logs to optimize runner-workspace disk space.",
+      "reason": "Violates team engineering instructions. Audit evidence and database histories must never be automatically deleted."
+    },
+    {
+      "idea": "Deploy real-money live capital settings or sign transactions directly from AI strategy recommendations.",
+      "reason": "High-risk. All live signing, wallet administration, or capital parameter adjustments must remain strictly human-only."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "79f51b5fca922b842daeef92f8121b0aa3d8bfa2",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only strategy audit. The existing modular foundations (Strategy Lab registry, fail-closed feature adaptation, and SQLite-based tracking) are highly cohesive and solid. However, no fresh runtime evidence is available in .strategy_cycle/evidence.json to verify strategy profitability or support canary/live promotion. The major architectural gap is the lack of a closed-loop outcome layer that maps actual filled trade receipts (such as live_execution_receipts) and execution failures back to Strategy Lab scorecards, and a contemporary quoting adapter for Solana leader events. No strategy is verified as live-ready."
+}
