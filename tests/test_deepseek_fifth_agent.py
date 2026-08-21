@@ -70,7 +70,11 @@ def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
     assert '_PROVIDER_LABELS["deepseek"] = "DeepSeek"' in ui
     assert 'aicfg:master:{lane}:deepseek' in ui
     assert "five_agent_reports_complete" in ui
-    assert "DeepSeek ✅" in ui
+    # The current compact five-agent UI composes the label and DONE icon dynamically:
+    # "DeepSeek — ✅ Completed" rather than embedding the old literal "DeepSeek ✅".
+    assert '"deepseek": "DeepSeek"' in ui
+    assert 'return "✅"' in ui
+    assert 'f"• {label} — {_icon(value)}' in ui
     # Sanitised control never carries provider credentials.
     assert "DEEPSEEK_API_KEY" not in control
 
