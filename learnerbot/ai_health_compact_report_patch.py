@@ -10,10 +10,10 @@ from . import telegram_ai_ops_patch as _ai_ops
 PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
 _LABELS = {
     "gpt": "GPT",
-    "claude": "CLAUDE",
-    "gemini": "GEMINI",
-    "deepseek": "DEEPSEEK",
-    "copilot": "COPILOT",
+    "claude": "Claude",
+    "gemini": "Gemini",
+    "deepseek": "DeepSeek",
+    "copilot": "Copilot",
 }
 
 # Keep the five-agent health collectors aligned with the compact display order.
@@ -95,11 +95,11 @@ def _looks_like_report_validation(reason: str) -> bool:
     )
 
 
-def classify_health(lane: str, provider: str, detail: dict) -> str:
-    """Convert real health state/reason into the compact operator diagnosis.
+def classify_health(lane: str, provider: str, detail: dict) -> tuple[str, str]:
+    """Return a mobile-sized icon and diagnosis from real health evidence.
 
-    This changes presentation only. It never changes provider state, retry logic,
-    master selection, trading state or any execution/safety gate.
+    Presentation only: this never changes provider state, retries, master selection,
+    trading state or any execution/safety gate.
     """
     lane = str(lane or "").lower()
     provider = str(provider or "").lower()
@@ -107,36 +107,21 @@ def classify_health(lane: str, provider: str, detail: dict) -> str:
     reason = _reason(detail)
 
     if state == "WORKING":
-        return "🟢 WORKING"
+        return "🟢", "Working"
     if state == "WAITING":
-        return "🟡 IN PROGRESS"
+        return "🟡", "In progress"
 
     if provider == "deepseek" and _looks_like_config(reason):
-        if lane == "strategy":
-            return "🔴 SAME CONFIGURATION BUG"
-        return "🔴 CLAUDE-CODE CUSTOM MODEL CONFIGURATION"
-
+        return "🔴", "Model config"
     if _looks_like_auth(reason):
-        return "🔴 AUTHENTICATION FAILURE"
+        return "🔴", "Authentication"
     if _looks_like_network(reason):
-        return "🔴 PROVIDER/NETWORK FAILURE"
-
-    # GPT commonly reaches the provider successfully but fails the report/schema
-    # validation stage. Keep that distinction visible instead of calling the whole
-    # provider down. Claude's non-auth/non-network failures are normally isolated
-    # to one workflow lane, so identify them as pipeline-specific.
+        return "🔴", "Provider/network"
     if provider == "gpt" or _looks_like_report_validation(reason):
-        suffix = " — provider probably reachable" if provider == "gpt" else ""
-        return f"🟠 REPORT/VALIDATION FAILURE{suffix}"
+        return "🟠", "Report validation"
     if provider == "claude":
-        return "🟠 PIPELINE-SPECIFIC FAILURE"
-
-    # Preserve a concise real diagnosis for other failures without hard-coding a
-    # provider as broken when only one lane/report failed.
-    cleaned = reason.strip()
-    if cleaned and cleaned != "no diagnostic reason was published":
-        return f"🟠 PIPELINE-SPECIFIC FAILURE — {cleaned[:120]}"
-    return "🟠 PIPELINE-SPECIFIC FAILURE"
+        return "🟠", "Pipeline failure"
+    return "🟠", "Pipeline failure"
 
 
 def _lane_health(lane: str) -> dict:
@@ -149,15 +134,16 @@ def _lane_health(lane: str) -> dict:
 
 def _lane_text(lane: str, health: dict | None = None) -> str:
     health = health if health is not None else _lane_health(lane)
-    label = "ENGINEERING" if lane == "engineering" else "STRATEGY"
+    heading = "🛠 ENGINEERING" if lane == "engineering" else "🧠 STRATEGY"
     agents = (health or {}).get("agents") or {}
-    lines = [label]
+    lines = [heading]
     for provider in PROVIDERS:
         detail = agents.get(provider) or {
             "state": "WAITING",
             "reason": f"{provider} report has not completed",
         }
-        lines.append(f"{_LABELS[provider]:<9} {classify_health(lane, provider, detail)}")
+        icon, status = classify_health(lane, provider, detail)
+        lines.append(f"{icon} {_LABELS[provider]} — {status}")
     return "\n".join(lines)
 
 
@@ -174,7 +160,7 @@ def warning_message(snapshot: dict) -> str:
     strategy = (snapshot or {}).get("strategy") or _lane_health("strategy")
     return "\n\n".join(
         [
-            "🤖 AI AGENT HEALTH REPORT",
+            "🤖 AI AGENT HEALTH",
             _lane_text("engineering", engineering),
             _lane_text("strategy", strategy),
         ]
@@ -182,7 +168,7 @@ def warning_message(snapshot: dict) -> str:
 
 
 def install() -> None:
-    # Automatic 30-minute unhealthy warning.
+    # Automatic unhealthy warning.
     _health_warning.warning_message = warning_message
     _health5.warning_message = warning_message
 
