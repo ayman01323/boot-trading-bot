@@ -70,7 +70,12 @@ def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
     assert '_PROVIDER_LABELS["deepseek"] = "DeepSeek"' in ui
     assert 'aicfg:master:{lane}:deepseek' in ui
     assert "five_agent_reports_complete" in ui
-    assert "DeepSeek ✅" in ui
+    # The current presentation deliberately renders provider + status through the
+    # shared five-agent row formatter rather than hard-coding "DeepSeek ✅".
+    assert '"deepseek": "DeepSeek"' in ui
+    assert "_five_lines" in ui
+    assert "_icon(value)" in ui
+    assert "_status_label(value)" in ui
     # Sanitised control never carries provider credentials.
     assert "DEEPSEEK_API_KEY" not in control
 

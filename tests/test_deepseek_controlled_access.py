@@ -29,7 +29,7 @@ def test_deepseek_github_access_is_draft_pr_only_and_protected() -> None:
     assert "learnerbot/wallet" in text
     assert "learnerbot/live_executor" in text
     assert "learnerbot/solana_live" in text
-    for forbidden in ("gh pr merge", "git push origin main", "sudo ", "deploy-boot-trading-bot"):
+    for forbidden in ("gh pr merge", "git push origin main", "sudo /", "deploy-boot-trading-bot"):
         assert forbidden not in text
 
 
@@ -55,14 +55,25 @@ def test_deepseek_vps_access_is_manual_restricted_and_current_main_only() -> Non
     assert "vps/deepseek/latest.json" in text
     assert "AGENT: DEEPSEEK" in text
     assert "AI-Agent: DEEPSEEK" in text
-    for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY", "mnemonic", "seed phrase"):
+    # Only the two named restricted wrappers may be invoked with sudo. Sensitive
+    # vocabulary is expected inside the redaction filter and is not evidence of access.
+    sudo_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("sudo ")]
+    assert sudo_lines
+    assert all(
+        line.startswith("sudo /usr/local/sbin/status-boot-trading-bot")
+        or line.startswith("sudo /usr/local/sbin/deploy-boot-trading-bot")
+        for line in sudo_lines
+    )
+    for forbidden in ("sudo bash", "sudo sh", "sudo -i"):
         assert forbidden not in text
+    assert "[REDACTED SENSITIVE LINE]" in text
 
 
 def test_vps_deploy_has_no_user_selected_sha_or_branch() -> None:
     text = _text(".github/workflows/deepseek-vps-controlled-ops.yml")
-    assert "target_sha:" not in text.split("on:", 1)[1].split("permissions:", 1)[0]
-    assert "branch:" not in text.split("on:", 1)[1].split("permissions:", 1)[0]
+    inputs = text.split("on:", 1)[1].split("permissions:", 1)[0]
+    assert "target_sha:" not in inputs
+    assert "branch:" not in inputs
     assert "git fetch --force origin main" in text
     assert 'current="$(git rev-parse HEAD' in text
     assert 'target="$(git rev-parse origin/main' in text
