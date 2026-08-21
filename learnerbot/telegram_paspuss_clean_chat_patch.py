@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 from . import ai_council_latency_patch as _latency  # noqa: F401
@@ -146,11 +147,15 @@ def _direct_static_answer(session: dict) -> str:
 
 
 def _deliver_direct_live(app, tid, session: dict, session_id: str) -> None:
+    """Deliver the user answer first; persistence must never suppress Telegram output."""
     answer = _direct_live_retry(session)
-    session = _friendly._council.load_session(app, session_id)
-    session["status"] = "LEADER_READY"
-    session["updated_epoch"] = int(__import__("time").time())
-    _friendly._council.save_session(app, session)
+    try:
+        session = _friendly._council.load_session(app, session_id)
+    except Exception:
+        session = dict(session)
+
+    # User-visible delivery is the primary operation. Both progress cleanup and answer
+    # sending happen before any session bookkeeping that could fail independently.
     _delete_progress_message(app, tid, session)
     _send_final_reply(
         app,
@@ -160,7 +165,19 @@ def _deliver_direct_live(app, tid, session: dict, session_id: str) -> None:
         answer,
         _brand._user_keyboard(session_id),
     )
-    _friendly._mark_delivered(app, session, fallback=False)
+
+    # Bookkeeping is best-effort only. A stale/corrupt session id, disk issue, or
+    # metadata write failure must never turn a valid answer into silence.
+    try:
+        session["status"] = "LEADER_READY"
+        session["updated_epoch"] = int(time.time())
+        _friendly._council.save_session(app, session)
+    except Exception:
+        pass
+    try:
+        _friendly._mark_delivered(app, session, fallback=False)
+    except Exception:
+        pass
 
 
 def _finish_user_from_answers(app, tid, session_id: str) -> None:
@@ -182,7 +199,10 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
         _delete_progress_message(app, tid, session)
         if answer:
             _send_final_reply(app, tid, session, "🐾 PasPuss AI", answer, _brand._user_keyboard(session_id))
-            _friendly._mark_delivered(app, session, fallback=True)
+            try:
+                _friendly._mark_delivered(app, session, fallback=True)
+            except Exception:
+                pass
             return
         _send_final_reply(
             app,
@@ -217,7 +237,10 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
             answer,
             _brand._user_keyboard(session_id),
         )
-        _friendly._mark_delivered(app, session, fallback=fallback)
+        try:
+            _friendly._mark_delivered(app, session, fallback=fallback)
+        except Exception:
+            pass
         return
 
     _send_final_reply(
