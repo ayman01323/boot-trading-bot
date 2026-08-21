@@ -1,4 +1,4 @@
-name: Dispatch DeepSeek Read-Only Verification
+name: Dispatch DeepSeek Full-Link Verification
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Dispatch DeepSeek GitHub Read-Only System Inspect
+      - name: Dispatch DeepSeek GitHub read-only verification
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -25,4 +25,16 @@ jobs:
           gh workflow run deepseek-github-readonly-selfhosted.yml \
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
-            -f task='READ-ONLY SYSTEM TEST. Report current GitHub main SHA, whether dependencies installed successfully, whether repository tests passed, the test pass count if available, and operational warnings. Do not modify code, create or merge PRs, deploy, restart services, change trading settings, or access wallet/signing material.'
+            -f task='FULL LINK TEST. Report current GitHub main SHA, dependency installation, repository test result/pass count, and operational warnings. Read/report only. Do not modify code, merge, deploy, change trading settings, or access wallet/signing material.'
+
+      - name: Dispatch DeepSeek GitHub-to-VPS controlled inspection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run deepseek-vps-controlled-ops.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f action=inspect \
+            -f task='FULL LINK TEST. Verify GitHub can reach the self-hosted boot-vps runner, collect the restricted service status, send only sanitised context to DeepSeek, and return a bounded health summary. Do not deploy, restart, trade, access wallet/signing material, or bypass LIVE/risk controls.'
