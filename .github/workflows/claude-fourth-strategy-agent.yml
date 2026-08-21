@@ -5,7 +5,7 @@ on:
     workflows: ["Hourly Three-Agent Strategy Cycle"]
     types: [completed]
   schedule:
-    - cron: '25 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       cycle_id:
@@ -22,7 +22,6 @@ concurrency:
 
 jobs:
   review:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -117,7 +116,25 @@ jobs:
           echo "evidence_source=$EVIDENCE_SOURCE" >> "$GITHUB_OUTPUT"
           echo "evidence_match=$match" >> "$GITHUB_OUTPUT"
 
+      - name: Skip duplicate Claude API review for an already-published exact cycle
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/runs/${CYCLE_ID}/claude.json?ref=ai-reviews" \
+              >/dev/null 2>&1; then
+            echo 'found=true' >> "$GITHUB_OUTPUT"
+            echo "Claude report already exists for ${CYCLE_ID}; no Anthropic API call will be made."
+          else
+            echo 'found=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out exact source reviewed by the other agents
+        if: steps.existing.outputs.found != 'true'
         env:
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
         shell: bash
@@ -127,6 +144,7 @@ jobs:
           git clean -fdx -e .strategy_claude/
 
       - name: Prepare Claude strategy prompt
+        if: steps.existing.outputs.found != 'true'
         env:
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
@@ -190,7 +208,7 @@ jobs:
 
       - name: Claude independent strategy report
         id: claude
-        if: steps.meta.outputs.evidence_match == 'true'
+        if: steps.existing.outputs.found != 'true' && steps.meta.outputs.evidence_match == 'true'
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -240,7 +258,7 @@ jobs:
           PY
 
       - name: Recover Claude incomplete report
-        if: steps.meta.outputs.evidence_match != 'true' || steps.claude.outcome != 'success'
+        if: steps.existing.outputs.found != 'true' && (steps.meta.outputs.evidence_match != 'true' || steps.claude.outcome != 'success')
         env:
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
@@ -277,6 +295,7 @@ jobs:
           PY
 
       - name: Publish Claude into the immutable strategy cycle
+        if: steps.existing.outputs.found != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
