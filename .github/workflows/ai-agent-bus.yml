@@ -3,23 +3,28 @@ name: Event-Driven AI Agent Bus
 on:
   issue_comment:
     types: [created]
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
 
+# Serialise all bus work so an issue_comment event and the polling fallback
+# cannot process the same message at the same time. Every run re-checks the
+# issue before calling a provider, so queued duplicate triggers become no-ops.
 concurrency:
-  group: ai-agent-bus-${{ github.event.comment.id }}
+  group: ai-agent-bus
   cancel-in-progress: false
 
 jobs:
   route:
     if: >-
-      github.event.issue.number == 333 &&
-      (github.event.comment.user.login == github.repository_owner ||
-       github.event.comment.user.login == 'github-actions[bot]') &&
-      startsWith(github.event.comment.body, 'AI_BUS') &&
-      !startsWith(github.event.comment.body, 'AI_BUS_REPLY')
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.number == 333 &&
+       (github.event.comment.user.login == github.repository_owner ||
+        github.event.comment.user.login == 'github-actions[bot]'))
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -31,28 +36,76 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Find latest unanswered AI bus message
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
+            > /tmp/ai-bus-comments.json
+
+          python - <<'PY' > /tmp/ai-bus-pending.env
+          import json
+          import os
+          import pathlib
+          import re
+
+          pages = json.loads(pathlib.Path('/tmp/ai-bus-comments.json').read_text(encoding='utf-8'))
+          comments = [row for page in pages for row in page]
+          trusted = {os.environ.get('REPO_OWNER', '').strip(), 'github-actions[bot]'}
+          message_id_re = re.compile(r'(?mi)^message_id:\s*([A-Za-z0-9._:-]{1,120})\s*$')
+
+          replied = set()
+          requests = []
+          for row in comments:
+              body = str(row.get('body') or '')
+              match = message_id_re.search(body)
+              if not match:
+                  continue
+              message_id = match.group(1)
+              if body.startswith('AI_BUS_REPLY'):
+                  replied.add(message_id)
+                  continue
+              user = ((row.get('user') or {}).get('login') or '').strip()
+              if body.startswith('AI_BUS\n') and user in trusted:
+                  requests.append((int(row.get('id') or 0), message_id, body))
+
+          pending = [row for row in requests if row[1] not in replied]
+          if not pending:
+              print('pending=false')
+              print('message_id=none')
+              print('comment_id=0')
+          else:
+              comment_id, message_id, body = max(pending, key=lambda row: row[0])
+              pathlib.Path('/tmp/ai-bus-message.md').write_text(body, encoding='utf-8')
+              print('pending=true')
+              print(f'message_id={message_id}')
+              print(f'comment_id={comment_id}')
+          PY
+
+          cat /tmp/ai-bus-pending.env >> "$GITHUB_OUTPUT"
+
       - name: Set up isolated Python
+        if: steps.pending.outputs.pending == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install minimal provider dependency
+        if: steps.pending.outputs.pending == 'true'
         shell: bash
         run: python -m pip install --disable-pip-version-check -q python-dotenv
 
-      - name: Materialise and validate bounded bus message
+      - name: Validate bounded bus message
+        if: steps.pending.outputs.pending == 'true'
         id: preflight
-        env:
-          COMMENT_BODY: ${{ github.event.comment.body }}
         shell: bash
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import os, pathlib
-          pathlib.Path('/tmp/ai-bus-message.md').write_text(
-              os.environ.get('COMMENT_BODY',''), encoding='utf-8'
-          )
-          PY
           python scripts/ai_agent_bus.py \
             --input /tmp/ai-bus-message.md \
             --output /tmp/unused.md \
@@ -60,17 +113,18 @@ jobs:
           cat /tmp/ai-bus-preflight.env >> "$GITHUB_OUTPUT"
 
       - name: Set up Node only when Copilot may be addressed
-        if: steps.preflight.outputs.needs_copilot == 'true'
+        if: steps.pending.outputs.pending == 'true' && steps.preflight.outputs.needs_copilot == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       - name: Install bounded Copilot CLI only when needed
-        if: steps.preflight.outputs.needs_copilot == 'true'
+        if: steps.pending.outputs.pending == 'true' && steps.preflight.outputs.needs_copilot == 'true'
         shell: bash
         run: npm install -g @github/copilot@latest
 
       - name: Route message to addressed provider(s)
+        if: steps.pending.outputs.pending == 'true'
         id: route
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -95,7 +149,7 @@ jobs:
           if [[ $rc -ne 0 || ! -s /tmp/ai-bus-reply.md ]]; then
             cat > /tmp/ai-bus-reply.md <<EOF
           AI_BUS_REPLY
-          message_id: ${{ steps.preflight.outputs.message_id }}
+          message_id: ${{ steps.pending.outputs.message_id }}
           from: BUS
           to: USER
           status: BLOCKED
@@ -107,19 +161,29 @@ jobs:
           exit 0
 
       - name: Post auditable reply to the AI bus issue
+        if: steps.pending.outputs.pending == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
         shell: bash
         run: |
           set -euo pipefail
+          # Re-check immediately before publishing so a delayed duplicate trigger
+          # cannot post a second reply for the same message id.
+          if gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
+              | python -c 'import json,re,sys; mid=sys.argv[1]; pages=json.load(sys.stdin); bodies=[str(r.get("body") or "") for p in pages for r in p]; raise SystemExit(0 if any(b.startswith("AI_BUS_REPLY") and re.search(r"(?mi)^message_id:\\s*"+re.escape(mid)+r"\\s*$", b) for b in bodies) else 1)' \
+                "${{ steps.pending.outputs.message_id }}"; then
+            echo "Reply already exists for ${{ steps.pending.outputs.message_id }}; skipping duplicate publish."
+            exit 0
+          fi
+
           python - <<'PY' > /tmp/ai-bus-comment.json
           import json, pathlib
           body=pathlib.Path('/tmp/ai-bus-reply.md').read_text(encoding='utf-8',errors='replace')
           print(json.dumps({'body': body}))
           PY
           gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments" \
+            "repos/${GITHUB_REPOSITORY}/issues/333/comments" \
             --input /tmp/ai-bus-comment.json >/dev/null
 
       - name: Publish compact run summary
@@ -129,9 +193,10 @@ jobs:
           {
             echo '## AI Agent Bus'
             echo
-            echo "Message ID: \`${{ steps.preflight.outputs.message_id }}\`"
-            echo "Target: **${{ steps.preflight.outputs.target }}**"
-            echo "Mode: **${{ steps.preflight.outputs.mode }}**"
-            echo "Copilot setup needed: **${{ steps.preflight.outputs.needs_copilot }}**"
-            echo "Router return code: **${{ steps.route.outputs.rc }}**"
+            echo "Pending message: **${{ steps.pending.outputs.pending || 'false' }}**"
+            echo "Message ID: \`${{ steps.pending.outputs.message_id || 'none' }}\`"
+            echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
+            echo "Mode: **${{ steps.preflight.outputs.mode || 'none' }}**"
+            echo "Copilot setup needed: **${{ steps.preflight.outputs.needs_copilot || 'false' }}**"
+            echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
           } >> "$GITHUB_STEP_SUMMARY"
