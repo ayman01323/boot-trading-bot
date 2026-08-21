@@ -1,5 +1,5 @@
 name: Direct Self-Hosted Deploy Current Main
-# Retry exact-main deployment for organised Solana emergency-exit alerts.
+# Deploy current main and keep the VPS GitHub remote on SSH-over-443 for restricted networks.
 
 on:
   push:
@@ -22,6 +22,18 @@ jobs:
     env:
       TARGET_SHA: ${{ github.sha }}
     steps:
+      - name: Route VPS GitHub SSH through port 443
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          if [[ -w "$repo/.git/config" ]]; then
+            git -C "$repo" remote set-url origin ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
+            echo "origin=$(git -C "$repo" remote get-url origin)"
+          else
+            echo "VPS repository config is not writable by this restricted runner; leaving origin unchanged."
+          fi
+
       - name: Deploy through restricted root wrapper
         id: deploy
         shell: bash
