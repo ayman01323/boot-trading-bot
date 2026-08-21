@@ -1,0 +1,146 @@
+name: AI Provider Credit Alerts
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+concurrency:
+  group: ai-provider-credit-alerts
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Read previous sanitised status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          git show origin/ai-reviews:provider-credits/latest_status.json \
+            > /tmp/provider-credit-previous.json 2>/dev/null || printf '{}\n' > /tmp/provider-credit-previous.json
+
+      - name: Authenticate to Google Cloud for Gemini budget notifications
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_ALERT_SERVICE_ACCOUNT != '' && vars.GCP_PUBSUB_SUBSCRIPTION != '' }}
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_ALERT_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_ALERT_SERVICE_ACCOUNT != '' && vars.GCP_PUBSUB_SUBSCRIPTION != '' }}
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Pull Gemini monthly-budget notifications
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_ALERT_SERVICE_ACCOUNT != '' && vars.GCP_PUBSUB_SUBSCRIPTION != '' }}
+        env:
+          GCP_PUBSUB_SUBSCRIPTION: ${{ vars.GCP_PUBSUB_SUBSCRIPTION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud pubsub subscriptions pull "$GCP_PUBSUB_SUBSCRIPTION" \
+            --limit=50 --format=json > /tmp/gemini-budget-messages.json
+
+      - name: Ensure an empty Gemini message input exists
+        if: ${{ !(vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_ALERT_SERVICE_ACCOUNT != '' && vars.GCP_PUBSUB_SUBSCRIPTION != '') }}
+        run: printf '[]\n' > /tmp/gemini-budget-messages.json
+
+      - name: Collect provider usage safely
+        env:
+          OPENAI_ADMIN_KEY: ${{ secrets.OPENAI_ADMIN_KEY }}
+          OPENAI_MONTHLY_BUDGET_USD: ${{ vars.OPENAI_MONTHLY_BUDGET_USD }}
+          COPILOT_BILLING_TOKEN: ${{ secrets.COPILOT_BILLING_TOKEN }}
+          COPILOT_BILLING_OWNER: ${{ vars.COPILOT_BILLING_OWNER || github.repository_owner }}
+          COPILOT_BILLING_SCOPE: ${{ vars.COPILOT_BILLING_SCOPE || 'user' }}
+          COPILOT_BILLING_MODE: ${{ vars.COPILOT_BILLING_MODE || 'ai_credit' }}
+          COPILOT_MONTHLY_AI_CREDITS: ${{ vars.COPILOT_MONTHLY_AI_CREDITS }}
+          COPILOT_MONTHLY_PREMIUM_REQUESTS: ${{ vars.COPILOT_MONTHLY_PREMIUM_REQUESTS }}
+          GEMINI_BUDGET_MONITOR_CONFIGURED: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_ALERT_SERVICE_ACCOUNT != '' && vars.GCP_PUBSUB_SUBSCRIPTION != '' }}
+          GEMINI_BUDGET_ID: ${{ vars.GEMINI_BUDGET_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m learnerbot.provider_credit_monitor \
+            --previous /tmp/provider-credit-previous.json \
+            --gemini-messages /tmp/gemini-budget-messages.json \
+            --output /tmp/provider-credit-status.json \
+            --ack-ids-output /tmp/gemini-budget-ack-ids.txt \
+            --markdown-output /tmp/provider-credit-summary.md
+          cat /tmp/provider-credit-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish sanitised status to ai-reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          rm -rf /tmp/provider-credit-ai-reviews
+          git worktree add --detach /tmp/provider-credit-ai-reviews origin/ai-reviews
+          mkdir -p /tmp/provider-credit-ai-reviews/provider-credits
+          cp /tmp/provider-credit-status.json /tmp/provider-credit-ai-reviews/provider-credits/latest_status.json
+          cd /tmp/provider-credit-ai-reviews
+          git config user.name 'ai-provider-credit-monitor'
+          git config user.email 'ai-provider-credit-monitor@users.noreply.github.com'
+          git add provider-credits/latest_status.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Update AI provider credit status'
+            for attempt in 1 2 3; do
+              git fetch origin ai-reviews
+              git rebase origin/ai-reviews
+              if git push origin HEAD:ai-reviews; then
+                break
+              fi
+              if [[ $attempt -eq 3 ]]; then
+                exit 1
+              fi
+              sleep "$((attempt * 5))"
+            done
+          fi
+
+      - name: Acknowledge published Gemini notifications
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' && vars.GCP_ALERT_SERVICE_ACCOUNT != '' && vars.GCP_PUBSUB_SUBSCRIPTION != '' }}
+        env:
+          GCP_PUBSUB_SUBSCRIPTION: ${{ vars.GCP_PUBSUB_SUBSCRIPTION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -s /tmp/gemini-budget-ack-ids.txt ]]; then
+            ack_ids="$(paste -sd, /tmp/gemini-budget-ack-ids.txt)"
+            gcloud pubsub subscriptions ack "$GCP_PUBSUB_SUBSCRIPTION" --ack-ids="$ack_ids"
+          fi
+
+      - name: Require all three monitors to be configured
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          status=json.load(open('/tmp/provider-credit-status.json'))
+          missing=[name for name,row in status['providers'].items() if row.get('state')=='UNKNOWN']
+          if missing:
+              raise SystemExit('Provider credit monitoring incomplete: '+', '.join(sorted(missing)))
+          PY
+
+      - name: Clean workspace
+        if: always()
+        run: rm -rf /tmp/provider-credit-ai-reviews /tmp/provider-credit-previous.json /tmp/provider-credit-status.json /tmp/provider-credit-summary.md /tmp/gemini-budget-messages.json /tmp/gemini-budget-ack-ids.txt
