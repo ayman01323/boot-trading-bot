@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/run-sibot-leader-gate-report.yml'
+      - 'scripts/sibot_leader_gate_report.py'
+      - 'scripts/install_sibot_leader_gate_wrapper.sh'
   workflow_dispatch:
 
 permissions:
@@ -15,60 +17,51 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
     env:
-      REPORT_VENV: /tmp/sibot-leader-gate-${{ github.run_id }}
-      DATA_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/data
-      CSV_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot
+      REPORT_WRAPPER: /usr/local/sbin/run-sibot-leader-gate-report
 
     steps:
-      - name: Check out current main without persisted credentials
+      - name: Check out exact current main without persisted credentials
         uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Check out read-only report source
-        uses: actions/checkout@v4
-        with:
-          ref: claude/restore-viable-leader-thresholds
-          path: leader-report-source
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Prepare report script on current-main code
+      - name: Capture current-main source
         shell: bash
         run: |
           set -euo pipefail
-          test -f leader-report-source/scripts/sibot_leader_gate_report.py
-          cp leader-report-source/scripts/sibot_leader_gate_report.py scripts/sibot_leader_gate_report.py
-          test -d "$DATA_DIR"
-          test -d "$CSV_DIR"
           git rev-parse HEAD > /tmp/sibot-leader-main-sha.txt
-          git -C leader-report-source rev-parse HEAD > /tmp/sibot-leader-report-source-sha.txt
           echo "Current main: $(cat /tmp/sibot-leader-main-sha.txt)"
-          echo "Report source: $(cat /tmp/sibot-leader-report-source-sha.txt)"
 
-      - name: Build isolated Python environment
+      - name: Verify restricted root report wrapper
+        id: wrapper
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          command -v python3.11 >/dev/null 2>&1
-          rm -rf "$REPORT_VENV"
-          python3.11 -m venv "$REPORT_VENV"
-          "$REPORT_VENV/bin/python" -m pip install \
-            --disable-pip-version-check -q \
-            -r requirements.txt
+          test -x "$REPORT_WRAPPER"
+          sudo -n -l "$REPORT_WRAPPER" >/dev/null
+
+      - name: Record wrapper bootstrap requirement
+        if: steps.wrapper.outcome != 'success'
+        shell: bash
+        run: |
+          cat > /tmp/sibot-leader-gate-report.txt <<'EOF'
+          Restricted SiBot leader-gate wrapper is not installed/authorised on the VPS.
+          Install it once as root from the deployed main checkout with:
+            sudo -E bash scripts/install_sibot_leader_gate_wrapper.sh
+          The GitHub runner has not been granted direct /root access or arbitrary sudo.
+          EOF
 
       - name: Run SiBot leader gate report read-only
+        if: steps.wrapper.outcome == 'success'
         id: gate_report
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          PYTHONDONTWRITEBYTECODE=1 \
-          DATA_DIR="$DATA_DIR" \
-          CSV_DIR="$CSV_DIR" \
-          "$REPORT_VENV/bin/python" scripts/sibot_leader_gate_report.py 2>&1 \
+          sudo -n "$REPORT_WRAPPER" 2>&1 \
             | sed -E 's/(account )[0-9]+/\1<redacted>/g' \
             | tee /tmp/sibot-leader-gate-report.txt
 
@@ -93,12 +86,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.run_id }}
+          WRAPPER_OUTCOME: ${{ steps.wrapper.outcome }}
           REPORT_OUTCOME: ${{ steps.gate_report.outcome }}
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY' > /tmp/sibot-leader-gate-result.json
-          import json, os, pathlib, time
+          import json, os, pathlib, re, time
 
           def read(path, limit=12000):
               p = pathlib.Path(path)
@@ -106,21 +100,30 @@ jobs:
 
           report = read('/tmp/sibot-leader-gate-report.txt')
           main_sha = read('/tmp/sibot-leader-main-sha.txt', 80)
-          report_source_sha = read('/tmp/sibot-leader-report-source-sha.txt', 80)
-          outcome = os.environ.get('REPORT_OUTCOME') or 'not-run'
-          status = 'SUCCESS' if outcome == 'success' and report else 'FAILED'
+          wrapper_outcome = os.environ.get('WRAPPER_OUTCOME') or 'not-run'
+          report_outcome = os.environ.get('REPORT_OUTCOME') or 'not-run'
+          m = re.search(r'(?m)^deployed_sha:\s*([0-9a-f]{40})\s*$', report)
+          deployed_sha = m.group(1) if m else ''
+          status = (
+              'SUCCESS'
+              if wrapper_outcome == 'success' and report_outcome == 'success' and bool(report)
+              else 'FAILED'
+          )
           if not report:
-              report = 'Report output was not produced. Check the GitHub Actions job for the failing setup step.'
+              report = 'Report output was not produced. Check the GitHub Actions job.'
 
           print(json.dumps({
-              'schema_version': 1,
+              'schema_version': 2,
               'status': status,
               'generated_epoch': int(time.time()),
               'workflow_run_id': int(os.environ.get('RUN_ID') or 0),
               'current_main_sha': main_sha,
-              'report_source_sha': report_source_sha,
-              'data_source': 'production DATA_DIR/CSV_DIR (read-only)',
+              'deployed_sha': deployed_sha,
+              'deployed_matches_current_main': bool(deployed_sha and deployed_sha == main_sha),
+              'data_source': 'production DATA_DIR/CSV_DIR via fixed read-only root wrapper',
               'account_ids_redacted': True,
+              'wrapper_outcome': wrapper_outcome,
+              'report_outcome': report_outcome,
               'report': report,
           }, indent=2, sort_keys=True))
           PY
@@ -155,13 +158,7 @@ jobs:
 
           gh api -X PUT "$api" --input /tmp/sibot-leader-put.json >/dev/null
 
-      - name: Remove isolated environment
-        if: always()
-        shell: bash
-        run: |
-          rm -rf "$REPORT_VENV"
-
-      - name: Fail workflow if gate report failed
-        if: always() && steps.gate_report.outcome == 'failure'
+      - name: Fail workflow if wrapper/report failed
+        if: always() && (steps.wrapper.outcome != 'success' || steps.gate_report.outcome != 'success')
         shell: bash
         run: exit 1
