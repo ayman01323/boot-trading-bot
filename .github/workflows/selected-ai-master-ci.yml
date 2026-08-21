@@ -13,9 +13,11 @@ on:
       - '.github/workflows/publish-ai-master-control.yml'
       - '.github/workflows/telegram-ai-cycle-dispatcher.yml'
       - '.github/workflows/claude-vps-controlled-ops.yml'
+      - '.github/workflows/claude-vps-control-kick.yml'
       - '.github/workflows/claude-fourth-engineering-agent.yml'
       - 'tests/test_selected_ai_master_control.py'
       - 'tests/test_claude_vps_controlled_access.py'
+      - 'tests/test_claude_vps_control_kick.py'
   workflow_dispatch:
 
 permissions:
@@ -40,7 +42,7 @@ jobs:
             scripts/resilient_selected_master.py \
             scripts/resilient_selected_master_v2.py
       - name: Run selected-master and Claude VPS regression tests
-        run: pytest -q tests/test_selected_ai_master_control.py tests/test_claude_vps_controlled_access.py
+        run: pytest -q tests/test_selected_ai_master_control.py tests/test_claude_vps_controlled_access.py tests/test_claude_vps_control_kick.py
       - name: Verify legacy masters delegate instead of adjudicating independently
         run: |
           set -euo pipefail
