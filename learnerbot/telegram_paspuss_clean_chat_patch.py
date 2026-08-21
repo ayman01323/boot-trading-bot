@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
+from . import ai_council_latency_patch as _latency  # noqa: F401
 from . import ai_council_live_web_patch as _live
 from . import telegram_ai_council_friendly_patch as _friendly
 from . import telegram_ai_council_patch as _cui
@@ -9,6 +11,7 @@ from . import telegram_paspuss_ai_brand_patch as _brand
 from . import telegram_ui as _ui
 
 _ORIGINAL_LEADER_PROMPT = _brand._leader_prompt
+_FINAL_ANSWER_DEADLINE_SECONDS = 25.0
 
 
 def _status_text(session: dict, stage: str, *, valid: int | None = None) -> str:
@@ -105,17 +108,59 @@ def _send_final_reply(app, tid, session: dict, title: str, body: str, keyboard=N
     return _friendly._send_final_reply(app, tid, session, title, _organise_answer_text(body), keyboard)
 
 
-def _direct_live_retry(session: dict) -> str:
-    """Bypass Council persistence if the normal leader wrapper failed on a live query."""
+def _within_deadline(fn, *, seconds: float = _FINAL_ANSWER_DEADLINE_SECONDS):
+    """Return a result promptly even if an upstream provider stalls."""
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paspuss-final")
+    future = pool.submit(fn)
     try:
-        prompt = _leader_prompt(session, "gpt")
-        env = _live._http._runtime_env()
-        rc, out, _err = _live._call_openai(prompt, env)
+        return future.result(timeout=seconds)
+    except TimeoutError:
+        future.cancel()
+        return None
+    except Exception:
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _direct_live_retry(session: dict) -> str:
+    """Run the grounded live-answer path without waiting on Council reviewers."""
+    prompt = _leader_prompt(session, "gpt")
+    env = _live._http._runtime_env()
+    result = _within_deadline(lambda: _live._call_openai(prompt, env))
+    if result:
+        rc, out, _err = result
+        if rc == 0 and str(out or "").strip() and not _live._looks_like_offline_refusal(str(out)):
+            return str(out).strip()
+    return _live.LIVE_UNAVAILABLE_TEXT
+
+
+def _direct_static_answer(session: dict) -> str:
+    prompt = _leader_prompt(session, "gpt")
+    result = _within_deadline(lambda: _friendly._council.call_provider("gpt", prompt))
+    if result:
+        rc, out, _err = result
         if rc == 0 and str(out or "").strip():
             return str(out).strip()
-    except Exception:
-        pass
-    return _live.LIVE_UNAVAILABLE_TEXT
+    return ""
+
+
+def _deliver_direct_live(app, tid, session: dict, session_id: str) -> None:
+    answer = _direct_live_retry(session)
+    session = _friendly._council.load_session(app, session_id)
+    session["status"] = "LEADER_READY"
+    session["updated_epoch"] = int(__import__("time").time())
+    _friendly._council.save_session(app, session)
+    _delete_progress_message(app, tid, session)
+    _send_final_reply(
+        app,
+        tid,
+        session,
+        "🐾 PasPuss AI",
+        answer,
+        _brand._user_keyboard(session_id),
+    )
+    _friendly._mark_delivered(app, session, fallback=False)
 
 
 def _finish_user_from_answers(app, tid, session_id: str) -> None:
@@ -125,9 +170,20 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
         for row in (session.get("answers") or {}).values()
         if str((row or {}).get("status") or "") == "DONE"
     )
+    question = str(session.get("question") or "")
+    requires_live = _live._question_requires_live(question)
+
+    if requires_live:
+        _deliver_direct_live(app, tid, session, session_id)
+        return
 
     if valid == 0:
+        answer = _direct_static_answer(session)
         _delete_progress_message(app, tid, session)
+        if answer:
+            _send_final_reply(app, tid, session, "🐾 PasPuss AI", answer, _brand._user_keyboard(session_id))
+            _friendly._mark_delivered(app, session, fallback=True)
+            return
         _send_final_reply(
             app,
             tid,
@@ -140,29 +196,16 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
 
     session = _friendly._status_message(app, tid, session, _status_text(session, "leader", valid=valid))
     _friendly._chat_action(app, tid)
-    try:
-        result = _friendly._council.run_leader(app, session_id, "gpt")
-    except Exception:
+    result = _within_deadline(lambda: _friendly._council.run_leader(app, session_id, "gpt"))
+    if not isinstance(result, dict):
         result = {"status": "FAILED", "answer": ""}
 
     session = _friendly._council.load_session(app, session_id)
-    question = str(session.get("question") or "")
-    requires_live = _live._question_requires_live(question)
     answer = str(result.get("answer") or "").strip()
     fallback = False
-
-    if requires_live:
-        # A freshness-sensitive question must never degrade to an independent offline
-        # draft. Retry the live-grounded final path directly if the leader wrapper
-        # failed or returned a characteristic offline refusal.
-        if str(result.get("status") or "") != "DONE" or not answer or _live._looks_like_offline_refusal(answer):
-            answer = _direct_live_retry(session)
-    elif str(result.get("status") or "") != "DONE" or not answer:
+    if str(result.get("status") or "") != "DONE" or not answer:
         _provider, answer = _friendly._best_available_answer(session)
         fallback = bool(answer)
-
-    if requires_live and _live._looks_like_offline_refusal(answer):
-        answer = _live.LIVE_UNAVAILABLE_TEXT
 
     _delete_progress_message(app, tid, session)
     if answer:
@@ -193,6 +236,13 @@ def _process_question(app, tid, session_id: str, master_mode: bool) -> None:
         session = _friendly._council.load_session(app, session_id)
         session = _friendly._status_message(app, tid, session, _status_text(session, "asking"))
         _friendly._chat_action(app, tid)
+
+        # Live/current questions do not need to wait for five private reviewers. Go
+        # straight to the mandatory grounded live path so weather/news/prices answer fast.
+        if _live._question_requires_live(str(session.get("question") or "")):
+            _deliver_direct_live(app, tid, session, session_id)
+            return
+
         _friendly._council.run_independent_answers(app, session_id)
         _brand._finish_user_from_answers(app, tid, session_id)
     except Exception:
