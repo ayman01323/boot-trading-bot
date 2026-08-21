@@ -32,16 +32,21 @@ def test_telegram_vps_menu_is_master_only_and_deploy_requires_confirmation() -> 
     assert 'request_vps_action' in text
 
 
-def test_vps_workflow_runs_directly_after_successful_control_publish_or_deploy() -> None:
+def test_vps_workflow_uses_hourly_fallback_and_direct_changed_control_dispatch() -> None:
     text = _text(".github/workflows/claude-vps-controlled-ops.yml")
+    publisher = _text(".github/workflows/publish-ai-master-control.yml")
     assert 'workflow_run:' in text
-    assert '"Publish Telegram AI Master Control"' in text
     assert '"Deploy BOOT to VPS"' in text
+    assert '"Publish Telegram AI Master Control"' not in text
     assert "if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'" in text
     assert "if event=='workflow_run' and action!='inspect':" in text
     assert 'run=False' in text
-    assert "cron: '*/5 * * * *'" in text
+    assert "cron: '13 * * * *'" in text
+    assert "cron: '*/5 * * * *'" not in text
     assert 'workflow_dispatch:' in text
+    assert 'gh workflow run claude-vps-controlled-ops.yml' in publisher
+    assert "steps.publish.outputs.changed == 'true'" in publisher
+    assert '-f action=none' in publisher
 
 
 def test_vps_workflow_uses_only_existing_restricted_sudo_wrappers() -> None:
@@ -83,11 +88,13 @@ def test_claude_runs_on_vps_only_against_redacted_context_in_plan_mode() -> None
     text = _text(".github/workflows/claude-vps-controlled-ops.yml")
     assert 'ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}' in text
     assert '@anthropic-ai/claude-code@latest' in text
+    assert 'if ! command -v claude' in text
     assert '--permission-mode plan' in text
-    assert '--max-turns 1' in text
+    assert '--max-turns 3' in text
     assert '[REDACTED SENSITIVE LINE]' in text
     assert 'wallet_or_private_key_access' in text
     assert 'LIVE risk gates' in text
+    assert 'fetch-depth: 1' in text
 
 
 def test_post_deploy_proof_consumes_inspect_only_without_new_deploy_authority() -> None:
