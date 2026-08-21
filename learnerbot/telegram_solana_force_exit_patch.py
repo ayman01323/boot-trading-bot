@@ -54,6 +54,9 @@ install()
 
 # This module is the final Telegram handler patch imported by learnerbot.__main__.
 # Load the AI Council here so its MASTER/User menu and message handler stay outermost
-# and are not displaced by older compatibility layers.
+# and are not displaced by older compatibility layers. The friendly layer replaces
+# message flooding with one progress card + one final reply; the rate limiter then
+# wraps that final start-question implementation.
 from . import telegram_ai_council_patch as _ai_council  # noqa: E402,F401
+from . import telegram_ai_council_friendly_patch as _ai_council_friendly  # noqa: E402,F401
 from . import telegram_ai_council_rate_limit_patch as _ai_council_limits  # noqa: E402,F401
