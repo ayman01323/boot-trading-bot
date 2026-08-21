@@ -17,7 +17,10 @@ def test_claude_vps_analysis_retry_is_read_only_and_bounded() -> None:
     assert '[REDACTED SENSITIVE LINE]' in text
 
     sudo_lines = [line.strip() for line in text.splitlines() if line.strip().startswith('sudo ')]
-    assert sudo_lines == ['sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-retry-status.txt 2>&1']
+    # Tolerate a non-zero status-check exit (matches deploy-vps.yml's pattern) so a
+    # transient status-wrapper failure can't silently kill the job before it ever
+    # reaches the Claude retry or publish steps.
+    assert sudo_lines == ['sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-retry-status.txt 2>&1 || true']
 
     for forbidden in (
         'deploy-boot-trading-bot',

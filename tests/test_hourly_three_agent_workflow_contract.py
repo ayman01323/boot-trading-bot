@@ -10,7 +10,9 @@ def _text():
 
 def test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent():
     text = _text()
-    assert "cron: '17 * * * *'" in text
+    # Cadence reduced from hourly to every 4 hours (~75% API cost cut); still
+    # its own independent schedule trigger, not gated by the weekly workflow.
+    assert "cron: '17 */4 * * *'" in text
     assert 'Weekly GPT Master Corrective Action' not in text
 
 

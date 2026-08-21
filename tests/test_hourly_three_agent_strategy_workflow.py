@@ -4,7 +4,8 @@ from pathlib import Path
 def test_hourly_three_agent_strategy_cycle_is_independent_of_weekly_engineering():
     text = (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "hourly-three-agent-strategy-cycle.yml").read_text(encoding="utf-8")
 
-    assert "cron: '17 * * * *'" in text
+    # Cadence reduced from hourly to every 4 hours (~75% API cost cut).
+    assert "cron: '17 */4 * * *'" in text
     assert "workflow_dispatch:" in text
     assert "Weekly GPT Master Corrective Action" not in text
     assert "OPENAI_API_KEY" in text

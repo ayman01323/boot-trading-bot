@@ -153,5 +153,8 @@ from . import strategy_lab_live_recording_patch  # noqa: F401
 # REPLACE/REWORK-worthy, using the same multiplier pattern sibot_profit_guard_patch
 # already applies for its own profit-lock throttle. Never a hard stop.
 from . import sibot_strategy_lab_throttle_patch  # noqa: F401
+# Telegram /strategylab: master-only, read-only report of real Strategy Lab
+# evidence (per-family net P&L, profit factor, trades). Reporting only.
+from . import telegram_strategy_lab_report_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
