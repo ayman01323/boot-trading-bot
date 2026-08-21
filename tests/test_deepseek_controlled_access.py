@@ -33,10 +33,12 @@ def test_deepseek_github_access_is_draft_pr_only_and_protected() -> None:
         assert forbidden not in text
 
 
-def test_deepseek_vps_access_is_manual_restricted_current_main_and_direct_api() -> None:
+def test_deepseek_vps_access_is_restricted_current_main_and_direct_api() -> None:
     text = _text(".github/workflows/deepseek-vps-controlled-ops.yml")
     assert "DeepSeek VPS Controlled Operations" in text
     assert "workflow_dispatch:" in text
+    assert "push:" in text
+    assert "'.github/deepseek-vps-inspect.trigger'" in text
     assert "schedule:" not in text
     assert "runs-on: [self-hosted, linux, x64, boot-vps]" in text
     assert "options: [inspect, test, deploy]" in text
@@ -63,6 +65,14 @@ def test_deepseek_vps_access_is_manual_restricted_current_main_and_direct_api() 
     assert "vps/deepseek/latest.json" in text
     assert "AGENT: DEEPSEEK" in text
     assert "AI-Agent: DEEPSEEK" in text
+
+    # A normal repository push may only request inspection. It cannot select
+    # test/deploy or broaden the self-hosted runner's authority.
+    assert "EVENT_NAME: ${{ github.event_name }}" in text
+    assert "if [[ \"$EVENT_NAME\" != 'workflow_dispatch' ]]" in text
+    assert "action='inspect'" in text
+    assert "A repository push" in text
+    assert "can never select test/deploy" in text
 
     # The VPS analysis is direct DeepSeek API traffic, not a shell-capable
     # compatibility CLI pointed at the server filesystem.
