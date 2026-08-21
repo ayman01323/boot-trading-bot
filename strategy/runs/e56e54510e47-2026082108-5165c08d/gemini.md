@@ -1,0 +1,3 @@
+# Gemini strategy review
+
+Completed architecture-only review. The bot separates lab, shadow, canary, and live evaluation lanes cleanly. The schema in shadow_strategy_events (shadow_strategy_executor.py) explicitly tracks quote_simulated_net_base, fee_base, and slippage_base alongside execution_failures, ensuring market losses are distinguished from infrastructure or execution issues for both EVM and Solana chains. Strategy AI proposals are correctly isolated from execution secrets (FORBIDDEN_SPEC_TERMS in strategy_lab.py) and cannot force a real-money deployment without satisfying canary probation logic. No fresh runtime forensics or shadow outcomes were available in evidence.json, so live and canary claims are strictly prohibited.
