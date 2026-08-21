@@ -66,3 +66,24 @@ def test_auto_deploy_page_is_push_triggered_and_shows_elapsed_seconds():
     assert "AUTO DEPLOY" in text
     assert "immediately when main changes" in text
     assert "Last successful deploy" in text
+
+
+def test_sibot_leader_gate_readonly_wrapper_regression():
+    """Run the standalone wrapper tests from the always-targeted SiBot CI group."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).with_name("test_sibot_leader_gate_readonly_wrapper.py")
+    spec = importlib.util.spec_from_file_location("sibot_leader_gate_wrapper_tests", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    tests = [
+        getattr(module, name)
+        for name in sorted(dir(module))
+        if name.startswith("test_") and callable(getattr(module, name))
+    ]
+    assert tests
+    for test in tests:
+        test()
