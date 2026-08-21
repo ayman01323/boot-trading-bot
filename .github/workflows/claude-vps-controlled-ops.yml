@@ -128,7 +128,7 @@ jobs:
               if [[ $rc -eq 0 && "$target" =~ ^[0-9a-f]{40}$ && "$current" == "$target" ]]; then
                 sudo /usr/local/sbin/deploy-boot-trading-bot "$target" >> /tmp/claude-vps-action.txt 2>&1 || rc=$?
               else
-                echo "Refusing deploy: checkout is not exact current origin/main." >> /tmp/claude-vps-action.txt
+                echo 'Refusing deploy: checkout is not exact current origin/main.' >> /tmp/claude-vps-action.txt
                 rc=42
               fi
               ;;
@@ -204,7 +204,7 @@ jobs:
           claude -p --permission-mode plan --max-turns 1 --output-format text --model "${CLAUDE_VPS_MODEL:-sonnet}" \
             "$(cat /tmp/claude-vps-prompt.txt)" > /tmp/claude-vps-analysis.txt 2>/tmp/claude-vps-error.txt
 
-      - name: Publish VPS result locally and to ai-reviews
+      - name: Publish sanitised VPS result to ai-reviews
         if: steps.request.outputs.run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -257,8 +257,6 @@ jobs:
           }
           print(json.dumps(out,indent=2,sort_keys=True))
           PY
-          sudo install -m 0644 /tmp/claude-vps-result.json /var/tmp/boot/claude_vps_ops_latest.json 2>/dev/null \
-            || { mkdir -p /var/tmp/boot; cp /tmp/claude-vps-result.json /var/tmp/boot/claude_vps_ops_latest.json; chmod 0644 /var/tmp/boot/claude_vps_ops_latest.json; }
 
           gh auth setup-git
           git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
