@@ -1,15 +1,22 @@
 name: Claude Fourth Strategy Agent
 
+# Runs concurrently with "Hourly Three-Agent Strategy Cycle" (same schedule)
+# rather than waiting for it to finish. Independently resolves its own exact
+# source commit / evidence hash / cycle id using the identical deterministic
+# algorithm the other workflow uses, so the two naturally agree on the same
+# cycle id for the same commit+hour without either one depending on files the
+# other publishes. Uses its own cost-gate state key
+# (strategy/claude_cost_gate_state.json) rather than sharing
+# strategy/cost_gate_state.json, so the two workflows never race on the same
+# file when they publish around the same time.
+
 on:
-  workflow_run:
-    workflows: ["Hourly Three-Agent Strategy Cycle"]
-    types: [completed]
   schedule:
-    - cron: '25 */4 * * *'
+    - cron: '17 */4 * * *'
   workflow_dispatch:
     inputs:
       cycle_id:
-        description: 'Optional immutable strategy cycle; defaults to latest'
+        description: 'Optional immutable strategy cycle; defaults to resolving the current commit'
         required: false
         type: string
 
@@ -22,12 +29,11 @@ concurrency:
 
 jobs:
   review:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
-      - name: Check out orchestration source
+      - name: Check out exact current main without persisted GitHub credentials
         uses: actions/checkout@v4
         with:
           ref: main
@@ -52,7 +58,7 @@ jobs:
           npm install -g @anthropic-ai/claude-code@latest
           claude --version
 
-      - name: Resolve immutable cycle and exact evidence
+      - name: Resolve source and freshest available evidence
         id: meta
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,41 +67,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .strategy_claude
-          cycle="${INPUT_CYCLE:-}"
-          if [[ -z "$cycle" ]]; then
-            cycle="$(gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
-              --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
-          fi
-          [[ "$cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || { echo 'Invalid cycle id.' >&2; exit 2; }
-          root="strategy/runs/${cycle}"
-          gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/${root}/context.json?ref=ai-reviews" \
-            --jq '.content' | tr -d '\n' | base64 -d > .strategy_claude/context.json
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          EVIDENCE_SOURCE="architecture-only"
+          EVIDENCE_FRESH="false"
 
-          python - <<'PY' > /tmp/claude-meta.env
-          import json
-          p=json.load(open('.strategy_claude/context.json'))
-          print('SOURCE_SHA='+str(p.get('source_commit') or ''))
-          print('EVIDENCE_SHA='+str(p.get('evidence_sha256') or ''))
-          print('EVIDENCE_SOURCE='+str(p.get('evidence_source') or ''))
+          if gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" \
+              > /tmp/claude-audit-status-file.json 2>/tmp/claude-audit-status-error.txt; then
+            jq -r '.content' /tmp/claude-audit-status-file.json | tr -d '\n' | base64 -d > .strategy_claude/evidence.json
+            EVIDENCE_SOURCE="audit-status:latest_loss_forensics.json"
+            age="$(python - <<'PY'
+          import json,time
+          p=json.load(open('.strategy_claude/evidence.json'))
+          t=int(p.get('generated_epoch') or 0)
+          print(max(0,int(time.time())-t) if t else 10**9)
           PY
-          source /tmp/claude-meta.env
-          test -n "$SOURCE_SHA"; test -n "$EVIDENCE_SHA"
-
-          match=false
-          set +e
-          gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" \
-            --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > .strategy_claude/evidence.json 2>/dev/null
-          rc=$?
-          set -e
-          if [[ $rc -eq 0 && -s .strategy_claude/evidence.json ]]; then
-            got="$(sha256sum .strategy_claude/evidence.json | awk '{print $1}')"
-            [[ "$got" == "$EVIDENCE_SHA" ]] && match=true
+          )"
+            if [[ "$age" -le 7200 ]]; then EVIDENCE_FRESH="true"; fi
           fi
 
-          if [[ "$match" != true && "$EVIDENCE_SOURCE" == 'architecture-only' ]]; then
+          if [[ ! -s .strategy_claude/evidence.json ]]; then
             python - "$SOURCE_SHA" <<'PY' > .strategy_claude/evidence.json
           import json,sys
           print(json.dumps({
@@ -107,32 +98,68 @@ jobs:
             'note':'No current sanitised runtime forensics branch was available. Review code/architecture, identify evidence gaps, and do not claim live profitability or canary readiness.'
           },indent=2,sort_keys=True))
           PY
-            got="$(sha256sum .strategy_claude/evidence.json | awk '{print $1}')"
-            [[ "$got" == "$EVIDENCE_SHA" ]] && match=true
           fi
 
-          echo "cycle_id=$cycle" >> "$GITHUB_OUTPUT"
+          # Same deterministic formula as hourly-three-agent-strategy-cycle.yml, so
+          # the two workflows agree on the same cycle id for the same commit+hour
+          # without either depending on a file the other publishes.
+          EVIDENCE_SHA="$(sha256sum .strategy_claude/evidence.json | awk '{print $1}')"
+          HOUR_KEY="$(date -u +'%Y%m%d%H')"
+          CYCLE_ID="${INPUT_CYCLE:-${SOURCE_SHA:0:12}-${HOUR_KEY}-${EVIDENCE_SHA:0:8}}"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
           echo "evidence_sha=$EVIDENCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "cycle_id=$CYCLE_ID" >> "$GITHUB_OUTPUT"
           echo "evidence_source=$EVIDENCE_SOURCE" >> "$GITHUB_OUTPUT"
-          echo "evidence_match=$match" >> "$GITHUB_OUTPUT"
+          echo "evidence_fresh=$EVIDENCE_FRESH" >> "$GITHUB_OUTPUT"
 
-      - name: Check out exact source reviewed by the other agents
+      - name: Evaluate paid-AI cost gate
+        id: gate
         env:
+          GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
           set -euo pipefail
-          git checkout --detach "$SOURCE_SHA"
-          git clean -fdx -e .strategy_claude/
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/strategy/claude_cost_gate_state.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/claude-cost-gate-state.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 || ! -s /tmp/claude-cost-gate-state.json ]]; then echo '{}' > /tmp/claude-cost-gate-state.json; fi
+
+          PYTHONPATH="$GITHUB_WORKSPACE" python - "$SOURCE_SHA" "$MANUAL" <<'PY' >> "$GITHUB_OUTPUT"
+          import json,sys
+          from learnerbot.strategy_ai_cost_gate import evaluate_cost_gate
+          source_sha,manual=sys.argv[1],sys.argv[2].lower()=='true'
+          evidence=json.load(open('.strategy_claude/evidence.json'))
+          try:
+              previous=json.load(open('/tmp/claude-cost-gate-state.json'))
+          except Exception:
+              previous={}
+          result=evaluate_cost_gate(source_commit=source_sha,evidence=evidence,previous_state=previous,manual=manual)
+          print(f"run_ai={str(result['run_ai']).lower()}")
+          print(f"reason={result['reason']}")
+          print(f"material_sha256={result['material_sha256']}")
+          PY
+
+      - name: Skip paid AI review -- no material change
+        if: steps.gate.outputs.run_ai != 'true'
+        env:
+          REASON: ${{ steps.gate.outputs.reason }}
+        shell: bash
+        run: |
+          echo "Skipping paid Claude review this cycle: ${REASON}"
 
       - name: Prepare Claude strategy prompt
+        if: steps.gate.outputs.run_ai == 'true'
         env:
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
           EVIDENCE_SOURCE: ${{ steps.meta.outputs.evidence_source }}
-          EVIDENCE_MATCH: ${{ steps.meta.outputs.evidence_match }}
+          EVIDENCE_FRESH: ${{ steps.meta.outputs.evidence_fresh }}
         shell: bash
         run: |
           cat > .strategy_claude/prompt.txt <<EOF
@@ -142,15 +169,15 @@ jobs:
           Exact cycle: ${CYCLE_ID}
           Exact source commit: ${SOURCE_SHA}
           Exact evidence SHA-256: ${EVIDENCE_SHA}
-          Evidence source: ${EVIDENCE_SOURCE}
-          Exact evidence bytes recovered: ${EVIDENCE_MATCH}
+          Evidence source: ${EVIDENCE_SOURCE}; fresh-within-2h=${EVIDENCE_FRESH}
 
           Objective: durable money-weighted NET P&L after fees, slippage, price impact, EVM gas, Solana priority fees,
           latency, failed executions and exit costs. Do not optimise win count. Separate STRATEGY/MARKET loss from
           EXECUTION/INFRASTRUCTURE failure and compare Solana and EVM using chain-specific economics.
 
-          Missing/stale runtime evidence alone does not make a repository architecture review incomplete. However, if the
-          exact evidence bytes cannot be recovered, do not claim measured profitability, canary readiness or LIVE readiness.
+          Missing/stale runtime evidence alone does not make a repository architecture review incomplete. If fresh runtime
+          evidence is unavailable, you MAY suggest code/SHADOW hypotheses but MUST NOT claim measured profitability, canary
+          readiness or LIVE readiness.
           REPORT ONLY. Do not edit code, trade, deploy, change LIVE/risk/capital settings, touch secrets/wallets/signing,
           add assets, weaken simulation/liquidity/sellability controls, or use external web research.
 
@@ -190,7 +217,7 @@ jobs:
 
       - name: Claude independent strategy report
         id: claude
-        if: steps.meta.outputs.evidence_match == 'true'
+        if: steps.gate.outputs.run_ai == 'true'
         continue-on-error: true
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -240,12 +267,11 @@ jobs:
           PY
 
       - name: Recover Claude incomplete report
-        if: steps.meta.outputs.evidence_match != 'true' || steps.claude.outcome != 'success'
+        if: steps.gate.outputs.run_ai == 'true' && steps.claude.outcome != 'success'
         env:
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
-          EVIDENCE_MATCH: ${{ steps.meta.outputs.evidence_match }}
           ANTHROPIC_PRESENT: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         shell: bash
         run: |
@@ -259,12 +285,7 @@ jobs:
                   parts.append(p.read_text(errors='replace')[-1200:])
           raw='\n'.join(parts)
           raw=re.sub(r'sk-ant-[A-Za-z0-9_-]+','<redacted>',raw)
-          if os.environ.get('EVIDENCE_MATCH')!='true':
-              reason='Exact evidence bytes for this immutable cycle could not be recovered; Claude was not allowed to review different evidence.'
-          elif os.environ.get('ANTHROPIC_PRESENT')!='true':
-              reason='ANTHROPIC_API_KEY is missing.'
-          else:
-              reason=raw.strip() or 'Claude execution/report extraction failed without diagnostic output.'
+          reason='ANTHROPIC_API_KEY is missing.' if os.environ.get('ANTHROPIC_PRESENT')!='true' else (raw.strip() or 'Claude execution/report extraction failed without diagnostic output.')
           p={
             'schema_version':1,'provider':'claude','cycle_id':os.environ['CYCLE_ID'],
             'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],
@@ -276,10 +297,16 @@ jobs:
           pathlib.Path('.strategy_claude/claude.md').write_text('# Claude strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
           PY
 
-      - name: Publish Claude into the immutable strategy cycle
+      - name: Publish Claude into the shared strategy cycle
+        if: steps.gate.outputs.run_ai == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
+          EVIDENCE_SOURCE: ${{ steps.meta.outputs.evidence_source }}
+          EVIDENCE_FRESH: ${{ steps.meta.outputs.evidence_fresh }}
+          MATERIAL_SHA: ${{ steps.gate.outputs.material_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -288,37 +315,73 @@ jobs:
           rm -rf /tmp/claude-ai-reviews
           git worktree add --detach /tmp/claude-ai-reviews origin/ai-reviews
           dest="/tmp/claude-ai-reviews/strategy/runs/${CYCLE_ID}"
-          mkdir -p "$dest"
+          mkdir -p "$dest" /tmp/claude-ai-reviews/strategy
           cp .strategy_claude/claude.json "$dest/claude.json"
           cp .strategy_claude/claude.md "$dest/claude.md"
 
-          python - "$dest/context.json" <<'PY'
-          import json,sys
-          p=sys.argv[1]
-          d=json.load(open(p))
+          # Claude may run before, after or alongside the GPT+Gemini workflow, so
+          # context.json and latest_status.json might not exist for this cycle yet
+          # -- create them if missing instead of assuming the other workflow got
+          # there first.
+          python - <<PY
+          import json
+          p='${dest}/context.json'
+          try:
+              d=json.load(open(p))
+          except Exception:
+              d={
+                'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}','evidence_sha256':'${EVIDENCE_SHA}',
+                'evidence_source':'${EVIDENCE_SOURCE}','evidence_fresh':'${EVIDENCE_FRESH}','base_kind':'HOURLY_CURRENT_MAIN',
+              }
           d['anthropic_credential_present']=True
           d['claude_report_available']=True
           open(p,'w').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY
 
-          python - /tmp/claude-ai-reviews/strategy/latest_status.json "$dest/claude.json" <<'PY'
-          import json,sys
-          status_path,report_path=sys.argv[1:3]
-          s=json.load(open(status_path))
-          r=json.load(open(report_path))
-          s['claude']='INCOMPLETE' if r.get('status')=='INCOMPLETE' else 'DONE'
+          python - <<PY
+          import json
+          p='/tmp/claude-ai-reviews/strategy/latest_status.json'
+          try:
+              s=json.load(open(p))
+          except Exception:
+              s={
+                'available':True,'cycle_id':'${CYCLE_ID}','source_commit':'${SOURCE_SHA}',
+                'evidence_sha256':'${EVIDENCE_SHA}','evidence_fresh':'${EVIDENCE_FRESH}',
+                'gpt':'PENDING','gemini':'PENDING','copilot':'PENDING',
+                'three_agent_reports_complete':False,'master_decision_available':False,
+                'change_pr_url':'','live_auto_deploy':False,
+              }
+          claude_report=json.load(open('.strategy_claude/claude.json'))
+          s['claude']='INCOMPLETE' if claude_report.get('status')=='INCOMPLETE' else 'DONE'
           s['four_agent_reports_complete']=False
           s['four_agent_master_decision_available']=False
           if s.get('state') in {'MASTER_DECIDED_4_AGENT','FOUR_AGENT_COMPLETE'}:
               s['state']='WAITING_FOR_FOUR_AGENT_RECONCILIATION'
-          open(status_path,'w').write(json.dumps(s,indent=2,sort_keys=True)+'\n')
+          open(p,'w').write(json.dumps(s,indent=2,sort_keys=True)+'\n')
+          PY
+
+          # Only create latest_cycle_id.txt if it doesn't already point at this (or
+          # a newer) cycle -- never overwrite a newer pointer with an older one.
+          existing_cycle="$(cat /tmp/claude-ai-reviews/strategy/latest_cycle_id.txt 2>/dev/null || true)"
+          if [[ -z "$existing_cycle" || "$existing_cycle" < "$CYCLE_ID" ]]; then
+            printf '%s\n' "$CYCLE_ID" > /tmp/claude-ai-reviews/strategy/latest_cycle_id.txt
+          fi
+
+          python - <<PY > /tmp/claude-ai-reviews/strategy/claude_cost_gate_state.json
+          import json,time
+          print(json.dumps({
+            'last_ai_attempt_epoch':int(time.time()),
+            'last_ai_attempt_source_commit':'${SOURCE_SHA}',
+            'last_ai_attempt_material_sha256':'${MATERIAL_SHA}',
+          },indent=2,sort_keys=True))
           PY
 
           cd /tmp/claude-ai-reviews
           git config user.name 'claude-fourth-strategy-agent'
           git config user.email 'claude-fourth-strategy-agent@users.noreply.github.com'
           git add "strategy/runs/${CYCLE_ID}/claude.json" "strategy/runs/${CYCLE_ID}/claude.md" \
-                  "strategy/runs/${CYCLE_ID}/context.json" strategy/latest_status.json
+                  "strategy/runs/${CYCLE_ID}/context.json" strategy/latest_status.json \
+                  strategy/latest_cycle_id.txt strategy/claude_cost_gate_state.json
           if ! git diff --cached --quiet; then
             git commit -m "Add Claude strategy review ${CYCLE_ID}"
             git fetch origin ai-reviews
