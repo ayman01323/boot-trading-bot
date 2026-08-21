@@ -1,5 +1,5 @@
-# GPT engineering recovery
+# Gpt engineering audit
 
-GPT engineering recovery did not complete.
+Gpt engineering recovery did not complete.
 
 Status: INCOMPLETE
