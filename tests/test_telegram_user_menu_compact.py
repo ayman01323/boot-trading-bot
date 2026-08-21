@@ -79,7 +79,7 @@ def test_ai_council_second_leader_uses_original_answers(tmp_path, monkeypatch):
     def fake_call(provider, prompt):
         if "one independent member of SiBot's AI Council" in prompt:
             return 0, f"ORIGINAL-{provider}-ANSWER", ""
-        if "selected as SiBot AI Council Leader" in prompt:
+        if "selected as SiBot AI Council Leader" in prompt or "You are PasPuss AI." in prompt:
             leader_prompts[provider] = prompt
             return 0, f"LEADER-{provider}-FINAL", ""
         raise AssertionError("unexpected prompt")
