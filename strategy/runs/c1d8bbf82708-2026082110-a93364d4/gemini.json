@@ -1,0 +1,81 @@
+{
+  "cycle_id": "c1d8bbf82708-2026082110-a93364d4",
+  "evidence_gaps": [
+    "Fresh within-2h real-money PnL forensics missing.",
+    "No distinct metric available separating structural market losses from infrastructure execution failures.",
+    "Lack of verified block latency and priority fee execution costs for Solana trades."
+  ],
+  "evidence_sha256": "a93364d4244a6a1addcb477ff8e0a49acbade7c347ec90b3d1d03b9583847a1e",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "None; avoids unverified capital exposure.",
+      "evidence": [
+        {
+          "detail": "Runtime forensics branch unavailable.",
+          "path": ".strategy_cycle/evidence.json"
+        },
+        {
+          "detail": "Defaults estimate 0.00002 SOL fee and 3% max roundtrip loss. Real-world execution/infrastructure gap must be measured.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Gather valid baseline net PnL accounting for actual priority fees and slippage on Solana without exposing live capital.",
+      "id": "shadow-eval-solana-sibot",
+      "minimum_observation": "3 evaluation windows, minimum 10 eligible opportunities",
+      "rationale": "Without fresh runtime records to validate Solana network conditions, we cannot confirm if 0.00002 SOL is sufficient for priority inclusion or if 3% loss guard prevents toxic MEV sandwiching. Continued SHADOW tracking is necessary to isolate executable alpha from block-inclusion/infrastructure failures.",
+      "shadow_test": "Measure SHADOW performance across a minimum of 3 evaluation windows against the estimated 0.00002 SOL fee limit and 3% roundtrip loss cap to compute true money-weighted NET P&L.",
+      "strategy": "solana_sibot_copy_leader",
+      "suggested_files": [
+        "learnerbot/solana_sibot.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "None; safe empirical data gathering.",
+      "evidence": [
+        {
+          "detail": "Runtime forensics branch unavailable.",
+          "path": ".strategy_cycle/evidence.json"
+        },
+        {
+          "detail": "Defaults assume 250000 gas units for buy/exit and 1.5% max entry deterioration.",
+          "path": "learnerbot/sibot.py"
+        }
+      ],
+      "expected_effect": "Establish empirical EVM gas execution baseline and validate 1.5% entry deterioration constraint on current router conditions.",
+      "id": "shadow-eval-evm-sibot",
+      "minimum_observation": "3 evaluation windows, minimum 8 trades",
+      "rationale": "EVM copy trading requires precise differentiation between strategy loss (bad entries) and infrastructure failure (reverts, out-of-gas, missed signals). We must validate the 250k gas cap against current mempool spikes before asserting positive executable edge.",
+      "shadow_test": "Correlate SHADOW paper EVM trades with corresponding mempool/block gas baselines to confirm net profitability is achievable under the 250k unit accounting.",
+      "strategy": "evm_sibot_top20_copy",
+      "suggested_files": [
+        "learnerbot/sibot.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote SHADOW strategies to CANARY or LIVE instantly based on theoretical top-20 leader performance.",
+      "reason": "Direct violation of missing fresh runtime evidence constraints; theoretical edge does not prove positive executable edge against slippage and gas fees."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "c1d8bbf8270854dfcb32e2def8fe51922b76698f",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Successful architecture review completed. Due to MISSING_RUNTIME_FORENSICS, all strategies must remain in SHADOW evaluation. The structural invariants in strategy_lab.py, sibot.py and solana_sibot.py correctly enforce execution economics (gas limits, priority fees, and roundtrip loss constraints), but fresh execution evidence is required to quantify real slippage, infrastructure failure rates versus strategy losses, and executable PnL before any promotion can occur."
+}
