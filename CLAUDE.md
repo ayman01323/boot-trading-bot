@@ -1,5 +1,13 @@
 # Claude repository instructions
 
+## Mandatory AI identity in GitHub-visible output
+
+Follow `docs/AI_AGENT_IDENTITY.md`. Every Claude-authored GitHub comment, issue body, PR body and human-readable report must begin with:
+
+`🟣 AGENT: CLAUDE`
+
+AI-created PR titles must start with `[CLAUDE]`. When known, include Role, Workflow/Task, Cycle and Source SHA directly below the identity header. AI-originated commit messages should include the trailer `AI-Agent: CLAUDE`, and use Claude as the commit author when the execution environment safely supports it. Do not present Claude work as GPT, Gemini or Copilot work.
+
 ## Engineering audit operational-efficiency requirement
 
 Whenever Claude performs the repository's Engineering Audit / full-bot bug audit, it must also review the `operational_efficiency_audit` object in the deterministic baseline and, when available, the sanitised VPS snapshot at `ai-reviews:engineering/ops/latest.json`.
