@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import html
+import json
 import os
 import sqlite3
 import threading
@@ -12,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from . import auto_trader as _auto
+from . import live_executor as _live
 from . import sibot as _evm
 from . import solana_sibot as _sol
 from . import telegram_sibot_patch as _telegram_sibot
@@ -20,9 +23,12 @@ from .trade_provenance import GIT_SHA, LEGACY_VALUE, STRATEGY_VERSION, current_i
 EVM_ENGINE = "SIBOT_EVM_COPY"
 SOLANA_ENGINE = "SIBOT_SOLANA_COPY"
 AUTO_EVM_ENGINE = "AUTO_EVM_ARBITRAGE"
+MANUAL_EVM_ENGINE = "MANUAL_EVM"
+EVM_WALLET_OPERATION_ENGINE = "EVM_WALLET_OPERATION"
 
 _MIGRATION_LOCK = threading.RLock()
 _MIGRATED: set[tuple[str, str, str, str]] = set()
+_LEDGER_LOCK = threading.RLock()
 
 _ORIG_EVM_CONNECT = _evm.connect
 _ORIG_SOL_CONNECT = _sol.connect
@@ -164,6 +170,125 @@ def _sol_connect_with_provenance(app) -> sqlite3.Connection:
         raise
 
 
+def _ledger_path(csv_dir: Path) -> Path:
+    return Path(csv_dir) / "auto" / "trade_provenance.sqlite3"
+
+
+_LEDGER_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS trade_events(
+  event_id TEXT PRIMARY KEY,
+  event_ts INTEGER NOT NULL,
+  telegram_id TEXT NOT NULL,
+  wallet_id TEXT,
+  chain_id TEXT,
+  chain_slug TEXT,
+  strategy_engine TEXT NOT NULL,
+  strategy_version TEXT NOT NULL,
+  git_sha TEXT NOT NULL,
+  action TEXT NOT NULL,
+  tx_hash TEXT,
+  status TEXT NOT NULL,
+  realised_pnl TEXT,
+  profit_fee TEXT,
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trade_events_24h
+  ON trade_events(telegram_id,event_ts,strategy_engine,strategy_version,git_sha,action,status);
+CREATE TABLE IF NOT EXISTS provenance_state(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS trg_trade_events_no_update
+BEFORE UPDATE ON trade_events
+BEGIN
+  SELECT RAISE(ABORT, 'trade provenance ledger is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS trg_trade_events_no_delete
+BEFORE DELETE ON trade_events
+BEGIN
+  SELECT RAISE(ABORT, 'trade provenance ledger is append-only');
+END;
+"""
+
+
+def _ledger_connect(csv_dir: Path) -> sqlite3.Connection:
+    path = _ledger_path(csv_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.executescript(_LEDGER_SCHEMA)
+    return conn
+
+
+def _event_id(row: dict, action: str) -> str:
+    tx_hash = str(row.get("tx_hash") or "").strip().lower()
+    engine = str(row.get("strategy_engine") or "UNKNOWN").upper()
+    chain_id = str(row.get("chain_id") or "")
+    if tx_hash:
+        raw = f"{engine}|{chain_id}|{tx_hash}|{action.upper()}"
+    else:
+        raw = json.dumps(
+            {"action": action.upper(), **{str(k): str(v) for k, v in sorted(row.items())}},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _record_ledger_event(
+    csv_dir: Path,
+    row: dict,
+    *,
+    action: str,
+    realised_pnl: str = "",
+    profit_fee: str = "",
+    metadata: dict | None = None,
+) -> None:
+    event_ts = int(float(row.get("timestamp_epoch") or time.time()))
+    identity = current_identity(strategy_engine=str(row.get("strategy_engine") or "UNKNOWN"))
+    # Historical/migrated rows deliberately retain legacy provenance rather than
+    # being relabelled with the currently running deployment.
+    version = str(row.get("strategy_version") or identity["strategy_version"])
+    sha = str(row.get("git_sha") or identity["git_sha"])
+    engine = str(row.get("strategy_engine") or identity["strategy_engine"]).upper()
+    material = dict(row)
+    material["strategy_engine"] = engine
+    material["strategy_version"] = version
+    material["git_sha"] = sha
+    event_id = _event_id(material, action)
+    with _LEDGER_LOCK, closing(_ledger_connect(csv_dir)) as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO trade_events(
+                 event_id,event_ts,telegram_id,wallet_id,chain_id,chain_slug,
+                 strategy_engine,strategy_version,git_sha,action,tx_hash,status,
+                 realised_pnl,profit_fee,metadata_json,created_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                event_id,
+                event_ts,
+                str(material.get("telegram_id") or "LEGACY"),
+                str(material.get("wallet_id") or ""),
+                str(material.get("chain_id") or ""),
+                str(material.get("chain_slug") or ""),
+                engine,
+                version,
+                sha,
+                str(action).upper(),
+                str(material.get("tx_hash") or ""),
+                str(material.get("status") or "UNKNOWN").upper(),
+                str(realised_pnl or ""),
+                str(profit_fee or ""),
+                json.dumps(metadata or {}, sort_keys=True, separators=(",", ":"), default=str),
+                int(time.time()),
+            ),
+        )
+        conn.commit()
+
+
 def _normalise_existing_auto_row(row: dict, strategy_engine: str) -> dict:
     out = dict(row)
     out["strategy_engine"] = str(out.get("strategy_engine") or strategy_engine)
@@ -178,8 +303,8 @@ def _stamp_new_auto_row(row: dict, strategy_engine: str) -> dict:
     return out
 
 
-def _atomic_bounded_csv(path: Path, rows: list[dict], headers: list[str]) -> None:
-    rows = rows[-10000:]
+def _atomic_bounded_csv(path: Path, rows: list[dict], headers: list[str], *, keep: int = 10000) -> None:
+    rows = rows[-max(1, int(keep)):]
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8", newline="") as f:
@@ -192,8 +317,23 @@ def _atomic_bounded_csv(path: Path, rows: list[dict], headers: list[str]) -> Non
 
 
 def _auto_append_with_provenance(path: Path, row: dict) -> None:
-    """Persist every AUTO EVM execution/attempt with immutable-at-write provenance."""
+    """Persist AUTO EVM outcome provenance before rotating the operational CSV."""
     path = Path(path)
+    stamped = _stamp_new_auto_row(row, AUTO_EVM_ENGINE)
+    csv_dir = path.parent.parent
+    _record_ledger_event(
+        csv_dir,
+        stamped,
+        action="AUTO_OUTCOME",
+        realised_pnl=str(stamped.get("realised_net_base") or ""),
+        profit_fee=str(stamped.get("profit_fee_base") or ""),
+        metadata={
+            "route_id": stamped.get("route_id") or "",
+            "route_path": stamped.get("route_path") or "",
+            "input_base": stamped.get("input_base") or "",
+            "note": stamped.get("note") or "",
+        },
+    )
     headers = [
         "timestamp_epoch", "telegram_id", "wallet_id", "chain_id", "chain_slug",
         "strategy_engine", "strategy_version", "git_sha",
@@ -205,7 +345,7 @@ def _auto_append_with_provenance(path: Path, row: dict) -> None:
         _normalise_existing_auto_row(r, AUTO_EVM_ENGINE)
         for r in _auto._rows(path)
     ]
-    existing.append(_stamp_new_auto_row(row, AUTO_EVM_ENGINE))
+    existing.append(stamped)
     _atomic_bounded_csv(path, existing, headers)
 
 
@@ -224,6 +364,114 @@ def _auto_append_simulation_with_provenance(csv_dir: Path, row: dict) -> None:
     ]
     existing.append(_stamp_new_auto_row(row, AUTO_EVM_ENGINE))
     _atomic_bounded_csv(path, existing, headers)
+
+
+def _engine_for_live_action(action: str) -> str:
+    action = str(action or "").upper()
+    if action.startswith("AUTO_"):
+        return AUTO_EVM_ENGINE
+    if action in {"BUY", "SELL"}:
+        return MANUAL_EVM_ENGINE
+    return EVM_WALLET_OPERATION_ENGINE
+
+
+def _live_audit_with_provenance(
+    self,
+    side,
+    token,
+    symbol,
+    amount_in,
+    expected_out,
+    minimum_out,
+    tx_hash,
+    status,
+    approval_hash="",
+):
+    """Stamp every LiveTrader audit event and persist it in the append-only ledger."""
+    action = str(side or "UNKNOWN").upper()
+    engine = _engine_for_live_action(action)
+    row = {
+        "timestamp_epoch": int(time.time()),
+        "telegram_id": self.telegram_id or "LEGACY",
+        "wallet_id": self.wallet_id or "LEGACY",
+        "chain_id": self.chain.chain_id,
+        "chain_slug": self.chain.slug,
+        "wallet": self.address or "",
+        "side": action,
+        "token": token,
+        "symbol": symbol,
+        "amount_in": amount_in,
+        "expected_out": expected_out,
+        "minimum_out": minimum_out,
+        "router": self.router_address,
+        "tx_hash": tx_hash,
+        "approval_hash": approval_hash,
+        "status": status,
+        **current_identity(strategy_engine=engine),
+    }
+    _record_ledger_event(
+        self.app.csv_dir,
+        row,
+        action=action,
+        metadata={
+            "token": token,
+            "symbol": symbol,
+            "amount_in": amount_in,
+            "expected_out": expected_out,
+            "minimum_out": minimum_out,
+            "router": self.router_address,
+            "approval_hash": approval_hash,
+        },
+    )
+
+    audit_path = Path(self.app.csv_dir) / "auto" / "live_trade_audit.csv"
+    headers = [
+        "timestamp_epoch", "telegram_id", "wallet_id", "chain_id", "chain_slug",
+        "strategy_engine", "strategy_version", "git_sha",
+        "wallet", "side", "token", "symbol", "amount_in", "expected_out",
+        "minimum_out", "router", "tx_hash", "approval_hash", "status",
+    ]
+    existing = []
+    for old in _auto._rows(audit_path):
+        old_engine = _engine_for_live_action(str(old.get("side") or ""))
+        existing.append(_normalise_existing_auto_row(old, old_engine))
+    existing.append(row)
+    _atomic_bounded_csv(audit_path, existing, headers, keep=5000)
+
+
+def _migrate_auto_operational_csv_to_ledger(app) -> None:
+    """Preserve the still-available pre-feature AUTO history as legacy evidence once."""
+    csv_dir = Path(app.csv_dir)
+    key = "auto_operational_csv_migrated_v1"
+    with _LEDGER_LOCK, closing(_ledger_connect(csv_dir)) as conn:
+        state = conn.execute("SELECT value FROM provenance_state WHERE key=?", (key,)).fetchone()
+        if state:
+            return
+
+    path = csv_dir / "auto" / "auto_trade_execution.csv"
+    for raw in _auto._rows(path):
+        row = _normalise_existing_auto_row(raw, AUTO_EVM_ENGINE)
+        _record_ledger_event(
+            csv_dir,
+            row,
+            action="AUTO_OUTCOME",
+            realised_pnl=str(row.get("realised_net_base") or ""),
+            profit_fee=str(row.get("profit_fee_base") or ""),
+            metadata={
+                "route_id": row.get("route_id") or "",
+                "route_path": row.get("route_path") or "",
+                "input_base": row.get("input_base") or "",
+                "note": row.get("note") or "",
+                "migrated_from_operational_csv": True,
+            },
+        )
+
+    with _LEDGER_LOCK, closing(_ledger_connect(csv_dir)) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO provenance_state(key,value) VALUES(?,?)",
+            (key, str(int(time.time()))),
+        )
+        conn.commit()
 
 
 def _dec(value) -> Decimal:
@@ -272,26 +520,22 @@ def _add_result(
 
 
 def _auto_trade_rows_24h(app, telegram_id, cutoff: int) -> list[dict]:
-    path = Path(app.csv_dir) / "auto" / "auto_trade_execution.csv"
+    _migrate_auto_operational_csv_to_ledger(app)
+    with closing(_ledger_connect(app.csv_dir)) as conn:
+        rows = conn.execute(
+            """SELECT event_ts AS closed_at,chain_slug,strategy_engine,strategy_version,git_sha,
+                      status,realised_pnl AS realised_net_base,profit_fee AS profit_fee_base
+                 FROM trade_events
+                WHERE telegram_id=? AND event_ts>=? AND action='AUTO_OUTCOME'
+                  AND status IN ('SUCCESS','SUCCESS_FEE_PENDING')
+                  AND TRIM(COALESCE(realised_pnl,''))<>''
+                ORDER BY event_ts""",
+            (str(telegram_id), int(cutoff)),
+        ).fetchall()
     out = []
-    for raw in _auto._rows(path):
-        if str(raw.get("telegram_id") or "").strip() != str(telegram_id):
-            continue
-        try:
-            ts = int(float(raw.get("timestamp_epoch") or 0))
-        except Exception:
-            continue
-        if ts < cutoff:
-            continue
-        # Only receipt-confirmed outcomes with a realised P&L belong in W/L counts.
-        if str(raw.get("status") or "").upper() not in {"SUCCESS", "SUCCESS_FEE_PENDING"}:
-            continue
-        realised_raw = str(raw.get("realised_net_base") or "").strip()
-        if not realised_raw:
-            continue
-        row = _normalise_existing_auto_row(raw, AUTO_EVM_ENGINE)
+    for raw in rows:
+        row = dict(raw)
         row["mode"] = "LIVE"
-        row["closed_at"] = ts
         out.append(row)
     return out
 
@@ -412,6 +656,7 @@ def install() -> None:
     _sol.connect = _sol_connect_with_provenance
     _auto._append = _auto_append_with_provenance
     _auto._append_simulation = _auto_append_simulation_with_provenance
+    _live.LiveTrader._audit = _live_audit_with_provenance
     _telegram_sibot.report_text = report_text
 
 
