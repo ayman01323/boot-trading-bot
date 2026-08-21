@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'learnerbot/ai_council.py'
       - 'learnerbot/ai_master_control.py'
       - 'learnerbot/ai_four_agent_health_patch.py'
       - 'learnerbot/telegram_ai_reports_menu_patch.py'
@@ -17,6 +18,7 @@ on:
       - '.github/workflows/publish-ai-master-control.yml'
       - '.github/workflows/deepseek-fifth-strategy-agent.yml'
       - '.github/workflows/deepseek-fifth-engineering-agent.yml'
+      - '.github/workflows/selfhosted-five-agent-recovery.yml'
       - '.github/workflows/telegram-ai-cycle-dispatcher.yml'
       - '.github/workflows/claude-vps-controlled-ops.yml'
       - '.github/workflows/claude-vps-control-kick.yml'
@@ -29,6 +31,7 @@ on:
       - 'CLAUDE.md'
       - 'tests/test_selected_ai_master_control.py'
       - 'tests/test_deepseek_fifth_agent.py'
+      - 'tests/test_deepseek_claude_context.py'
       - 'tests/test_claude_vps_controlled_access.py'
       - 'tests/test_claude_vps_control_kick.py'
       - 'tests/test_claude_vps_analysis_retry.py'
@@ -64,6 +67,7 @@ jobs:
           python3 -m venv "$venv"
           "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest
           "$venv/bin/python" -m py_compile \
+            learnerbot/ai_council.py \
             learnerbot/ai_master_control.py \
             learnerbot/ai_four_agent_health_patch.py \
             learnerbot/telegram_five_agent_patch.py \
@@ -73,6 +77,7 @@ jobs:
           "$venv/bin/python" -m pytest -q \
             tests/test_selected_ai_master_control.py \
             tests/test_deepseek_fifth_agent.py \
+            tests/test_deepseek_claude_context.py \
             tests/test_claude_vps_controlled_access.py \
             tests/test_claude_vps_control_kick.py \
             tests/test_claude_vps_analysis_retry.py \
