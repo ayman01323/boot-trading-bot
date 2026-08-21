@@ -55,8 +55,16 @@ def test_deepseek_vps_access_is_manual_restricted_and_current_main_only() -> Non
     assert "vps/deepseek/latest.json" in text
     assert "AGENT: DEEPSEEK" in text
     assert "AI-Agent: DEEPSEEK" in text
-    for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY", "mnemonic", "seed phrase"):
+
+    # Dangerous execution primitives must not be available to DeepSeek.
+    for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY"):
         assert forbidden not in text
+
+    # Secret-recovery phrases are intentionally present only in the sanitiser so
+    # matching VPS output is redacted before it reaches the model.  Do not treat
+    # those defensive regex literals themselves as a security violation.
+    assert "mnemonic|seed phrase|password" in text
+    assert "[REDACTED SENSITIVE LINE]" in text
 
 
 def test_vps_deploy_has_no_user_selected_sha_or_branch() -> None:
