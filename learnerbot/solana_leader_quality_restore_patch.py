@@ -16,7 +16,7 @@ from . import solana_sibot as _sol
 # executable-edge per-trade preflight (_validate_shadow_entry) untouched -- those are
 # not being relaxed and are not the source of weak leader vetting.
 _QUALITY_FLOOR_OVERRIDES = {
-    "require_complete_history": "true",
+    "require_complete_history": "false",
     "min_win_rate_pct": "65",
     "min_profit_factor": "1.75",
     "recent_trade_window": "20",
@@ -63,7 +63,7 @@ def install():
 
     _sol._leader_quality_restore_installed = True
     print(
-        "[solana-leader-quality-restore] history_complete=true win_rate>=65% pf>=1.75 "
+        "[solana-leader-quality-restore] history_complete=false win_rate>=65% pf>=1.75 "
         "recent_win_rate>=65% recent_pf>=1.50 drawdown<=20% copied_win_rate>=50% "
         "copied_pf>=1.50 consecutive_loss_limit=2 leader_suspend=1440m "
         "leader_event_gate=median_return+mint_loss+platform_pf_breaker"
