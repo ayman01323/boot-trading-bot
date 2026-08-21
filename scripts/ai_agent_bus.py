@@ -23,6 +23,7 @@ _SECRET_ENV_KEYS = (
     "GH_TOKEN",
     "GITHUB_TOKEN",
 )
+_COPILOT_SECRET_KEYS = {"COPILOT_GITHUB_TOKEN", "COPILOT_ASSIGN_TOKEN"}
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
     re.compile(r"AIza[A-Za-z0-9_-]{20,}"),
@@ -200,11 +201,25 @@ def _call(target: str, prompt: str) -> tuple[int, str, str]:
     old_cwd = os.getcwd()
     try:
         if target == "copilot":
-            # Keep Copilot away from the checked-out repository; it receives only
-            # the bounded bus prompt and existing CLI credential.
-            with tempfile.TemporaryDirectory(prefix="ai-bus-copilot-") as tmp:
-                os.chdir(tmp)
-                return call_provider(target, prompt)
+            # Keep Copilot away from the checked-out repository and prevent its
+            # subprocess from inheriting unrelated provider credentials.
+            preserved = {
+                key: os.environ.get(key)
+                for key in _SECRET_ENV_KEYS
+                if key not in _COPILOT_SECRET_KEYS
+            }
+            try:
+                for key in preserved:
+                    os.environ.pop(key, None)
+                with tempfile.TemporaryDirectory(prefix="ai-bus-copilot-") as tmp:
+                    os.chdir(tmp)
+                    return call_provider(target, prompt)
+            finally:
+                for key, value in preserved.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
         return call_provider(target, prompt)
     finally:
         os.chdir(old_cwd)
