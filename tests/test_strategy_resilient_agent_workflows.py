@@ -21,20 +21,28 @@ def test_strategy_copilot_reconciler_retries_with_standard_assignment_payload():
 
 
 def test_strategy_master_continues_with_one_or_more_valid_reports():
-    text = _text(".github/workflows/strategy-resilient-master.yml")
-    assert "steps.agents.outputs.count != '0'" in text
-    assert "One or two agents may be missing" in text
-    assert "Never invent their opinions" in text
-    assert "Deterministic fallback when GPT Master is unavailable" in text
-    assert "three_agent_reports_complete':len(valid)==3" in text
-    assert "'cycle_continued':True" in text
-    assert "MASTER_DECIDED_PARTIAL" in text
-    assert "live_auto_deploy':False" in text
+    compat = _text(".github/workflows/strategy-resilient-master.yml")
+    selected = _text(".github/workflows/selected-ai-master.yml")
+    runner = _text("scripts/resilient_selected_master.py")
+    assert "selected-ai-master.yml" in compat
+    assert "lane=strategy" in compat
+    assert 'if [[ "$count" == 0 ]]' in selected
+    assert '"minimum_valid_reports_to_continue": 1' in runner
+    assert 'resilient_cycle_continued' in runner
+    assert 'failed_agent_count' in runner
+    assert '"live_auto_deploy": False' in runner
 
 
-def test_partial_strategy_master_cannot_bypass_two_agent_policy_gate():
-    contract = _text("learnerbot/three_agent_strategy_contract.py")
-    workflow = _text(".github/workflows/strategy-resilient-master.yml")
-    assert 'if len(agents) < 2:' in contract
-    assert 'requires support from at least two independent agents' in contract
-    assert 'Any accepted auto-code proposal still requires at least two independent supporting agents' in workflow
+def test_single_agent_strategy_cycle_is_stricter_but_not_stopped():
+    runner = _text("scripts/resilient_selected_master.py")
+    assert 'threshold = 0.95 if count == 1 else 0.85' in runner
+    assert 'if risk not in ({"LOW"} if count == 1 else {"LOW", "MEDIUM"})' in runner
+    assert '"single_agent_strategy_confidence": 0.95' in runner
+    assert '"live_trading_depends_on_ai_health": False' in runner
+
+
+def test_selected_master_fallback_order_is_selected_then_gpt_claude_gemini_other():
+    wrapper = _text("scripts/resilient_selected_master_v2.py")
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "copilot")' in wrapper
+    assert 'if preferred in _base.PROVIDERS' in wrapper
+    assert 'if provider not in out' in wrapper
