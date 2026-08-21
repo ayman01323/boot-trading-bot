@@ -1,60 +1,88 @@
-requested_sha=89061556be74c3e786de8eb999e96d03f330fb39
-deploy_outcome=success
-deploy_exit=0
-run_id=32483791498
-utc=2026-08-21T12:51:22Z
+requested_sha=79f51b5fca922b842daeef92f8121b0aa3d8bfa2
+deploy_outcome=failure
+deploy_exit=10
+run_id=32484649091
+utc=2026-08-21T13:01:50Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T12:50:18Z BEGIN current=43242ee7960696cb0a76e66c1086b808689e8156 requested=89061556be74c3e786de8eb999e96d03f330fb39
+2026-08-21T13:00:46Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=79f51b5fca922b842daeef92f8121b0aa3d8bfa2
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   43242ee..8906155  main       -> origin/main
-Updating 43242ee..8906155
+   8906155..79f51b5  main       -> origin/main
+Updating 8906155..79f51b5
 Fast-forward
- .github/workflows/hourly-three-agent-strategy-cycle.yml | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ .../workflows/deepseek-github-controlled-ops.yml   | 238 +++++++++++++++++++
+ .github/workflows/deepseek-vps-controlled-ops.yml  | 251 +++++++++++++++++++++
+ tests/test_deepseek_controlled_access.py           |  69 ++++++
+ 3 files changed, 558 insertions(+)
+ create mode 100644 .github/workflows/deepseek-github-controlled-ops.yml
+ create mode 100644 .github/workflows/deepseek-vps-controlled-ops.yml
+ create mode 100644 tests/test_deepseek_controlled_access.py
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [ 13%]
+...................................................F.................... [ 13%]
 ........................................................................ [ 27%]
 ........................................................................ [ 41%]
 ........................................................................ [ 55%]
-........................................................................ [ 69%]
-........................................................................ [ 83%]
-........................................................................ [ 97%]
-...............                                                          [100%]
+........................................................................ [ 68%]
+........................................................................ [ 82%]
+........................................................................ [ 96%]
+..................                                                       [100%]
+=================================== FAILURES ===================================
+_____ test_deepseek_vps_access_is_manual_restricted_and_current_main_only ______
+
+    def test_deepseek_vps_access_is_manual_restricted_and_current_main_only() -> None:
+        text = _text(".github/workflows/deepseek-vps-controlled-ops.yml")
+        assert "DeepSeek VPS Controlled Operations" in text
+        assert "workflow_dispatch:" in text
+        assert "schedule:" not in text
+        assert "runs-on: [self-hosted, linux, x64, boot-vps]" in text
+        assert "options: [inspect, test, deploy]" in text
+        assert "sudo /usr/local/sbin/status-boot-trading-bot" in text
+        assert 'sudo /usr/local/sbin/deploy-boot-trading-bot "$target"' in text
+        assert "checkout is not exact current origin/main" in text
+        assert "secrets.DEEPSEEK_API_KEY" in text
+        assert "https://api.deepseek.com/anthropic" in text
+        assert "--permission-mode plan" in text
+        assert "provider':'deepseek'" in text
+        assert "root_shell':False" in text
+        assert "arbitrary_sudo':False" in text
+        assert "wallet_or_private_key_access':False" in text
+        assert "arbitrary_deploy_sha':False" in text
+        assert "deploy_current_main_via_restricted_wrapper_only':True" in text
+        assert "vps/deepseek/latest.json" in text
+        assert "AGENT: DEEPSEEK" in text
+        assert "AI-Agent: DEEPSEEK" in text
+        for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY", "mnemonic", "seed phrase"):
+>           assert forbidden not in text
+E           assert 'mnemonic' not in 'name: DeepS...P_SUMMARY"\n'
+E             
+E             'mnemonic' is contained here:
+E               [_ -]?key|mnemonic|seed phrase|password|authorization:|bearer |secret=|token=)',line):
+E             ?           ++++++++
+E                                     kept.append('[REDACTED SENSITIVE LINE]')
+E                                 else:
+E                                     line=re.sub(r'sk-[A-Za-z0-9_-]{12,}','<redacted-key>',line)...
+E             
+E             ...Full output truncated (131 lines hidden), use '-vv' to show
+
+tests/test_deepseek_controlled_access.py:59: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-519 passed, 1 warning in 39.06s
-2026-08-21T12:51:05Z TESTS PASSED; restarting learnerbot
-2026-08-21T12:51:09Z SUCCESS sha=89061556be74c3e786de8eb999e96d03f330fb39 version=2.3.10 service=active
-     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 4s ago
-   Main PID: 377581 (python)
-      Tasks: 20 (limit: 5869)
-     Memory: 565.6M (peak: 580.2M)
-        CPU: 3.384s
-     CGroup: /system.slice/learnerbot.service
-             └─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [telegram-account] tid=461513364 role=USER status=ACTIVE can_auto=true evm_wallet=false evm_signing_file=false sol_wallet=true sol_signing=true sol_live=false sibot_on=true sibot_auto=false evm_exec_24h=0 sol_buy_24h=0 sol_sell_24h=0 mirroring=false
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [config] CSVbot configuration loaded/reloaded
+=========================== short test summary info ============================
+FAILED tests/test_deepseek_controlled_access.py::test_deepseek_vps_access_is_manual_restricted_and_current_main_only
+1 failed, 521 passed, 1 warning in 34.88s
+2026-08-21T13:01:29Z TESTS FAILED; service remains on old running process
+HEAD is now at 8906155 Use Gemini 3.7 Flash for hourly strategy reviews
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T12:51:19Z
+UTC: 2026-08-21T13:01:45Z
 branch: main
 sha:    89061556be74c3e786de8eb999e96d03f330fb39
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -65,21 +93,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 14s ago
+     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 10min ago
    Main PID: 377581 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 616.1M (peak: 637.7M)
-        CPU: 11.664s
+     Memory: 621.4M (peak: 750.8M)
+        CPU: 8min 25.588s
      CGroup: /system.slice/learnerbot.service
              └─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 21 13:51:06 mint.yesgoodwill.com python[377581]: [config] CSVbot configuration loaded/reloaded
-Aug 21 13:51:09 mint.yesgoodwill.com python[377581]: [scan:bsc] 115379972..115379981 tx=750
-Aug 21 13:51:16 mint.yesgoodwill.com python[377581]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
+Aug 21 13:57:15 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 13:57:18 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 13:57:21 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 13:57:25 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 13:57:39 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=37.999
+Aug 21 13:58:20 mint.yesgoodwill.com python[377581]: [power-discovery] v2-added=25 v3-pools=196 products=7954 auto-products=950 rejected=0 seconds=433.100
+Aug 21 13:58:20 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=39.915
+Aug 21 13:59:01 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=39.655
+Aug 21 13:59:58 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=56.158
+Aug 21 14:00:56 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=56.982
