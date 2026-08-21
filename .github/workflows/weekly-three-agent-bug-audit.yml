@@ -153,14 +153,15 @@ jobs:
         id: gpt
         continue-on-error: true
         env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-            echo "OPENAI_API_KEY missing" >&2
+          if [[ -z "${CODEX_API_KEY:-}" ]]; then
+            echo "CODEX_API_KEY missing" >&2
             exit 2
           fi
           cp .weekly_audit/common_prompt.txt /tmp/gpt_prompt.txt
