@@ -1,0 +1,127 @@
+{
+  "provider": "copilot",
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "review_only": true,
+  "no_live_changes": true,
+  "cycle_id": "154d417006d3-2026082023-e5d4a14f",
+  "source_commit": "154d417006d3461fa90b89b7c41f6a5cb5b6424d",
+  "evidence_sha256": "e5d4a14fbe859ff99269688657fd6077e3e2917327bae584d4e19c535139d840",
+  "evidence_fresh": false,
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture review of source commit 154d417006d3461fa90b89b7c41f6a5cb5b6424d. Runtime evidence is stale (>2 h); profitability and live-readiness cannot be claimed. The positive-follower-edge gate merged in this commit improves entry discipline on Solana but several structural gaps in strategy evaluation, exit logic and cross-chain coverage remain. Four targeted SHADOW improvements are proposed.",
+  "proposals": [
+    {
+      "id": "PROP-001",
+      "title": "Calibrate follower-edge gate thresholds with historical friction distribution",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA"],
+      "confidence": 0.72,
+      "rationale": "The positive-follower-executable-edge gate introduced in PR #163 uses fixed reserve values for Jupiter friction, network fees, slippage and latency. These constants are not calibrated against observed execution data. If actual costs are systematically higher the gate under-rejects; if lower it over-rejects valid opportunities. A shadow calibration pass using recorded Jupiter quote spreads and on-chain fee observations would produce distribution-informed thresholds, improving net P&L durability.",
+      "evidence": [
+        {
+          "path": "learnerbot/solana_first_day_strategy_restore_patch.py",
+          "note": "Fixed reserve constants are hard-coded; no reference to historical fee distribution"
+        },
+        {
+          "path": "learnerbot/solana_positive_edge_entry_gate_patch.py",
+          "note": "Entry gate applies static thresholds without percentile-based calibration"
+        }
+      ],
+      "shadow_test": "Run a 72-hour SHADOW window comparing the existing static-threshold gate against a percentile-calibrated gate (p75 of observed Jupiter friction + network fees). Accept calibrated gate if net P&L per eligible opportunity improves by >=5% with no increase in execution failure rate.",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py",
+        "learnerbot/market_feature_adapter.py"
+      ],
+      "risks": "Mis-calibration could over-relax the gate and increase entry into unprofitable trades. Guard: gate must remain positive-edge; never relax below zero expected net.",
+      "research_tools": ["Jupiter quote API", "Dune on-chain fee query for Solana"]
+    },
+    {
+      "id": "PROP-002",
+      "title": "Add time-bounded exit rule to Solana leader-copy strategy to cap maximum loss per hold",
+      "action": "IMPROVE",
+      "chain_scope": ["SOLANA"],
+      "confidence": 0.78,
+      "rationale": "The restored first-day Solana leader strategy has no explicit maximum hold-time exit or trailing-loss exit beyond the existing circuit-breaker. Positions that fail to appreciate within a bounded window accumulate opportunity cost and increase exposure to liquidity deterioration. A time-bounded exit at, e.g., T+90 min with a trailing-loss floor reduces average loss magnitude while preserving upside participation.",
+      "evidence": [
+        {
+          "path": "learnerbot/solana_first_day_strategy_restore_patch.py",
+          "note": "Strategy restore does not define a maximum hold-time or trailing exit"
+        },
+        {
+          "path": "learnerbot/solana_exit_circuit_breaker_patch.py",
+          "note": "Circuit breaker acts globally, not per-position time limit"
+        }
+      ],
+      "shadow_test": "Shadow-test a 90-minute maximum hold with a -8% trailing-loss floor for 7 days. Accept if average loss per losing trade falls by >=10% and profit factor remains above 1.1 across at least 20 closed positions.",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ],
+      "risks": "Premature exits on slow-moving valid leader positions could reduce win rate. Mitigation: only apply rule to positions not yet showing any unrealised gain at T+45 min.",
+      "research_tools": ["Dune wallet cohort hold-time vs return analysis"]
+    },
+    {
+      "id": "PROP-003",
+      "title": "Implement EVM liquidity-confirmed momentum shadow strategy",
+      "action": "NEW_SHADOW",
+      "chain_scope": ["EVM"],
+      "confidence": 0.61,
+      "rationale": "The current strategy universe is Solana-dominant. EVM coverage is thin. A liquidity-confirmed momentum strategy (token age < 48 h, 1 h volume growth > 50%, pool depth > $15k, positive simulated net edge) is a differentiated, non-leader-copy hypothesis that can run independently on EVM chains using existing DEX Screener and Etherscan data sources. This does not replicate Solana logic and requires chain-specific cost modelling including gas, MEV and ERC-20 approval overhead.",
+      "evidence": [
+        {
+          "path": "learnerbot/cross_chain_strategy_signals.py",
+          "note": "Cross-chain signal adapter exists but EVM momentum path is underdeveloped"
+        },
+        {
+          "path": "learnerbot/market_feature_adapter.py",
+          "note": "Feature adapter supports EVM but no momentum-with-liquidity-gate feature set defined"
+        }
+      ],
+      "shadow_test": "Register a NEW_SHADOW EVM liquidity-confirmed momentum strategy. Over 14 days record: eligible opportunity count, participation rate, simulated net P&L per trade, profit factor, largest simulated loss. Accept for SHADOW_MORE only if profit factor > 1.15 over >= 30 eligible events with no single simulated loss exceeding 12% of position.",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_ai_proposals.py"
+      ],
+      "risks": "EVM gas costs and MEV exposure are materially higher than Solana; without accurate cost modelling the shadow P&L will be overstated. Require chain-specific gas/MEV reserve in simulation before any shadow promotion.",
+      "research_tools": ["DEX Screener API", "Etherscan API V2", "DefiLlama chain TVL/volume"]
+    },
+    {
+      "id": "PROP-004",
+      "title": "Add profitable-wallet cohort pattern research to strategy internal learning",
+      "action": "RESEARCH_MORE",
+      "chain_scope": ["SOLANA", "EVM"],
+      "confidence": 0.65,
+      "rationale": "Strategy internal learning currently monitors the bot's own trades. Expanding to cohort-level public-wallet analysis (wallets with > 30-day profitable history, > 50 trades, profit factor > 1.3 on Dune) would surface repeatable patterns that are not dependent on a single leader wallet and would reduce single-point-of-failure risk in the leader-copy family.",
+      "evidence": [
+        {
+          "path": "learnerbot/strategy_internal_learning.py",
+          "note": "Internal learning is scoped to this bot's own transaction history only"
+        },
+        {
+          "path": "learnerbot/strategy_external_research.py",
+          "note": "External research module exists but cohort-based pattern extraction is not implemented"
+        }
+      ],
+      "shadow_test": "Produce a Dune cohort query covering >= 100 profitable Solana wallets and >= 50 profitable EVM wallets over the last 30 days. Extract top-3 behavioural patterns by frequency. For each pattern that survives cost-adjusted simulation, register a PROPOSED strategy entry in strategy_lab. Accept research phase complete when >= 1 pattern reaches SHADOW status.",
+      "suggested_files": [
+        "learnerbot/strategy_external_research.py",
+        "learnerbot/strategy_lab_research.py"
+      ],
+      "risks": "Cohort selection bias could surface coincidental rather than causal patterns. Require minimum 30-day out-of-sample validation window before any pattern is promoted beyond SHADOW.",
+      "research_tools": ["Dune Analytics", "DEX Screener API", "DefiLlama"]
+    }
+  ],
+  "runtime_evidence_gaps": [
+    "No fresh runtime evidence (>2 h stale): live P&L, win/loss counts, execution failure rates and liquidity-check pass rates are unknown for this cycle.",
+    "Solana Jupiter quote success rate and average friction vs gate thresholds not sampled in this cycle.",
+    "EVM execution success rate and gas cost distribution not available.",
+    "Follower-edge gate rejection rate versus valid-opportunity rate cannot be assessed without fresh telemetry."
+  ],
+  "safety_notes": [
+    "No live settings, capital, signing material, secrets or deployment configuration were modified.",
+    "All proposals are SHADOW or RESEARCH and require explicit human approval before any live promotion.",
+    "The positive-edge entry gate from PR #163 must remain in force during all shadow experiments.",
+    "Cross-chain proposals require independent chain-specific cost modelling before shadow promotion."
+  ]
+}
