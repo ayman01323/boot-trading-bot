@@ -1,0 +1,51 @@
+name: Claude Strategy Status Fix Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/claude-fourth-strategy-agent.yml'
+      - '.github/workflows/claude-strategy-status-fix-ci.yml'
+      - 'learnerbot/ai_ops_current_cycle_patch.py'
+      - 'learnerbot/__main__.py'
+      - 'tests/test_ai_ops_current_cycle_patch.py'
+      - 'tests/test_four_agent_workflows.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest pyyaml
+      - name: Compile status patch and tests
+        run: |
+          python -m py_compile \
+            learnerbot/ai_ops_current_cycle_patch.py \
+            tests/test_ai_ops_current_cycle_patch.py \
+            tests/test_four_agent_workflows.py
+      - name: Parse Claude workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib,yaml
+          p=pathlib.Path('.github/workflows/claude-fourth-strategy-agent.yml')
+          data=yaml.safe_load(p.read_text(encoding='utf-8'))
+          assert data.get('jobs',{}).get('review'), 'Claude review job missing'
+          print('CLAUDE_WORKFLOW_YAML_OK')
+          PY
+      - name: Run focused regressions
+        run: |
+          pytest -x -vv \
+            tests/test_ai_ops_current_cycle_patch.py \
+            tests/test_four_agent_workflows.py \
+            tests/test_imports.py \
+            tests/test_main_import_order.py
