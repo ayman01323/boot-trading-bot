@@ -198,7 +198,7 @@ jobs:
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash' }}
+          DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash[1m]' }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
@@ -207,6 +207,9 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
+          if [[ "$DEEPSEEK_STRATEGY_MODEL" == "deepseek-v4-flash" ]]; then
+            DEEPSEEK_STRATEGY_MODEL="${DEEPSEEK_STRATEGY_MODEL}[1m]"
+          fi
           export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
           export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
           export ANTHROPIC_MODEL="$DEEPSEEK_STRATEGY_MODEL"
