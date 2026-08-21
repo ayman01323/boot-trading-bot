@@ -2,63 +2,63 @@ from pathlib import Path
 
 
 WORKFLOW = Path('.github/workflows/gpt-master-strategy-action.yml')
+SELECTED = Path('.github/workflows/selected-ai-master.yml')
+RUNNER = Path('scripts/resilient_selected_master_v2.py')
 
 
-def _text():
-    return WORKFLOW.read_text(encoding='utf-8')
+def _text(path=WORKFLOW):
+    return Path(path).read_text(encoding='utf-8')
 
 
-def test_master_reconciler_runs_from_default_branch_schedule_not_bot_pr_event():
+def test_legacy_gpt_master_is_only_a_default_branch_compatibility_delegate():
     text = _text()
     assert "cron: '*/10 * * * *'" in text
     assert 'workflow_dispatch:' in text
     assert '\n  pull_request:' not in text
-    assert 'cycle_from_report_pair' in text
-    assert 'No unresolved PR with an exact Copilot report pair is ready' in text
+    assert 'selected-ai-master.yml' in text
+    assert 'lane=strategy' in text
+    assert 'GPT is now one selectable/fallback MASTER' in text
 
 
-def test_master_has_no_bwrap_workspace_sandbox_or_persisted_credentials():
-    text = _text()
+def test_selected_master_checks_out_main_without_persisted_credentials():
+    text = _text(SELECTED)
+    assert 'ref: main' in text
     assert 'persist-credentials: false' in text
-    assert 'codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral' in text
-    assert '--sandbox workspace-write' not in text
-    assert 'CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}' in text
+    assert '@openai/codex@latest' in text
+    assert '@anthropic-ai/claude-code@latest' in text
+    assert '@google/gemini-cli@latest' in text
+    assert '@github/copilot@latest' in text
 
 
-def test_master_requires_all_three_complete_and_same_cycle():
-    text = _text()
-    assert 'Independent reports still incomplete' in text
-    assert 'validate-agent' in text
-    assert '[[ "$CYCLE_ID" == "${{ steps.pr.outputs.cycle_hint }}" ]]' in text
-    assert 'three_agent_reports_complete' in text
+def test_selected_master_does_not_require_all_agents_complete():
+    text = _text(SELECTED)
+    runner = _text('scripts/resilient_selected_master.py')
+    assert 'Collected ${count} candidate report file(s)' in text
+    assert 'if [[ "$count" == 0 ]]' in text
+    assert '"minimum_valid_reports_to_continue": 1' in runner
+    assert 'failed_agent_count' in runner
+    assert 'resilient_cycle_continued' in runner
 
 
-def test_master_is_report_only_and_never_auto_deploys():
-    text = _text()
-    assert 'This run is REPORT ONLY' in text
-    assert '"implementation_allowed":false' in text
-    assert "'live_auto_deploy':False" in text
-    assert 'no automatic merge, deployment, capital/risk or live-trading change' in text
-
-def test_master_scopes_pre_checkout_gh_pr_commands_to_repository():
-    text = _text()
-    resolve_step = text.split(
-        '- name: Resolve completed Copilot report PR by immutable cycle', 1
-    )[1].split('- name: Check out Copilot report PR', 1)[0]
-    assert 'GH_REPO: ${{ github.repository }}' in resolve_step
-    assert 'gh pr list' in resolve_step
-    assert 'gh pr diff "$candidate" --name-only' in resolve_step
-    assert resolve_step.count('gh pr view') >= 2
+def test_selected_master_is_never_direct_live_trading_authority():
+    runner = _text('scripts/resilient_selected_master.py')
+    assert '"live_auto_deploy": False' in runner
+    assert '"live_trading_depends_on_ai_health": False' in runner
+    assert 'No AI report or master decision may directly trade' in runner
+    assert 'wallet/signing' in runner
 
 
-def test_master_pins_explicit_pr_to_its_report_cycle_not_latest_pointer():
-    text = _text()
-    resolve_step = text.split(
-        '- name: Resolve completed Copilot report PR by immutable cycle', 1
-    )[1].split('- name: Check out Copilot report PR', 1)[0]
-    assert 'INPUT_CYCLE: ${{ inputs.cycle_id }}' in resolve_step
-    assert 'cycle="$(cycle_from_report_pair "$pr" "$cycle")"' in resolve_step
-    assert 'latest_cycle_id.txt' not in resolve_step
-    assert '.ai/strategy/copilot/*.json' in resolve_step
-    assert '.ai/strategy/copilot/*.md' in resolve_step
-    assert '[[ ${#files[@]} -eq 2 ]]' in resolve_step
+def test_selected_master_uses_exact_requested_fallback_priority():
+    text = _text(RUNNER)
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "copilot")' in text
+    assert 'if preferred in _base.PROVIDERS' in text
+    assert 'if provider not in out' in text
+    assert '"--plan"' in text
+
+
+def test_selected_master_collects_copilot_report_from_exact_cycle_pr_when_needed():
+    text = _text(SELECTED)
+    assert '.ai/strategy/copilot/${identity}.json' in text
+    assert '.ai/weekly/copilot/${identity}.json' in text
+    assert 'gh pr diff "$number" --name-only' in text
+    assert 'ref=${head}' in text
