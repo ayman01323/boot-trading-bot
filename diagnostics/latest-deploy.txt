@@ -1,43 +1,19 @@
-requested_sha=5e9d67a69163412b4d3de185b4e24ce1ec62566f
+requested_sha=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff
 deploy_outcome=success
 deploy_exit=0
-run_id=32454598147
-utc=2026-08-21T06:30:49Z
+run_id=32454988321
+utc=2026-08-21T06:36:17Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T06:29:44Z BEGIN current=154d417006d3461fa90b89b7c41f6a5cb5b6424d requested=5e9d67a69163412b4d3de185b4e24ce1ec62566f
+2026-08-21T06:35:20Z BEGIN current=5e9d67a69163412b4d3de185b4e24ce1ec62566f requested=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   ed5d572..5e9d67a  main       -> origin/main
-Updating 154d417..5e9d67a
+   5e9d67a..e56e545  main       -> origin/main
+Updating 5e9d67a..e56e545
 Fast-forward
- .github/workflows/polygon-live-forensics-test.yml  |  50 ++
- .github/workflows/publish-runtime-forensics.yml    |  85 +++
- .../workflows/trade-strategy-provenance-test.yml   |  38 ++
- learnerbot/__main__.py                             |  10 +-
- .../ai_agent_health_master_reconcile_patch.py      | 143 +++++
- learnerbot/loss_forensics_runtime_bridge_patch.py  |  66 ++
- learnerbot/polygon_live_enable_migration.py        | 174 ++++++
- learnerbot/polygon_live_runtime_invariant_patch.py |  25 +
- learnerbot/telegram_hi_keefek_patch.py             |   2 +
- learnerbot/trade_provenance.py                     |  64 ++
- learnerbot/trade_strategy_provenance_patch.py      | 663 +++++++++++++++++++++
- .../test_ai_agent_health_master_reconcile_patch.py |  97 +++
- tests/test_polygon_live_and_runtime_forensics.py   | 132 ++++
- tests/test_trade_strategy_provenance.py            | 335 +++++++++++
- 14 files changed, 1883 insertions(+), 1 deletion(-)
- create mode 100644 .github/workflows/polygon-live-forensics-test.yml
- create mode 100644 .github/workflows/publish-runtime-forensics.yml
- create mode 100644 .github/workflows/trade-strategy-provenance-test.yml
- create mode 100644 learnerbot/ai_agent_health_master_reconcile_patch.py
- create mode 100644 learnerbot/loss_forensics_runtime_bridge_patch.py
- create mode 100644 learnerbot/polygon_live_enable_migration.py
- create mode 100644 learnerbot/polygon_live_runtime_invariant_patch.py
- create mode 100644 learnerbot/trade_provenance.py
- create mode 100644 learnerbot/trade_strategy_provenance_patch.py
- create mode 100644 tests/test_ai_agent_health_master_reconcile_patch.py
- create mode 100644 tests/test_polygon_live_and_runtime_forensics.py
- create mode 100644 tests/test_trade_strategy_provenance.py
+ learnerbot/polygon_live_enable_migration.py      | 158 +++++++++++++++--------
+ tests/test_polygon_live_and_runtime_forensics.py |  51 +++++++-
+ 2 files changed, 151 insertions(+), 58 deletions(-)
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
@@ -47,40 +23,40 @@ Fast-forward
 ........................................................................ [ 65%]
 ........................................................................ [ 82%]
 ........................................................................ [ 98%]
-.....                                                                    [100%]
+......                                                                   [100%]
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-437 passed, 1 warning in 39.91s
-2026-08-21T06:30:33Z TESTS PASSED; restarting learnerbot
-2026-08-21T06:30:37Z SUCCESS sha=5e9d67a69163412b4d3de185b4e24ce1ec62566f version=2.3.10 service=active
-     Active: active (running) since Fri 2026-08-21 07:30:33 BST; 4s ago
-   Main PID: 328839 (python)
+438 passed, 1 warning in 32.83s
+2026-08-21T06:36:01Z TESTS PASSED; restarting learnerbot
+2026-08-21T06:36:05Z SUCCESS sha=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff version=2.3.10 service=active
+     Active: active (running) since Fri 2026-08-21 07:36:01 BST; 4s ago
+   Main PID: 329469 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 614.2M (peak: 636.4M)
-        CPU: 3.402s
+     Memory: 629.1M (peak: 646.2M)
+        CPU: 3.488s
      CGroup: /system.slice/learnerbot.service
-             └─328839 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─329469 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: [telegram-account] tid=461513364 role=USER status=ACTIVE can_auto=true evm_wallet=false evm_signing_file=false sol_wallet=true sol_signing=true sol_live=false sibot_on=true sibot_auto=false evm_exec_24h=0 sol_buy_24h=0 sol_sell_24h=0 mirroring=false
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [config] CSVbot configuration loaded/reloaded
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [telegram-account] tid=461513364 role=USER status=ACTIVE can_auto=true evm_wallet=false evm_signing_file=false sol_wallet=true sol_signing=true sol_live=false sibot_on=true sibot_auto=false evm_exec_24h=0 sol_buy_24h=0 sol_sell_24h=0 mirroring=false
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [config] CSVbot configuration loaded/reloaded
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T06:30:47Z
+UTC: 2026-08-21T06:36:15Z
 branch: main
-sha:    5e9d67a69163412b4d3de185b4e24ce1ec62566f
+sha:    e56e54510e47aba1e85c24cfc4a5f7434f2b04ff
 origin: git@github.com:ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -89,21 +65,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 07:30:33 BST; 14s ago
-   Main PID: 328839 (python)
+     Active: active (running) since Fri 2026-08-21 07:36:01 BST; 14s ago
+   Main PID: 329469 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 644.1M (peak: 655.6M)
-        CPU: 11.824s
+     Memory: 610.2M (peak: 646.2M)
+        CPU: 12.006s
      CGroup: /system.slice/learnerbot.service
-             └─328839 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─329469 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 21 07:30:33 mint.yesgoodwill.com python[328839]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 21 07:30:34 mint.yesgoodwill.com python[328839]: [config] CSVbot configuration loaded/reloaded
-Aug 21 07:30:38 mint.yesgoodwill.com python[328839]: [scan:bsc] 115379772..115379781 tx=475
-Aug 21 07:30:44 mint.yesgoodwill.com python[328839]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [config] CSVbot configuration loaded/reloaded
+Aug 21 07:36:06 mint.yesgoodwill.com python[329469]: [scan:bsc] 115379782..115379791 tx=489
+Aug 21 07:36:12 mint.yesgoodwill.com python[329469]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
