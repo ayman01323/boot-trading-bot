@@ -86,7 +86,7 @@ def save(app, value: dict, *, updated_by: str | int = "") -> dict:
     out["updated_epoch"] = int(time.time())
     out["updated_by"] = str(updated_by or "")[:80]
     _atomic_json(_path(app), out)
-    # The trading process gets no GitHub credential.  A self-hosted Actions job
+    # The trading process gets no GitHub credential. A self-hosted Actions job
     # reads this sanitised bridge and publishes it to ai-reviews.
     try:
         _atomic_json(bridge_path(), out)
@@ -138,3 +138,7 @@ def request_run(app, lane: str, *, updated_by: str | int = "") -> dict:
     value[f"{lane}_enabled"] = True
     value[f"{lane}_run_nonce"] = int(value.get(f"{lane}_run_nonce") or 0) + 1
     return save(app, value, updated_by=updated_by)
+
+
+# Install the four-agent AI health/reporting layer when the MASTER control is loaded.
+from . import ai_four_agent_health_patch  # noqa: E402,F401
