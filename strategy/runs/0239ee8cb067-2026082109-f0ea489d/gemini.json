@@ -1,0 +1,54 @@
+{
+  "cycle_id": "0239ee8cb067-2026082109-f0ea489d",
+  "evidence_gaps": [
+    "Missing recent sanitised runtime forensics data (fresh-within-2h=false).",
+    "Missing LIVE or recent SHADOW execution evidence validating money-weighted NET P&L after actual priority fees, gas, slippage, and price impact.",
+    "Lack of proven execution edge in current market conditions."
+  ],
+  "evidence_sha256": "f0ea489d5ba953a9119415d7ae579e781ea728c862bc3312b2da575ae1bcd12a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Increases complexity in handling dynamic RPC retries and error bucketing.",
+      "evidence": [
+        {
+          "detail": "The schema tracks execution_failures and signal_skips separately, but handling logic during network volatility requires better isolation.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Static RPC delay and poll defaults can misclassify network jitter or rate-limits as missed opportunities or losses.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Clearer separation between infrastructure failures and true strategy decay, yielding high-fidelity net-base calculations in SHADOW before LIVE promotion.",
+      "id": "prop-solana-evm-rpc-separation",
+      "minimum_observation": "72 hours of uninterrupted SHADOW telemetry demonstrating proper failure bucketing.",
+      "rationale": "Static RPC thresholds on high-speed chains like Solana and varied latency EVM networks cause false negatives in SHADOW PnL. To accurately calculate durable money-weighted NET P&L after fees, slippage, and price impact, EXECUTION/INFRASTRUCTURE failures (e.g., RPC drops, priority fee estimation failures) must be strictly isolated from STRATEGY/MARKET loss.",
+      "shadow_test": "Monitor 'execution_failures' versus 'losses' in strategy_lab_windows for 72 hours across active candidates to ensure network drops are not penalized as market losses.",
+      "strategy": "Solana and EVM Copy Trading",
+      "suggested_files": [
+        "learnerbot/solana_sibot.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Immediate PROMOTION of strategies exhibiting high historical 'win count' or 'proven profit'.",
+      "reason": "Prohibited due to missing fresh runtime forensics. Raw win count must not be optimized without current positive executable edge data factoring in slippage and fees."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "0239ee8cb067446e1849fbeb36e89b19d0ab62e5",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only strategy review due to absent runtime forensics evidence. Core SHADOW abstractions appropriately separate discovery from execution, but chain-specific accounting must more robustly distinguish infrastructure/RPC drops from genuine strategy loss, especially in high-volatility environments like Solana."
+}
