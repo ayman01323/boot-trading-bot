@@ -15,6 +15,12 @@ from . import solana_sibot as _sol
 # signal age, entry deterioration, stop-loss/take-profit) and the newer positive-
 # executable-edge per-trade preflight (_validate_shadow_entry) untouched -- those are
 # not being relaxed and are not the source of weak leader vetting.
+#
+# 2026-08-21: the read-only gate report (scripts/sibot_leader_gate_report.py) showed
+# require_complete_history=true alone eliminating all 20 Solana Top-20 candidates at
+# the history_complete stage, before any other gate was ever evaluated. Relaxing only
+# that one key to get a second funnel reading; every other floor below is unchanged
+# pending that new evidence.
 _QUALITY_FLOOR_OVERRIDES = {
     "require_complete_history": "false",
     "min_win_rate_pct": "65",
