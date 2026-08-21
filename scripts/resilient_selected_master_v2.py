@@ -8,11 +8,17 @@ from pathlib import Path
 
 import resilient_selected_master as _base
 
+# Extend the legacy runner at import time so report loading, validation and MASTER
+# selection can see DeepSeek without duplicating the guarded policy engine.
+_base.PROVIDERS = tuple(dict.fromkeys((*_base.PROVIDERS, "deepseek")))
+
 # User-selected master is always attempted first. If it fails, never retry it;
-# fall back in this exact order: GPT -> Claude -> Gemini -> any remaining provider.
-_FALLBACK = ("gpt", "claude", "gemini", "copilot")
+# fall back in this exact order: GPT -> Claude -> Gemini -> DeepSeek -> Copilot.
+_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")
 _BASE_STRATEGY_PROMPT = _base._strategy_prompt
 _BASE_ENGINEERING_PROMPT = _base._engineering_prompt
+_BASE_CALL_PROVIDER = _base._call_provider
+_BASE_GATE = _base._gate
 
 
 def _provider_order(preferred: str) -> list[str]:
@@ -102,17 +108,60 @@ def _with_vps_context(prompt: str) -> str:
     return prompt + "\n\nBOUNDED VPS OPERATIONAL CONTEXT:\n" + context + "\nThis context is observational/operational evidence only. It does not grant root, wallet/signing, arbitrary sudo, arbitrary deploy-SHA, LIVE-risk, or safety-gate bypass authority.\n"
 
 
+def _five_agent_prompt(prompt: str) -> str:
+    return (
+        prompt.replace(
+            "One, two or three other AI agents may be unavailable.",
+            "Up to four other AI agents may be unavailable.",
+        )
+        .replace(
+            "Use provider names only from gpt, gemini, copilot, claude.",
+            "Use provider names only from gpt, gemini, copilot, claude, deepseek.",
+        )
+    )
+
+
 def _strategy_prompt(identity: str, source: str, evidence: str, reports: dict[str, dict]) -> str:
-    return _with_vps_context(_BASE_STRATEGY_PROMPT(identity, source, evidence, reports))
+    return _with_vps_context(_five_agent_prompt(_BASE_STRATEGY_PROMPT(identity, source, evidence, reports)))
 
 
 def _engineering_prompt(source: str, reports: dict[str, dict]) -> str:
-    return _with_vps_context(_BASE_ENGINEERING_PROMPT(source, reports))
+    return _with_vps_context(_five_agent_prompt(_BASE_ENGINEERING_PROMPT(source, reports)))
 
 
 def _call_provider(provider: str, prompt: str):
+    if provider == "deepseek":
+        env = dict(os.environ)
+        key = str(env.get("DEEPSEEK_API_KEY") or "").strip()
+        if not key:
+            return 90, "", "DEEPSEEK_API_KEY missing"
+        # DeepSeek officially exposes an Anthropic-compatible endpoint and documents
+        # Claude Code as a supported agent harness. Keep it read-only in plan mode.
+        model = str(env.get("DEEPSEEK_MASTER_MODEL") or "deepseek-v4-flash").strip()
+        env.pop("ANTHROPIC_API_KEY", None)
+        env["ANTHROPIC_BASE_URL"] = "https://api.deepseek.com/anthropic"
+        env["ANTHROPIC_AUTH_TOKEN"] = key
+        env["ANTHROPIC_MODEL"] = model
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = model
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = model
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = model
+        env["CLAUDE_CODE_SUBAGENT_MODEL"] = model
+        env["DISABLE_AUTOUPDATER"] = "1"
+        cmd = [
+            "claude",
+            "-p",
+            "--permission-mode",
+            "plan",
+            "--max-turns",
+            "1",
+            "--output-format",
+            "text",
+            prompt,
+        ]
+        return _base._run(cmd, "", env)
+
     if provider != "copilot":
-        return _base._call_provider(provider, prompt)
+        return _BASE_CALL_PROVIDER(provider, prompt)
 
     env = dict(os.environ)
     token = str(
@@ -140,10 +189,17 @@ def _call_provider(provider: str, prompt: str):
     return _base._run(cmd, "", env)
 
 
+def _gate(decision: dict, lane: str, valid_reports: set[str]) -> dict:
+    out = _BASE_GATE(decision, lane, valid_reports)
+    out["failed_agent_count"] = max(0, 5 - len(valid_reports))
+    return out
+
+
 _base._provider_order = _provider_order
 _base._call_provider = _call_provider
 _base._strategy_prompt = _strategy_prompt
 _base._engineering_prompt = _engineering_prompt
+_base._gate = _gate
 
 if __name__ == "__main__":
     raise SystemExit(_base.main())
