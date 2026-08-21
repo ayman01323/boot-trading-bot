@@ -38,6 +38,11 @@ from . import solana_positive_edge_entry_gate_patch as _positive_edge
 # The restore layer also adds a protective positive follower executable-edge
 # preflight outside the existing Jupiter round-trip cache.
 from . import solana_first_day_strategy_restore_patch as _first_day_strategy
+# Final policy layer: re-tighten Solana leader-quality thresholds and restore the
+# leader-event circuit breaker that the first-day rollback above loosened, while
+# keeping first-day's frequency/timing settings and the positive-executable-edge
+# preflight intact. See solana_leader_quality_restore_patch.py for the rationale.
+from . import solana_leader_quality_restore_patch as _quality_restore
 
 
 def _recompose_execution_validation():
@@ -107,9 +112,16 @@ def install():
         ),
         "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
         "first_day_strategy_reference": _first_day_strategy.FIRST_DAY_REFERENCE_COMMIT == "f0ca88450fe96a316dc15e676fab1e36c1137285",
-        "first_day_strategy_settings": _sol.settings is _first_day_strategy.settings_first_day_strategy,
-        "first_day_strategy_process": _sol.process_leader_event is _live.process_leader_event,
-        "first_day_strategy_copied_guard": _profit_guard._copied_ok is _first_day_strategy.copied_ok_first_day,
+
+        # Leader *quality* is no longer the first-day loosened profile: the dedicated
+        # restore layer re-tightens win-rate/profit-factor/history-completeness floors
+        # and puts the median-return/mint-loss/platform-PF circuit breaker back on the
+        # live leader-event path. First-day's frequency/timing keys (checked below)
+        # and the positive-executable-edge preflight remain exactly as first-day set them.
+        "leader_quality_settings_active": _sol.settings is _quality_restore.settings_quality_restored,
+        "leader_quality_settings_inner": _quality_restore._PREV_SETTINGS is _first_day_strategy.settings_first_day_strategy,
+        "leader_quality_process_restored": _sol.process_leader_event is _positive_edge.process_leader_event_positive_edge,
+        "leader_quality_copied_guard_restored": _profit_guard._copied_ok is _positive_edge.copied_ok_quarantine_first_loss,
         "first_day_signal_age": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("max_signal_age_seconds") == "30",
         "first_day_take_profit": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("take_profit_pct") == "25",
         "first_day_stop_loss": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("stop_loss_pct") == "10",

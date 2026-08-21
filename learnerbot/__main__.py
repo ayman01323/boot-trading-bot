@@ -136,9 +136,22 @@ from . import evm_transfer_native_hotfix_patch  # noqa: F401
 from . import loss_forensics_runtime_bridge_patch  # noqa: F401
 # Refuse startup if any feature or presentation layer displaced an audited trading hook.
 from . import trading_runtime_invariant_patch  # noqa: F401
+# Re-tighten Solana leader-quality thresholds and restore the leader-event circuit
+# breaker that the first-day rollback loosened; keeps first-day timing/frequency
+# settings and the positive-executable-edge preflight untouched.
+from . import solana_leader_quality_restore_patch  # noqa: F401
 # Additional final invariant for Polygon-only AUTO focus and fresh runtime-evidence handoff.
 from . import polygon_live_runtime_invariant_patch  # noqa: F401
 # Final trade attribution layer: stamp each EVM/Solana position with immutable strategy version + exact opening Git SHA.
 from . import trade_strategy_provenance_patch  # noqa: F401
+# Feed real SiBot leader-copy and direct-market-arbitrage results into the Strategy
+# Lab's per-chain scorecards. Recording only -- never arms LIVE trading, changes
+# capital or bypasses a safety gate (see strategy_lab.py's own invariants).
+from . import strategy_lab_live_recording_patch  # noqa: F401
+# The one bounded, evidence-based action taken on that data: proportionally reduce
+# SiBot position sizing for a chain whose Strategy Lab evidence has become
+# REPLACE/REWORK-worthy, using the same multiplier pattern sibot_profit_guard_patch
+# already applies for its own profit-lock throttle. Never a hard stop.
+from . import sibot_strategy_lab_throttle_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())

@@ -37,6 +37,7 @@ from learnerbot import solana_profit_first_live_correction_patch as profit_first
 from learnerbot import solana_partial_sell_profit_guard_patch as partial_guard
 from learnerbot import solana_positive_edge_entry_gate_patch as positive_edge
 from learnerbot import solana_first_day_strategy_restore_patch as first_day
+from learnerbot import solana_leader_quality_restore_patch as quality_restore
 from learnerbot import solana_live_executor as executor
 from learnerbot import solana_sibot as sol
 
@@ -72,16 +73,21 @@ assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
 assert sibot.poll_leader_blocks is evm.poll_leader_blocks_reliable
 assert telegram_ui.start_menu_thread is audit_worker.start_menu_thread_with_transaction_audit
 
-# The later strategy modules are still importable/auditable but are no longer the
-# active Solana policy. The owner-requested first-day strategy is the final layer.
+# The frequency/timing-only strategy modules are still importable/auditable and the
+# owner-requested first-day *timing* profile is still in effect. Leader *quality* is
+# no longer the first-day loosened profile: solana_leader_quality_restore_patch is
+# the final policy layer and re-tightens win-rate/PF/history thresholds plus the
+# leader-event circuit breaker back to the originally audited values.
 assert profit_first._PREV_SETTINGS is profit_control.settings_with_profit_control
 assert first_day.FIRST_DAY_REFERENCE_COMMIT == "f0ca88450fe96a316dc15e676fab1e36c1137285"
-assert sol.settings is first_day.settings_first_day_strategy
-assert sol.process_leader_event is live.process_leader_event
-assert guard._copied_ok is first_day.copied_ok_first_day
-assert sol.process_leader_event is not positive_edge.process_leader_event_positive_edge
+assert sol.settings is quality_restore.settings_quality_restored
+assert quality_restore._PREV_SETTINGS is first_day.settings_first_day_strategy
+assert sol.process_leader_event is positive_edge.process_leader_event_positive_edge
+assert guard._copied_ok is positive_edge.copied_ok_quarantine_first_loss
+assert sol.process_leader_event is not live.process_leader_event
 assert sol.process_leader_event is not partial_guard.process_leader_event_partial_profit_guard
 assert sol.process_leader_event is not profit_first.process_leader_event_profit_first
+assert guard._copied_ok is not first_day.copied_ok_first_day
 
 assert first_day.FIRST_DAY_STRATEGY_TARGETS["leaders_per_user"] == "5"
 assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_signal_age_seconds"] == "30"
