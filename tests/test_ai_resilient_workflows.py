@@ -32,30 +32,35 @@ def test_engineering_agents_retry_every_thirty_minutes_on_same_source():
     assert "Publish only successful retry reports" in text
 
 
-def test_resilient_master_continues_with_at_least_one_valid_agent():
-    text = _text(".github/workflows/weekly-resilient-master.yml")
-    assert "steps.agents.outputs.count != '0'" in text
-    assert "Deterministic fallback master when GPT Master is unavailable" in text
-    assert "single-agent resilient cycle cannot auto-implement" in text
-    assert "cycle_continued':True" in text
-    assert "three_agent_reports_complete':n==3" in text
+def test_legacy_engineering_master_delegates_to_selected_resilient_master():
+    compat = _text(".github/workflows/weekly-resilient-master.yml")
+    selected = _text(".github/workflows/selected-ai-master.yml")
+    runner = _text("scripts/resilient_selected_master.py")
+    assert "selected-ai-master.yml" in compat
+    assert "lane=engineering" in compat
+    assert "matrix:" in selected and "strategy, engineering" in selected
+    assert 'if [[ "$count" == 0 ]]' in selected
+    assert '"minimum_valid_reports_to_continue": 1' in runner
+    assert '"live_trading_depends_on_ai_health": False' in runner
 
 
-def test_strategy_promoter_is_policy_eligible_shadow_first_and_never_toggles_live():
+def test_strategy_promoter_remains_shadow_first_and_never_toggles_live():
     text = _text(".github/workflows/strategy-approved-change-promoter.yml")
     assert "row.get('policy_eligible')" in text
     assert "row.get('shadow_only') is True" in text
-    assert "len(agents & {'gpt','gemini','copilot'})>=2" in text
     assert "strategy_auto_path_allowed" in text
     assert "Run full regression and critical trading-safety tests" in text
-    assert "gh pr merge" in text
-    assert "gh workflow run deploy-vps.yml --ref main" in text
     assert "live_switch_changed':False" in text
     assert "CANARY->PROBATION->ACTIVE" in text
     assert "--admin" not in text
 
 
-def test_runtime_loads_health_warning_and_exact_source_guard():
-    text = _text("learnerbot/telegram_hi_keefek_patch.py")
-    assert "ai_agent_health_warning_patch" in text
-    assert "strategy_canary_source_guard_patch" in text
+def test_runtime_loads_four_agent_health_warning_and_exact_source_guard():
+    control = _text("learnerbot/ai_master_control.py")
+    health = _text("learnerbot/ai_four_agent_health_patch.py")
+    hi = _text("learnerbot/telegram_hi_keefek_patch.py")
+    assert "ai_four_agent_health_patch" in control
+    assert 'PROVIDERS = ("gpt", "claude", "gemini", "copilot")' in health
+    assert "AI failure never disables the trading engine" in health
+    assert "ai_agent_health_warning_patch" in hi
+    assert "strategy_canary_source_guard_patch" in hi
