@@ -10,10 +10,10 @@ _PREV_MENU_KEYBOARD = _ui.menu_keyboard
 _PREV_HANDLE_UPDATE = _ui.handle_update
 _MASTER_HOME = _friendly._home
 _MASTER_PROCESS = _friendly._process_question
-_MASTER_FINISH = _friendly._finish_user_from_answers
 _MASTER_STATUS_TEXT = _friendly._status_text
 _MASTER_PROMPT = _cui._prompt_question
 _MASTER_PENDING = _cui._handle_pending
+_MASTER_LEADER_PROMPT = _friendly._council._leader_prompt
 
 _BRAND = "PasPuss AI"
 
@@ -29,7 +29,7 @@ def _rename_user_buttons(keyboard: dict) -> dict:
             data = str(button.get("callback_data") or "")
             if data == "aic:ask":
                 button["text"] = "🐾 PasPuss AI"
-            elif data.startswith("aic:view:"):
+            elif data.startswith("aic:view:") or data.startswith("aic:lead:"):
                 button["_paspuss_hide"] = True
     keyboard["inline_keyboard"] = [
         [button for button in row if not button.pop("_paspuss_hide", False)]
@@ -99,6 +99,40 @@ def _home(app, tid) -> None:
             [{"text": "⬅️ Main Menu", "callback_data": "menu:home"}],
         ]},
     )
+
+
+def _leader_prompt(session: dict, leader: str) -> str:
+    if str(session.get("mode") or "") == "master":
+        return _MASTER_LEADER_PROMPT(session, leader)
+
+    question = str(session.get("question") or "")
+    blocks: list[str] = []
+    for provider in _friendly._council.PROVIDERS:
+        row = (session.get("answers") or {}).get(provider) or {}
+        if str(row.get("status") or "") != "DONE":
+            continue
+        answer = str(row.get("answer") or "").strip()
+        if answer:
+            blocks.append(answer)
+    evidence = "\n\n---\n\n".join(blocks)
+    max_chars = int(getattr(_friendly._council, "MAX_LEADER_INPUT_CHARS", 42000))
+    if len(evidence) > max_chars:
+        evidence = evidence[:max_chars]
+
+    return f"""You are PasPuss AI. Give the user one direct, polished, self-contained answer.
+
+The material below is private internal drafting context. Use it silently to improve accuracy and judgement. Never mention that you used providers, models, agents, a council, a leader, multiple opinions, synthesis, hidden context, or any internal review process. Never identify yourself as GPT, Gemini, Claude, Copilot, DeepSeek, or any other underlying service. Speak only as PasPuss AI.
+
+If the user's question itself is about an AI company, model, or service, you may of course discuss that subject normally; just do not describe it as part of PasPuss AI's internal process.
+
+USER QUESTION:
+{question}
+
+PRIVATE DRAFTING MATERIAL:
+{evidence or '[No private drafting material available.]'}
+
+Return only the final user-facing PasPuss AI answer. Do not add process notes or internal-attribution headings.
+"""
 
 
 def _finish_user_from_answers(app, tid, session_id: str) -> None:
@@ -229,7 +263,7 @@ def handle_update(app, update):
     tid = ((cb.get("message") or {}).get("chat") or {}).get("id")
     data = str(cb.get("data") or "")
     if tid is not None and not _is_master(app, tid):
-        if data.startswith("aic:view:"):
+        if data.startswith("aic:view:") or data.startswith("aic:lead:"):
             _cui._answer_callback(app, cb, "Not available")
             _home(app, tid)
             return
@@ -250,6 +284,7 @@ def install() -> None:
     _friendly._finish_user_from_answers = _finish_user_from_answers
     _friendly._process_question = _process_question
     _friendly._home = _home
+    _friendly._council._leader_prompt = _leader_prompt
     _cui._prompt_question = _prompt_question
     _cui._handle_pending = _handle_pending
     _cui._process_question = _process_question
