@@ -1,0 +1,83 @@
+name: Publish Telegram AI Master Control
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-ai-master-control
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Check out current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate sanitised Telegram AI control bridge
+        id: control
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=/var/tmp/boot/ai_master_control.json
+          if [[ ! -s "$src" ]]; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo 'No Telegram AI control bridge exists yet.'
+            exit 0
+          fi
+          python - "$src" /tmp/ai-master-control.json <<'PY'
+          import json,sys,time
+          src,out=sys.argv[1:3]
+          p=json.load(open(src,encoding='utf-8'))
+          providers={'auto','gpt','gemini','copilot','claude'}
+          cycles={'scheduled','manual'}
+          clean={'schema_version':1}
+          for lane in ('strategy','engineering'):
+              master=str(p.get(lane+'_master') or 'auto').lower()
+              cycle=str(p.get(lane+'_cycle') or 'scheduled').lower()
+              if master not in providers: raise SystemExit('invalid master provider')
+              if cycle not in cycles: raise SystemExit('invalid cycle mode')
+              clean[lane+'_master']=master
+              clean[lane+'_cycle']=cycle
+              clean[lane+'_enabled']=bool(p.get(lane+'_enabled',True))
+              clean[lane+'_run_nonce']=max(0,int(p.get(lane+'_run_nonce') or 0))
+          clean['updated_epoch']=max(0,int(p.get('updated_epoch') or 0))
+          clean['updated_by']=str(p.get('updated_by') or '')[:80]
+          clean['published_epoch']=int(time.time())
+          json.dump(clean,open(out,'w',encoding='utf-8'),indent=2,sort_keys=True);open(out,'a').write('\n')
+          PY
+          echo 'available=true' >> "$GITHUB_OUTPUT"
+
+      - name: Publish control to ai-reviews
+        if: steps.control.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/ai-control-reviews
+          git worktree add --detach /tmp/ai-control-reviews origin/ai-reviews
+          mkdir -p /tmp/ai-control-reviews/control
+          cp /tmp/ai-master-control.json /tmp/ai-control-reviews/control/latest.json
+          cd /tmp/ai-control-reviews
+          git config user.name 'telegram-ai-control-bot'
+          git config user.email 'telegram-ai-control-bot@users.noreply.github.com'
+          git add control/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish Telegram AI master control'
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
