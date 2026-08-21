@@ -10,6 +10,7 @@ GitHub can show several automated agents under the same repository account or wo
 | Gemini | `🔵 AGENT: GEMINI` | `[GEMINI]` |
 | GitHub Copilot | `🟡 AGENT: COPILOT` | `[COPILOT]` |
 | Claude | `🟣 AGENT: CLAUDE` | `[CLAUDE]` |
+| DeepSeek | `🔴 AGENT: DEEPSEEK` | `[DEEPSEEK]` |
 
 ## Required GitHub-visible header
 
@@ -25,7 +26,7 @@ Cycle: 0239ee8cb067-2026082110-f0ea489d
 Source SHA: 127196a61c62...
 ```
 
-Do not claim another provider's identity. If a workflow merely orchestrates another provider, label the provider that actually produced the analysis/content, and identify an orchestrator separately if useful.
+Do not claim another provider's identity. If a workflow merely orchestrates another provider, label the provider that actually produced the analysis/content, and identify an orchestrator separately if useful. A CLI/harness is not the provider: for example, DeepSeek invoked through a Claude-compatible/Claude Code harness must still identify as `DEEPSEEK`, not `CLAUDE`.
 
 ## Pull requests and commits
 
@@ -45,5 +46,6 @@ AI status/notification surfaces use the same colours:
 - `🔵 GEMINI`
 - `🟡 COPILOT`
 - `🟣 CLAUDE`
+- `🔴 DEEPSEEK`
 
 A Telegram summary may show multiple providers in one message, but each provider must keep its own explicit label/status.
