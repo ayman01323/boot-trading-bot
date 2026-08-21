@@ -10,6 +10,14 @@ from learnerbot.ai_council_http_patch import call_provider
 
 _ALLOWED_PROVIDERS = {"deepseek", "gemini", "copilot"}
 _MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
+_SECRET_ENV_KEYS = (
+    "DEEPSEEK_API_KEY",
+    "GEMINI_API_KEY",
+    "COPILOT_ASSIGN_TOKEN",
+    "COPILOT_GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+)
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
@@ -35,6 +43,10 @@ def _parse_headers(text: str) -> tuple[str, dict[str, str], str]:
 
 def _redact(text: str) -> str:
     value = str(text or "")
+    for key in _SECRET_ENV_KEYS:
+        secret = str(os.environ.get(key) or "").strip()
+        if secret:
+            value = value.replace(secret, "[REDACTED]")
     for pattern in _SECRET_PATTERNS:
         value = pattern.sub("[REDACTED]", value)
     value = re.sub(
