@@ -1,14 +1,260 @@
 {
-  "findings": [],
+  "findings": [
+    {
+      "category": "EVM_EXECUTION_RETRY",
+      "confidence": 0.99,
+      "corrective_action": "Persist BROADCAST with the transaction hash before waiting for a receipt. Represent timeout as BROADCAST_UNKNOWN, block replacement execution, and reconcile the receipt and wallet state asynchronously before applying cooldown or P&L.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 198-201 broadcast a transaction and then raise if receipt polling times out. Lines 218-220 catch that exception, discard the known transaction hash, and persist status REJECTED.",
+          "file": "learnerbot/auto_trader.py"
+        },
+        {
+          "detail": "Lines 48-54 count only BROADCAST, SUCCESS, SUCCESS_FEE_PENDING, FAILED, and FEE_PENDING toward cooldown/rate limits; REJECTED is excluded.",
+          "file": "learnerbot/auto_trader.py"
+        }
+      ],
+      "id": "AUDIT-001",
+      "impact": "A transaction that landed after an RPC timeout is treated as never submitted. The same wallet can execute another route on the next cycle, exceeding intended trade frequency/capital exposure while the original trade remains untracked.",
+      "root_cause": "Broadcast and pre-broadcast failures share one exception handler, and the transaction hash is scoped inside the success path rather than durably recorded immediately after submission.",
+      "severity": "P1",
+      "tests_required": [
+        "Simulate send success followed by receipt timeout and assert the transaction hash is retained.",
+        "Assert uncertain broadcasts consume cooldown/rate-limit capacity.",
+        "Assert a later reconciliation updates the same row without submitting a second trade."
+      ],
+      "title": "Receipt uncertainty is recorded as REJECTED and permits duplicate automatic execution"
+    },
+    {
+      "category": "CONFIGURATION_SECURITY",
+      "confidence": 0.99,
+      "corrective_action": "Remove account-specific arming from imports. Implement an explicit authenticated migration command requiring expected environment/deployment identity and current-state confirmation; record migration state transactionally in durable configuration. Fresh installs must default to all LIVE/AUTO gates off.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 85-92 unconditionally import account-specific LIVE migrations during every real application startup.",
+          "file": "learnerbot/__main__.py"
+        },
+        {
+          "detail": "Lines 26-49 create Telegram ID 6760898817 if absent and promote it to active MASTER. Lines 51-88 enable AUTO, LIVE, ARMED, SiBot AUTO, and Solana LIVE. The only idempotency control is a marker under the mutable data directory.",
+          "file": "learnerbot/telegram_676_full_live_migration.py"
+        },
+        {
+          "detail": "Lines 131-165 enable the platform AUTO gate, Polygon LIVE gate, user LIVE settings, and Polygon focus whenever deployment markers are absent.",
+          "file": "learnerbot/polygon_live_enable_migration.py"
+        }
+      ],
+      "id": "AUDIT-002",
+      "impact": "A disaster recovery, new host, lost marker volume, or data-directory migration can silently recreate privileged identity and real-money execution settings. Repository code, rather than deployment authorization, becomes sufficient to arm LIVE operation.",
+      "root_cause": "One-time operational actions were embedded in import-time application code and keyed only by local marker files that are not authoritative configuration state.",
+      "severity": "P1",
+      "tests_required": [
+        "Start with an empty data directory and assert no user is created and all LIVE/AUTO gates remain off.",
+        "Restore configuration without marker files and assert operator settings are not changed.",
+        "Test an explicit migration command for authorization, idempotency, audit logging, and fail-closed behavior."
+      ],
+      "title": "Fresh or partially restored data directories automatically create a hard-coded MASTER and arm LIVE trading"
+    },
+    {
+      "category": "CONCURRENCY_DATA_INTEGRITY",
+      "confidence": 0.96,
+      "corrective_action": "Move operational ledgers and execution state to SQLite transactions with unique event identifiers. Until then, use one shared lock plus unique temporary files and re-read under lock; use OS-level locking if multiple processes may write.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Line 142 starts Telegram, power-discovery, and fast-market threads alongside the main loop.",
+          "file": "learnerbot/cli.py"
+        },
+        {
+          "detail": "Lines 30-45 read an entire CSV, append, write a shared .tmp name, and replace the destination without a lock.",
+          "file": "learnerbot/auto_trader.py"
+        },
+        {
+          "detail": "Lines 96-109 perform the same unlocked read-modify-replace pattern for live_trade_audit.csv.",
+          "file": "learnerbot/live_executor.py"
+        },
+        {
+          "detail": "Lines 41-49 use an unlocked shared temporary filename for the fee ledger.",
+          "file": "learnerbot/fee_engine.py"
+        },
+        {
+          "detail": "Lines 10-25 and 41-73 update execution_queue.csv without a process-wide lock.",
+          "file": "learnerbot/execution_queue.py"
+        }
+      ],
+      "id": "AUDIT-003",
+      "impact": "Concurrent writers can lose rows, overwrite newer settings, raise FileNotFoundError while replacing the same temporary file, or corrupt audit/cooldown evidence. Missing execution rows can subsequently weaken rate limits and accounting reconciliation.",
+      "root_cause": "Atomic rename protects readers from partial files but does not make a multi-step read-modify-write operation mutually exclusive.",
+      "severity": "P2",
+      "tests_required": [
+        "Barrier-synchronize multiple writers to each shared ledger and assert all unique rows survive.",
+        "Exercise Telegram and execution writers concurrently.",
+        "Verify no shared temporary-file collision and no lost cooldown/audit records."
+      ],
+      "title": "Shared CSV read-modify-replace operations are not synchronized across runtime threads"
+    },
+    {
+      "category": "STRATEGY_LAB_PROVENANCE",
+      "confidence": 0.98,
+      "corrective_action": "Hash the canonical strategy specification. Return the existing row unchanged when the hash matches; increment version only for a changed specification, preserve lifecycle state, and store versions as immutable rows.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 194-205 increment version for every registration of an existing strategy and force status='SHADOW' on conflict, without checking whether its specification changed.",
+          "file": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Lines 31-66 cache strategy IDs only in process memory, so the first use after each restart invokes register_strategy again.",
+          "file": "learnerbot/strategy_lab_live_recording_patch.py"
+        },
+        {
+          "detail": "Lines 28-42 depend on the registered strategy and its evaluated lifecycle state to reduce position sizing.",
+          "file": "learnerbot/sibot_strategy_lab_throttle_patch.py"
+        }
+      ],
+      "id": "AUDIT-004",
+      "impact": "Every process restart can manufacture a new strategy version despite identical code/specification and transiently revert REWORK, REPLACE, or PROMOTION_CANDIDATE to SHADOW. Trade provenance and lifecycle histories no longer identify actual strategy changes reliably.",
+      "root_cause": "Registration is implemented as an unconditional version bump/upsert rather than an idempotent create-or-compare operation.",
+      "severity": "P2",
+      "tests_required": [
+        "Register the same specification across simulated restarts and assert version/status remain unchanged.",
+        "Change one parameter and assert exactly one new immutable version is created.",
+        "Assert trade provenance references the correct immutable version."
+      ],
+      "title": "Re-registering an unchanged strategy creates phantom versions and resets lifecycle status"
+    },
+    {
+      "category": "DEPLOYMENT_RELIABILITY",
+      "confidence": 0.94,
+      "corrective_action": "Set cancel-in-progress to false and serialize deployments. Make the restricted wrapper transactional with staging, validation, atomic release switching, and rollback; publish attestation for every attempted target.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 13-15 configure a global deployment concurrency group with cancel-in-progress: true.",
+          "file": ".github/workflows/deploy-vps.yml"
+        },
+        {
+          "detail": "Lines 64-84 run the mutable deployment through a self-hosted VPS wrapper. Cancellation can terminate this step before status and attestation complete.",
+          "file": ".github/workflows/deploy-vps.yml"
+        },
+        {
+          "detail": "Lines 3-8 allow both main pushes and manual dispatches, making overlapping requests expected.",
+          "file": ".github/workflows/deploy-vps.yml"
+        }
+      ],
+      "id": "AUDIT-005",
+      "impact": "A second push or dispatch can terminate installation/restart work midway, leaving a partially updated environment or ambiguous running commit while the replacement deployment begins.",
+      "root_cause": "Cancellation semantics suitable for CI are applied to a state-mutating deployment job.",
+      "severity": "P1",
+      "tests_required": [
+        "Dispatch two deployments while the first is inside the wrapper and verify strict serialization.",
+        "Inject cancellation/failure at each deployment phase and verify rollback to the prior attested commit.",
+        "Assert the running commit equals the final successful target."
+      ],
+      "title": "A newer deployment cancels an in-progress VPS deployment"
+    },
+    {
+      "category": "PACKAGING",
+      "confidence": 0.99,
+      "corrective_action": "Declare solders in project dependencies or a required runtime extra that startup imports conditionally. Generate deployment requirements from one authoritative dependency definition.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 10-15 declare requests, python-dotenv, web3, and cryptography but omit solders.",
+          "file": "pyproject.toml"
+        },
+        {
+          "detail": "Line 5 separately declares solders>=0.28,<0.29.",
+          "file": "requirements.txt"
+        },
+        {
+          "detail": "Module-level imports require solders.keypair, solders.message, solders.signature, and solders.transaction.",
+          "file": "learnerbot/solana_live_executor.py"
+        },
+        {
+          "detail": "The startup composition imports Solana LIVE modules unconditionally, so a standards-based installation from pyproject metadata fails before CLI startup.",
+          "file": "learnerbot/__main__.py"
+        }
+      ],
+      "id": "AUDIT-006",
+      "impact": "Installing the package with pip/build metadata rather than requirements.txt produces an environment that cannot start the bot, including EVM-only commands because the Solana patch stack is imported globally.",
+      "root_cause": "Dependency declarations diverged between requirements.txt and pyproject.toml.",
+      "severity": "P2",
+      "tests_required": [
+        "Build a wheel, install it into an empty environment without requirements.txt, and run python -m learnerbot --help.",
+        "Run the module import sweep against the installed wheel.",
+        "Verify dependency metadata contains a compatible solders requirement."
+      ],
+      "title": "Published project metadata omits the mandatory Solana runtime dependency"
+    },
+    {
+      "category": "CI_SUPPLY_CHAIN",
+      "confidence": 0.97,
+      "corrective_action": "Pin exact package versions and integrity hashes, pin GitHub Actions by commit SHA, separate analysis from write-capable promotion jobs, and pass only the minimum credential to each isolated step.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 8-11 grant write permissions; lines 51-59 install @openai/codex@latest and @google/gemini-cli@latest at runtime.",
+          "file": ".github/workflows/weekly-three-agent-bug-audit.yml"
+        },
+        {
+          "detail": "Lines 39-48 install unpinned latest AI CLIs; lines 52-57 expose provider and assignment credentials to the workflow.",
+          "file": ".github/workflows/hourly-three-agent-strategy-cycle.yml"
+        },
+        {
+          "detail": "The workflow installs @openai/codex@latest, supplies OPENAI_API_KEY, and later possesses contents/actions write authority for branch creation, merge, and deployment dispatch.",
+          "file": ".github/workflows/strategy-approved-change-promoter.yml"
+        }
+      ],
+      "id": "AUDIT-007",
+      "impact": "An upstream package compromise or incompatible release is immediately executed in a credentialed job and can exfiltrate API tokens, manipulate review artifacts, or misuse repository write/dispatch authority.",
+      "root_cause": "Tool installation prioritizes newest releases over reproducible, integrity-pinned workflow dependencies.",
+      "severity": "P2",
+      "tests_required": [
+        "Verify all external Actions and npm/pip tools are pinned by immutable version or digest.",
+        "Add policy CI rejecting @latest and mutable action tags in privileged workflows.",
+        "Confirm analysis jobs run with read-only repository permissions and no unrelated secrets."
+      ],
+      "title": "Privileged AI workflows execute unpinned latest CLI packages with repository credentials"
+    },
+    {
+      "category": "ACCOUNTING_METRICS",
+      "confidence": 0.99,
+      "corrective_action": "Track bucket largest_loss independently while iterating rows and merge it with the previous window maximum.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "Lines 188-197 aggregate all negative trades in a bucket into gross_loss.",
+          "file": "learnerbot/strategy_lab_live_recording_patch.py"
+        },
+        {
+          "detail": "Lines 91-104 pass that aggregate gross_loss to max(previous largest_loss, gross_loss), so multiple smaller losses become one fictitious largest loss.",
+          "file": "learnerbot/strategy_lab_live_recording_patch.py"
+        }
+      ],
+      "id": "AUDIT-008",
+      "impact": "Risk reports overstate single-trade loss magnitude and may drive incorrect Strategy Lab decisions or operator investigation.",
+      "root_cause": "The aggregation bucket does not retain the maximum individual negative net value separately from total gross loss.",
+      "severity": "P3",
+      "tests_required": [
+        "Record two losses of 1 and 2 units in one window and assert gross_loss=3 while largest_loss=2.",
+        "Verify incremental updates preserve the maximum across batches."
+      ],
+      "title": "Direct-market Strategy Lab largest loss records aggregate losses instead of the largest individual loss"
+    }
+  ],
   "no_live_changes": true,
   "provider": "gpt",
   "refusals_or_limits": [
-    "error: unexpected argument '--a<redacted>' found\n\n  tip: to pass '--a<redacted>' as a value, use '-- --a<redacted>'\n\nUsage: codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]\n\nFor more information, try '--help'."
+    "Report-only review: no files, configuration, capital settings, secrets, wallets, signing material, deployments, or live systems were changed.",
+    "The requested commit was verified as checked out exactly and the worktree was clean.",
+    "Runtime tests and compile checks could not execute because neither python nor pytest is installed in the supplied environment; both commands failed before repository code ran. Findings therefore rely on deterministic source/control-flow evidence and test inspection."
   ],
   "report_only": true,
   "schema_version": 1,
   "scope": "FULL_REPOSITORY_BUG_AUDIT",
   "source_commit": "c1d8bbf8270854dfcb32e2def8fe51922b76698f",
-  "status": "INCOMPLETE",
-  "summary": "GPT engineering recovery did not complete."
+  "status": "ISSUES_FOUND",
+  "summary": "Found concrete execution-recovery, configuration, concurrency, lifecycle-accounting, deployment, packaging, and CI supply-chain defects. The most serious can cause an already-broadcast EVM trade to be retried, silently arm real-money trading during state restoration, or interrupt an in-progress VPS deployment."
 }
