@@ -76,6 +76,7 @@ def test_progress_message_is_deleted_after_success(monkeypatch) -> None:
 
     monkeypatch.setattr(clean._friendly._council, "load_session", lambda app, sid: dict(session))
     monkeypatch.setattr(clean._friendly._council, "run_leader", lambda app, sid, leader: {"status": "DONE", "answer": "First sentence. Second sentence. Third sentence."})
+    monkeypatch.setattr(clean._friendly, "_status_message", lambda app, tid, s, text, keyboard=None: s)
     monkeypatch.setattr(clean._friendly, "_chat_action", lambda app, tid: None)
     monkeypatch.setattr(clean._friendly, "_mark_delivered", lambda app, s, fallback=False: None)
     monkeypatch.setattr(clean, "_delete_progress_message", lambda app, tid, s: deleted.append(s["telegram"]["progress_message_id"]))
