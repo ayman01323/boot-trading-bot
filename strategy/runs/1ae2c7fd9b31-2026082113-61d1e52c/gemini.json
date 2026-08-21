@@ -1,0 +1,103 @@
+{
+  "cycle_id": "1ae2c7fd9b31-2026082113-61d1e52c",
+  "evidence_gaps": [
+    "No fresh runtime forensics branch or evidence file available (evidence_status is MISSING_RUNTIME_FORENSICS).",
+    "Lack of historical strategy-specific performance data (opportunities, eligible opportunities, wins, losses, profit factor) in the strategy_lab_windows table.",
+    "Lack of real-time transaction records or execution logs to measure actual slippage, priority fees, and transaction failure rates under fast market conditions.",
+    "Lack of real-time Jupiter/Raydium pricing query adapter for Solana leader events to calculate active gross edge, liquidity, and sellability."
+  ],
+  "evidence_sha256": "61d1e52cee29b48669bb1e481ba19935bfacfd4434900df19c7d9dded41e849a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Reduces total eligible opportunity count for the Dislocation Mean Reversion family by filtering out positive dislocation events.",
+      "evidence": [
+        {
+          "detail": "Line 164 evaluates absolute dislocation: abs(_d(features.dislocation_z)) < Decimal('1.5') rather than restricting triggers to negative dislocation (underpricing) for directional long spot entry.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Eliminates economically unsound buy triggers on overvalued assets, reducing downside risk in strong momentum-extension environments.",
+      "id": "dislocation-reversion-neg-only",
+      "minimum_observation": "7 days or 50 simulated opportunities",
+      "rationale": "A long-only directional spot strategy can only profit from buying undervalued assets. Evaluating absolute dislocation means the bot may buy overvalued assets (dislocation_z > 1.5) expecting them to reversion-drop, causing immediate losses upon buy.",
+      "shadow_test": "Run a parallel shadow simulator for Dislocation Mean Reversion comparing the absolute z-score strategy vs the negative-only z-score strategy over 7 days. Stop the test if simulation drawdown on mock capital exceeds 5%.",
+      "strategy": "Dislocation Mean Reversion",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Increased Solana RPC request overhead, potential API rate-limiting, and minor latency addition to the main loop.",
+      "evidence": [
+        {
+          "detail": "Lines 269-277 shows Solana leader events lack active executable future quotes, causing gross_edge_bps, liquidity, and sellability to remain defaulted to zero.",
+          "path": "learnerbot/market_feature_adapter.py"
+        }
+      ],
+      "expected_effect": "Enables Solana leader signals to be successfully evaluated by the 7 strategy families in the Strategy Lab.",
+      "id": "solana-executable-quote-adapter",
+      "minimum_observation": "5 days or 100 leader events",
+      "rationale": "Because Solana feature adaptation lacks contemporaneous quotes, its opportunities fail the platform-wide common executability thresholds. Integrating an RPC/Jupiter price fetcher is required to calculate genuine executable edge.",
+      "shadow_test": "Deploy a mock/read-only Solana quote adapter querying Jupiter Price API on leader swap events, measuring latency and percentage of successfully populated features over 5 days. Terminate if RPC query latency exceeds 800ms.",
+      "strategy": "Solana SIBOT / Market Feature Adaptation",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Reduces the volume of eligible opportunities in the New Liquidity Quality family.",
+      "evidence": [
+        {
+          "detail": "Line 197-198 allows pool age up to 86400 seconds (24 hours) for new pools.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Improves strategy safety and lowers the probability of purchasing dying/rugged tokens.",
+      "id": "new-liquidity-quality-window",
+      "minimum_observation": "10 days or 30 opportunities",
+      "rationale": "A 24-hour window is too wide for new liquidity pools. High-risk rugpulls, honeypots, and sudden liquidity drains occur most frequently during initial hours of pool launch. Restricting the evaluation window to the first 4 hours (14,400 seconds) focuses the strategy on fresh, active listings and mitigates stale-honeypot risk.",
+      "shadow_test": "Run shadow evaluation on New Liquidity Quality comparing a 4-hour pool age threshold vs a 24-hour threshold over 10 days, recording simulated rugpull losses. Terminate if simulated loss exceeds 10%.",
+      "strategy": "New Liquidity Quality",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "id": "direct-canary-promotion",
+      "idea": "Direct promotion of EVM Cross Venue Net Arbitrage to Canary lane",
+      "reason": "Prohibited by core safety guidelines due to the complete lack of fresh within-2h runtime forensics. Promoting any strategy directly without verified out-of-sample shadow stats is a high-risk violation of the Strategy Lab lifecycle."
+    },
+    {
+      "id": "lower-liquidity-gate",
+      "idea": "Broadening the liquidity score threshold in _common_executable to artificially increase trade frequency",
+      "reason": "Violates the core mandate that active does not mean forced trading. Artificially lowering safety/liquidity gates to force trades turns activity targets into loss-generating quotas."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "1ae2c7fd9b314c3527a1fce37860b4e8c8fdb952",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed a comprehensive architecture-only strategic review. Due to missing runtime forensics, no strategy is promoted to canary/live lanes. Identified three major improvement areas: restricting Dislocation Mean Reversion to negative-only dislocations for long-only spot-buys, developing an active quote/price adapter for Solana leader events to bypass the current fail-closed zero-value default, and tightening the New Liquidity Quality pool age window from 24 hours to 4 hours to lower rugpull exposure."
+}
