@@ -32,14 +32,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Run bridge and safety regressions in isolated venv
+      - name: Run bridge and safety regressions in isolated inherited venv
         shell: bash
         run: |
           set -euo pipefail
           venv="/tmp/deepseek-telegram-bridge-ci-${GITHUB_RUN_ID}"
           rm -rf "$venv"
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest pyyaml
+          # Inherit the VPS's already-working BOOT runtime dependencies instead of
+          # downloading a second Solana stack. Only test/YAML helpers are added.
+          python3 -m venv --system-site-packages "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml
           "$venv/bin/python" -m py_compile \
             learnerbot/ai_master_control.py \
             learnerbot/telegram_deepseek_control_patch.py \
