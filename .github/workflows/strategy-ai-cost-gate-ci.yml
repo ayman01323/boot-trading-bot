@@ -1,0 +1,44 @@
+name: Strategy AI Cost Gate Tests
+
+on:
+  pull_request:
+    paths:
+      - 'learnerbot/strategy_ai_cost_gate.py'
+      - 'learnerbot/server_gpt_cost_saver_patch.py'
+      - 'learnerbot/__main__.py'
+      - 'tests/test_strategy_ai_cost_gate.py'
+      - 'tests/test_strategy_ai_cost_workflow.py'
+      - 'tests/test_ai_review_pipeline_cost_control.py'
+      - 'tests/test_ci_api_cost_control.py'
+      - 'tests/test_server_gpt_cost_saver.py'
+      - '.github/workflows/hourly-three-agent-strategy-cycle.yml'
+      - '.github/workflows/ai-review-pipeline-ci.yml'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/strategy-ai-cost-gate-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest
+      - name: Compile cost-control modules
+        run: python -m py_compile learnerbot/strategy_ai_cost_gate.py learnerbot/server_gpt_cost_saver_patch.py
+      - name: Run cost control tests
+        run: |
+          pytest -q \
+            tests/test_strategy_ai_cost_gate.py \
+            tests/test_strategy_ai_cost_workflow.py \
+            tests/test_ai_review_pipeline_cost_control.py \
+            tests/test_ci_api_cost_control.py \
+            tests/test_server_gpt_cost_saver.py \
+            tests/test_hourly_three_agent_strategy_workflow.py \
+            tests/test_hourly_three_agent_workflow_contract.py
