@@ -15,8 +15,6 @@ def test_claude_workflow_uses_secret_plan_mode_same_cycle_and_clean_workspace() 
     assert '"scope":"MULTI_AGENT_STRATEGY_REVIEW"' in text
     assert "evidence_sha256" in text
     assert "no_live_changes" in text
-    # Claude is allowed to create only its temporary report workspace; any tracked
-    # or out-of-scope edit causes the independent review step to fail.
     assert "['git','status','--porcelain']" in text
     assert "Claude reviewer changed tracked/out-of-scope files" in text
 
@@ -33,7 +31,7 @@ def test_legacy_four_agent_master_delegates_to_selected_resilient_master() -> No
     assert "matrix:" in selected and "strategy, engineering" in selected
     assert 'if [[ "$count" == 0 ]]' in selected
     assert '"minimum_valid_reports_to_continue": 1' in runner
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "copilot")' in fallback
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")' in fallback
     assert '"live_auto_deploy": False' in runner
 
 
