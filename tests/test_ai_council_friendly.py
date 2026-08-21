@@ -45,8 +45,9 @@ def test_user_gets_one_final_synthesis_without_automatic_raw_answer_dump(tmp_pat
 
     friendly._finish_user_from_answers(app, "123", session["session_id"])
 
-    assert sent == [("🤖 SiBot — final answer", "One clear combined answer")]
-    assert any("GPT is combining" in text for text in status)
+    assert sent == [("🐾 PasPuss AI", "One clear combined answer")]
+    assert any("PasPuss is working on your question" in text for text in status)
+    assert all("GPT is combining" not in text for text in status)
 
 
 def test_gpt_leader_failure_falls_back_to_best_available_answer(tmp_path, monkeypatch):
@@ -66,9 +67,10 @@ def test_gpt_leader_failure_falls_back_to_best_available_answer(tmp_path, monkey
     friendly._finish_user_from_answers(app, "123", session["session_id"])
 
     assert len(sent) == 1
-    assert sent[0][0] == "🤖 SiBot — answer"
-    assert "GPT could not complete" in sent[0][1]
-    assert "GPT original" in sent[0][1]
+    assert sent[0][0] == "🐾 PasPuss AI"
+    assert sent[0][1] == "GPT original"
+    assert "could not complete" not in sent[0][1]
+    assert "Leader" not in sent[0][1]
 
 
 def test_restart_recovery_resumes_recent_asking_session(tmp_path, monkeypatch):
@@ -114,8 +116,10 @@ def test_final_reply_is_threaded_to_original_question(tmp_path, monkeypatch):
         lambda method, token, payload=None, timeout=20, **kwargs: payloads.append((method, payload)) or {"message_id": 900},
     )
 
-    friendly._send_final_reply(app, "123", session, "SiBot", "Answer", friendly._user_keyboard(session["session_id"]))
+    friendly._send_final_reply(app, "123", session, "PasPuss AI", "Answer", friendly._user_keyboard(session["session_id"]))
 
     send = next(payload for method, payload in payloads if method == "sendMessage")
     assert send["reply_parameters"]["message_id"] == 777
-    assert "View AI opinions" in str(send["reply_markup"])
+    assert "PasPuss AI" in str(send["reply_markup"])
+    assert "View AI opinions" not in str(send["reply_markup"])
+    assert "aic:view:" not in str(send["reply_markup"])
