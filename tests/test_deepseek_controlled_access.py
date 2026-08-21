@@ -123,7 +123,7 @@ def test_sibot_leader_gate_wrapper_preserves_bounded_vps_access() -> None:
 
 
 def test_ai_agent_bus_delivery_fallback_runs_in_bounded_access_ci() -> None:
-    """Exercise polling fallback/dedupe regressions in the always-targeted access CI."""
+    """Exercise live delivery, polling/dedupe and Claude compatibility regressions."""
     import importlib.util
 
     path = ROOT / "tests" / "test_ai_agent_bus_delivery_fallback.py"
