@@ -82,3 +82,45 @@ def test_question_length_is_bounded(tmp_path):
     app = _app(tmp_path)
     with pytest.raises(ai_council.CouncilError):
         ai_council.create_session(app, 1, "x" * (ai_council.MAX_QUESTION_CHARS + 1), mode="user")
+
+
+def test_gemini_council_defaults_to_flash_and_retries_429(monkeypatch):
+    calls = []
+    sleeps = []
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_COUNCIL_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MASTER_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_STRATEGY_MODEL", raising=False)
+    monkeypatch.setattr(ai_council.random, "uniform", lambda _a, _b: 0.0)
+    monkeypatch.setattr(ai_council.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    def fake_run(cmd, prompt, env, *, stdin=False):
+        calls.append(list(cmd))
+        if len(calls) == 1:
+            return 1, "", "HTTP 429 RESOURCE_EXHAUSTED Too Many Requests retry in 3s"
+        return 0, "GEMINI_OK", ""
+
+    monkeypatch.setattr(ai_council, "_run", fake_run)
+
+    rc, out, err = ai_council.call_provider("gemini", "hello")
+
+    assert rc == 0
+    assert out == "GEMINI_OK"
+    assert err == ""
+    assert len(calls) == 2
+    assert all("--model" in cmd for cmd in calls)
+    assert all(cmd[cmd.index("--model") + 1] == "gemini-3.7-flash" for cmd in calls)
+    assert sleeps == [3.0]
+
+
+def test_gemini_council_model_override_wins(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("GEMINI_COUNCIL_MODEL", "gemini-custom-model")
+
+    def fake_run(cmd, prompt, env, *, stdin=False):
+        assert cmd[cmd.index("--model") + 1] == "gemini-custom-model"
+        return 0, "OK", ""
+
+    monkeypatch.setattr(ai_council, "_run", fake_run)
+    assert ai_council.call_provider("gemini", "hello") == (0, "OK", "")
