@@ -1,0 +1,47 @@
+{
+  "findings": [
+    {
+      "category": "EXECUTION",
+      "confidence": 1.0,
+      "corrective_action": "Modify the `reconcile_pending_exit_circuits` SQL query to include the new atomic sell error strings, or remove the strict string filter from the `LANDED_INVALID` clause and handle the exact failure classification within Python.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "SQL query filters for `status='LANDED_INVALID' AND error LIKE '%SELL produced no input-token balance decrease%'`",
+          "file": "learnerbot/solana_exit_circuit_breaker_patch.py",
+          "line": 183,
+          "symbol": "reconcile_pending_exit_circuits"
+        },
+        {
+          "detail": "Raises `SolanaLivePostExecutionError` with string 'Atomic sell+close was submitted but confirmation details are unavailable' which fails the LIKE filter.",
+          "file": "learnerbot/solana_execution_efficiency_patch.py",
+          "line": 520,
+          "symbol": "atomic_full_sell"
+        },
+        {
+          "detail": "Raises error with string 'Atomic sell+close landed but input-token balance did not decrease' which also fails the LIKE filter.",
+          "file": "learnerbot/solana_execution_efficiency_patch.py",
+          "line": 532,
+          "symbol": "atomic_full_sell"
+        }
+      ],
+      "id": "solana-exit-circuit-mismatch",
+      "impact": "When a Solana LIVE atomic full sell experiences RPC lag or lands with a zero-balance decrease, the position is placed into the exit circuit with `LANDED_INVALID` status. Because the error messages do not match the hardcoded SQL `LIKE` clause, the reconciliation loop permanently ignores the position. This freezes the user's LIVE trading state indefinitely and abandons the position without attempting an automatic retry.",
+      "root_cause": "The circuit breaker's SQL filter was not updated to accommodate the new exception strings introduced by the atomic sell-and-close feature in `solana_execution_efficiency_patch.py`.",
+      "severity": "P1",
+      "tests_required": [
+        "Unit test verifying `reconcile_pending_exit_circuits` correctly pulls and processes a circuit row created by an RPC timeout during an atomic sell+close."
+      ],
+      "title": "Solana LIVE atomic sell errors permanently block circuit-breaker reconciliation due to string mismatch"
+    }
+  ],
+  "no_live_changes": true,
+  "provider": "gemini",
+  "refusals_or_limits": [],
+  "report_only": true,
+  "schema_version": 1,
+  "scope": "FULL_REPOSITORY_BUG_AUDIT",
+  "source_commit": "c1d8bbf8270854dfcb32e2def8fe51922b76698f",
+  "status": "ISSUES_FOUND",
+  "summary": "Identified a critical execution failure in the Solana LIVE exit circuit breaker where newly introduced atomic sell error messages are ignored by the reconciliation loop due to a hardcoded string mismatch. This strands capital and permanently halts trading for the affected user when RPC lag occurs."
+}
