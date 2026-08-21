@@ -1,0 +1,79 @@
+{
+  "cycle_id": "7ce4e599d6be-2026082109-b1858109",
+  "evidence_gaps": [
+    "Missing runtime execution metrics (opportunities, eligible_opportunities, trades, net_profit, slippage_cost, fees, execution_failures) for all strategy lab hypotheses."
+  ],
+  "evidence_sha256": "b1858109f3d0399d3b3ad4b9248acae205c828c6ec364c8a4dec40bd26130ca1",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "RPC rate limits could be tested during high momentum bursts. Zero capital risk while contained in SHADOW mode.",
+      "evidence": [
+        {
+          "detail": "Seeded as a built-in research hypothesis requiring execution cost validation.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Absence of runtime forensics prevents calculating net profit or eligible participation rate.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Produces a statistically significant sample of simulated trades with explicit accounting for slippage and gas/priority fees, enabling a data-driven replacement or promotion decision.",
+      "id": "continue-shadow-momentum",
+      "minimum_observation": "3 evaluation windows, >= 8 simulated trades",
+      "rationale": "Without fresh runtime evidence, profitability and execution stability remain unknown. The hypothesis must continue gathering shadow execution data to measure its eligible participation rate and simulated net profit before any promotion decision.",
+      "shadow_test": "Monitor for at least 3 evaluation windows and 8 trades. Reject if eligible participation falls below 0.20 or profit factor is <= 1.0 after strict execution costs.",
+      "strategy": "Liquidity Confirmed Momentum",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Potential to waste computing resources if latency barriers make the strategy fundamentally unviable; zero capital risk.",
+      "evidence": [
+        {
+          "detail": "Built-in research hypothesis explicitly targeting net edge after strict latency and gas costs.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Policies mandate independent strategy scorecards to track simulated slippage and execution failures.",
+          "path": "docs/STRATEGY_LAB.md"
+        }
+      ],
+      "expected_effect": "Identifies if apparent arbitrage spreads are truly executable or merely artifacts of stale block states.",
+      "id": "continue-shadow-arbitrage",
+      "minimum_observation": "3 evaluation windows, >= 10 eligible opportunities",
+      "rationale": "Arbitrage is highly sensitive to latency and priority gas costs. SHADOW execution is required to verify if the bot's execution speed can actually capture the observed spread after chain-specific fees.",
+      "shadow_test": "Simulate for at least 3 windows and discard if execution_failures outnumber successful simulated trades or if simulated net_profit is consistently negative.",
+      "strategy": "Cross Venue Net Arbitrage",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote Liquidity Confirmed Momentum or Cross Venue Net Arbitrage to LIVE.",
+      "reason": "Forbidden: No runtime execution evidence or net profitability metrics exist to justify promotion out of SHADOW mode."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "7ce4e599d6befc3659f684ea33f43907c9af3379",
+  "status": "HEALTHY",
+  "summary": "Architecture-only review completed. The Strategy Laboratory framework securely isolates experimental and AI-proposed hypotheses in SHADOW mode, enforcing separation between discovery and live execution. However, with evidence.json reporting 'MISSING_RUNTIME_FORENSICS', there is zero runtime evidence of execution success or net profitability. No LIVE promotions can occur until execution logs prove money-weighted profitability after chain-specific execution costs and failures."
+}
