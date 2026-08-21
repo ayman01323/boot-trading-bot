@@ -74,13 +74,14 @@ def test_claude_runs_on_vps_only_against_redacted_context_in_plan_mode() -> None
     assert '--permission-mode plan' in text
     assert '--max-turns 1' in text
     assert '[REDACTED SENSITIVE LINE]' in text
-    assert 'wallet/private-key access' in text
+    assert 'wallet_or_private_key_access' in text
     assert 'LIVE risk gates' in text
 
 
 def test_master_prompt_adapter_accepts_only_bounded_vps_fields() -> None:
     text = _text("scripts/resilient_selected_master_v2.py")
     assert 'CLAUDE_VPS_CONTEXT_PATH' in text
+    assert 'vps/claude/latest.json?ref=ai-reviews' in text
     assert 'BOUNDED VPS OPERATIONAL CONTEXT' in text
     assert '"claude_analysis": str(raw.get("claude_analysis")' in text
     assert 'sanitised_action_tail' not in text
