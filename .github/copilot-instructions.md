@@ -1,5 +1,13 @@
 # BOOT trading-bot Copilot instructions
 
+## Mandatory AI identity in GitHub-visible output
+
+Follow `docs/AI_AGENT_IDENTITY.md`. Every Copilot-authored GitHub comment, issue body, PR body and human-readable report must begin with:
+
+`🟡 AGENT: COPILOT`
+
+AI-created PR titles must start with `[COPILOT]`. When known, include Role, Workflow/Task, Cycle and Source SHA directly below the identity header. AI-originated commit messages should include the trailer `AI-Agent: COPILOT`. Do not present Copilot work as GPT, Gemini or Claude work.
+
 ## Strategy-research role
 
 When reviewing this repository, treat leader-wallet copying as only one strategy family. Actively look for evidence-supported strategies that can be learned from the bot's own market, execution and transaction data and from public research sources without depending on one selected leader wallet.
