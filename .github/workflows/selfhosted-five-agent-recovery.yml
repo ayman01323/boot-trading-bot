@@ -1,0 +1,342 @@
+name: Self-Hosted Five-Agent Recovery
+
+on:
+  push:
+    paths:
+      - '.github/selfhosted-five-agent-recovery.trigger'
+  schedule:
+    - cron: '9,39 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: selfhosted-five-agent-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 110
+    steps:
+      - name: Check out orchestration main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Recover missing GPT, Claude and DeepSeek reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
+          CLAUDE_ENGINEERING_MODEL: ${{ vars.CLAUDE_ENGINEERING_MODEL || 'sonnet' }}
+          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash' }}
+          CLAUDE_STRATEGY_MODEL: ${{ vars.CLAUDE_STRATEGY_MODEL || 'sonnet' }}
+          DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash' }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="/tmp/five-agent-recovery-${GITHUB_RUN_ID}"
+          rm -rf "$TMP" && mkdir -p "$TMP"
+
+          read_text() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n' || true
+          }
+
+          report_status() {
+            local path="$1" out="$TMP/status.json"
+            set +e
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d > "$out" 2>/dev/null
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 || ! -s "$out" ]]; then echo MISSING; return 0; fi
+            python3 - "$out" <<'PY'
+          import json,sys
+          try: print(str(json.load(open(sys.argv[1])).get('status') or 'MISSING').upper())
+          except Exception: print('MISSING')
+          PY
+          }
+
+          put_file() {
+            local path="$1" file="$2" message="$3"
+            local api="repos/${GITHUB_REPOSITORY}/contents/${path}" current sha encoded
+            current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+            sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+            encoded="$(base64 -w0 "$file")"
+            python3 - "$encoded" "$sha" "$message" <<'PY' > "$TMP/put.json"
+          import json,sys
+          p={'message':sys.argv[3],'content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+            gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input "$TMP/put.json" >/dev/null
+          }
+
+          publish_engineering() {
+            local provider="$1" source="$2" json_file="$3"
+            python3 - "$json_file" "$TMP/${provider}.md" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1])); lines=[f"# {p.get('provider','AI').title()} engineering audit",'',str(p.get('summary') or ''),'',f"Status: {p.get('status')}"]
+          for x in p.get('findings') or []: lines += ['',f"## {x.get('severity')} — {x.get('title')}",str(x.get('impact') or '')]
+          open(sys.argv[2],'w').write('\n'.join(lines)+'\n')
+          PY
+            put_file "weekly/runs/${source}/${provider}.json" "$json_file" "Recover ${provider} engineering report ${source:0:12}"
+            put_file "weekly/runs/${source}/${provider}.md" "$TMP/${provider}.md" "Recover ${provider} engineering report ${source:0:12}"
+          }
+
+          make_eng_incomplete() {
+            local provider="$1" source="$2" reason="$3" out="$4"
+            python3 - "$provider" "$source" "$reason" > "$out" <<'PY'
+          import json,sys
+          provider,source,reason=sys.argv[1:4]
+          print(json.dumps({'schema_version':1,'provider':provider,'source_commit':source,'scope':'FULL_REPOSITORY_BUG_AUDIT','status':'INCOMPLETE','summary':provider.title()+' engineering recovery did not complete.','findings':[],'refusals_or_limits':[reason[:1800]],'report_only':True,'no_live_changes':True},indent=2,sort_keys=True))
+          PY
+          }
+
+          parse_eng() {
+            local provider="$1" source="$2" raw="$3" begin="$4" end="$5" out="$6"
+            python3 - "$provider" "$source" "$raw" "$begin" "$end" "$out" <<'PY'
+          import json,re,sys,pathlib
+          provider,source,rawp,begin,end,out=sys.argv[1:7]
+          raw=pathlib.Path(rawp).read_text(errors='replace')
+          m=re.search(re.escape(begin)+r'\s*(\{.*?\})\s*'+re.escape(end),raw,re.S)
+          if not m: raise SystemExit('JSON markers missing')
+          p=json.loads(m.group(1))
+          if p.get('provider')!=provider or p.get('source_commit')!=source: raise SystemExit('identity mismatch')
+          if p.get('status') not in {'CLEAN','ISSUES_FOUND','INCOMPLETE'}: raise SystemExit('bad status')
+          p['schema_version']=1; p['scope']='FULL_REPOSITORY_BUG_AUDIT'; p['report_only']=True; p['no_live_changes']=True
+          pathlib.Path(out).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+          }
+
+          engineering_source="$(read_text weekly/latest_source_commit.txt)"
+          if [[ "$engineering_source" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Engineering recovery source: ${engineering_source}"
+            git checkout --detach "$engineering_source"
+            git reset --hard "$engineering_source" >/dev/null
+            git clean -fdx >/dev/null
+
+            cat > "$TMP/engineering-prompt.txt" <<EOF
+          Audit the ENTIRE checked-out repository at exact source commit ${engineering_source} as an independent engineering reviewer of a multi-chain automated trading bot. Inspect execution, EVM/Solana, accounting/P&L, concurrency, databases, retries/timeouts, configuration, security, Telegram/operator permissions, Strategy Lab/shadow systems, safety/circuit breakers, workflows/deployment interactions and tests. Find concrete software defects and operational regressions; do not tune strategy merely for disappointing profit. REPORT ONLY: do not edit files, trade, deploy, change capital/LIVE settings, secrets, wallets or signing.
+
+          Return one JSON object with: schema_version=1, provider=PROVIDER, source_commit=${engineering_source}, scope=FULL_REPOSITORY_BUG_AUDIT, status=CLEAN|ISSUES_FOUND|INCOMPLETE, summary, findings, refusals_or_limits, report_only=true, no_live_changes=true. Each finding must contain id, severity P0-P3, category, title, evidence with file/detail, impact, root_cause, corrective_action, tests_required, confidence 0..1, deterministic_evidence.
+          EOF
+
+            gpt_status="$(report_status "weekly/runs/${engineering_source}/gpt.json")"
+            if [[ "$gpt_status" == MISSING || "$gpt_status" == INCOMPLETE || "$gpt_status" == FAILED ]]; then
+              echo 'Recovering GPT engineering report'
+              cp "$TMP/engineering-prompt.txt" "$TMP/gpt-prompt.txt"
+              sed -i 's/provider=PROVIDER/provider=gpt/' "$TMP/gpt-prompt.txt"
+              cat >> "$TMP/gpt-prompt.txt" <<'EOF'
+          End exactly with ENGINEERING_JSON_BEGIN then the JSON object then ENGINEERING_JSON_END. Do not write repository files.
+          EOF
+              if [[ -z "${CODEX_API_KEY:-}" ]]; then
+                make_eng_incomplete gpt "$engineering_source" 'OPENAI_API_KEY/CODEX_API_KEY is missing.' "$TMP/gpt.json"
+              else
+                set +e
+                model_args=(); [[ -z "${OPENAI_WEEKLY_AUDIT_MODEL:-}" ]] || model_args=(-m "$OPENAI_WEEKLY_AUDIT_MODEL")
+                npx -y @openai/codex@latest --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
+                  < "$TMP/gpt-prompt.txt" > "$TMP/gpt.out" 2> "$TMP/gpt.err"
+                rc=$?
+                set -e
+                if [[ $rc -eq 0 ]] && parse_eng gpt "$engineering_source" "$TMP/gpt.out" ENGINEERING_JSON_BEGIN ENGINEERING_JSON_END "$TMP/gpt.json"; then :; else
+                  reason="$(tail -c 1600 "$TMP/gpt.err" 2>/dev/null || true)"; make_eng_incomplete gpt "$engineering_source" "${reason:-GPT Codex recovery failed.}" "$TMP/gpt.json"
+                fi
+              fi
+              publish_engineering gpt "$engineering_source" "$TMP/gpt.json"
+            fi
+
+            claude_status="$(report_status "weekly/runs/${engineering_source}/claude.json")"
+            if [[ "$claude_status" == MISSING ]]; then
+              echo 'Recovering Claude engineering report'
+              cp "$TMP/engineering-prompt.txt" "$TMP/claude-eng-prompt.txt"
+              sed -i 's/provider=PROVIDER/provider=claude/' "$TMP/claude-eng-prompt.txt"
+              cat >> "$TMP/claude-eng-prompt.txt" <<'EOF'
+          End exactly with CLAUDE_ENGINEERING_JSON_BEGIN then the JSON object then CLAUDE_ENGINEERING_JSON_END.
+          EOF
+              if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+                make_eng_incomplete claude "$engineering_source" 'ANTHROPIC_API_KEY is missing.' "$TMP/claude.json"
+              else
+                set +e
+                npx -y @anthropic-ai/claude-code@latest -p --permission-mode plan --max-turns 8 --output-format text \
+                  --model "$CLAUDE_ENGINEERING_MODEL" "$(cat "$TMP/claude-eng-prompt.txt")" > "$TMP/claude.out" 2> "$TMP/claude.err"
+                rc=$?
+                set -e
+                if [[ $rc -eq 0 ]] && parse_eng claude "$engineering_source" "$TMP/claude.out" CLAUDE_ENGINEERING_JSON_BEGIN CLAUDE_ENGINEERING_JSON_END "$TMP/claude.json"; then :; else
+                  reason="$(tail -c 1600 "$TMP/claude.err" 2>/dev/null || true)"; make_eng_incomplete claude "$engineering_source" "${reason:-Claude recovery failed.}" "$TMP/claude.json"
+                fi
+              fi
+              publish_engineering claude "$engineering_source" "$TMP/claude.json"
+            fi
+
+            deepseek_status="$(report_status "weekly/runs/${engineering_source}/deepseek.json")"
+            if [[ "$deepseek_status" == MISSING ]]; then
+              echo 'Recovering DeepSeek engineering report'
+              cp "$TMP/engineering-prompt.txt" "$TMP/deepseek-eng-prompt.txt"
+              sed -i 's/provider=PROVIDER/provider=deepseek/' "$TMP/deepseek-eng-prompt.txt"
+              cat >> "$TMP/deepseek-eng-prompt.txt" <<'EOF'
+          Also assess API/model cost, server bandwidth and disk-growth inefficiency without weakening any safety control. End exactly with DEEPSEEK_ENGINEERING_JSON_BEGIN then the JSON object then DEEPSEEK_ENGINEERING_JSON_END.
+          EOF
+              if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+                make_eng_incomplete deepseek "$engineering_source" 'DEEPSEEK_API_KEY is missing.' "$TMP/deepseek.json"
+              else
+                set +e
+                ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic' ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY" ANTHROPIC_API_KEY='' \
+                ANTHROPIC_MODEL="$DEEPSEEK_ENGINEERING_MODEL" ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_ENGINEERING_MODEL" \
+                ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_ENGINEERING_MODEL" ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_ENGINEERING_MODEL" \
+                npx -y @anthropic-ai/claude-code@latest -p --permission-mode plan --max-turns 8 --output-format text \
+                  "$(cat "$TMP/deepseek-eng-prompt.txt")" > "$TMP/deepseek.out" 2> "$TMP/deepseek.err"
+                rc=$?
+                set -e
+                if [[ $rc -eq 0 ]] && parse_eng deepseek "$engineering_source" "$TMP/deepseek.out" DEEPSEEK_ENGINEERING_JSON_BEGIN DEEPSEEK_ENGINEERING_JSON_END "$TMP/deepseek.json"; then :; else
+                  reason="$(tail -c 1600 "$TMP/deepseek.err" 2>/dev/null || true)"; make_eng_incomplete deepseek "$engineering_source" "${reason:-DeepSeek recovery failed.}" "$TMP/deepseek.json"
+                fi
+              fi
+              publish_engineering deepseek "$engineering_source" "$TMP/deepseek.json"
+            fi
+          fi
+
+          git checkout -f main >/dev/null 2>&1 || true
+          git clean -fdx >/dev/null 2>&1 || true
+
+          strategy_cycle="$(read_text strategy/latest_cycle_id.txt)"
+          if [[ "$strategy_cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
+            root="strategy/runs/${strategy_cycle}"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${root}/context.json?ref=ai-reviews" --jq '.content' \
+              | tr -d '\n' | base64 -d > "$TMP/context.json"
+            python3 - "$TMP/context.json" > "$TMP/strategy.env" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1])); print('STRATEGY_SOURCE='+str(p.get('source_commit') or '')); print('EVIDENCE_SHA='+str(p.get('evidence_sha256') or '')); print('EVIDENCE_SOURCE='+str(p.get('evidence_source') or ''))
+          PY
+            source "$TMP/strategy.env"
+            if [[ "$STRATEGY_SOURCE" =~ ^[0-9a-f]{40}$ && "$EVIDENCE_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+              exact=false
+              set +e
+              gh api -H 'Accept: application/vnd.github+json' \
+                "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" --jq '.content' 2>/dev/null \
+                | tr -d '\n' | base64 -d > "$TMP/evidence.json" 2>/dev/null
+              rc=$?
+              set -e
+              if [[ $rc -eq 0 && -s "$TMP/evidence.json" && "$(sha256sum "$TMP/evidence.json" | awk '{print $1}')" == "$EVIDENCE_SHA" ]]; then exact=true; fi
+              if [[ "$exact" != true && "$EVIDENCE_SOURCE" == architecture-only ]]; then
+                python3 - "$STRATEGY_SOURCE" > "$TMP/evidence.json" <<'PY'
+          import json,sys
+          print(json.dumps({'schema_version':1,'generated_epoch':0,'generated_utc':'','evidence_status':'MISSING_RUNTIME_FORENSICS','source_commit':sys.argv[1],'note':'No current sanitised runtime forensics branch was available. Review code/architecture, identify evidence gaps, and do not claim live profitability or canary readiness.'},indent=2,sort_keys=True))
+          PY
+                [[ "$(sha256sum "$TMP/evidence.json" | awk '{print $1}')" == "$EVIDENCE_SHA" ]] && exact=true
+              fi
+
+              git checkout --detach "$STRATEGY_SOURCE"
+              git reset --hard "$STRATEGY_SOURCE" >/dev/null
+              git clean -fdx >/dev/null
+
+              make_strategy_incomplete() {
+                local provider="$1" reason="$2" out="$3"
+                python3 - "$provider" "$strategy_cycle" "$STRATEGY_SOURCE" "$EVIDENCE_SHA" "$reason" > "$out" <<'PY'
+          import json,sys
+          provider,cycle,source,evidence,reason=sys.argv[1:6]
+          print(json.dumps({'schema_version':1,'provider':provider,'cycle_id':cycle,'source_commit':source,'evidence_sha256':evidence,'scope':'MULTI_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':provider.title()+' strategy recovery did not complete.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True},indent=2,sort_keys=True))
+          PY
+              }
+
+              parse_strategy() {
+                local provider="$1" raw="$2" out="$3"
+                python3 - "$provider" "$strategy_cycle" "$STRATEGY_SOURCE" "$EVIDENCE_SHA" "$raw" "$out" <<'PY'
+          import json,re,sys,pathlib
+          provider,cycle,source,evidence,rawp,out=sys.argv[1:7]
+          raw=pathlib.Path(rawp).read_text(errors='replace')
+          m=re.search(r'STRATEGY_REVIEW_JSON_BEGIN\s*(\{.*?\})\s*STRATEGY_REVIEW_JSON_END',raw,re.S)
+          if not m: raise SystemExit('strategy markers missing')
+          p=json.loads(m.group(1))
+          for k,v in {'provider':provider,'cycle_id':cycle,'source_commit':source,'evidence_sha256':evidence}.items():
+              if p.get(k)!=v: raise SystemExit(k+' mismatch')
+          if p.get('status') not in {'HEALTHY','CHANGES_PROPOSED','INCOMPLETE'}: raise SystemExit('bad status')
+          p['scope']='MULTI_AGENT_STRATEGY_REVIEW'; p['review_only']=True; p['no_live_changes']=True
+          pathlib.Path(out).write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+              }
+
+              publish_strategy() {
+                local provider="$1" json_file="$2"
+                python3 - "$json_file" "$TMP/${provider}-strategy.md" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1])); open(sys.argv[2],'w').write(f"# {p.get('provider','AI').title()} strategy review\n\n{p.get('summary','')}\n")
+          PY
+                put_file "strategy/runs/${strategy_cycle}/${provider}.json" "$json_file" "Recover ${provider} strategy ${strategy_cycle}"
+                put_file "strategy/runs/${strategy_cycle}/${provider}.md" "$TMP/${provider}-strategy.md" "Recover ${provider} strategy ${strategy_cycle}"
+              }
+
+              cat > "$TMP/strategy-prompt.txt" <<EOF
+          Review the checked-out repository and the exact immutable strategy evidence supplied below as an independent strategy reviewer for a multi-chain automated trading bot.
+          Cycle: ${strategy_cycle}
+          Source commit: ${STRATEGY_SOURCE}
+          Evidence SHA-256: ${EVIDENCE_SHA}
+          Evidence source: ${EVIDENCE_SOURCE}
+          Objective: durable money-weighted NET P&L after fees, slippage, price impact, gas/priority fees, latency, failed executions and exit costs. Separate strategy/market loss from execution/infrastructure failure. Missing or stale runtime evidence alone does not make a complete architecture review INCOMPLETE. REPORT ONLY: do not edit, trade, deploy, change LIVE/risk/capital settings, wallets/signing/secrets, add assets, weaken safety controls or use external web research.
+          Return JSON with schema_version=1, provider=PROVIDER, cycle_id=${strategy_cycle}, source_commit=${STRATEGY_SOURCE}, evidence_sha256=${EVIDENCE_SHA}, scope=MULTI_AGENT_STRATEGY_REVIEW, status=HEALTHY|CHANGES_PROPOSED|INCOMPLETE, summary, proposals, rejected_ideas, evidence_gaps, review_only=true, no_live_changes=true. Any proposal needs id, action, strategy, chain_scope, evidence, rationale, expected_effect, downside_risk, shadow_test, minimum_observation, confidence and suggested_files.
+
+          Exact evidence follows:
+          $(cat "$TMP/evidence.json" 2>/dev/null || echo '{}')
+          EOF
+
+              claude_strategy_status="$(report_status "strategy/runs/${strategy_cycle}/claude.json")"
+              if [[ "$claude_strategy_status" == MISSING ]]; then
+                if [[ "$exact" != true ]]; then
+                  make_strategy_incomplete claude 'Exact evidence bytes could not be reconstructed.' "$TMP/claude-strategy.json"
+                elif [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+                  make_strategy_incomplete claude 'ANTHROPIC_API_KEY is missing.' "$TMP/claude-strategy.json"
+                else
+                  cp "$TMP/strategy-prompt.txt" "$TMP/claude-strategy-prompt.txt"; sed -i 's/provider=PROVIDER/provider=claude/' "$TMP/claude-strategy-prompt.txt"; echo 'End with STRATEGY_REVIEW_JSON_BEGIN, the JSON, then STRATEGY_REVIEW_JSON_END.' >> "$TMP/claude-strategy-prompt.txt"
+                  set +e
+                  npx -y @anthropic-ai/claude-code@latest -p --permission-mode plan --max-turns 8 --output-format text --model "$CLAUDE_STRATEGY_MODEL" \
+                    "$(cat "$TMP/claude-strategy-prompt.txt")" > "$TMP/claude-strategy.out" 2> "$TMP/claude-strategy.err"
+                  rc=$?
+                  set -e
+                  if [[ $rc -eq 0 ]] && parse_strategy claude "$TMP/claude-strategy.out" "$TMP/claude-strategy.json"; then :; else
+                    reason="$(tail -c 1600 "$TMP/claude-strategy.err" 2>/dev/null || true)"; make_strategy_incomplete claude "${reason:-Claude strategy recovery failed.}" "$TMP/claude-strategy.json"
+                  fi
+                fi
+                publish_strategy claude "$TMP/claude-strategy.json"
+              fi
+
+              deepseek_strategy_status="$(report_status "strategy/runs/${strategy_cycle}/deepseek.json")"
+              if [[ "$deepseek_strategy_status" == MISSING ]]; then
+                if [[ "$exact" != true ]]; then
+                  make_strategy_incomplete deepseek 'Exact evidence bytes could not be reconstructed.' "$TMP/deepseek-strategy.json"
+                elif [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+                  make_strategy_incomplete deepseek 'DEEPSEEK_API_KEY is missing.' "$TMP/deepseek-strategy.json"
+                else
+                  cp "$TMP/strategy-prompt.txt" "$TMP/deepseek-strategy-prompt.txt"; sed -i 's/provider=PROVIDER/provider=deepseek/' "$TMP/deepseek-strategy-prompt.txt"; echo 'End with STRATEGY_REVIEW_JSON_BEGIN, the JSON, then STRATEGY_REVIEW_JSON_END.' >> "$TMP/deepseek-strategy-prompt.txt"
+                  set +e
+                  ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic' ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY" ANTHROPIC_API_KEY='' \
+                  ANTHROPIC_MODEL="$DEEPSEEK_STRATEGY_MODEL" ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_STRATEGY_MODEL" ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_STRATEGY_MODEL" ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_STRATEGY_MODEL" \
+                  npx -y @anthropic-ai/claude-code@latest -p --permission-mode plan --max-turns 8 --output-format text \
+                    "$(cat "$TMP/deepseek-strategy-prompt.txt")" > "$TMP/deepseek-strategy.out" 2> "$TMP/deepseek-strategy.err"
+                  rc=$?
+                  set -e
+                  if [[ $rc -eq 0 ]] && parse_strategy deepseek "$TMP/deepseek-strategy.out" "$TMP/deepseek-strategy.json"; then :; else
+                    reason="$(tail -c 1600 "$TMP/deepseek-strategy.err" 2>/dev/null || true)"; make_strategy_incomplete deepseek "${reason:-DeepSeek strategy recovery failed.}" "$TMP/deepseek-strategy.json"
+                  fi
+                fi
+                publish_strategy deepseek "$TMP/deepseek-strategy.json"
+              fi
+            fi
+          fi
+
+          rm -rf "$TMP"
