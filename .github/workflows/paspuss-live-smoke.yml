@@ -1,0 +1,35 @@
+name: PasPuss Live Smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/paspuss-live-smoke.trigger'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify current PasPuss live-search path
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /root/multichain-learning-bot-v2.2-fast-direct-market
+          /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python - <<'PY'
+          from learnerbot import ai_council_live_web_patch as live
+          from learnerbot import ai_council_http_patch as http
+          prompt = '''You are PasPuss AI. Give the user one direct answer.\n\nUSER QUESTION:\nWhat is the current temperature in London?\n\nPRIVATE DRAFTING MATERIAL:\n[smoke test]'''
+          env = http._runtime_env()
+          rc, out, err = live._call_openai(prompt, env)
+          text = str(out or '')
+          print('rc=', rc)
+          print('has_output=', bool(text.strip()))
+          print('offline_refusal=', live._looks_like_offline_refusal(text))
+          print('live_unavailable=', text.strip() == live.LIVE_UNAVAILABLE_TEXT)
+          if rc != 0 or not text.strip() or live._looks_like_offline_refusal(text) or text.strip() == live.LIVE_UNAVAILABLE_TEXT:
+              raise SystemExit(1)
+          PY
