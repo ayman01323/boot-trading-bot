@@ -34,6 +34,14 @@ def test_claude_strategy_review_is_independent_of_copilot_and_deduplicated() -> 
     assert "steps.existing.outputs.found != 'true' && steps.meta.outputs.evidence_match == 'true'" in text
 
 
+def test_claude_paid_smoke_test_is_manual_only() -> None:
+    text = (ROOT / ".github/workflows/claude-agent-smoke.yml").read_text(encoding="utf-8")
+    assert "pull_request:" not in text
+    assert "workflow_dispatch:" in text
+    assert "run_paid_check" in text
+    assert "if: inputs.run_paid_check == true" in text
+
+
 def test_legacy_four_agent_master_delegates_to_selected_resilient_master() -> None:
     legacy = (ROOT / ".github/workflows/four-agent-strategy-master.yml").read_text(encoding="utf-8")
     selected = (ROOT / ".github/workflows/selected-ai-master.yml").read_text(encoding="utf-8")
