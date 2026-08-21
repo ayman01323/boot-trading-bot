@@ -7,7 +7,7 @@ from . import ai_master_control as _control
 from . import telegram_ai_ops_patch as _ai
 from . import telegram_sibot_patch as _sibot_ui
 from . import telegram_ui as _ui
-from .ai_ops_status import snapshot_for_display
+from .ai_ops_status import fetch_ai_reviews, read_json, snapshot_for_display
 from .user_registry import is_master
 
 _PREV_MENU = _ui.menu_keyboard
@@ -156,9 +156,21 @@ def _control_text(app) -> str:
     ])
 
 
+def _latest_vps_result() -> dict:
+    root = _ai._repo_root()
+    try:
+        fetch_ai_reviews(root, timeout=12)
+        value = read_json(root, "vps/claude/latest.json")
+        if isinstance(value, dict):
+            return value
+    except Exception:
+        pass
+    return _control.load_vps_result()
+
+
 def _vps_text(app) -> str:
     cfg = _control.load(app)
-    result = _control.load_vps_result()
+    result = _latest_vps_result()
     action = str(cfg.get("claude_vps_action") or "none").upper()
     nonce = int(cfg.get("claude_vps_action_nonce") or 0)
     status = str(result.get("status") or "WAITING").upper()
