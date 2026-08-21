@@ -1,0 +1,27 @@
+{
+  "action": "inspect",
+  "action_return_code": 0,
+  "deepseek_analysis": "\ud83d\udd34 AGENT: DEEPSEEK\n\n**Inspection result:** action succeeded \u2014 deterministic return code `0`. Inspection only; no VPS mutation requested or performed.\n\n**Service health:** `learnerbot.service` appears healthy.\n- Active: `active (running)`, enabled, stable PID `469602`.\n- No error-level log lines in the supplied context.\n- Expected subsystems started: Solana/SiBot research, Telegram menus/commands, BSC scanner, daily Drive backup, fast-market scan.\n- Current resource usage: 477.5M memory, 35.2s CPU, 15 tasks.\n\n**Concrete warnings:**\n- **SHA mismatch:** requested GitHub source SHA is `3011c3e\u2026`, but running repo SHA is `2d8f2c1\u2026`. The push-triggered inspection may be looking at a different commit than what is deployed.\n- **Memory trend:** memory rose from `461.6M` to `477.5M` within the observed second, while peak is `648.0M`. Worth watching for a possible leak or repeated peak pressure.\n- **No tracked changes:** the VPS reports no tracked changes despite a GitHub push-triggered inspection.\n- **Fast-market-scan:** `eligible=3` but `auto-events=0` \u2014 confirm this is expected for current market conditions rather than a scanner gap.\n\n**Concrete follow-up:**\n1. Align deployed SHA with the expected GitHub SHA and verify the correct commit is running.\n2. Monitor memory over the next few hours; investigate if it repeatedly approaches the `648M` peak.\n3. Validate fast-market-scan auto-event logic to confirm zero events is intentional.\n4. Confirm the daily Drive backup `2026-08-21.zip` exists and is restorable if needed.",
+  "deepseek_analysis_available": true,
+  "deployed_sha": "2d8f2c1fc89ad664cbaaf7cb6176a96490b9cd26",
+  "generated_epoch": 1787348223,
+  "github_to_vps_link": true,
+  "provider": "deepseek",
+  "provider_return_code": 0,
+  "sanitised_action_tail": "Inspection only; no VPS mutation requested.\n",
+  "schema_version": 2,
+  "security": {
+    "arbitrary_deploy_sha": false,
+    "arbitrary_sudo": false,
+    "deploy_current_main_via_restricted_wrapper_only": true,
+    "live_or_risk_bypass": false,
+    "root_shell": false,
+    "wallet_or_private_key_access": false
+  },
+  "self_hosted_runner": true,
+  "service_active": true,
+  "source_commit": "3011c3e3a4e049b6aa9a3b5bc77651c535fb7408",
+  "status": "SUCCESS",
+  "target_sha": "3011c3e3a4e049b6aa9a3b5bc77651c535fb7408",
+  "workflow_run_id": 32529229294
+}
