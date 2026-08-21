@@ -49,6 +49,28 @@ def test_live_openai_call_requires_hosted_web_search(monkeypatch) -> None:
     assert "Do not tell the user that you lack internet access" in captured["payload"]["input"]
 
 
+def test_tool_compatibility_error_retries_documented_web_model(monkeypatch) -> None:
+    models = []
+
+    def fake_http(url, *, headers, payload=None, method=None, timeout=90):
+        models.append(payload["model"])
+        if len(models) == 1:
+            return 400, {"error": {"message": "tool not supported"}}, "", {}
+        return 200, {"output_text": "Fresh answer"}, "", {}
+
+    monkeypatch.setattr(live._http, "_http_json", fake_http)
+    rc, out, err = live._call_openai(
+        _final_prompt("What is the latest news in London?"),
+        {
+            "OPENAI_API_KEY": "test-key",
+            "OPENAI_COUNCIL_MODEL": "custom-text-model",
+            "OPENAI_WEB_MODEL": "gpt-5.4",
+        },
+    )
+    assert (rc, out, err) == (0, "Fresh answer", "")
+    assert models == ["custom-text-model", "gpt-5.4"]
+
+
 def test_static_openai_call_delegates_without_web_search(monkeypatch) -> None:
     called = []
 
