@@ -102,13 +102,18 @@ def test_post_deploy_proof_consumes_inspect_only_without_new_deploy_authority() 
     assert '--permission-mode plan' in tail
     assert 'vps/claude/latest.json' in tail
     assert 'automatic_trigger_inspect_only' in tail
+    assert 'mnemonic|seed phrase' in tail
+    assert '[REDACTED SENSITIVE LINE]' in tail
+    assert "'wallet_or_private_key_access':False" in tail
+    assert "'automatic_trigger_inspect_only':True" in tail
     for forbidden in (
         'deploy-boot-trading-bot',
         '-f action=deploy',
         'PRIVATE_KEY',
-        'mnemonic',
-        'seed phrase',
-        'wallet_or_private_key_access\":True',
+        '/root/.ssh',
+        'id_rsa',
+        'WALLET_PRIVATE_KEY',
+        "'wallet_or_private_key_access':True",
     ):
         assert forbidden not in tail
 
