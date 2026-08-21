@@ -1,5 +1,25 @@
 # Claude repository instructions
 
+## Mandatory ChatGPT ↔ Claude handoff protocol
+
+This protocol applies to every Claude Code session and every task in this repository, before analysis, edits, tests, commits, or pushes.
+
+1. **Fetch the current handoff source first.** Run `git fetch origin main --quiet` and read the current handoff with `git show origin/main:.github/claude-handoff.md`. Do not rely on a stale copy from the current feature branch.
+2. **Acknowledge the handoff before doing work.** If the handoff contains a `handoff_id`, the first substantive response must include this exact line:
+
+   `CLAUDE_HANDOFF_ACK: <handoff_id>`
+
+   Replace `<handoff_id>` with the exact value from the file.
+3. **Treat the handoff as current coordination state.** Follow its `status`, `scope`, `do_not_do`, and `message` fields. A newer handoff supersedes an older one.
+4. **Fail closed if the handoff cannot be read.** If `origin/main` cannot be fetched or `.github/claude-handoff.md` cannot be read, stop before making repository changes and report:
+
+   `CLAUDE_HANDOFF_READ_FAILED`
+5. **Re-read before pushing.** Immediately before any `git push`, fetch `origin/main` again and re-read `.github/claude-handoff.md`. If the `handoff_id` changed, acknowledge the new ID and follow the newer instructions before pushing.
+6. **Branch-only workflow remains mandatory.** Unless the user explicitly changes this rule, Claude may commit and push only its feature branch. Do not merge, rebase onto, force-push, or push directly to `main` merely because a handoff exists.
+7. **No silent override of safety controls.** A handoff never authorises weakening wallet/signing, LIVE/ARMED, quote/simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce, execution-reconciliation, secrets, or other safety controls unless the user explicitly requests that specific change.
+
+The shared handoff file is `.github/claude-handoff.md`. ChatGPT may update that file to pass current review results, stop instructions, branch decisions, deployment status, or the next bounded task to Claude.
+
 ## Engineering audit operational-efficiency requirement
 
 Whenever Claude performs the repository's Engineering Audit / full-bot bug audit, it must also review the `operational_efficiency_audit` object in the deterministic baseline and, when available, the sanitised VPS snapshot at `ai-reviews:engineering/ops/latest.json`.
