@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 def _kv(path: Path) -> dict[tuple[str, str], str]:
     with path.open("r", encoding="utf-8-sig", newline="") as fh:
@@ -41,9 +43,24 @@ def test_polygon_live_migration_is_polygon_scoped_and_keeps_cross_dex_shadow(mon
         ],
     )
     user_calls = []
+    user_values = {}
     focus_calls = []
-    monkeypatch.setattr(mod, "set_user_setting", lambda *a, **kw: user_calls.append((a, kw)))
-    monkeypatch.setattr(mod, "set_focus", lambda app, enabled: focus_calls.append(bool(enabled)))
+    original_focus = mod.set_focus
+
+    def fake_set_user_setting(csv_dir, tid, setting, value, *, chain_id="*", description=""):
+        user_calls.append(((csv_dir, tid, setting, value), {"chain_id": chain_id, "description": description}))
+        user_values[(str(chain_id), str(setting))] = str(value)
+
+    def fake_user_setting(csv_dir, tid, chain_id, setting, default=None):
+        return user_values.get((str(chain_id), str(setting)), default)
+
+    def recording_focus(app, enabled):
+        focus_calls.append(bool(enabled))
+        return original_focus(app, enabled)
+
+    monkeypatch.setattr(mod, "set_user_setting", fake_set_user_setting)
+    monkeypatch.setattr(mod, "user_setting", fake_user_setting)
+    monkeypatch.setattr(mod, "set_focus", recording_focus)
 
     mod.enable_polygon_live(app)
 
@@ -64,6 +81,36 @@ def test_polygon_live_migration_is_polygon_scoped_and_keeps_cross_dex_shadow(mon
     assert "direct_auto_focus=polygon_only" in marker
     assert "route_scope=single_router_profit_protected_cycles" in marker
     assert "cross_dex_live=false" in marker
+
+    verified = (app.data_dir / mod.VERIFIED_MARKER).read_text(encoding="utf-8")
+    assert "chain_id=137" in verified
+    assert "QuickSwap" in verified
+    assert "cross_dex_live=false" in verified
+
+
+def test_polygon_live_verification_fails_closed_when_effective_gate_is_missing(monkeypatch, tmp_path):
+    from learnerbot import polygon_live_enable_migration as mod
+
+    app = SimpleNamespace(csv_dir=tmp_path / "csv", data_dir=tmp_path / "data")
+    app.csv_dir.mkdir(parents=True)
+    app.data_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(mod, "_polygon_ready", lambda app: (True, "QuickSwap"))
+    monkeypatch.setattr(
+        mod,
+        "load_kv_scoped",
+        lambda path, chain_id: {
+            "auto_trading_enabled": "false" if Path(path).name == "auto_trading_settings.csv" else "true",
+            "fast_market_enabled": "true",
+            "full_power_enabled": "true",
+            "trading_enabled": "true",
+        },
+    )
+    monkeypatch.setattr(mod, "focus_enabled", lambda app: True)
+    monkeypatch.setattr(mod, "user_setting", lambda *a, **kw: "true")
+
+    with pytest.raises(RuntimeError, match="platform_auto"):
+        mod.verify_polygon_live(app)
 
 
 def test_runtime_forensics_bridge_survives_git_publish_failure(monkeypatch, tmp_path):
