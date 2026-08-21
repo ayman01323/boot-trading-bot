@@ -1,0 +1,37 @@
+name: Temporary Full Test Diagnosis
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-full-test-diagnosis-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 30
+    steps:
+      - name: Check out tested merge ref without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run complete test suite in isolated venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="/tmp/boot-failed-test-diagnosis-${GITHUB_RUN_ID}"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+          "$venv/bin/python" -m compileall -q learnerbot scripts tests
+          "$venv/bin/python" -m pytest -q
+          rm -rf "$venv"
