@@ -1,0 +1,27 @@
+name: Strategy AI Cost Gate Tests
+
+on:
+  pull_request:
+    paths:
+      - 'learnerbot/strategy_ai_cost_gate.py'
+      - 'tests/test_strategy_ai_cost_gate.py'
+      - 'tests/test_strategy_ai_cost_workflow.py'
+      - '.github/workflows/hourly-three-agent-strategy-cycle.yml'
+      - '.github/workflows/strategy-ai-cost-gate-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Compile cost gate
+        run: python -m py_compile learnerbot/strategy_ai_cost_gate.py
+      - name: Run cost gate tests
+        run: pytest -q tests/test_strategy_ai_cost_gate.py tests/test_strategy_ai_cost_workflow.py tests/test_hourly_three_agent_strategy_workflow.py tests/test_hourly_three_agent_workflow_contract.py
