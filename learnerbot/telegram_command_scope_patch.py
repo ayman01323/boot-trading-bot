@@ -142,3 +142,5 @@ from . import telegram_five_agent_patch  # noqa: E402,F401
 from . import ai_recovery_health_patch  # noqa: E402,F401
 # MASTER Telegram can dispatch the already-bounded DeepSeek GitHub/VPS workflows.
 from . import telegram_deepseek_control_patch  # noqa: E402,F401
+# Compose the bounded trade lookup buttons on top of the existing DeepSeek control.
+from . import telegram_deepseek_trade_lookup_patch  # noqa: E402,F401
