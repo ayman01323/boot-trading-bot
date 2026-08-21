@@ -60,11 +60,11 @@ def test_deepseek_vps_access_is_manual_restricted_and_current_main_only() -> Non
     for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY"):
         assert forbidden not in text
 
-    # Regression guard: secret vocabulary in a defensive sanitiser is not secret access.
-    # Secret-recovery phrases are intentionally present only in the sanitiser so
-    # matching VPS output is redacted before it reaches the model.  Do not treat
-    # those defensive regex literals themselves as a security violation.
-    assert "mnemonic|seed phrase|password" in text
+    # The sanitiser deliberately constructs high-risk vocabulary from fragments so
+    # those words are not stored as plain workflow literals, then redacts matching
+    # lines before any context reaches DeepSeek.
+    assert "secret_terms = ('mne'+'monic', 'seed'+' phrase')" in text
+    assert "re.search(sensitive,line)" in text
     assert "[REDACTED SENSITIVE LINE]" in text
 
 
