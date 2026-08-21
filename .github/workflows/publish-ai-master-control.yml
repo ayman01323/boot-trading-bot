@@ -39,6 +39,7 @@ jobs:
           providers={'auto','gpt','gemini','copilot','claude','deepseek'}
           cycles={'scheduled','manual'}
           vps_actions={'none','inspect','test','deploy'}
+          ds_github_actions={'none','inspect','test','draft_fix'}
           clean={'schema_version':1}
           for lane in ('strategy','engineering'):
               master=str(p.get(lane+'_master') or 'auto').lower()
@@ -54,17 +55,33 @@ jobs:
           clean['claude_vps_action']=action
           clean['claude_vps_action_nonce']=max(0,int(p.get('claude_vps_action_nonce') or 0))
           clean['claude_vps_last_request_epoch']=max(0,int(p.get('claude_vps_last_request_epoch') or 0))
+
+          ds_gh=str(p.get('deepseek_github_action') or 'none').lower()
+          if ds_gh not in ds_github_actions: raise SystemExit('invalid DeepSeek GitHub action')
+          clean['deepseek_github_action']=ds_gh
+          clean['deepseek_github_action_nonce']=max(0,int(p.get('deepseek_github_action_nonce') or 0))
+          clean['deepseek_github_task']=str(p.get('deepseek_github_task') or '').replace('\x00','').strip()[:800]
+          clean['deepseek_github_last_request_epoch']=max(0,int(p.get('deepseek_github_last_request_epoch') or 0))
+
+          ds_vps=str(p.get('deepseek_vps_action') or 'none').lower()
+          if ds_vps not in vps_actions: raise SystemExit('invalid DeepSeek VPS action')
+          clean['deepseek_vps_action']=ds_vps
+          clean['deepseek_vps_action_nonce']=max(0,int(p.get('deepseek_vps_action_nonce') or 0))
+          clean['deepseek_vps_last_request_epoch']=max(0,int(p.get('deepseek_vps_last_request_epoch') or 0))
+
           clean['updated_epoch']=max(0,int(p.get('updated_epoch') or 0))
           clean['updated_by']=str(p.get('updated_by') or '')[:80]
           json.dump(clean,open(out,'w',encoding='utf-8'),indent=2,sort_keys=True);open(out,'a').write('\n')
-          print('ACTION='+action)
-          print('NONCE='+str(clean['claude_vps_action_nonce']))
           PY
-          action="$(python3 -c "import json;print(json.load(open('/tmp/ai-master-control.json')).get('claude_vps_action','none'))")"
-          nonce="$(python3 -c "import json;print(int(json.load(open('/tmp/ai-master-control.json')).get('claude_vps_action_nonce',0)))")"
           echo 'available=true' >> "$GITHUB_OUTPUT"
-          echo "vps_action=$action" >> "$GITHUB_OUTPUT"
-          echo "vps_nonce=$nonce" >> "$GITHUB_OUTPUT"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          p=json.load(open('/tmp/ai-master-control.json'))
+          for key in ('claude_vps_action','deepseek_github_action','deepseek_vps_action'):
+              print(f'{key}={p.get(key,"none")}')
+          for key in ('claude_vps_action_nonce','deepseek_github_action_nonce','deepseek_vps_action_nonce'):
+              print(f'{key}={int(p.get(key) or 0)}')
+          PY
 
       - name: Publish only changed control through GitHub Contents API
         if: steps.control.outputs.available == 'true'
@@ -96,17 +113,23 @@ jobs:
             echo '{}' > /tmp/ai-master-existing.json
           fi
 
-          changed="$(python3 - <<'PY'
+          python3 - <<'PY' > /tmp/ai-master-comparison.env
           import json
           new=json.load(open('/tmp/ai-master-control.json'))
           try: old=json.load(open('/tmp/ai-master-existing.json'))
           except Exception: old={}
-          old.pop('published_epoch',None)
-          print('false' if old==new else 'true')
+          old_no_time=dict(old); old_no_time.pop('published_epoch',None)
+          print('CHANGED=' + ('true' if old_no_time != new else 'false'))
+          for name in ('deepseek_github','deepseek_vps'):
+              key=name+'_action_nonce'
+              requested=int(new.get(key) or 0) > int(old.get(key) or 0)
+              print(name.upper()+'_REQUEST=' + ('true' if requested else 'false'))
           PY
-          )"
-          echo "changed=$changed" >> "$GITHUB_OUTPUT"
-          if [[ "$changed" != true ]]; then
+          source /tmp/ai-master-comparison.env
+          echo "changed=$CHANGED" >> "$GITHUB_OUTPUT"
+          echo "deepseek_github_request=$DEEPSEEK_GITHUB_REQUEST" >> "$GITHUB_OUTPUT"
+          echo "deepseek_vps_request=$DEEPSEEK_VPS_REQUEST" >> "$GITHUB_OUTPUT"
+          if [[ "$CHANGED" != true ]]; then
             echo 'Control is semantically unchanged; no ai-reviews commit/write required.'
             exit 0
           fi
@@ -134,7 +157,7 @@ jobs:
       - name: Wake bounded Claude processor only for a changed VPS request
         if: >-
           steps.publish.outputs.changed == 'true' &&
-          steps.control.outputs.vps_action != 'none'
+          steps.control.outputs.claude_vps_action != 'none'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -146,3 +169,37 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --ref main \
             -f action=none
+
+      - name: Dispatch new bounded DeepSeek GitHub request
+        if: >-
+          steps.publish.outputs.deepseek_github_request == 'true' &&
+          steps.control.outputs.deepseek_github_action != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.control.outputs.deepseek_github_action }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          task="$(python3 -c "import json;print(json.load(open('/tmp/ai-master-control.json')).get('deepseek_github_task',''))")"
+          gh workflow run deepseek-github-controlled-ops.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f action="$ACTION" \
+            -f task="$task"
+          echo "Dispatched DeepSeek GitHub action=$ACTION from Telegram bridge."
+
+      - name: Dispatch new bounded DeepSeek VPS request
+        if: >-
+          steps.publish.outputs.deepseek_vps_request == 'true' &&
+          steps.control.outputs.deepseek_vps_action != 'none'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.control.outputs.deepseek_vps_action }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run deepseek-vps-controlled-ops.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f action="$ACTION"
+          echo "Dispatched DeepSeek VPS action=$ACTION from Telegram bridge."
