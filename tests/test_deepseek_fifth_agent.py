@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from learnerbot.ai_agent_identity import agent_label
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -70,7 +72,9 @@ def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
     assert '_PROVIDER_LABELS["deepseek"] = "DeepSeek"' in ui
     assert 'aicfg:master:{lane}:deepseek' in ui
     assert "five_agent_reports_complete" in ui
-    assert "DeepSeek ✅" in ui
+    assert "from .ai_agent_identity import agent_label" in ui
+    assert "agent_label(name)" in ui
+    assert agent_label("deepseek") == "🔴 DEEPSEEK"
     # Sanitised control never carries provider credentials.
     assert "DEEPSEEK_API_KEY" not in control
 
