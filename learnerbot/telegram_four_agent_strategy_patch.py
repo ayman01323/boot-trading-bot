@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from . import ai_ops_status as _status
 from . import telegram_ai_ops_patch as _tgops
+from .ai_agent_identity import agent_label
 
 _PREV_STRATEGY_STATUS = _status.strategy_status
 _PREV_TRANSITIONS = _tgops.transition_messages
@@ -26,11 +27,9 @@ def _four_complete(state: dict) -> bool:
 
 
 def _agent_lines(state: dict) -> str:
-    return (
-        f"GPT {_icon(_value(state, 'gpt'))} {_value(state, 'gpt')} | "
-        f"Gemini {_icon(_value(state, 'gemini'))} {_value(state, 'gemini')}\n"
-        f"Copilot {_icon(_value(state, 'copilot'))} {_value(state, 'copilot')} | "
-        f"Claude {_icon(_value(state, 'claude'))} {_value(state, 'claude')}"
+    return "\n".join(
+        f"{agent_label(name)} {_icon(_value(state, name))} {_value(state, name)}"
+        for name in _AGENTS
     )
 
 
@@ -84,7 +83,10 @@ def transition_messages_four_agent(previous: dict, current: dict) -> list[str]:
     if current_complete and not previous_complete:
         complete_text = (
             "✅ FOUR STRATEGY AGENTS COMPLETE\n"
-            "GPT ✅  Gemini ✅  Copilot ✅  Claude ✅\n"
+            f"{agent_label('gpt')} ✅\n"
+            f"{agent_label('gemini')} ✅\n"
+            f"{agent_label('copilot')} ✅\n"
+            f"{agent_label('claude')} ✅\n"
             "Strategy master adjudication is available or starting."
         )
         # Put completion before a master-decision message if both become visible
@@ -102,7 +104,11 @@ def strategy_text_four_agent(state: dict) -> str:
     if not s.get("available"):
         return (
             "<b>🔬 FOUR-AGENT STRATEGY REVIEW</b>\n\n"
-            "Waiting for the first GPT + Gemini + Copilot + Claude strategy cycle."
+            f"{agent_label('gpt')}\n"
+            f"{agent_label('gemini')}\n"
+            f"{agent_label('copilot')}\n"
+            f"{agent_label('claude')}\n\n"
+            "Waiting for the first four-agent strategy cycle."
         )
 
     counts = s.get("decision_counts") or {}
@@ -110,12 +116,12 @@ def strategy_text_four_agent(state: dict) -> str:
         "<b>🔬 FOUR-AGENT STRATEGY REVIEW</b>",
         "",
         f"Cycle: <code>{_tgops._safe(s.get('cycle_id'),120)}</code>",
-        f"GPT: {_icon(_value(s, 'gpt'))} <b>{_tgops._safe(_value(s, 'gpt'))}</b>",
-        f"Gemini: {_icon(_value(s, 'gemini'))} <b>{_tgops._safe(_value(s, 'gemini'))}</b>",
-        f"Copilot: {_icon(_value(s, 'copilot'))} <b>{_tgops._safe(_value(s, 'copilot'))}</b>",
-        f"Claude: {_icon(_value(s, 'claude'))} <b>{_tgops._safe(_value(s, 'claude'))}</b>",
-        f"All four complete: <b>{'YES' if _four_complete(s) else 'NO'}</b>",
     ]
+    lines.extend(
+        f"{agent_label(name)}: {_icon(_value(s, name))} <b>{_tgops._safe(_value(s, name))}</b>"
+        for name in _AGENTS
+    )
+    lines.append(f"All four complete: <b>{'YES' if _four_complete(s) else 'NO'}</b>")
     if s.get("master_decision_available"):
         lines += [
             "",
