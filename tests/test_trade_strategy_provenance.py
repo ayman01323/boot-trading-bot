@@ -4,6 +4,7 @@ import csv
 import sqlite3
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,7 +134,7 @@ def test_existing_positions_are_marked_legacy_not_backfilled_with_current_sha(tm
         assert row["git_sha"] == provenance.LEGACY_VALUE
 
 
-def test_auto_execution_and_simulation_logs_are_stamped_and_old_rows_stay_legacy(tmp_path):
+def test_auto_execution_and_simulation_logs_are_stamped_and_outcomes_are_permanent(tmp_path):
     app = App(tmp_path)
     now = int(time.time())
     execution = app.csv_dir / "auto" / "auto_trade_execution.csv"
@@ -149,7 +150,7 @@ def test_auto_execution_and_simulation_logs_are_stamped_and_old_rows_stay_legacy
     with execution.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=old_headers)
         writer.writeheader()
-        writer.writerow({h: _auto_row(now - 100).get(h, "") for h in old_headers})
+        writer.writerow({h: _auto_row(now - 100, tx_hash="tx-old").get(h, "") for h in old_headers})
 
     auto_trader._append(execution, _auto_row(now, tx_hash="tx-new"))
     rows = auto_trader._rows(execution)
@@ -160,6 +161,17 @@ def test_auto_execution_and_simulation_logs_are_stamped_and_old_rows_stay_legacy
     assert rows[1]["strategy_engine"] == provenance.AUTO_EVM_ENGINE
     assert rows[1]["strategy_version"] == provenance.STRATEGY_VERSION
     assert rows[1]["git_sha"] == provenance.GIT_SHA
+
+    # The new outcome is written to an append-only SQLite ledger before the bounded
+    # operational CSV is rotated.
+    with sqlite3.connect(provenance._ledger_path(app.csv_dir)) as conn:
+        ledger = conn.execute(
+            "SELECT strategy_engine,strategy_version,git_sha FROM trade_events "
+            "WHERE action='AUTO_OUTCOME' AND tx_hash='tx-new'"
+        ).fetchone()
+        assert ledger == (provenance.AUTO_EVM_ENGINE, provenance.STRATEGY_VERSION, provenance.GIT_SHA)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            conn.execute("DELETE FROM trade_events WHERE tx_hash='tx-new'")
 
     auto_trader._append_simulation(app.csv_dir, {
         "timestamp_epoch": now,
@@ -180,6 +192,57 @@ def test_auto_execution_and_simulation_logs_are_stamped_and_old_rows_stay_legacy
     assert sim["strategy_engine"] == provenance.AUTO_EVM_ENGINE
     assert sim["strategy_version"] == provenance.STRATEGY_VERSION
     assert sim["git_sha"] == provenance.GIT_SHA
+
+
+def test_live_trader_manual_and_auto_broadcast_audit_is_versioned_and_ledgered(tmp_path):
+    app = App(tmp_path)
+    fake = SimpleNamespace(
+        app=app,
+        telegram_id="123",
+        wallet_id="evm-1",
+        chain=SimpleNamespace(chain_id=137, slug="polygon"),
+        address="0x0000000000000000000000000000000000000001",
+        router_address="0x0000000000000000000000000000000000000002",
+    )
+
+    provenance._live_audit_with_provenance(
+        fake,
+        "BUY",
+        "0x0000000000000000000000000000000000000003",
+        "TOK",
+        "0.1",
+        "100",
+        "95",
+        "manual-tx",
+        "BROADCAST",
+    )
+    provenance._live_audit_with_provenance(
+        fake,
+        "AUTO_CYCLE",
+        "A>B>A",
+        "ROUTE",
+        "1",
+        "1.02",
+        "1.01",
+        "auto-broadcast-tx",
+        "BROADCAST",
+    )
+
+    rows = auto_trader._rows(app.csv_dir / "auto" / "live_trade_audit.csv")
+    assert rows[0]["strategy_engine"] == provenance.MANUAL_EVM_ENGINE
+    assert rows[0]["strategy_version"] == provenance.STRATEGY_VERSION
+    assert rows[0]["git_sha"] == provenance.GIT_SHA
+    assert rows[1]["strategy_engine"] == provenance.AUTO_EVM_ENGINE
+
+    with sqlite3.connect(provenance._ledger_path(app.csv_dir)) as conn:
+        manual = conn.execute(
+            "SELECT strategy_engine,strategy_version,git_sha FROM trade_events WHERE tx_hash='manual-tx'"
+        ).fetchone()
+        auto = conn.execute(
+            "SELECT strategy_engine,strategy_version,git_sha FROM trade_events WHERE tx_hash='auto-broadcast-tx'"
+        ).fetchone()
+    assert manual == (provenance.MANUAL_EVM_ENGINE, provenance.STRATEGY_VERSION, provenance.GIT_SHA)
+    assert auto == (provenance.AUTO_EVM_ENGINE, provenance.STRATEGY_VERSION, provenance.GIT_SHA)
 
 
 def test_24h_attribution_never_merges_engines_versions_or_live_shadow(tmp_path):
@@ -236,8 +299,11 @@ def test_24h_attribution_never_merges_engines_versions_or_live_shadow(tmp_path):
     # remain distinct from SiBot even though version/SHA are identical.
     auto_trader._append(
         app.csv_dir / "auto" / "auto_trade_execution.csv",
-        _auto_row(now - 60, realised_net_base="0.03", profit_fee_base="0.005"),
+        _auto_row(now - 60, tx_hash="auto-outcome", realised_net_base="0.03", profit_fee_base="0.005"),
     )
+
+    # Prove the 24h report is based on the permanent ledger, not the rotating CSV.
+    (app.csv_dir / "auto" / "auto_trade_execution.csv").unlink()
 
     groups = provenance.strategy_attribution_24h(app, "123", now=now)
     keyed = {
