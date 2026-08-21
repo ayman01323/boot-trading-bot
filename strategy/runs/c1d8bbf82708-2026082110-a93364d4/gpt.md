@@ -1,12 +1,12 @@
 # GPT strategy review
 
-Architecture-only review completed. The repository contains substantial fail-closed execution protection and distinguishes execution-failure counts from realised trading results, but Strategy Lab and SHADOW records do not yet provide a complete, chain-normalised, money-weighted net-P&L attribution covering every executable cost and failure. Solana has explicit impact, slippage, priority-fee, platform-fee and refundable-rent handling; EVM has fresh simulation, gas reserves and receipt gas accounting. No profitability, CANARY-readiness or LIVE-readiness conclusion is permitted because current runtime forensics are unavailable.
+Architecture-only review completed. The EVM path has useful fail-closed quote, simulation, liquidity, sellability and receipt-confirmed gas accounting, while the common signal layer requires positive cost-adjusted edge. However, the Solana Strategy Lab adapter deliberately supplies zero current edge and no executable outcome, so Solana strategies cannot yet be economically evaluated there. Strategy Lab accounting also lacks explicit price-impact, gas/priority-fee, rent-state and execution-failure attribution fields, creating a risk that incomplete caller-provided net values or infrastructure failures are interpreted as strategy performance. No profitability, CANARY-readiness or LIVE-readiness claim is supported without fresh runtime forensics and independent realised outcomes.
 
-## REWORK — Strategy Lab performance attribution
-Durable selection requires comparable money-weighted NET P&L and explicit causal attribution. A negative executable trade should be STRATEGY/MARKET loss; quote, simulation, RPC, signing, broadcast, landing or reconciliation faults should be EXECUTION/INFRASTRUCTURE failures, including any gas lost. Collapsing these dimensions can replace sound signals because of infrastructure faults or retain weak signals whose costs are incomplete.
+## REWORK — Solana Strategy Lab feature and outcome adapter
+A historical leader success ratio is not an executable edge. Solana needs timestamped entry and exit quotes at the tested size, route price impact, DEX/platform fees, base and priority/Jito fees, latency/adverse-selection reserve, sellability, liquidity, simulation result, and refundable-rent state before a strategy signal can be evaluated. Rent principal should not be treated as permanent loss while recoverable, but failed or unrecovered rent must remain visible.
 
-## SHADOW_MORE — Cross-chain signal families
-A single expected-edge number is insufficient across Solana and EVM. Solana needs compute/priority or Jito costs, account-rent treatment, Jupiter platform fees, route impact and landing reliability. EVM needs EIP-1559/legacy gas economics, approval/preparation costs, reverts, nonce/replacement failures, MEV exposure and receipt-confirmed gas.
+## IMPROVE — Money-weighted Strategy Lab accounting
+Strategy/market loss means an economically valid execution or mark-to-executable-exit produced negative net performance. Execution/infrastructure failure means quote, RPC, simulation, signing, broadcast, confirmation, reconciliation or settlement failed. These categories have different remedies, but both can consume money and must enter failure-adjusted net P&L where applicable.
 
-## KEEP — Positive executable-edge and sellability gates
-These controls align with the objective: do not manufacture trades, do not weaken liquidity or sellability protection, and require executable edge after chain-specific friction.
+## SHADOW_MORE — Cross Venue Net Arbitrage
+This is the best-supported architectural hypothesis because the cycle is atomic and the current path applies several executable safeguards. Fixed basis-point thresholds still cannot establish edge across EVM chains with materially different gas and inclusion economics, and no fresh realised evidence is available.

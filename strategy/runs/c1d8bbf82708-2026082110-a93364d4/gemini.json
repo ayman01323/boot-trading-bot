@@ -1,9 +1,9 @@
 {
   "cycle_id": "c1d8bbf82708-2026082110-a93364d4",
   "evidence_gaps": [
-    "Fresh within-2h real-money PnL forensics missing.",
-    "No distinct metric available separating structural market losses from infrastructure execution failures.",
-    "Lack of verified block latency and priority fee execution costs for Solana trades."
+    "Fresh runtime forensics are missing (.strategy_cycle/evidence.json indicates MISSING_RUNTIME_FORENSICS).",
+    "Missing historical slippage and priority fee metrics for Solana.",
+    "Missing gas cost impact measurements for EVM networks."
   ],
   "evidence_sha256": "a93364d4244a6a1addcb477ff8e0a49acbade7c347ec90b3d1d03b9583847a1e",
   "no_live_changes": true,
@@ -13,27 +13,23 @@
       "chain_scope": [
         "SOLANA"
       ],
-      "confidence": 0.9,
-      "downside_risk": "None; avoids unverified capital exposure.",
+      "confidence": 0.85,
+      "downside_risk": "None, as capital is not committed in SHADOW.",
       "evidence": [
         {
-          "detail": "Runtime forensics branch unavailable.",
-          "path": ".strategy_cycle/evidence.json"
-        },
-        {
-          "detail": "Defaults estimate 0.00002 SOL fee and 3% max roundtrip loss. Real-world execution/infrastructure gap must be measured.",
+          "detail": "stop_loss_pct=10, take_profit_pct=25 and trailing_trigger_pct=10 provide structural exit rails. Missing latency impact data.",
           "path": "learnerbot/solana_sibot.py"
         }
       ],
-      "expected_effect": "Gather valid baseline net PnL accounting for actual priority fees and slippage on Solana without exposing live capital.",
-      "id": "shadow-eval-solana-sibot",
-      "minimum_observation": "3 evaluation windows, minimum 10 eligible opportunities",
-      "rationale": "Without fresh runtime records to validate Solana network conditions, we cannot confirm if 0.00002 SOL is sufficient for priority inclusion or if 3% loss guard prevents toxic MEV sandwiching. Continued SHADOW tracking is necessary to isolate executable alpha from block-inclusion/infrastructure failures.",
-      "shadow_test": "Measure SHADOW performance across a minimum of 3 evaluation windows against the estimated 0.00002 SOL fee limit and 3% roundtrip loss cap to compute true money-weighted NET P&L.",
-      "strategy": "solana_sibot_copy_leader",
+      "expected_effect": "Gather realistic PnL constraints without endangering live capital.",
+      "id": "prop-sol-shadow-expansion-1",
+      "minimum_observation": "72h or 100+ simulated round-trip trades.",
+      "rationale": "Before trusting real capital to copy-behavior strategies on Solana, we must measure specific slippage and priority fee drift. Wait for a full evidence cycle.",
+      "shadow_test": "Run simulated shadowing for 72h. Verify cost basis including median Jupiter V2 priority fees vs. gross profitability. Halt if failure rate > 10%.",
+      "strategy": "Solana Top20 Leader Copy Behaviour",
       "suggested_files": [
         "learnerbot/solana_sibot.py",
-        "learnerbot/strategy_lab.py"
+        "learnerbot/shadow_strategy_executor.py"
       ]
     },
     {
@@ -41,35 +37,31 @@
       "chain_scope": [
         "EVM"
       ],
-      "confidence": 0.9,
-      "downside_risk": "None; safe empirical data gathering.",
+      "confidence": 0.8,
+      "downside_risk": "Time delay before live rollout, but protects capital.",
       "evidence": [
         {
-          "detail": "Runtime forensics branch unavailable.",
-          "path": ".strategy_cycle/evidence.json"
-        },
-        {
-          "detail": "Defaults assume 250000 gas units for buy/exit and 1.5% max entry deterioration.",
+          "detail": "Multi-chain executor design is present but gas variance impact under load is unverified without runtime forensics.",
           "path": "learnerbot/sibot.py"
         }
       ],
-      "expected_effect": "Establish empirical EVM gas execution baseline and validate 1.5% entry deterioration constraint on current router conditions.",
-      "id": "shadow-eval-evm-sibot",
-      "minimum_observation": "3 evaluation windows, minimum 8 trades",
-      "rationale": "EVM copy trading requires precise differentiation between strategy loss (bad entries) and infrastructure failure (reverts, out-of-gas, missed signals). We must validate the 250k gas cap against current mempool spikes before asserting positive executable edge.",
-      "shadow_test": "Correlate SHADOW paper EVM trades with corresponding mempool/block gas baselines to confirm net profitability is achievable under the 250k unit accounting.",
-      "strategy": "evm_sibot_top20_copy",
+      "expected_effect": "Establish accurate gas-inclusive PnL and MEV slippage baselines.",
+      "id": "prop-evm-shadow-verify-1",
+      "minimum_observation": "48h or 50+ simulated round-trip trades on EVM networks.",
+      "rationale": "Base/Ethereum transaction fees and sandwich attacks must be quantified in shadow execution before live rollout.",
+      "shadow_test": "Monitor top 20 EVM addresses. Apply standard MEV protection assumptions. Compare simulated entry to actual on-chain liquidity at execution time.",
+      "strategy": "EVM Top20 Leader Copy Behaviour",
       "suggested_files": [
         "learnerbot/sibot.py",
-        "learnerbot/strategy_lab.py"
+        "learnerbot/shadow_strategy_executor.py"
       ]
     }
   ],
   "provider": "gemini",
   "rejected_ideas": [
     {
-      "idea": "Promote SHADOW strategies to CANARY or LIVE instantly based on theoretical top-20 leader performance.",
-      "reason": "Direct violation of missing fresh runtime evidence constraints; theoretical edge does not prove positive executable edge against slippage and gas fees."
+      "idea": "Promote EVM copy trading to live implementation immediately.",
+      "reason": "Prohibited due to lack of fresh runtime evidence and unquantified gas/slippage impact."
     }
   ],
   "review_only": true,
@@ -77,5 +69,5 @@
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "c1d8bbf8270854dfcb32e2def8fe51922b76698f",
   "status": "CHANGES_PROPOSED",
-  "summary": "Successful architecture review completed. Due to MISSING_RUNTIME_FORENSICS, all strategies must remain in SHADOW evaluation. The structural invariants in strategy_lab.py, sibot.py and solana_sibot.py correctly enforce execution economics (gas limits, priority fees, and roundtrip loss constraints), but fresh execution evidence is required to quantify real slippage, infrastructure failure rates versus strategy losses, and executable PnL before any promotion can occur."
+  "summary": "Completed architecture-only review of multi-chain copy trading strategy. Due to the absence of fresh runtime forensics, the review relies on static analysis of the MultiChain_Top20_Copy_Behaviour_Bot design in learnerbot/solana_sibot.py and EVM variants. Execution/slippage protections appear structurally sound via break-even floor and take-profit logic, but live promotion is strictly prohibited until durable net money-weighted P&L after network fees and failure rates can be evaluated with real evidence."
 }

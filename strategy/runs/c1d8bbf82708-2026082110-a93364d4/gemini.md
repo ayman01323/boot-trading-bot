@@ -1,9 +1,9 @@
 # Gemini strategy review
 
-Successful architecture review completed. Due to MISSING_RUNTIME_FORENSICS, all strategies must remain in SHADOW evaluation. The structural invariants in strategy_lab.py, sibot.py and solana_sibot.py correctly enforce execution economics (gas limits, priority fees, and roundtrip loss constraints), but fresh execution evidence is required to quantify real slippage, infrastructure failure rates versus strategy losses, and executable PnL before any promotion can occur.
+Completed architecture-only review of multi-chain copy trading strategy. Due to the absence of fresh runtime forensics, the review relies on static analysis of the MultiChain_Top20_Copy_Behaviour_Bot design in learnerbot/solana_sibot.py and EVM variants. Execution/slippage protections appear structurally sound via break-even floor and take-profit logic, but live promotion is strictly prohibited until durable net money-weighted P&L after network fees and failure rates can be evaluated with real evidence.
 
-## SHADOW_MORE — solana_sibot_copy_leader
-Without fresh runtime records to validate Solana network conditions, we cannot confirm if 0.00002 SOL is sufficient for priority inclusion or if 3% loss guard prevents toxic MEV sandwiching. Continued SHADOW tracking is necessary to isolate executable alpha from block-inclusion/infrastructure failures.
+## SHADOW_MORE — Solana Top20 Leader Copy Behaviour
+Before trusting real capital to copy-behavior strategies on Solana, we must measure specific slippage and priority fee drift. Wait for a full evidence cycle.
 
-## SHADOW_MORE — evm_sibot_top20_copy
-EVM copy trading requires precise differentiation between strategy loss (bad entries) and infrastructure failure (reverts, out-of-gas, missed signals). We must validate the 250k gas cap against current mempool spikes before asserting positive executable edge.
+## SHADOW_MORE — EVM Top20 Leader Copy Behaviour
+Base/Ethereum transaction fees and sandwich attacks must be quantified in shadow execution before live rollout.
