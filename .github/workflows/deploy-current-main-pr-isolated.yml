@@ -1,0 +1,107 @@
+name: Deploy Current Main PR Isolated
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/deploy-current-main.trigger'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: boot-vps-current-main-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Record isolated deployment request
+    if: >-
+      github.head_ref == 'agent/deploy-current-main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      TARGET_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Confirm exact base SHA
+        run: |
+          echo "Isolated deployment requested for ${TARGET_SHA}"
+          test "${#TARGET_SHA}" -eq 40
+
+  deploy:
+    name: Test and deploy exact PR base on VPS
+    if: >-
+      github.head_ref == 'agent/deploy-current-main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: probe
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    env:
+      TARGET_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Route repository GitHub SSH through port 443 when writable
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          if [[ -w "$repo/.git/config" ]]; then
+            git -C "$repo" remote set-url origin ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
+            echo 'VPS repository origin routed through ssh.github.com:443.'
+          else
+            echo 'Runner cannot directly rewrite root-owned git config; restricted deploy wrapper will use the existing origin.'
+          fi
+
+      - name: Deploy through restricted root wrapper
+        id: deploy
+        shell: bash
+        run: |
+          set +e
+          sudo /usr/local/sbin/deploy-boot-trading-bot "${TARGET_SHA}" 2>&1 | tee /tmp/boot-isolated-deploy-output.txt
+          rc=${PIPESTATUS[0]}
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+
+      - name: Publish server status and isolated diagnostic
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          DEPLOY_EXIT: ${{ steps.deploy.outputs.exit_code }}
+        run: |
+          set +e
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/boot-isolated-status.txt 2>&1 || true
+          {
+            echo "requested_sha=${TARGET_SHA}"
+            echo "deploy_outcome=${DEPLOY_OUTCOME:-unknown}"
+            echo "deploy_exit=${DEPLOY_EXIT:-unknown}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo '=== SERVER STATUS ==='
+            cat /tmp/boot-isolated-status.txt
+            echo
+            echo '=== DEPLOY OUTPUT (tail) ==='
+            tail -n 160 /tmp/boot-isolated-deploy-output.txt 2>/dev/null || true
+          } > /tmp/boot-isolated-deploy.txt
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-isolated-deploy.txt"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/boot-isolated-deploy.txt)"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/boot-isolated-put.json
+          import json,sys
+          p={'message':'Update isolated VPS deployment diagnostic','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" --data-binary @/tmp/boot-isolated-put.json >/dev/null
+
+          if [[ "${DEPLOY_OUTCOME:-}" != success || "${DEPLOY_EXIT:-}" != 0 ]]; then
+            exit 1
+          fi
