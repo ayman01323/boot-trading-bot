@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import re
 
 from . import solana_emergency_liquidity_unwind_patch as _unwind
@@ -120,6 +121,7 @@ install()
 # the friendly layer then presents one progress card + one final reply, and the rate
 # limiter wraps that final start-question implementation.
 from . import telegram_ai_council_patch as _ai_council  # noqa: E402,F401
+os.environ.setdefault("AI_COUNCIL_RUNTIME_ENV", "/var/tmp/ai_council_runtime.env")
 from . import ai_council_http_patch as _ai_council_http  # noqa: E402,F401
 from . import telegram_ai_council_friendly_patch as _ai_council_friendly  # noqa: E402,F401
 from . import telegram_ai_council_rate_limit_patch as _ai_council_limits  # noqa: E402,F401
