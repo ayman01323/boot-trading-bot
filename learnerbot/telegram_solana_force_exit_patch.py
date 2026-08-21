@@ -1,11 +1,70 @@
 from __future__ import annotations
 
 import html
+import re
 
 from . import solana_emergency_liquidity_unwind_patch as _unwind
 from . import telegram_ui as _ui
 
 _ORIGINAL_HANDLE_UPDATE = _ui.handle_update
+_ORIGINAL_LIVE_NOTIFY = _unwind._live._notify
+_EMERGENCY_PREFIX = "🧯 <b>Solana emergency exit deferred — liquidity unsafe</b>"
+
+
+def _human_retry(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds >= 3600 and seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} hour" + ("s" if hours != 1 else "") + f" ({seconds}s)"
+    if seconds >= 60 and seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{minutes} min ({seconds}s)"
+    return f"{seconds}s"
+
+
+def _format_emergency_liquidity_notice(text: str) -> str:
+    raw = str(text or "")
+    if not raw.startswith(_EMERGENCY_PREFIX):
+        return raw
+
+    reason = re.search(r"Reason: <code>(.*?)</code>", raw)
+    position = re.search(r"Position: <code>(.*?)</code>", raw)
+    ceiling = re.search(r"Hard impact\+slippage ceiling: <b>(.*?)</b>", raw)
+    guard = re.search(r"Last guard: <code>(.*?)</code>", raw)
+    retry = re.search(r"Automatic retry: <b>(\d+)s</b> \(liquidity attempt (\d+)\)\.", raw)
+    if not all((reason, position, ceiling, guard, retry)):
+        return raw
+
+    retry_seconds = int(retry.group(1))
+    attempt = retry.group(2)
+    return (
+        "🧯 <b>SOLANA EMERGENCY EXIT DEFERRED</b>\n"
+        "⚠️ <b>Status:</b> Liquidity unsafe\n\n"
+        "<b>Position</b>\n"
+        f"• ID: <code>{position.group(1)}</code>\n"
+        f"• Trigger: <code>{reason.group(1)}</code>\n\n"
+        "<b>Safety checks</b>\n"
+        f"• Maximum impact + slippage: <b>{ceiling.group(1)}</b>\n"
+        "• Exit sizes tested: <b>100% → 75% → 50% → 25%</b>\n"
+        "• Transaction broadcast: <b>NO</b>\n\n"
+        "<b>Liquidity result</b>\n"
+        "Jupiter priced every tested slice above the emergency ceiling.\n"
+        f"<code>{guard.group(1)}</code>\n\n"
+        "<b>Next action</b>\n"
+        f"• Automatic retry: <b>{_human_retry(retry_seconds)}</b>\n"
+        f"• Liquidity attempt: <b>{attempt}</b>\n\n"
+        "🛡️ <b>Protection:</b> A near-100% price-impact quote is never bypassed automatically because it could realise essentially all remaining swap value as loss."
+    )
+
+
+def _live_notify_with_emergency_format(app, tid, text, *args, **kwargs):
+    return _ORIGINAL_LIVE_NOTIFY(
+        app,
+        tid,
+        _format_emergency_liquidity_notice(str(text or "")),
+        *args,
+        **kwargs,
+    )
 
 
 def handle_update(app, update):
@@ -44,6 +103,9 @@ def handle_update(app, update):
 
 
 def install():
+    if not getattr(_unwind._live, "_emergency_liquidity_alert_format_installed", False):
+        _unwind._live._notify = _live_notify_with_emergency_format
+        _unwind._live._emergency_liquidity_alert_format_installed = True
     if getattr(_ui, "_solana_force_exit_patch_installed", False):
         return
     _ui.handle_update = handle_update
