@@ -9,6 +9,7 @@ def test_kick_workflow_only_dispatches_bounded_processor() -> None:
     text = (ROOT / ".github/workflows/claude-vps-control-kick.yml").read_text(encoding="utf-8")
     assert 'workflows:' in text
     assert '"Publish Telegram AI Master Control"' in text
+    assert '"Deploy BOOT to VPS"' in text
     assert 'actions: write' in text
     assert 'contents: read' in text
     assert 'gh workflow run claude-vps-controlled-ops.yml' in text
