@@ -1,0 +1,83 @@
+{
+  "cycle_id": "1ae2c7fd9b31-2026082113-61d1e52c",
+  "evidence_gaps": [
+    "No runtime/live forensics evidence was supplied for this cycle (evidence_status=MISSING_RUNTIME_FORENSICS in the source evidence document); no actual realized-P&L, slippage, gas-cost, or fill-quality data was available to confirm whether the architectural cost-control mechanisms described in this review are performing as designed in production.",
+    "The sanitised VPS operational snapshot (ai-reviews:engineering/ops/latest.json) referenced in the repository's engineering-audit instructions was not part of the supplied evidence bundle, so no operational-efficiency (API cost / server bandwidth / disk usage) assessment could be performed this cycle. This review is scoped as MULTI_AGENT_STRATEGY_REVIEW rather than the full Engineering Audit, but the gap is noted for completeness and should be picked up when the next Engineering Audit cycle runs with that snapshot available.",
+    "No standalone JSON schema files exist for the loss-forensics export, deploy attestation, or deterministic-baseline evidence artifacts -- schemas are implicit in Python builder functions (e.g. scripts/weekly_bug_audit_baseline.py, learnerbot/loss_forensics_github_export.py) rather than published as separate schema documents, which limits independent, non-Python verification of evidence-artifact integrity across review cycles.",
+    "Without the quote-vs-actual slippage metric proposed in P1, this review cannot confirm whether the net-edge threshold used by cross_chain_strategy_signals.py's _common_executable() gate is well-calibrated against real execution costs versus theoretical/quoted costs."
+  ],
+  "evidence_sha256": "61d1e52cee29b48669bb1e481ba19935bfacfd4434900df19c7d9dded41e849a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "Add a computed quote-vs-actual slippage/price-impact delta metric derived from data already captured, and extend the EVM audit trail to log the actual delivered output amount post-fill. Report-only observability addition; no change to signing, quoting, or risk-gate logic.",
+      "chain_scope": "EVM + Solana (multi-chain)",
+      "confidence": 0.8,
+      "downside_risk": "None to capital or risk controls if implemented as additive, asynchronous, post-hoc logging/reporting over existing tables. Risk only arises if an implementation mistakenly inserts synchronous work into the hot pre-broadcast/signing path -- must be avoided.",
+      "evidence": "solana_execution_efficiency_patch.py's live_execution_receipts table stores both quoted slippage_bps/price_impact_bps and actual raw_input_amount/raw_output_amount/wallet_delta_lamports in the same row, but no code computes a delta (no slippage_realized_bps field or comparison function found anywhere in the survey). learnerbot/live_executor.py's live_trade_audit.csv (~lines 749-753) logs expected_out/minimum_out at quote time but never logs the actual amount delivered post-fill, so EVM quote-vs-actual slippage cannot even in principle be reconstructed from that file alone.",
+      "expected_effect": "Produces an ongoing, auditable realized-fill-quality series per chain/venue that future strategy reviews (including this one) can use to validate or challenge the net-edge thresholds already encoded in _common_executable() and the strategy scorecards. No behavioral change to trading.",
+      "id": "P1-quote-vs-actual-fill-quality-metric",
+      "minimum_observation": "At least 50 closed LIVE or CANARY trades per chain with both quote-time and fill-time amounts present before treating the aggregate distribution as meaningful.",
+      "rationale": "The review objective is durable money-weighted net P&L after fees, slippage, price impact, gas and execution costs. Without a realized-vs-quoted comparison, it is impossible to tell whether the net-edge thresholds used to gate trade eligibility are well-calibrated against real execution quality, or whether apparent strategy underperformance is actually execution slippage eating a real edge.",
+      "shadow_test": "Implement as a read-only, backfillable post-processing pass over existing live_execution_receipts / live_trade_audit.csv rows; validate computed deltas by hand against a sample of recent SHADOW and CANARY records before wiring the metric into any scorecard or reviewer-facing report.",
+      "strategy": "cross-cutting: feeds calibration of cross_chain_strategy_signals.py's net-edge thresholds and strategy_lab.py scorecards",
+      "suggested_files": [
+        "learnerbot/solana_execution_efficiency_patch.py",
+        "learnerbot/live_executor.py",
+        "learnerbot/loss_forensics_github_export.py"
+      ]
+    },
+    {
+      "action": "Merge the existing exit_reason_counts (strategy-level exit reasons) and exit_circuit_status_counts (execution/infrastructure fault buckets) into one reconciled report line that explicitly separates strategy/market loss from execution/infrastructure-failure loss, as this review's objective requires. Report-only addition to the loss-forensics export.",
+      "chain_scope": "Solana now (exit_circuit_breaker is Solana-specific); extend the same pattern to EVM if/when an equivalent execution-fault ledger exists there",
+      "confidence": 0.75,
+      "downside_risk": "Purely additive reporting change with no effect on trading behavior; the only risk is a mis-joined report if the merge logic is wrong, mitigated by cross-checking against raw per-trade rows during the shadow test.",
+      "evidence": "learnerbot/loss_forensics_github_export.py's _position_report computes exit_reason_counts (~line 108, e.g. SOLANA_STOP_LOSS, SOLANA_LEADER_EXIT_LOSS_CAP) and exit_circuit_status_counts (~line 120, sourced from solana_exit_circuit_breaker_patch.py's live_exit_circuit table, e.g. LANDED_INVALID, RECONCILING, ORPHANED) as two separate, uncombined buckets; solana_execution_fault_counter_patch.py additionally tracks a distinct execution-fault counter independent of solana_profit_guard_patch.py's strategy-loss counters. No single reconciled figure exists today.",
+      "expected_effect": "Every future loss-forensics export and review cycle gets one authoritative loss-attribution line, improving the accuracy of strategy promotion/demotion decisions in strategy_lab.py and of every downstream AI reviewer's assessment.",
+      "id": "P2-unified-strategy-vs-execution-loss-attribution",
+      "minimum_observation": "7 days / one full hourly loss-forensics export cycle covering both closed-trade exits and exit-circuit events.",
+      "rationale": "The review objective explicitly calls for separating strategy/market loss from execution/infrastructure failure. Today that requires manually cross-referencing at least three separate counters/tables, which is error-prone and risks misattributing infra faults as bad strategy calls (or vice versa) when a human or AI reviewer reads the export.",
+      "shadow_test": "Generate the merged report from historical loss_forensics exports already produced hourly; compare merged totals against manual reconciliation for at least one full week before treating the merged figure as authoritative in any reviewer-facing prompt or document.",
+      "strategy": "reporting layer only; consumed by the strategy_lab.py promotion/demotion process and all AI strategy reviewers",
+      "suggested_files": [
+        "learnerbot/loss_forensics_github_export.py"
+      ]
+    },
+    {
+      "action": "Either explicitly document why per-transaction 'pending' nonce lookups are sufficient for the current single-signer-per-wallet EVM design, or add local nonce-sequencing/collision test coverage. This is a confirm-or-harden investigation, not a prescribed code change to signing logic.",
+      "chain_scope": "EVM (BSC/ETH/Arbitrum/Base/Polygon)",
+      "confidence": 0.55,
+      "downside_risk": "None from analysis or added test coverage alone. Any future change to nonce handling itself would need separate, careful review since it touches signing directly -- explicitly not proposed here.",
+      "evidence": "learnerbot/live_executor.py line ~304 (nonce = w3.eth.get_transaction_count(self.address, \"pending\")) is the only nonce-handling code found across the ~150-module learnerbot package and ~100 test files; no dedicated local nonce-sequencing, replacement-transaction, or nonce-collision test was found.",
+      "expected_effect": "Either confirms the current approach is adequate (with test evidence), or surfaces a latent execution-reliability gap before it manifests as a stuck LIVE position, without any code change to signing logic being made blind.",
+      "id": "P3-nonce-handling-confirm-or-harden",
+      "minimum_observation": "N/A for test-coverage-only work; if a future code change to nonce handling is made, require zero nonce-related execution faults over at least 100 LIVE EVM transactions before considering it validated.",
+      "rationale": "Even under a single-signer-per-wallet design, relying solely on a live 'pending' nonce query is fragile under mempool congestion, RPC lag, or overlapping retry paths elsewhere in the bot (e.g. emergency-exit retries added in fba36d7), and a stuck or duplicated nonce could silently block or duplicate a stop-loss exit -- the same failure class that commit just hardened for backoff persistence.",
+      "shadow_test": "Add unit/integration tests simulating near-simultaneous transactions and RPC nonce-lag against a local/test RPC node; no production code path change until such tests exist.",
+      "strategy": "EVM execution path only",
+      "suggested_files": [
+        "learnerbot/live_executor.py",
+        "tests/"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "id": "R1-add-evm-aggregator",
+      "idea": "Integrate an EVM DEX aggregator (1inch/0x/Matcha) to reduce price impact versus the current hardcoded PancakeSwap-family V2/V3 router set.",
+      "reason_rejected": "No evidence in this architecture-only review indicates the current router set is actually producing excess price impact in practice -- there is no runtime data this cycle, and no quote-vs-actual slippage metric yet exists to establish a baseline (see P1). Adding a new third-party integration expands signing/execution attack surface and complexity without a demonstrated need. Revisit once P1 provides real realized-slippage data showing the current router set underperforms."
+    },
+    {
+      "id": "R2-build-internal-backtest-engine",
+      "idea": "Build an internal historical backtesting/replay engine to validate strategies against historical data before SHADOW/CANARY.",
+      "reason_rejected": "The existing SHADOW quote-simulation lane (shadow_strategy_executor.py) plus the graduated, capital-bounded LIVE canary process (strategy_canary.py, requiring multi-agent approval and staged trade-count thresholds) already provide a real-money-cautious validation path appropriate to this bot's scale. Project docs (docs/STRATEGY_SOURCE_RESEARCH.md) explicitly treat third-party backtest frameworks as research-only references, never production code, reflecting a deliberate prior decision. Building a new internal historical simulator is a large undertaking with no evidence in this review that SHADOW+canary is currently insufficient."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "1ae2c7fd9b314c3527a1fce37860b4e8c8fdb952",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review (no runtime forensics supplied). The strategy engine (learnerbot/cross_chain_strategy_signals.py, strategy_lab.py) and execution paths (learnerbot/live_executor.py for EVM, learnerbot/solana_live_executor.py + solana_execution_efficiency_patch.py for Solana) show disciplined cost-aware gating: net-edge/liquidity/sellability thresholds before eligibility, gas-reserve-inclusive min-out floors, capped total-fee ratios and profit-share fee caps on Solana, and fail-closed pre-broadcast simulation plus on-chain-proof-required execution reconciliation before any exit is marked complete. The most recent strategy-relevant commit (fba36d7) hardened the Solana emergency-exit circuit breaker by persisting backoff state and adding an operator-confirmed, hard-capped manual override -- a genuine reliability improvement with no weakening of the impact ceiling invariant. The main gaps found are observability/measurement gaps, not missing controls: (1) quote-vs-actual slippage/fill-quality is never computed despite both quoted and actual amounts being stored in the same execution-receipt rows on Solana, and EVM's audit trail never logs the actual delivered output at all; (2) strategy-caused loss and execution/infrastructure-caused loss are tracked in separate counters (exit_reason_counts vs exit_circuit_status_counts) with nothing merging them into one reconciled attribution figure, which is exactly the separation this review's objective requires. Neither gap implies unsafe behavior today; both limit how precisely durable net P&L can be attributed once real trading data exists. No live/runtime evidence was available this cycle to validate any of this against actual outcomes."
+}
