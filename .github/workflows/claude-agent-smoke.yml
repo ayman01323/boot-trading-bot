@@ -1,24 +1,20 @@
 name: Claude Agent Smoke Test
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/claude-fourth-strategy-agent.yml'
-      - '.github/workflows/claude-fourth-engineering-agent.yml'
-      - '.github/workflows/selected-ai-master.yml'
-      - '.github/workflows/claude-agent-smoke.yml'
-      - 'learnerbot/three_agent_strategy_contract.py'
-      - 'tests/test_four_agent_strategy_contract.py'
-      - 'tests/test_four_agent_workflows.py'
-      - 'tests/test_selected_ai_master_control.py'
   workflow_dispatch:
+    inputs:
+      run_paid_check:
+        description: 'Make one real Anthropic API call'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
   smoke:
+    if: inputs.run_paid_check == true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
