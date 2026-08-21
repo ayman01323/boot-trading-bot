@@ -14,7 +14,7 @@ def test_readonly_deepseek_inspector_is_bounded_and_telegram_compatible() -> Non
     assert "ref: main" in text
     assert "persist-credentials: false" in text
     assert "PYTHONDONTWRITEBYTECODE=1" in text
-    assert '"$py" -m pytest -q' in text
+    assert '"$DEEPSEEK_RO_VENV/bin/python" -m pytest -q' in text
 
     # The read-only inspector uses the same direct DeepSeek HTTP provider path
     # already used by the live AI Council, and deliberately ignores the VPS
