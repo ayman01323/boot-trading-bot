@@ -1,0 +1,284 @@
+name: Claude VPS Controlled Operations
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Optional bounded VPS action'
+        required: false
+        default: none
+        type: choice
+        options: [none, inspect, test, deploy]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: claude-vps-controlled-ops
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 30
+    steps:
+      - name: Check out current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve bounded VPS request
+        id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_ACTION: ${{ inputs.action }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          get_review_file() {
+            local path="$1" out="$2"
+            set +e
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d > "$out" 2>/dev/null
+            rc=$?
+            set -e
+            [[ $rc -eq 0 && -s "$out" ]]
+          }
+          get_review_file control/latest.json /tmp/claude-vps-control.json || echo '{}' > /tmp/claude-vps-control.json
+          get_review_file control/claude_vps_dispatch_state.json /tmp/claude-vps-state.json || echo '{}' > /tmp/claude-vps-state.json
+
+          python - "$GITHUB_EVENT_NAME" "${INPUT_ACTION:-none}" /tmp/claude-vps-control.json /tmp/claude-vps-state.json <<'PY' > /tmp/claude-vps-request.env
+          import json,sys
+          event,input_action,control_path,state_path=sys.argv[1:5]
+          try: control=json.load(open(control_path,encoding='utf-8'))
+          except Exception: control={}
+          try: state=json.load(open(state_path,encoding='utf-8'))
+          except Exception: state={}
+          allowed={'none','inspect','test','deploy'}
+          action=str(control.get('claude_vps_action') or 'none').lower()
+          nonce=max(0,int(control.get('claude_vps_action_nonce') or 0))
+          seen=max(0,int(state.get('claude_vps_action_nonce') or 0))
+          requested_by=str(control.get('updated_by') or '')[:80]
+          selected=(str(control.get('strategy_master') or '').lower()=='claude' or str(control.get('engineering_master') or '').lower()=='claude')
+          if event=='workflow_dispatch' and input_action in allowed and input_action!='none':
+              action=input_action
+              nonce=max(nonce,seen)+1
+              requested_by='github-workflow-dispatch'
+          run=(action in allowed and action!='none' and nonce>seen and selected)
+          print('ACTION='+action)
+          print('NONCE='+str(nonce))
+          print('SEEN='+str(seen))
+          print('REQUESTED_BY='+requested_by.replace('\n',' ')[:80])
+          print('SELECTED='+('true' if selected else 'false'))
+          print('RUN='+('true' if run else 'false'))
+          PY
+          source /tmp/claude-vps-request.env
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+          echo "nonce=$NONCE" >> "$GITHUB_OUTPUT"
+          echo "requested_by=$REQUESTED_BY" >> "$GITHUB_OUTPUT"
+          echo "selected=$SELECTED" >> "$GITHUB_OUTPUT"
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          if [[ "$RUN" != true ]]; then
+            echo "No new bounded Claude VPS action. action=$ACTION nonce=$NONCE seen=$SEEN claude_selected=$SELECTED"
+          fi
+
+      - name: Collect pre-action VPS status through restricted wrapper
+        if: steps.request.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-before.txt 2>&1
+
+      - name: Execute bounded VPS action
+        if: steps.request.outputs.run == 'true'
+        id: execute
+        env:
+          ACTION: ${{ steps.request.outputs.action }}
+        shell: bash
+        run: |
+          set +e
+          : > /tmp/claude-vps-action.txt
+          target="$(git rev-parse HEAD)"
+          rc=0
+          case "$ACTION" in
+            inspect)
+              echo 'Inspection only; no VPS mutation requested.' | tee /tmp/claude-vps-action.txt
+              ;;
+            test)
+              tmpvenv="/tmp/claude-vps-test-${GITHUB_RUN_ID}"
+              rm -rf "$tmpvenv"
+              python3 -m venv "$tmpvenv" >> /tmp/claude-vps-action.txt 2>&1 || rc=$?
+              if [[ $rc -eq 0 ]]; then
+                "$tmpvenv/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest >> /tmp/claude-vps-action.txt 2>&1 || rc=$?
+              fi
+              if [[ $rc -eq 0 ]]; then
+                "$tmpvenv/bin/python" -m pytest -q >> /tmp/claude-vps-action.txt 2>&1 || rc=$?
+              fi
+              rm -rf "$tmpvenv"
+              ;;
+            deploy)
+              git fetch --force origin main >> /tmp/claude-vps-action.txt 2>&1 || rc=$?
+              target="$(git rev-parse origin/main 2>/dev/null || true)"
+              current="$(git rev-parse HEAD 2>/dev/null || true)"
+              if [[ $rc -eq 0 && "$target" =~ ^[0-9a-f]{40}$ && "$current" == "$target" ]]; then
+                sudo /usr/local/sbin/deploy-boot-trading-bot "$target" >> /tmp/claude-vps-action.txt 2>&1 || rc=$?
+              else
+                echo 'Refusing deploy: checkout is not exact current origin/main.' >> /tmp/claude-vps-action.txt
+                rc=42
+              fi
+              ;;
+            *)
+              echo 'Unsupported action refused.' >> /tmp/claude-vps-action.txt
+              rc=43
+              ;;
+          esac
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$target" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Collect post-action VPS status through restricted wrapper
+        if: steps.request.outputs.run == 'true'
+        shell: bash
+        run: |
+          set +e
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-after.txt 2>&1
+          exit 0
+
+      - name: Build sanitised Claude VPS context
+        if: steps.request.outputs.run == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib,re
+          parts=[]
+          for title,path in (
+              ('BEFORE','/tmp/claude-vps-before.txt'),
+              ('ACTION','/tmp/claude-vps-action.txt'),
+              ('AFTER','/tmp/claude-vps-after.txt'),
+          ):
+              p=pathlib.Path(path)
+              text=p.read_text(encoding='utf-8',errors='replace') if p.exists() else ''
+              kept=[]
+              for line in text.splitlines():
+                  if re.search(r'(?i)(api[_ -]?key|private[_ -]?key|mnemonic|seed phrase|password|authorization:|bearer |secret=|token=)',line):
+                      kept.append('[REDACTED SENSITIVE LINE]')
+                  else:
+                      line=re.sub(r'sk-ant-[A-Za-z0-9_-]+','<redacted-anthropic-key>',line)
+                      line=re.sub(r'github_pat_[A-Za-z0-9_]+','<redacted-github-token>',line)
+                      line=re.sub(r'gh[pousr]_[A-Za-z0-9]+','<redacted-github-token>',line)
+                      kept.append(line)
+              clean='\n'.join(kept)
+              parts.append(f'=== {title} ===\n'+clean[-9000:])
+          pathlib.Path('/tmp/claude-vps-context.txt').write_text('\n\n'.join(parts)+'\n',encoding='utf-8')
+          PY
+
+      - name: Claude analyse bounded VPS context
+        if: steps.request.outputs.run == 'true'
+        id: claude
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ACTION: ${{ steps.request.outputs.action }}
+          ACTION_RC: ${{ steps.execute.outputs.rc }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANTHROPIC_API_KEY:-}"
+          npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-install.log 2>&1
+          cat > /tmp/claude-vps-prompt.txt <<EOF
+          You are Claude acting as the selected engineering MASTER's bounded VPS observer.
+          Requested VPS action: ${ACTION}; deterministic action return code: ${ACTION_RC}.
+          The context below was collected only through restricted status/deploy wrappers and a clean GitHub checkout.
+          Summarise operational health, whether the requested action succeeded, and any concrete follow-up needed.
+          Do not request or infer secrets. Do not suggest bypassing tests, wallet/signing controls, LIVE risk gates, or sudo restrictions.
+          Keep the answer under 700 characters and plain text.
+
+          $(cat /tmp/claude-vps-context.txt)
+          EOF
+          claude -p --permission-mode plan --max-turns 1 --output-format text --model "${CLAUDE_VPS_MODEL:-sonnet}" \
+            "$(cat /tmp/claude-vps-prompt.txt)" > /tmp/claude-vps-analysis.txt 2>/tmp/claude-vps-error.txt
+
+      - name: Publish sanitised VPS result to ai-reviews
+        if: steps.request.outputs.run == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.request.outputs.action }}
+          NONCE: ${{ steps.request.outputs.nonce }}
+          REQUESTED_BY: ${{ steps.request.outputs.requested_by }}
+          ACTION_RC: ${{ steps.execute.outputs.rc }}
+          TARGET_SHA: ${{ steps.execute.outputs.target_sha }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/claude-vps-result.json
+          import json,os,pathlib,re,time
+          def read(path,limit):
+              p=pathlib.Path(path)
+              if not p.exists(): return ''
+              return p.read_text(encoding='utf-8',errors='replace')[-limit:]
+          after=read('/tmp/claude-vps-after.txt',12000)
+          action_tail=read('/tmp/claude-vps-action.txt',5000)
+          analysis=read('/tmp/claude-vps-analysis.txt',1200).strip()
+          if not analysis:
+              analysis=read('/tmp/claude-vps-error.txt',800).strip() or 'Claude analysis unavailable; deterministic VPS result is still recorded.'
+          analysis=re.sub(r'sk-ant-[A-Za-z0-9_-]+','<redacted>',analysis)
+          sha=''
+          m=re.search(r'(?m)^sha:\s*([0-9a-f]{40})\s*$',after)
+          if m: sha=m.group(1)
+          rc=int(os.environ.get('ACTION_RC') or 999)
+          out={
+              'schema_version':1,
+              'generated_epoch':int(time.time()),
+              'action':os.environ.get('ACTION','none'),
+              'action_nonce':int(os.environ.get('NONCE') or 0),
+              'requested_by':os.environ.get('REQUESTED_BY','')[:80],
+              'status':'SUCCESS' if rc==0 else 'FAILED',
+              'action_return_code':rc,
+              'target_sha':os.environ.get('TARGET_SHA','')[:40],
+              'deployed_sha':sha,
+              'service_active':bool(re.search(r'Active:\s+active \(running\)',after,re.I)),
+              'claude_analysis_available':os.environ.get('CLAUDE_OUTCOME')=='success',
+              'claude_analysis':analysis[:1200],
+              'sanitised_action_tail':action_tail[-2500:],
+              'security':{
+                  'root_shell':False,
+                  'arbitrary_sudo':False,
+                  'wallet_or_private_key_access':False,
+                  'arbitrary_deploy_sha':False,
+                  'deploy_current_main_via_restricted_wrapper_only':True,
+              },
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/claude-vps-ai-reviews
+          git worktree add --detach /tmp/claude-vps-ai-reviews origin/ai-reviews
+          mkdir -p /tmp/claude-vps-ai-reviews/vps/claude /tmp/claude-vps-ai-reviews/control
+          cp /tmp/claude-vps-result.json /tmp/claude-vps-ai-reviews/vps/claude/latest.json
+          python3 - <<'PY' > /tmp/claude-vps-ai-reviews/control/claude_vps_dispatch_state.json
+          import json,os,time
+          print(json.dumps({'claude_vps_action_nonce':int(os.environ.get('NONCE') or 0),'completed_epoch':int(time.time())},indent=2,sort_keys=True))
+          PY
+          cd /tmp/claude-vps-ai-reviews
+          git config user.name 'claude-vps-controlled-ops'
+          git config user.email 'claude-vps-controlled-ops@users.noreply.github.com'
+          git add vps/claude/latest.json control/claude_vps_dispatch_state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Record bounded Claude VPS ${ACTION} result"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: No-op note
+        if: steps.request.outputs.run != 'true'
+        run: echo 'No new Claude VPS request; no VPS command was executed.'

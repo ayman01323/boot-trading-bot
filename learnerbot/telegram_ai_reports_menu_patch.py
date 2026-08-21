@@ -7,7 +7,7 @@ from . import ai_master_control as _control
 from . import telegram_ai_ops_patch as _ai
 from . import telegram_sibot_patch as _sibot_ui
 from . import telegram_ui as _ui
-from .ai_ops_status import snapshot_for_display
+from .ai_ops_status import fetch_ai_reviews, read_json, snapshot_for_display
 from .user_registry import is_master
 
 _PREV_MENU = _ui.menu_keyboard
@@ -53,9 +53,8 @@ def menu_keyboard(app=None, chat_id=None):
 def _ai_keyboard() -> dict:
     return {
         "inline_keyboard": [
-            [
-                {"text": "🎛 AI Master Control", "callback_data": "aiops:control"},
-            ],
+            [{"text": "🎛 AI Master Control", "callback_data": "aiops:control"}],
+            [{"text": "🖥 Claude VPS Access", "callback_data": "aiops:vps"}],
             [
                 {"text": "🧪 Engineering Audit", "callback_data": "aiops:audit"},
                 {"text": "🧠 Master Decisions", "callback_data": "aiops:decision"},
@@ -103,7 +102,29 @@ def _control_keyboard(value: dict) -> dict:
         [cbtn("engineering", "scheduled", "⏱ Scheduled"), cbtn("engineering", "manual", "✋ Manual")],
         [toggle("engineering"), {"text": "▶️ Run Engineering now", "callback_data": "aicfg:run:engineering"}],
         [{"text": "▶️ Run BOTH now", "callback_data": "aicfg:run:both"}],
+        [{"text": "🖥 Claude VPS Access", "callback_data": "aiops:vps"}],
         [{"text": "⬅️ AI Reports", "callback_data": "menu:aiops"}],
+    ]}
+
+
+def _vps_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [
+            {"text": "🔎 Inspect VPS", "callback_data": "aivps:run:inspect"},
+            {"text": "🧪 Run VPS tests", "callback_data": "aivps:run:test"},
+        ],
+        [{"text": "🚀 Deploy current main", "callback_data": "aivps:confirm:deploy"}],
+        [
+            {"text": "🔄 Refresh", "callback_data": "aiops:vps"},
+            {"text": "⬅️ AI Reports", "callback_data": "menu:aiops"},
+        ],
+    ]}
+
+
+def _vps_confirm_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [{"text": "✅ Confirm deploy CURRENT main", "callback_data": "aivps:run:deploy"}],
+        [{"text": "❌ Cancel", "callback_data": "aiops:vps"}],
     ]}
 
 
@@ -133,6 +154,51 @@ def _control_text(app) -> str:
         "",
         "<i>AI availability never disables the live trading engine. AI review/master decisions cannot bypass wallet, signing, simulation, liquidity, loss, capital or LIVE execution gates.</i>",
     ])
+
+
+def _latest_vps_result() -> dict:
+    root = _ai._repo_root()
+    try:
+        fetch_ai_reviews(root, timeout=12)
+        value = read_json(root, "vps/claude/latest.json")
+        if isinstance(value, dict):
+            return value
+    except Exception:
+        pass
+    return _control.load_vps_result()
+
+
+def _vps_text(app) -> str:
+    cfg = _control.load(app)
+    result = _latest_vps_result()
+    action = str(cfg.get("claude_vps_action") or "none").upper()
+    nonce = int(cfg.get("claude_vps_action_nonce") or 0)
+    status = str(result.get("status") or "WAITING").upper()
+    last_action = str(result.get("action") or "none").upper()
+    target = str(result.get("target_sha") or result.get("deployed_sha") or "")[:40]
+    analysis = str(result.get("claude_analysis") or "").strip()
+    if len(analysis) > 800:
+        analysis = analysis[:800] + "…"
+    lines = [
+        "<b>🖥 CLAUDE VPS CONTROLLED ACCESS</b>",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "Claude is allowed to inspect sanitised VPS status/logs, run isolated tests, and deploy only the current GitHub <code>main</code> through the existing restricted root wrapper.",
+        "",
+        "🔒 No root shell | No arbitrary sudo | No wallet/private-key access | No safety-gate bypass",
+        "",
+        f"Pending/requested action: <b>{html.escape(action)}</b> #{nonce}",
+        f"Last VPS result: <b>{html.escape(status)}</b> — {html.escape(last_action)}",
+    ]
+    if target:
+        lines.append(f"Target/deployed SHA: <code>{html.escape(target)}</code>")
+    if analysis:
+        lines += ["", "<b>Claude VPS analysis:</b>", html.escape(analysis)]
+    lines += [
+        "",
+        "<i>Deploy requires a second Telegram confirmation and can deploy only the current tested main SHA. The restricted VPS deployment wrapper still runs the full server test suite before restart.</i>",
+    ]
+    return "\n".join(lines)
 
 
 def _mark(value):
@@ -200,12 +266,16 @@ def _render_control(app, tid, cb=None):
     _render(app, tid, _control_text(app), _control_keyboard(value), cb)
 
 
+def _render_vps(app, tid, cb=None):
+    _render(app, tid, _vps_text(app), _vps_keyboard(), cb)
+
+
 def handle_update(app, update):
     cb = update.get("callback_query")
     if cb:
         tid = ((cb.get("message") or {}).get("chat") or {}).get("id")
         data = str(cb.get("data") or "")
-        if data == "menu:aiops" or data.startswith("aiops:") or data.startswith("aicfg:"):
+        if data == "menu:aiops" or data.startswith("aiops:") or data.startswith("aicfg:") or data.startswith("aivps:"):
             if not _is_master(app, tid):
                 _answer(app, cb, "MASTER only")
                 return
@@ -242,6 +312,16 @@ def handle_update(app, update):
                 _answer(app, cb, text)
                 _render_control(app, tid, cb)
                 return
+            if data == "aivps:confirm:deploy":
+                _answer(app, cb, "Confirm current-main deploy")
+                _render(app, tid, "<b>⚠️ CONFIRM VPS DEPLOY</b>\n\nThis will deploy only the current GitHub <code>main</code> SHA through the restricted root wrapper. Full VPS tests must pass before the service restarts.", _vps_confirm_keyboard(), cb)
+                return
+            if data.startswith("aivps:run:"):
+                action = data.rsplit(":", 1)[1]
+                _control.request_vps_action(app, action, updated_by=tid)
+                _answer(app, cb, f"Claude VPS {action} requested")
+                _render_vps(app, tid, cb)
+                return
 
             _answer(app, cb)
             state = snapshot_for_display(_ai._repo_root())
@@ -255,6 +335,9 @@ def handle_update(app, update):
                 body = _ai._combined_text(state)
             elif data == "aiops:control":
                 _render_control(app, tid, cb)
+                return
+            elif data == "aiops:vps":
+                _render_vps(app, tid, cb)
                 return
             else:
                 body = _home_text(app, state)

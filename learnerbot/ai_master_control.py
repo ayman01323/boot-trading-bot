@@ -9,6 +9,7 @@ from typing import Any
 PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude")
 LANES = ("strategy", "engineering")
 CYCLES = ("scheduled", "manual")
+VPS_ACTIONS = ("none", "inspect", "test", "deploy")
 
 DEFAULT_CONTROL = {
     "schema_version": 1,
@@ -20,6 +21,9 @@ DEFAULT_CONTROL = {
     "engineering_enabled": True,
     "strategy_run_nonce": 0,
     "engineering_run_nonce": 0,
+    "claude_vps_action": "none",
+    "claude_vps_action_nonce": 0,
+    "claude_vps_last_request_epoch": 0,
     "updated_epoch": 0,
     "updated_by": "",
 }
@@ -31,6 +35,10 @@ def _path(app) -> Path:
 
 def bridge_path() -> Path:
     return Path("/var/tmp/boot/ai_master_control.json")
+
+
+def vps_result_path() -> Path:
+    return Path("/var/tmp/boot/claude_vps_ops_latest.json")
 
 
 def _bool(value: Any, default: bool = False) -> bool:
@@ -54,6 +62,16 @@ def sanitise(raw: dict | None) -> dict:
             out[f"{lane}_run_nonce"] = max(0, int(src.get(f"{lane}_run_nonce") or 0))
         except Exception:
             out[f"{lane}_run_nonce"] = 0
+    action = str(src.get("claude_vps_action") or "none").lower().strip()
+    out["claude_vps_action"] = action if action in VPS_ACTIONS else "none"
+    try:
+        out["claude_vps_action_nonce"] = max(0, int(src.get("claude_vps_action_nonce") or 0))
+    except Exception:
+        out["claude_vps_action_nonce"] = 0
+    try:
+        out["claude_vps_last_request_epoch"] = max(0, int(src.get("claude_vps_last_request_epoch") or 0))
+    except Exception:
+        out["claude_vps_last_request_epoch"] = 0
     try:
         out["updated_epoch"] = max(0, int(src.get("updated_epoch") or 0))
     except Exception:
@@ -68,6 +86,14 @@ def load(app) -> dict:
     except Exception:
         raw = {}
     return sanitise(raw)
+
+
+def load_vps_result() -> dict:
+    try:
+        value = json.loads(vps_result_path().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -137,6 +163,17 @@ def request_run(app, lane: str, *, updated_by: str | int = "") -> dict:
     value = load(app)
     value[f"{lane}_enabled"] = True
     value[f"{lane}_run_nonce"] = int(value.get(f"{lane}_run_nonce") or 0) + 1
+    return save(app, value, updated_by=updated_by)
+
+
+def request_vps_action(app, action: str, *, updated_by: str | int = "") -> dict:
+    action = str(action).lower().strip()
+    if action not in VPS_ACTIONS or action == "none":
+        raise ValueError("unsupported Claude VPS action")
+    value = load(app)
+    value["claude_vps_action"] = action
+    value["claude_vps_action_nonce"] = int(value.get("claude_vps_action_nonce") or 0) + 1
+    value["claude_vps_last_request_epoch"] = int(time.time())
     return save(app, value, updated_by=updated_by)
 
 
