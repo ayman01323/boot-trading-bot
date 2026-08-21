@@ -1,0 +1,70 @@
+{
+  "cycle_id": "7b5f44c8ee35-2026082110-2c09882c",
+  "evidence_gaps": [
+    "Missing recent runtime forensics (evidence.json missing runtime forensics).",
+    "Lack of real execution logs to verify Slippage and Priority Fee bounds in fast markets."
+  ],
+  "evidence_sha256": "2c09882c175b4e92b2a31a61183b83e3daab05a8f8eb447df9153ad3553c9280",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Might increase RPC payload complexity if dynamic fees are constantly requested for every SHADOW quote.",
+      "evidence": [
+        {
+          "detail": "_validate_shadow_entry uses a static configuration for estimated_entry_fee_sol (default 0.00002) which ignores dynamic priority fees in fast markets.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "More accurate representation of net-PnL and execution costs during SHADOW testing.",
+      "id": "prop-sol-dynamic-fees-01",
+      "minimum_observation": "100 closed Solana SHADOW trades.",
+      "rationale": "Accurate SHADOW PnL requires dynamic infrastructure fee awareness. Fast market conditions usually spike priority fees, turning marginally profitable leaders into net-loss trades if static fees are assumed, thus misclassifying an EXECUTION/INFRASTRUCTURE cost as a HEALTHY setup.",
+      "shadow_test": "Record dynamic priority fee estimates (e.g. from Jupiter's API or recent block averages) instead of a hardcoded 0.00002 SOL during SHADOW PnL validation.",
+      "strategy": "Solana SiBot Copy Trading",
+      "suggested_files": [
+        "learnerbot/solana_sibot.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "eth_estimateGas calls might fail or revert if the simulation state is inconsistent with the real execution block, requiring fallback handling.",
+      "evidence": [
+        {
+          "detail": "_estimated_gas_native uses a static 250,000 gas units fallback for accounting, bypassing actual eth_estimateGas validation.",
+          "path": "learnerbot/sibot.py"
+        }
+      ],
+      "expected_effect": "Will prevent false-positive SHADOW buys on high-gas-cost tokens, improving net P&L realism.",
+      "id": "prop-evm-dynamic-gas-01",
+      "minimum_observation": "100 closed EVM SHADOW trades.",
+      "rationale": "Static gas units fail to capture the infrastructure execution cost of high-tax or complex proxy tokens. A lack of eth_estimateGas leads to optimistic entry validations, blending EXECUTION gas failures into MARKET models.",
+      "shadow_test": "Execute eth_estimateGas for all prospective SiBot EVM BUY/SELL operations during SHADOW mode and log the deviations against the 250,000 fallback.",
+      "strategy": "EVM SiBot Copy Trading",
+      "suggested_files": [
+        "learnerbot/sibot.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote SiBot strategies directly to LIVE",
+      "reason": "Prohibited by architectural review constraints; no fresh runtime forensics are available."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "7b5f44c8ee35fa83b2403149320a0e7202e5599d",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architectural review completed in the absence of fresh runtime forensics. The EVM and Solana SiBot engines successfully isolate leader signals, perform FIFO trade reconstruction, and implement round-trip slippage/deterioration gates. However, fixed execution cost estimates on both chains mask real-world network infrastructure variance (Solana priority fees, EVM gas constraints), which risks inflating SHADOW PnL and blending EXECUTION failure with MARKET loss."
+}
