@@ -68,6 +68,7 @@ def test_leader_prompt_requests_mobile_friendly_spacing() -> None:
 def test_progress_message_is_deleted_after_success(monkeypatch) -> None:
     session = {
         "session_id": "abc",
+        "question": "What should I feed my cat?",
         "answers": {"gpt": {"status": "DONE", "answer": "draft"}},
         "telegram": {"progress_message_id": 42},
     }
@@ -86,3 +87,58 @@ def test_progress_message_is_deleted_after_success(monkeypatch) -> None:
     assert deleted == [42]
     assert len(sent) == 1
     assert sent[0][0] == "🐾 PasPuss AI"
+
+
+def test_live_question_does_not_fallback_to_offline_independent_answer(monkeypatch) -> None:
+    session = {
+        "session_id": "live1",
+        "question": "What is the current temperature in London?",
+        "answers": {"gemini": {"status": "DONE", "answer": "I do not have access to live weather feeds."}},
+        "telegram": {},
+    }
+    sent = []
+    fallback_calls = []
+
+    monkeypatch.setattr(clean._friendly._council, "load_session", lambda app, sid: dict(session))
+    monkeypatch.setattr(clean._friendly._council, "run_leader", lambda app, sid, leader: {"status": "FAILED", "answer": ""})
+    monkeypatch.setattr(clean._friendly, "_best_available_answer", lambda s: fallback_calls.append(True) or ("gemini", "offline draft"))
+    monkeypatch.setattr(clean, "_direct_live_retry", lambda s: "London is 19°C right now.")
+    monkeypatch.setattr(clean._friendly, "_status_message", lambda app, tid, s, text, keyboard=None: s)
+    monkeypatch.setattr(clean._friendly, "_chat_action", lambda app, tid: None)
+    monkeypatch.setattr(clean._friendly, "_mark_delivered", lambda app, s, fallback=False: None)
+    monkeypatch.setattr(clean, "_delete_progress_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(clean, "_send_final_reply", lambda app, tid, s, title, body, keyboard=None: sent.append(body))
+
+    clean._finish_user_from_answers(SimpleNamespace(), 123, "live1")
+    assert fallback_calls == []
+    assert sent == ["London is 19°C right now."]
+
+
+def test_live_offline_refusal_is_replaced_by_live_retry(monkeypatch) -> None:
+    session = {
+        "session_id": "live2",
+        "question": "What is the temperature in London right now?",
+        "answers": {"gpt": {"status": "DONE", "answer": "draft"}},
+        "telegram": {},
+    }
+    sent = []
+
+    monkeypatch.setattr(clean._friendly._council, "load_session", lambda app, sid: dict(session))
+    monkeypatch.setattr(
+        clean._friendly._council,
+        "run_leader",
+        lambda app, sid, leader: {
+            "status": "DONE",
+            "answer": "I cannot provide the current real-time temperature because I do not have access to live weather feeds.",
+        },
+    )
+    monkeypatch.setattr(clean, "_direct_live_retry", lambda s: clean._live.LIVE_UNAVAILABLE_TEXT)
+    monkeypatch.setattr(clean._friendly, "_status_message", lambda app, tid, s, text, keyboard=None: s)
+    monkeypatch.setattr(clean._friendly, "_chat_action", lambda app, tid: None)
+    monkeypatch.setattr(clean._friendly, "_mark_delivered", lambda app, s, fallback=False: None)
+    monkeypatch.setattr(clean, "_delete_progress_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(clean, "_send_final_reply", lambda app, tid, s, title, body, keyboard=None: sent.append(body))
+
+    clean._finish_user_from_answers(SimpleNamespace(), 123, "live2")
+    assert sent == [clean._live.LIVE_UNAVAILABLE_TEXT]
+    assert "do not have access" not in sent[0].lower()
