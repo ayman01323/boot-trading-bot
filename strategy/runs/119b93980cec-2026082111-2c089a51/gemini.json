@@ -1,0 +1,53 @@
+{
+  "cycle_id": "119b93980cec-2026082111-2c089a51",
+  "evidence_gaps": [
+    "No fresh runtime evidence generated within the last 2 hours.",
+    "Lack of verified transaction cost data (Solana network fees, EVM gas) for current market conditions.",
+    "Missing execution failure rate and slippage metrics to differentiate infrastructure faults from strategy weakness."
+  ],
+  "evidence_sha256": "2c089a51e3482d945ddcacf031ee2ff9d4ca5530c0aa75dfa905f417aa395c43",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "Potentially delays capital deployment on valid strategies until sufficient runtime forensics can be collected.",
+      "evidence": [
+        {
+          "detail": "Enforces SHADOW status and uses MIN_EVALUATION_WINDOWS to safely isolate evaluation from LIVE execution.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Reports MISSING_RUNTIME_FORENSICS, indicating no live/fresh execution data is available.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Ensures no unverified strategy is promoted to LIVE or CANARY. Allows for continued accumulation of simulated metrics.",
+      "id": "shadow-baseline-strategies",
+      "minimum_observation": "3 independent evaluation windows with at least 8 total trades",
+      "rationale": "Without fresh runtime evidence detailing gas, priority fees, slippage, and execution/infrastructure failure rates, profitability cannot be validated. The architecture's default SHADOW state must be maintained.",
+      "shadow_test": "Simulate and measure against live data to verify net_profit > 0 and profit_factor >= 1.10. Must explicitly separate market/strategy losses from infrastructure/execution failures.",
+      "strategy": "Core Strategy Lab Hypotheses (ARBITRAGE, MOMENTUM, MEAN_REVERSION, FLOW, NEW_MARKET, LEARNED_PATTERN)",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote ARBITRAGE or MOMENTUM strategies directly to LIVE or CANARY status",
+      "reason": "Explicitly prohibited without fresh runtime forensics to demonstrate durable net profitability after fees, slippage, and execution failures."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "119b93980cec9678e5cc7f7f23fc6cd311e933ae",
+  "status": "HEALTHY",
+  "summary": "Completed architecture-only review of the strategy lab. The architecture robustly enforces SHADOW isolation for all new proposals. Due to the lack of fresh runtime evidence, live profitability cannot be evaluated. All strategies must continue gathering out-of-sample shadow execution data."
+}
