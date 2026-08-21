@@ -25,6 +25,9 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 30
+    env:
+      DEEPSEEK_RO_VENV: /tmp/deepseek-ro-${{ github.run_id }}
+
     steps:
       - name: Check out exact current main without persisted credentials
         uses: actions/checkout@v4
@@ -61,16 +64,35 @@ jobs:
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$source_sha" > /tmp/deepseek-ro-sha.txt
 
-          py='python3'
-          if [[ -x /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python ]]; then
-            py='/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python'
-          fi
+          rm -rf "$DEEPSEEK_RO_VENV"
+          python3 -m venv "$DEEPSEEK_RO_VENV"
+
+          set +e
+          "$DEEPSEEK_RO_VENV/bin/python" -m pip install \
+            --disable-pip-version-check -q \
+            -r requirements.txt pytest \
+            > /tmp/deepseek-ro-install.txt 2>&1
+          install_rc=$?
+          set -e
+          echo "install_rc=$install_rc" >> "$GITHUB_OUTPUT"
 
           git status --porcelain > /tmp/deepseek-ro-status-before.txt
-          set +e
-          PYTHONDONTWRITEBYTECODE=1 "$py" -m pytest -q > /tmp/deepseek-ro-tests.txt 2>&1
-          test_rc=$?
-          set -e
+
+          if [[ "$install_rc" -eq 0 ]]; then
+            set +e
+            PYTHONDONTWRITEBYTECODE=1 \
+              "$DEEPSEEK_RO_VENV/bin/python" -m pytest -q \
+              > /tmp/deepseek-ro-tests.txt 2>&1
+            test_rc=$?
+            set -e
+          else
+            test_rc=125
+            {
+              echo "Dependency installation failed; pytest was not run."
+              tail -n 120 /tmp/deepseek-ro-install.txt
+            } > /tmp/deepseek-ro-tests.txt
+          fi
+
           git status --porcelain > /tmp/deepseek-ro-status-after.txt
           if [[ -s /tmp/deepseek-ro-status-after.txt ]]; then
             clean_rc=1
@@ -82,6 +104,7 @@ jobs:
 
           python3 - <<'PY'
           import pathlib, re
+
           def safe(path, limit):
               p = pathlib.Path(path)
               text = p.read_text(encoding='utf-8', errors='replace')[-limit:] if p.exists() else ''
@@ -94,12 +117,17 @@ jobs:
               text = re.sub(r'github_pat_[A-Za-z0-9_]+', '<redacted-github-token>', text)
               text = re.sub(r'gh[pousr]_[A-Za-z0-9]+', '<redacted-github-token>', text)
               return text
+
           parts = [
               '=== CURRENT MAIN SHA ===\n' + safe('/tmp/deepseek-ro-sha.txt', 200),
+              '=== DEPENDENCY INSTALL ===\n' + safe('/tmp/deepseek-ro-install.txt', 6000),
               '=== PYTEST ===\n' + safe('/tmp/deepseek-ro-tests.txt', 12000),
               '=== WORKTREE AFTER TEST ===\n' + safe('/tmp/deepseek-ro-status-after.txt', 3000),
           ]
-          pathlib.Path('/tmp/deepseek-ro-context.txt').write_text('\n\n'.join(parts) + '\n', encoding='utf-8')
+          pathlib.Path('/tmp/deepseek-ro-context.txt').write_text(
+              '\n\n'.join(parts) + '\n',
+              encoding='utf-8',
+          )
           PY
 
       - name: Ask DeepSeek using sanitised context only
@@ -109,17 +137,20 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           AI_COUNCIL_RUNTIME_ENV: /tmp/deepseek-readonly-no-runtime.env
           SOURCE_SHA: ${{ steps.collect.outputs.source_sha }}
+          INSTALL_RC: ${{ steps.collect.outputs.install_rc }}
           TEST_RC: ${{ steps.collect.outputs.test_rc }}
           CLEAN_RC: ${{ steps.collect.outputs.clean_rc }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
-          py='python3'
-          if [[ -x /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python ]]; then
-            py='/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python'
+
+          py="$DEEPSEEK_RO_VENV/bin/python"
+          if [[ ! -x "$py" ]]; then
+            py='python3'
           fi
-          "$py" - <<'PY'
+
+          PYTHONDONTWRITEBYTECODE=1 "$py" - <<'PY'
           import os, pathlib
           from learnerbot.ai_council_http_patch import call_provider
 
@@ -128,6 +159,7 @@ jobs:
           prompt = '\n'.join([
               'You are DEEPSEEK acting as a bounded read-only repository status analyst.',
               'Exact current-main SHA: ' + os.environ.get('SOURCE_SHA', ''),
+              'Dependency-install return code: ' + os.environ.get('INSTALL_RC', ''),
               'Pytest return code: ' + os.environ.get('TEST_RC', ''),
               'Worktree-clean return code: ' + os.environ.get('CLEAN_RC', ''),
               'Requested task:',
@@ -135,9 +167,10 @@ jobs:
               '',
               'Use ONLY the sanitised status context below. Report:',
               '1. current main SHA;',
-              '2. whether tests passed;',
-              '3. test pass count if shown;',
-              '4. concrete warnings/errors relevant to operation.',
+              '2. whether dependencies installed;',
+              '3. whether tests passed;',
+              '4. test pass count if shown;',
+              '5. concrete warnings/errors relevant to operation.',
               '',
               'Do not request secrets, edit files, create PRs, merge, deploy, restart services, trade,',
               'change LIVE/ARMED/risk/capital settings, access wallet/signing material, or infer facts',
@@ -161,6 +194,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.collect.outputs.source_sha }}
+          INSTALL_RC: ${{ steps.collect.outputs.install_rc }}
           TEST_RC: ${{ steps.collect.outputs.test_rc }}
           CLEAN_RC: ${{ steps.collect.outputs.clean_rc }}
           RUN_ID: ${{ github.run_id }}
@@ -182,19 +216,31 @@ jobs:
               provider_rc = int(provider_rc_text)
           except Exception:
               provider_rc = 999
+
           if not analysis:
-              analysis = '🔴 AGENT: DEEPSEEK\n\nDeepSeek analysis unavailable: ' + (error or 'provider call failed')
+              analysis = '🔴 AGENT: DEEPSEEK\n\nDeepSeek analysis unavailable: ' + (
+                  error or 'provider call failed'
+              )
+
           analysis = re.sub(
               r'(?i)(api[_ -]?key|private[_ -]?key|authorization|bearer|token)[^\n]*',
               '[REDACTED]',
               analysis,
           )
+
           m = re.search(r'(\d+) passed', tests)
           pass_count = int(m.group(1)) if m else None
           task = read('/tmp/deepseek-ro-task.txt', 800).strip()
+          install_rc = int(os.environ.get('INSTALL_RC') or 999)
           test_rc = int(os.environ.get('TEST_RC') or 999)
           clean_rc = int(os.environ.get('CLEAN_RC') or 999)
-          status = 'SUCCESS' if test_rc == 0 and clean_rc == 0 and provider_rc == 0 else 'FAILED'
+
+          status = (
+              'SUCCESS'
+              if install_rc == 0 and test_rc == 0 and clean_rc == 0 and provider_rc == 0
+              else 'FAILED'
+          )
+
           out = {
               'schema_version': 1,
               'provider': 'deepseek',
@@ -205,6 +251,7 @@ jobs:
               'status': status,
               'task': task,
               'summary': analysis[:1800],
+              'dependency_install_return_code': install_rc,
               'test_return_code': test_rc,
               'test_pass_count': pass_count,
               'worktree_clean': clean_rc == 0,
@@ -224,10 +271,14 @@ jobs:
 
           api="repos/${GITHUB_REPOSITORY}/contents/github/deepseek/latest.json"
           existing_sha=''
+
           set +e
-          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" > /tmp/deepseek-ro-existing.json 2>/dev/null
+          gh api -H 'Accept: application/vnd.github+json' \
+            "$api?ref=ai-reviews" \
+            > /tmp/deepseek-ro-existing.json 2>/dev/null
           rc=$?
           set -e
+
           if [[ $rc -eq 0 && -s /tmp/deepseek-ro-existing.json ]]; then
             existing_sha="$(python3 - <<'PY'
           import json
@@ -235,6 +286,7 @@ jobs:
           PY
             )"
           fi
+
           python3 - "$existing_sha" <<'PY' > /tmp/deepseek-ro-put.json
           import base64, json, sys
           raw = open('/tmp/deepseek-github-result.json', 'rb').read()
@@ -247,4 +299,11 @@ jobs:
               out['sha'] = sys.argv[1]
           print(json.dumps(out))
           PY
+
           gh api -X PUT "$api" --input /tmp/deepseek-ro-put.json >/dev/null
+
+      - name: Remove isolated DeepSeek environment
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$DEEPSEEK_RO_VENV"
