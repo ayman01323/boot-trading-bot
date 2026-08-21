@@ -1,0 +1,225 @@
+name: DeepSeek Fifth Engineering Agent
+
+on:
+  workflow_run:
+    workflows: ["Weekly Three-Agent Full-Bot Bug Audit"]
+    types: [completed]
+  schedule:
+    - cron: '45 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: 'Optional immutable engineering source commit; defaults to latest weekly source'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deepseek-fifth-engineering-agent
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out orchestration main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install read-only agent harness
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code@latest
+          claude --version
+
+      - name: Resolve immutable engineering source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE: ${{ inputs.source_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${INPUT_SOURCE:-}"
+          if [[ -z "$source_sha" ]]; then
+            source_sha="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/weekly/latest_source_commit.txt?ref=ai-reviews" \
+              --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
+          fi
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid engineering source commit.' >&2; exit 2; }
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact engineering source
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "$SOURCE_SHA" || true
+          git checkout --detach "$SOURCE_SHA"
+          git clean -fdx
+
+      - name: Fetch optional deterministic audit baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .deepseek_engineering
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/weekly/runs/${SOURCE_SHA}/baseline.json?ref=ai-reviews" \
+            --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d > .deepseek_engineering/baseline.json
+          rc=$?
+          set -e
+          [[ $rc -eq 0 && -s .deepseek_engineering/baseline.json ]] || echo '{}' > .deepseek_engineering/baseline.json
+
+      - name: DeepSeek independent full-repository engineering audit
+        id: deepseek
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash' }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${DEEPSEEK_API_KEY:-}"
+          export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
+          export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+          export ANTHROPIC_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
+          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
+          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
+          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
+          unset ANTHROPIC_API_KEY || true
+          cat > /tmp/deepseek-engineering-prompt.txt <<EOF
+          You are DEEPSEEK, the fifth INDEPENDENT engineering reviewer of an automated multi-chain trading bot.
+          Exact source commit: ${SOURCE_SHA}
+          Inspect the checked-out repository deeply and read .deepseek_engineering/baseline.json when useful.
+
+          REPORT ONLY. Do not edit files, run trades, deploy, touch wallets/secrets/signing, change LIVE/capital settings,
+          or weaken simulation, liquidity, sellability, slippage, reserve, stop-loss, circuit-breaker, nonce or reconciliation controls.
+          Find concrete correctness, safety, execution, accounting, concurrency, data, security and test defects.
+
+          The engineering audit MUST also assess these operational-efficiency domains without weakening safety:
+          1. API/model cost: unnecessary paid calls, duplicate fan-out/adjudication, oversized context, missing cache/material-change gates.
+          2. Server bandwidth: excessive polling/checkouts/fetches/downloads/RPC calls/log transfers and event-driven/cache/shallow alternatives.
+          3. Disk usage: growth, free-space risk, runner workspaces, caches, logs, DBs and safe retention. Never recommend automatic deletion of wallet/key/database/evidence material.
+
+          Return exactly one JSON object between DEEPSEEK_ENGINEERING_JSON_BEGIN and DEEPSEEK_ENGINEERING_JSON_END:
+          {
+            "schema_version":1,"provider":"deepseek","source_commit":"${SOURCE_SHA}",
+            "scope":"FULL_REPOSITORY_BUG_AUDIT","status":"CLEAN|ISSUES_FOUND|INCOMPLETE",
+            "summary":"...","findings":[{
+              "id":"stable-short-id","severity":"P0|P1|P2|P3","category":"CORRECTNESS|SAFETY|EXECUTION|ACCOUNTING|CONCURRENCY|DATA|NETWORK|CONFIG|SECURITY|TESTS|PERFORMANCE|MAINTAINABILITY",
+              "title":"...","evidence":[{"file":"exact/path.py","line":0,"detail":"specific evidence"}],
+              "impact":"...","root_cause":"...","corrective_action":"bounded corrective action",
+              "tests_required":["specific test"],"confidence":0.0,"deterministic_evidence":false
+            }],
+            "operational_efficiency":{
+              "api_cost":{"status":"OK|OPTIMISE|UNKNOWN","evidence":[],"recommendations":[]},
+              "server_bandwidth":{"status":"OK|OPTIMISE|UNKNOWN","evidence":[],"recommendations":[]},
+              "disk_usage":{"status":"OK|OPTIMISE|UNKNOWN","evidence":[],"recommendations":[]}
+            },
+            "refusals_or_limits":[],"report_only":true,"no_live_changes":true
+          }
+          DEEPSEEK_ENGINEERING_JSON_END
+          EOF
+          claude -p --permission-mode plan --max-turns 6 --output-format text \
+            "$(cat /tmp/deepseek-engineering-prompt.txt)" > /tmp/deepseek-engineering.out 2> /tmp/deepseek-engineering.err
+          python - "$SOURCE_SHA" <<'PY'
+          import json,re,sys,pathlib
+          source=sys.argv[1]
+          raw=pathlib.Path('/tmp/deepseek-engineering.out').read_text(errors='replace')
+          m=re.search(r'DEEPSEEK_ENGINEERING_JSON_BEGIN\s*(\{.*?\})\s*DEEPSEEK_ENGINEERING_JSON_END',raw,re.S)
+          if not m: raise SystemExit('DeepSeek engineering JSON markers missing')
+          p=json.loads(m.group(1))
+          if p.get('provider')!='deepseek' or p.get('source_commit')!=source: raise SystemExit('DeepSeek engineering identity mismatch')
+          if p.get('scope')!='FULL_REPOSITORY_BUG_AUDIT' or p.get('status') not in {'CLEAN','ISSUES_FOUND','INCOMPLETE'}: raise SystemExit('DeepSeek engineering contract mismatch')
+          if p.get('report_only') is not True or p.get('no_live_changes') is not True or not isinstance(p.get('findings'),list): raise SystemExit('DeepSeek engineering safety contract mismatch')
+          for row in p['findings']:
+              if row.get('severity') not in {'P0','P1','P2','P3'}: raise SystemExit('invalid severity')
+              c=float(row.get('confidence',-1))
+              if c<0 or c>1: raise SystemExit('invalid confidence')
+              if not isinstance(row.get('evidence'),list) or not row['evidence']: raise SystemExit('evidence required')
+              if not isinstance(row.get('tests_required'),list): raise SystemExit('tests_required required')
+          ops=p.get('operational_efficiency') or {}
+          if not all(k in ops for k in ('api_cost','server_bandwidth','disk_usage')): raise SystemExit('operational efficiency audit missing')
+          pathlib.Path('.deepseek_engineering/deepseek.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          md=['# DeepSeek engineering audit','',str(p.get('summary') or ''),'',f"Status: {p.get('status')}"]
+          for row in p.get('findings') or []: md += ['',f"## {row.get('severity')} — {row.get('title')}",str(row.get('impact') or '')]
+          pathlib.Path('.deepseek_engineering/deepseek.md').write_text('\n'.join(md)+'\n')
+          PY
+          python - <<'PY'
+          import subprocess,sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              if line[:2]=='??' and line[3:].replace('\\','/').startswith('.deepseek_engineering/'): continue
+              bad.append(line)
+          if bad:
+              print('DeepSeek engineering reviewer changed tracked/out-of-scope files:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
+          PY
+
+      - name: Recover explicit DeepSeek incomplete engineering report
+        if: steps.deepseek.outcome != 'success'
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          DEEPSEEK_PRESENT: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+        shell: bash
+        run: |
+          mkdir -p .deepseek_engineering
+          python - <<'PY'
+          import json,os,pathlib,re
+          if os.environ.get('DEEPSEEK_PRESENT')!='true': reason='DEEPSEEK_API_KEY is missing.'
+          else:
+              raw=''
+              for p in (pathlib.Path('/tmp/deepseek-engineering.err'),pathlib.Path('/tmp/deepseek-engineering.out')):
+                  if p.exists(): raw += p.read_text(errors='replace')[-1200:]+'\n'
+              reason=re.sub(r'(?i)(api[_ -]?key|authorization|bearer|token)[^\n]*','[REDACTED]',raw).strip() or 'DeepSeek engineering execution/report extraction failed.'
+          p={'schema_version':1,'provider':'deepseek','source_commit':os.environ['SOURCE_SHA'],'scope':'FULL_REPOSITORY_BUG_AUDIT','status':'INCOMPLETE','summary':'DeepSeek engineering review did not complete.','findings':[],'operational_efficiency':{'api_cost':{'status':'UNKNOWN','evidence':[],'recommendations':[]},'server_bandwidth':{'status':'UNKNOWN','evidence':[],'recommendations':[]},'disk_usage':{'status':'UNKNOWN','evidence':[],'recommendations':[]}},'refusals_or_limits':[reason[:1800]],'report_only':True,'no_live_changes':True}
+          pathlib.Path('.deepseek_engineering/deepseek.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.deepseek_engineering/deepseek.md').write_text('# DeepSeek engineering audit\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
+          PY
+
+      - name: Publish DeepSeek engineering report only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/deepseek-engineering-reviews
+          git worktree add --detach /tmp/deepseek-engineering-reviews origin/ai-reviews
+          dest="/tmp/deepseek-engineering-reviews/weekly/runs/${SOURCE_SHA}"
+          mkdir -p "$dest"
+          cp .deepseek_engineering/deepseek.json "$dest/deepseek.json"
+          cp .deepseek_engineering/deepseek.md "$dest/deepseek.md"
+          cd /tmp/deepseek-engineering-reviews
+          git config user.name 'deepseek-fifth-engineering-agent'
+          git config user.email 'deepseek-fifth-engineering-agent@users.noreply.github.com'
+          git add "weekly/runs/${SOURCE_SHA}/deepseek.json" "weekly/runs/${SOURCE_SHA}/deepseek.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "Add DeepSeek engineering audit ${SOURCE_SHA:0:12}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Clean workspace
+        if: always()
+        run: rm -rf .deepseek_engineering /tmp/deepseek-engineering-reviews /tmp/deepseek-engineering-prompt.txt /tmp/deepseek-engineering.out /tmp/deepseek-engineering.err

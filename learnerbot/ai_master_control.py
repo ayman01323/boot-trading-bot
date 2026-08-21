@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude")
+PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude", "deepseek")
 LANES = ("strategy", "engineering")
 CYCLES = ("scheduled", "manual")
 VPS_ACTIONS = ("none", "inspect", "test", "deploy")
@@ -177,5 +177,5 @@ def request_vps_action(app, action: str, *, updated_by: str | int = "") -> dict:
     return save(app, value, updated_by=updated_by)
 
 
-# Install the four-agent AI health/reporting layer when the MASTER control is loaded.
+# Install the multi-agent AI health/reporting layer when the MASTER control is loaded.
 from . import ai_four_agent_health_patch  # noqa: E402,F401

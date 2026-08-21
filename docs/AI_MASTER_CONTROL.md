@@ -8,19 +8,22 @@ Independent agents:
 - GPT
 - Claude
 - Gemini
+- DeepSeek
 - Copilot
 
 The Strategy and Engineering lanes each have an independently selectable preferred MASTER.
 
 Fallback order is fixed:
 
-`selected MASTER -> GPT -> Claude -> Gemini -> other available agent`
+`selected MASTER -> GPT -> Claude -> Gemini -> DeepSeek -> other available agent`
 
-The selected provider is never retried after it fails. If the selected provider is already GPT, Claude, or Gemini, that provider is skipped when the fallback chain reaches it.
+The selected provider is never retried after it fails. If the selected provider is already in the fallback chain, that provider is skipped when the fallback chain reaches it.
+
+DeepSeek uses the repository secret `DEEPSEEK_API_KEY` and the official DeepSeek Anthropic-compatible endpoint through the existing read-only Claude Code harness. The default model is `deepseek-v4-flash`; repository variables may override Strategy, Engineering, or MASTER model selection. DeepSeek credentials never enter the sanitised Telegram control bridge or AI report files.
 
 ## Resilience
 
-One valid independent report is sufficient for a review/adjudication cycle to continue. One, two, or three unavailable agents do not stop the AI lane and do not stop the trading engine.
+One valid independent report is sufficient for a review/adjudication cycle to continue. Up to four unavailable agents do not stop the AI lane and do not stop the trading engine.
 
 Single-agent decisions use stricter policy:
 - Strategy: at least 0.95 confidence, LOW risk only, SHADOW-only, allow-listed files, explicit tests.
@@ -35,7 +38,7 @@ No AI agent or MASTER is authorised by this system to bypass those controls or d
 Open `AI Reports & Control` -> `AI Master Control`.
 
 For each lane you can:
-- choose AUTO, GPT, Claude, Gemini, or Copilot as preferred MASTER;
+- choose AUTO, GPT, Claude, Gemini, DeepSeek, or Copilot as preferred MASTER;
 - enable/disable the AI review lane;
 - choose scheduled/manual review mode;
 - request Strategy now;
@@ -64,6 +67,8 @@ The VPS workflow does not create a shell account for Claude and does not provide
 
 The only sudo commands present in the Claude VPS workflow are the existing restricted BOOT status and deploy wrappers.
 
+DeepSeek does not receive VPS access by becoming a reviewer or selected MASTER. Its Strategy and Engineering reviewer workflows are report-only, and its selected-MASTER invocation remains plan-mode adjudication only.
+
 ## Failure reporting
 
-Telegram MASTER chats receive AI health warnings showing GPT, Claude, Gemini, and Copilot individually. The message records unavailable agents and the actual MASTER that took over. Warnings state explicitly that AI failure does not disable the trading engine.
+Telegram MASTER chats receive AI health warnings showing GPT, Claude, Gemini, DeepSeek, and Copilot individually. The message records unavailable agents and the actual MASTER that took over. Warnings state explicitly that AI failure does not disable the trading engine.
