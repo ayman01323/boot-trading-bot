@@ -138,6 +138,8 @@ def _call_provider(provider: str, prompt: str):
         # DeepSeek officially exposes an Anthropic-compatible endpoint and documents
         # Claude Code as a supported agent harness. Keep it read-only in plan mode.
         model = str(env.get("DEEPSEEK_MASTER_MODEL") or "deepseek-v4-flash").strip()
+        if not model.endswith("[1m]"):
+            model = f"{model}[1m]"
         env.pop("ANTHROPIC_API_KEY", None)
         env["ANTHROPIC_BASE_URL"] = "https://api.deepseek.com/anthropic"
         env["ANTHROPIC_AUTH_TOKEN"] = key
