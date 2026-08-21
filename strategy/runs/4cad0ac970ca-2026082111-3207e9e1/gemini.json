@@ -1,0 +1,49 @@
+{
+  "cycle_id": "4cad0ac970ca-2026082111-3207e9e1",
+  "evidence_gaps": [
+    "No fresh runtime forensics available.",
+    "Lack of chain-specific fee-inclusive (Solana priority fee, EVM gas) historical execution traces to validate net edge durability vs execution failure."
+  ],
+  "evidence_sha256": "3207e9e1d9c2e7c9ffd3e736d38f3f8eb3badc0239d9cc63c5a8c397caa2238a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Extends shadow observation period and delays live validation, which is an acceptable cost given the absence of fresh runtime execution forensics.",
+      "evidence": [
+        {
+          "detail": "The strategy requires min_net_bps=4 and forecast_probability>=0.65 but does not guarantee profitability without empirical data accounting for real-world chain-specific economics (L1 priority fees/base fees) in actual execution.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "A definitive separation of market prediction failures versus execution slippage in shadow metrics, providing the necessary evidence before any real capital is exposed.",
+      "id": "shadow-eval-forecasted-edge",
+      "minimum_observation": "100 valid shadow executions",
+      "rationale": "Without fresh runtime forensics, we must explicitly distinguish STRATEGY/MARKET loss (e.g. model miscalibration) from EXECUTION/INFRASTRUCTURE failure (e.g. unanticipated slippage and gas spikes). Further shadow observation is necessary to safely evaluate chain-specific execution viability without assuming profitability.",
+      "shadow_test": "Execute forecasted_positive_net_edge in shadow mode for 100 valid iterations. Record predicted net bps vs actual shadow simulated net bps (strictly including chain-specific gas/priority fees). Halt if mean simulated execution/infrastructure costs eclipse the forecasted market edge.",
+      "strategy": "forecasted_positive_net_edge",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote to CANARY for real-money validation",
+      "reason": "Strictly prohibited by review rules when fresh runtime evidence is missing. Must accrue sufficient simulated history in SHADOW mode first."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "4cad0ac970ca2649adb18c0ba02b2d01b69ced53",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed due to missing runtime evidence. Structural inspection of cross_chain_strategy_signals.py shows sound base logic for forecasted_positive_net_edge, but empirical evidence is required to prove edge durability after EVM L1 gas and Solana priority fees. Live/Canary promotion is strictly prohibited until shadow forensics validate durable net P&L."
+}
