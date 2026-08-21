@@ -21,6 +21,19 @@ def test_claude_workflow_uses_secret_plan_mode_same_cycle_and_clean_workspace() 
     assert "Claude reviewer changed tracked/out-of-scope files" in text
 
 
+def test_claude_strategy_review_is_independent_of_copilot_and_deduplicated() -> None:
+    text = (ROOT / ".github/workflows/claude-fourth-strategy-agent.yml").read_text(encoding="utf-8")
+    # A failed/blocked original three-agent cycle must not suppress Claude.
+    assert "github.event.workflow_run.conclusion == 'success'" not in text
+    assert "types: [completed]" in text
+    # Five-minute fallback makes the latest cycle recover quickly if the workflow_run
+    # event is delayed, but an existing exact-cycle report prevents another paid call.
+    assert "cron: '*/5 * * * *'" in text
+    assert "Skip duplicate Claude API review for an already-published exact cycle" in text
+    assert "no Anthropic API call will be made" in text
+    assert "steps.existing.outputs.found != 'true' && steps.meta.outputs.evidence_match == 'true'" in text
+
+
 def test_legacy_four_agent_master_delegates_to_selected_resilient_master() -> None:
     legacy = (ROOT / ".github/workflows/four-agent-strategy-master.yml").read_text(encoding="utf-8")
     selected = (ROOT / ".github/workflows/selected-ai-master.yml").read_text(encoding="utf-8")
