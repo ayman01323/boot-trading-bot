@@ -23,22 +23,28 @@ def test_requested_compact_health_format():
 
     text = compact.warning_message({"engineering": engineering, "strategy": strategy})
 
-    assert "ENGINEERING" in text
-    assert "GPT       🟠 REPORT/VALIDATION FAILURE — provider probably reachable" in text
-    assert "CLAUDE    🟠 PIPELINE-SPECIFIC FAILURE" in text
-    assert "GEMINI    🟢 WORKING" in text
-    assert "DEEPSEEK  🔴 CLAUDE-CODE CUSTOM MODEL CONFIGURATION" in text
-    assert "COPILOT   🟡 IN PROGRESS" in text
-    assert "STRATEGY" in text
-    assert "DEEPSEEK  🔴 SAME CONFIGURATION BUG" in text
+    assert text.startswith("🤖 AI AGENT HEALTH")
+    assert "🛠 ENGINEERING" in text
+    assert "🟠 GPT — Report validation" in text
+    assert "🟠 Claude — Pipeline failure" in text
+    assert "🟢 Gemini — Working" in text
+    assert "🔴 DeepSeek — Model config" in text
+    assert "🟡 Copilot — In progress" in text
+    assert "🧠 STRATEGY" in text
+    assert "🟢 GPT — Working" in text
+
+    # Mobile presentation must not rely on padded columns or long diagnostics.
+    assert "provider probably reachable" not in text
+    assert "CLAUDE-CODE CUSTOM MODEL CONFIGURATION" not in text
+    assert "       " not in text
 
 
 def test_health_classification_uses_real_state_and_reason():
-    assert compact.classify_health("engineering", "gemini", {"state": "WORKING"}) == "🟢 WORKING"
-    assert compact.classify_health("strategy", "copilot", {"state": "WAITING"}) == "🟡 IN PROGRESS"
+    assert compact.classify_health("engineering", "gemini", {"state": "WORKING"}) == ("🟢", "Working")
+    assert compact.classify_health("strategy", "copilot", {"state": "WAITING"}) == ("🟡", "In progress")
     assert compact.classify_health(
         "engineering", "copilot", {"state": "NOT_WORKING", "reason": "authentication failed"}
-    ) == "🔴 AUTHENTICATION FAILURE"
+    ) == ("🔴", "Authentication")
     assert compact.classify_health(
         "engineering", "gemini", {"state": "NOT_WORKING", "reason": "network timeout"}
-    ) == "🔴 PROVIDER/NETWORK FAILURE"
+    ) == ("🔴", "Provider/network")
