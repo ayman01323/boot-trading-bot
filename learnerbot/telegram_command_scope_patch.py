@@ -132,3 +132,7 @@ def install():
 
 
 install()
+
+# Final AI Strategy presentation uses four independent reviewers (GPT, Gemini,
+# Copilot and Claude) and waits for all four before declaring completion.
+from . import telegram_four_agent_strategy_patch  # noqa: E402,F401
