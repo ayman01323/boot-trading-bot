@@ -1,0 +1,42 @@
+name: Claude Agent Smoke Test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-fourth-strategy-agent.yml'
+      - '.github/workflows/four-agent-strategy-master.yml'
+      - '.github/workflows/claude-agent-smoke.yml'
+      - 'learnerbot/three_agent_strategy_contract.py'
+      - 'tests/test_four_agent_strategy_contract.py'
+      - 'tests/test_four_agent_workflows.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install official Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Verify Anthropic credential and read-only Claude invocation
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANTHROPIC_API_KEY:-}"
+          claude --version
+          out="$(claude -p --permission-mode plan --model sonnet --max-turns 1 --output-format text \
+            'Credential smoke test only. Do not use tools. Reply exactly CLAUDE_AGENT_OK')"
+          printf '%s\n' "$out"
+          grep -Fq 'CLAUDE_AGENT_OK' <<< "$out"
