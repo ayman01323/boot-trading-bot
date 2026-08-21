@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/claude-fourth-strategy-agent.yml'
+      - '.github/workflows/claude-agent-smoke.yml'
       - '.github/workflows/claude-strategy-status-fix-ci.yml'
       - 'learnerbot/ai_ops_current_cycle_patch.py'
       - 'learnerbot/__main__.py'
@@ -31,16 +32,17 @@ jobs:
             learnerbot/ai_ops_current_cycle_patch.py \
             tests/test_ai_ops_current_cycle_patch.py \
             tests/test_four_agent_workflows.py
-      - name: Parse Claude workflow
+      - name: Parse Claude workflows
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import pathlib,yaml
-          p=pathlib.Path('.github/workflows/claude-fourth-strategy-agent.yml')
-          data=yaml.safe_load(p.read_text(encoding='utf-8'))
-          assert data.get('jobs',{}).get('review'), 'Claude review job missing'
-          print('CLAUDE_WORKFLOW_YAML_OK')
+          for name in ('claude-fourth-strategy-agent.yml','claude-agent-smoke.yml'):
+              p=pathlib.Path('.github/workflows')/name
+              data=yaml.safe_load(p.read_text(encoding='utf-8'))
+              assert data.get('jobs'), f'{name}: jobs missing'
+              print('CLAUDE_WORKFLOW_YAML_OK',name)
           PY
       - name: Run focused regressions
         run: |
