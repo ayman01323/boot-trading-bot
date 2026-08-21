@@ -76,6 +76,10 @@ jobs:
               nonce=max(nonce,seen)+1
               requested_by='github-workflow-dispatch'
           run=(action in allowed and action!='none' and nonce>seen and selected)
+          # Automatic upstream workflow completions may consume inspection requests only.
+          # Existing scheduled/manual paths retain their prior bounded test/deploy behavior.
+          if event=='workflow_run' and action!='inspect':
+              run=False
           print('ACTION='+action)
           print('NONCE='+str(nonce))
           print('SEEN='+str(seen))
