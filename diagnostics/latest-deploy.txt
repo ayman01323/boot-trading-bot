@@ -1,15 +1,15 @@
-requested_sha=afd9d17e7813c05204f4b75e2eb189bac355463c
+requested_sha=c24ee33053bb4cac21d84e8af5ce1f95090a23b9
 deploy_outcome=failure
 deploy_exit=10
-run_id=32479430463
-utc=2026-08-21T11:56:17Z
+run_id=32479674104
+utc=2026-08-21T12:00:03Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T11:55:47Z BEGIN current=a3070d0617a6ac6b10e0db67f8894f76eb282e5a requested=afd9d17e7813c05204f4b75e2eb189bac355463c
+2026-08-21T11:58:57Z BEGIN current=a3070d0617a6ac6b10e0db67f8894f76eb282e5a requested=c24ee33053bb4cac21d84e8af5ce1f95090a23b9
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   d911639..afd9d17  main       -> origin/main
-Updating a3070d0..afd9d17
+   afd9d17..c24ee33  main       -> origin/main
+Updating a3070d0..c24ee33
 Fast-forward
  .github/copilot-instructions.md                    |  12 ++
  .github/workflows/claude-vps-analysis-retry.yml    |  16 +-
@@ -23,34 +23,44 @@ Fast-forward
  AGENTS.md                                          |  13 ++
  CLAUDE.md                                          |  13 ++
  GEMINI.md                                          |   9 ++
+ learnerbot/telegram_command_scope_patch.py         |   4 +
+ learnerbot/telegram_four_agent_strategy_patch.py   | 149 +++++++++++++++++++
  scripts/weekly_bug_audit_baseline.py               | 106 ++++++++++++-
  tests/test_claude_vps_analysis_retry.py            |   9 +-
  tests/test_claude_vps_control_kick.py              |  11 +-
  tests/test_claude_vps_controlled_access.py         |  15 +-
  tests/test_engineering_cost_bandwidth_audit.py     |  83 +++++++++++
  tests/test_hourly_strategy_cycle_cost_gate.py      |  75 ++++++++++
- 18 files changed, 699 insertions(+), 77 deletions(-)
+ tests/test_telegram_four_agent_strategy_patch.py   |  70 +++++++++
+ 21 files changed, 922 insertions(+), 77 deletions(-)
  create mode 100644 .github/workflows/engineering-vps-resource-snapshot.yml
  create mode 100644 AGENTS.md
  create mode 100644 CLAUDE.md
  create mode 100644 GEMINI.md
+ create mode 100644 learnerbot/telegram_four_agent_strategy_patch.py
  create mode 100644 tests/test_engineering_cost_bandwidth_audit.py
  create mode 100644 tests/test_hourly_strategy_cycle_cost_gate.py
+ create mode 100644 tests/test_telegram_four_agent_strategy_patch.py
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
+..................................................................F..... [ 14%]
+........................................................................ [ 28%]
+........................................................................ [ 43%]
+........................................................................ [ 57%]
+........................................................................ [ 72%]
+........................................................................ [ 86%]
+...................................................................      [100%]
+=================================== FAILURES ===================================
+____________________ test_workflow_has_expected_step_count _____________________
 
-==================================== ERRORS ====================================
-________ ERROR collecting tests/test_hourly_strategy_cycle_cost_gate.py ________
-ImportError while importing test module '/root/multichain-learning-bot-v2.2-fast-direct-market/tests/test_hourly_strategy_cycle_cost_gate.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-/usr/lib64/python3.11/importlib/__init__.py:126: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-tests/test_hourly_strategy_cycle_cost_gate.py:3: in <module>
-    import yaml
-E   ModuleNotFoundError: No module named 'yaml'
+    def test_workflow_has_expected_step_count():
+        names = re.findall(r"(?m)^\s{6}- name: .+$", _text())
+>       assert len(names) == 16
+E       AssertionError: assert 14 == 16
+E        +  where 14 = len(['      - name: Check out exact current main without persisted GitHub credentials', '      - name: Install review tool... evidence', '      - name: Evaluate paid-AI cost gate', '      - name: Skip paid AI review -- no material change', ...])
+
+tests/test_hourly_strategy_cycle_cost_gate.py:22: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -58,15 +68,14 @@ E   ModuleNotFoundError: No module named 'yaml'
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
-ERROR tests/test_hourly_strategy_cycle_cost_gate.py
-!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
-1 warning, 1 error in 2.35s
-2026-08-21T11:55:56Z TESTS FAILED; service remains on old running process
+FAILED tests/test_hourly_strategy_cycle_cost_gate.py::test_workflow_has_expected_step_count
+1 failed, 498 passed, 1 warning in 36.21s
+2026-08-21T11:59:41Z TESTS FAILED; service remains on old running process
 HEAD is now at a3070d0 Port strategy_ai_cost_gate.py: material-change gating logic for paid AI reviews
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T11:56:12Z
+UTC: 2026-08-21T11:59:57Z
 branch: main
 sha:    a3070d0617a6ac6b10e0db67f8894f76eb282e5a
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -77,21 +86,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 12:39:19 BST; 16min ago
+     Active: active (running) since Fri 2026-08-21 12:39:19 BST; 20min ago
    Main PID: 364862 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 634.6M (peak: 781.7M)
-        CPU: 12min 43.541s
+     Memory: 576.8M (peak: 781.7M)
+        CPU: 15min 21.934s
      CGroup: /system.slice/learnerbot.service
              └─364862 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 12:51:31 mint.yesgoodwill.com python[364862]: [score:base] wallets=122536
-Aug 21 12:51:59 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=53.175
-Aug 21 12:52:34 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=33.683
-Aug 21 12:52:38 mint.yesgoodwill.com python[364862]: [analyse:base] {'candidate_pool': 500, 'wallets': 50, 'transactions': 1492, 'transfer_logs': 27, 'evidence_rows': 1492, 'proven_positive_wallets': 1, 'cursor': 200}
-Aug 21 12:53:18 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=43.022
-Aug 21 12:54:02 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=42.721
-Aug 21 12:54:27 mint.yesgoodwill.com python[364862]: [power-discovery] v2-added=20 v3-pools=195 products=7945 auto-products=946 rejected=0 seconds=430.300
-Aug 21 12:54:51 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=48.063
-Aug 21 12:55:27 mint.yesgoodwill.com python[364862]: [learn:base] patterns=537
-Aug 21 12:55:51 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=4 merged=4 eligible=4 auto-events=0 seconds=58.520
+Aug 21 12:57:15 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:57:18 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:57:22 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:57:28 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:58:10 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=3 merged=3 eligible=3 auto-events=0 seconds=66.379
+Aug 21 12:59:07 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:59:07 mint.yesgoodwill.com python[364862]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=55.866
+Aug 21 12:59:14 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:59:18 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 12:59:21 mint.yesgoodwill.com python[364862]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
