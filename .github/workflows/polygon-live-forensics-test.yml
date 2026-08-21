@@ -1,0 +1,50 @@
+name: Polygon LIVE and Runtime Forensics Test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'learnerbot/polygon_live_enable_migration.py'
+      - 'learnerbot/loss_forensics_runtime_bridge_patch.py'
+      - 'learnerbot/polygon_live_runtime_invariant_patch.py'
+      - 'learnerbot/__main__.py'
+      - 'tests/test_polygon_live_and_runtime_forensics.py'
+      - '.github/workflows/publish-runtime-forensics.yml'
+      - '.github/workflows/polygon-live-forensics-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/polygon_live_enable_migration.py'
+      - 'learnerbot/loss_forensics_runtime_bridge_patch.py'
+      - 'learnerbot/polygon_live_runtime_invariant_patch.py'
+      - 'learnerbot/__main__.py'
+      - 'tests/test_polygon_live_and_runtime_forensics.py'
+      - '.github/workflows/publish-runtime-forensics.yml'
+      - '.github/workflows/polygon-live-forensics-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Compile changed runtime modules
+        run: |
+          python -m py_compile \
+            learnerbot/polygon_live_enable_migration.py \
+            learnerbot/loss_forensics_runtime_bridge_patch.py \
+            learnerbot/polygon_live_runtime_invariant_patch.py \
+            tests/test_polygon_live_and_runtime_forensics.py
+      - name: Run focused regression
+        run: pytest -x -vv tests/test_polygon_live_and_runtime_forensics.py
