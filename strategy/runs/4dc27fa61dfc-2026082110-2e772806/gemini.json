@@ -1,0 +1,49 @@
+{
+  "cycle_id": "4dc27fa61dfc-2026082110-2e772806",
+  "evidence_gaps": [
+    "Missing runtime forensics to validate execution infrastructure reliability vs strategy logic failures.",
+    "No recent data on Solana priority fee requirements for atomic transaction inclusion.",
+    "Lack of EVM gas consumption bounds on complex routing paths."
+  ],
+  "evidence_sha256": "2e77280678e9cded17d70df9cfef4589bc3a218d33e369356d62416004a25033",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.0,
+      "downside_risk": "Prolonged SHADOW testing consumes compute resources without generating live profit.",
+      "evidence": [
+        {
+          "detail": "Strategy hypothesis requires executable spread to remain positive after known fees, slippage, price impact, and latency reserve.",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Gather out-of-sample data on routing failure rates and net execution outcomes against realistic gas/priority fees.",
+      "id": "prop-cross-venue-arbitrage-shadow",
+      "minimum_observation": "100 eligible opportunities per chain",
+      "rationale": "Without fresh runtime evidence distinguishing market losses from execution failures, we cannot verify if latency reserves and slippage estimations accurately reflect real network conditions on EVM and Solana.",
+      "shadow_test": "Simulate trades on cross-venue spread > 0.5% keeping track of simulated transaction inclusion costs. Stop if simulated execution failure rate > 15%.",
+      "strategy": "Cross Venue Net Arbitrage",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy to LIVE",
+      "reason": "Forbidden by lack of fresh runtime forensics. We cannot distinguish execution/infrastructure failures from strategy losses without recent runtime logs."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "4dc27fa61dfc5ca7b865a549c0f3253d1d973bb3",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only strategy review. Runtime forensics are unavailable. Current strategy architectures in strategy_lab.py (e.g., Cross Venue Net Arbitrage, Liquidity Confirmed Momentum) are logically sound but must remain in SHADOW. Missing runtime evidence prevents validating that theoretical net execution edges overcome actual gas, priority fees, slippage, and execution failure rates on Solana and EVM."
+}
