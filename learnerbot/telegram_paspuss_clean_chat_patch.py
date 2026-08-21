@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from . import ai_council_live_web_patch as _live
 from . import telegram_ai_council_friendly_patch as _friendly
 from . import telegram_ai_council_patch as _cui
 from . import telegram_paspuss_ai_brand_patch as _brand
@@ -104,6 +105,19 @@ def _send_final_reply(app, tid, session: dict, title: str, body: str, keyboard=N
     return _friendly._send_final_reply(app, tid, session, title, _organise_answer_text(body), keyboard)
 
 
+def _direct_live_retry(session: dict) -> str:
+    """Bypass Council persistence if the normal leader wrapper failed on a live query."""
+    try:
+        prompt = _leader_prompt(session, "gpt")
+        env = _live._http._runtime_env()
+        rc, out, _err = _live._call_openai(prompt, env)
+        if rc == 0 and str(out or "").strip():
+            return str(out).strip()
+    except Exception:
+        pass
+    return _live.LIVE_UNAVAILABLE_TEXT
+
+
 def _finish_user_from_answers(app, tid, session_id: str) -> None:
     session = _friendly._council.load_session(app, session_id)
     valid = sum(
@@ -124,8 +138,6 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
         )
         return
 
-    # Keep one existing progress message alive during the synthesis phase. In production
-    # this edits the same message in place; it never repeats or quotes the user's question.
     session = _friendly._status_message(app, tid, session, _status_text(session, "leader", valid=valid))
     _friendly._chat_action(app, tid)
     try:
@@ -134,11 +146,23 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
         result = {"status": "FAILED", "answer": ""}
 
     session = _friendly._council.load_session(app, session_id)
+    question = str(session.get("question") or "")
+    requires_live = _live._question_requires_live(question)
     answer = str(result.get("answer") or "").strip()
     fallback = False
-    if str(result.get("status") or "") != "DONE" or not answer:
+
+    if requires_live:
+        # A freshness-sensitive question must never degrade to an independent offline
+        # draft. Retry the live-grounded final path directly if the leader wrapper
+        # failed or returned a characteristic offline refusal.
+        if str(result.get("status") or "") != "DONE" or not answer or _live._looks_like_offline_refusal(answer):
+            answer = _direct_live_retry(session)
+    elif str(result.get("status") or "") != "DONE" or not answer:
         _provider, answer = _friendly._best_available_answer(session)
         fallback = bool(answer)
+
+    if requires_live and _live._looks_like_offline_refusal(answer):
+        answer = _live.LIVE_UNAVAILABLE_TEXT
 
     _delete_progress_message(app, tid, session)
     if answer:
