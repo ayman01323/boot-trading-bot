@@ -38,6 +38,8 @@ def test_vps_workflow_runs_directly_after_successful_control_publish_or_deploy()
     assert '"Publish Telegram AI Master Control"' in text
     assert '"Deploy BOOT to VPS"' in text
     assert "if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'" in text
+    assert "if event=='workflow_run' and action!='inspect':" in text
+    assert 'run=False' in text
     assert "cron: '*/5 * * * *'" in text
     assert 'workflow_dispatch:' in text
 
