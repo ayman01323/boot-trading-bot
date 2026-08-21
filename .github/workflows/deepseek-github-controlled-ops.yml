@@ -1,0 +1,238 @@
+name: DeepSeek GitHub Controlled Operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Bounded GitHub action'
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, test, draft_fix]
+      task:
+        description: 'Optional task for inspect/draft_fix; never authorises merge/deploy/live changes'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: deepseek-github-controlled-ops
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Record exact source and bounded action
+        id: meta
+        env:
+          ACTION: ${{ inputs.action }}
+          TASK: ${{ inputs.task }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          action="${ACTION:-inspect}"
+          case "$action" in inspect|test|draft_fix) ;; *) echo 'Unsupported action' >&2; exit 2;; esac
+          printf '%s' "${TASK:-}" > /tmp/deepseek-github-task.txt
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+
+      - name: Run deterministic repository tests when requested
+        if: steps.meta.outputs.action == 'test'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+          python -m compileall -q learnerbot scripts tests
+          pytest -q
+
+      - name: Install read-only DeepSeek harness
+        if: steps.meta.outputs.action == 'inspect' || steps.meta.outputs.action == 'draft_fix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code@latest
+          claude --version
+
+      - name: DeepSeek repository inspection
+        if: steps.meta.outputs.action == 'inspect'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_GITHUB_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${DEEPSEEK_API_KEY:-}"
+          export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
+          export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+          export ANTHROPIC_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          unset ANTHROPIC_API_KEY || true
+          task="$(cat /tmp/deepseek-github-task.txt)"
+          cat > /tmp/deepseek-github-inspect-prompt.txt <<EOF
+          You are DEEPSEEK acting as a bounded GitHub repository inspector.
+          Exact source SHA: ${SOURCE_SHA}
+          Task: ${task:-Review the repository for concrete correctness/reliability issues and useful bounded follow-up.}
+
+          READ/REPORT ONLY. Do not edit files, commit, push, merge, deploy, trade, change LIVE/ARMED/capital/risk settings,
+          touch wallet/signing/private-key material, expose secrets, or weaken simulation/liquidity/sellability/stop-loss/circuit-breaker controls.
+          Inspect the checked-out repository and return a concise report with concrete file evidence. Do not use the network.
+          EOF
+          claude -p --permission-mode plan --max-turns 6 --output-format text \
+            "$(cat /tmp/deepseek-github-inspect-prompt.txt)" > /tmp/deepseek-github-inspect.txt
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+
+      - name: Publish DeepSeek inspection as workflow summary
+        if: steps.meta.outputs.action == 'inspect'
+        shell: bash
+        run: |
+          {
+            echo '## 🔴 AGENT: DEEPSEEK'
+            echo
+            echo "Source SHA: \`${{ steps.meta.outputs.source_sha }}\`"
+            echo
+            cat /tmp/deepseek-github-inspect.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create isolated DeepSeek draft-fix branch
+        if: steps.meta.outputs.action == 'draft_fix'
+        id: branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="deepseek/controlled-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: DeepSeek bounded draft fix
+        if: steps.meta.outputs.action == 'draft_fix'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_GITHUB_MODEL: ${{ vars.DEEPSEEK_GITHUB_MODEL || 'deepseek-v4-flash' }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${DEEPSEEK_API_KEY:-}"
+          export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
+          export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+          export ANTHROPIC_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_GITHUB_MODEL"
+          unset ANTHROPIC_API_KEY || true
+          task="$(cat /tmp/deepseek-github-task.txt)"
+          test -n "$task" || { echo 'draft_fix requires a concrete task' >&2; exit 2; }
+          cat > /tmp/deepseek-github-fix-prompt.txt <<EOF
+          You are DEEPSEEK working on a bounded draft-only GitHub fix.
+          Exact base source SHA: ${SOURCE_SHA}
+          Requested task: ${task}
+
+          Implement the smallest supported code/test change needed for the task. You may edit repository files, but:
+          - never touch .github workflows, secrets/env files, wallet/private-key/signing code or material;
+          - never change LIVE/ARMED activation, capital/position sizing, risk limits, deployment authority or RPC/API credentials;
+          - never weaken simulation, quote, liquidity/sellability, slippage, positive-edge, nonce, atomicity, stop-loss,
+            circuit-breaker, reserve or execution-reconciliation protections;
+          - do not commit, push, merge, deploy or submit any transaction;
+          - add/update focused tests and run relevant tests where practical.
+          EOF
+          claude -p --permission-mode acceptEdits --max-turns 12 --output-format text \
+            "$(cat /tmp/deepseek-github-fix-prompt.txt)" > /tmp/deepseek-github-fix.txt
+
+      - name: Enforce protected-path and scope guard
+        if: steps.meta.outputs.action == 'draft_fix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import pathlib, subprocess, sys
+          changed=set()
+          for cmd in (["git","diff","--name-only"],["git","ls-files","--others","--exclude-standard"]):
+              changed.update(x.strip().replace('\\','/') for x in subprocess.check_output(cmd,text=True).splitlines() if x.strip())
+          if not changed:
+              raise SystemExit('DeepSeek produced no supported repository change')
+          protected_prefixes=(
+              '.github/','.env','wallet','secrets','credentials',
+              'learnerbot/wallet','learnerbot/solana_wallet','learnerbot/live_executor',
+              'learnerbot/solana_live','learnerbot/telegram_676','learnerbot/polygon_live_enable',
+              'scripts/install_github_deployer','scripts/deploy',
+          )
+          protected_terms=('private_key','signing','mnemonic','seed','secret','credential')
+          bad=[]
+          for path in changed:
+              low=path.lower()
+              if low.startswith(protected_prefixes) or any(term in low for term in protected_terms):
+                  bad.append(path)
+          if bad:
+              print('Protected DeepSeek changes refused:',*sorted(bad),sep='\n  ',file=sys.stderr)
+              raise SystemExit(3)
+          if len(changed)>12:
+              raise SystemExit(f'Refusing broad DeepSeek patch: {len(changed)} files')
+          print('Allowed DeepSeek changed files:',*sorted(changed),sep='\n  ')
+          PY
+
+      - name: Run mandatory regression before any DeepSeek PR
+        if: steps.meta.outputs.action == 'draft_fix'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+          python -m compileall -q learnerbot scripts tests
+          pytest -q
+
+      - name: Commit, push and open draft PR only
+        if: steps.meta.outputs.action == 'draft_fix' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.branch.outputs.branch }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'DeepSeek'
+          git config user.email 'deepseek-agent@users.noreply.github.com'
+          git add -A
+          git commit -m $'DeepSeek bounded GitHub fix\n\nAI-Agent: DEEPSEEK'
+          gh auth setup-git
+          git push -u origin "$BRANCH"
+          task="$(cat /tmp/deepseek-github-task.txt)"
+          cat > /tmp/deepseek-pr.md <<EOF
+          🔴 **AGENT: DEEPSEEK**
+          Role: Bounded GitHub implementation agent
+          Workflow/Task: DeepSeek GitHub Controlled Operations
+          Source SHA: \`${SOURCE_SHA}\`
+
+          Requested task: ${task}
+
+          This is a **draft PR only**. DeepSeek cannot merge or deploy this PR. The workflow blocks protected wallet/signing,
+          LIVE/ARMED, capital/risk, deployment and safety-control paths and requires the full test suite before push.
+          EOF
+          gh pr create --draft --base main --head "$BRANCH" --title "[DEEPSEEK] Bounded repository fix" --body-file /tmp/deepseek-pr.md
