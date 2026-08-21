@@ -18,18 +18,65 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd /root/multichain-learning-bot-v2.2-fast-direct-market
-          /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python - <<'PY'
-          from learnerbot import ai_council_live_web_patch as live
-          from learnerbot import ai_council_http_patch as http
-          prompt = '''You are PasPuss AI. Give the user one direct answer.\n\nUSER QUESTION:\nWhat is the current temperature in London?\n\nPRIVATE DRAFTING MATERIAL:\n[smoke test]'''
-          env = http._runtime_env()
-          rc, out, err = live._call_openai(prompt, env)
-          text = str(out or '')
-          print('rc=', rc)
-          print('has_output=', bool(text.strip()))
-          print('offline_refusal=', live._looks_like_offline_refusal(text))
-          print('live_unavailable=', text.strip() == live.LIVE_UNAVAILABLE_TEXT)
-          if rc != 0 or not text.strip() or live._looks_like_offline_refusal(text) or text.strip() == live.LIVE_UNAVAILABLE_TEXT:
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import re
+          import urllib.error
+          import urllib.request
+
+          runtime = pathlib.Path('/var/tmp/ai_council_runtime.env')
+          values = {}
+          for line in runtime.read_text(encoding='utf-8').splitlines():
+              if '=' not in line:
+                  continue
+              key, raw = line.split('=', 1)
+              try:
+                  values[key] = json.loads(raw)
+              except Exception:
+                  values[key] = raw.strip().strip('"')
+          key = str(values.get('OPENAI_API_KEY') or '').strip()
+          if not key:
+              print('openai_key_present=False')
+              raise SystemExit(1)
+
+          payload = {
+              'model': 'gpt-5.6',
+              'input': 'What is the current temperature in London? Answer with the current temperature and brief conditions.',
+              'tools': [{'type': 'web_search'}],
+              'tool_choice': 'required',
+              'max_output_tokens': 300,
+          }
+          req = urllib.request.Request(
+              'https://api.openai.com/v1/responses',
+              data=json.dumps(payload).encode('utf-8'),
+              headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'},
+              method='POST',
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=90) as resp:
+                  body = json.loads(resp.read().decode('utf-8'))
+                  status = int(resp.status or 200)
+          except urllib.error.HTTPError as exc:
+              status = int(exc.code or 500)
+              body = json.loads(exc.read().decode('utf-8', errors='replace') or '{}')
+
+          text = str(body.get('output_text') or '').strip()
+          if not text:
+              chunks = []
+              for item in body.get('output') or []:
+                  if not isinstance(item, dict) or item.get('type') != 'message':
+                      continue
+                  for part in item.get('content') or []:
+                      if isinstance(part, dict) and isinstance(part.get('text'), str):
+                          chunks.append(part['text'])
+              text = '\n'.join(chunks).strip()
+
+          offline = bool(re.search(r"(?:do not|don't|cannot|can't).{0,40}access to (?:live|real[- ]?time|current)", text, flags=re.I|re.S))
+          print('http_status=', status)
+          print('has_output=', bool(text))
+          print('offline_refusal=', offline)
+          print('mentions_temperature=', bool(re.search(r'\b\d{1,2}(?:\.\d+)?\s*°?\s*C\b', text, flags=re.I)))
+          if not (200 <= status < 300) or not text or offline:
               raise SystemExit(1)
           PY
