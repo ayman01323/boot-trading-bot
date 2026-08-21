@@ -1,0 +1,179 @@
+name: DeepSeek VPS Health Link
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/deepseek-vps-health-link.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deepseek-vps-health-link
+  cancel-in-progress: true
+
+jobs:
+  health-link:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Collect restricted VPS service status
+        id: status
+        shell: bash
+        run: |
+          set +e
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/deepseek-vps-health-status.txt 2>&1
+          rc=$?
+          set -e
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Build sanitised status context
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import pathlib, re
+          src=pathlib.Path('/tmp/deepseek-vps-health-status.txt')
+          text=src.read_text(encoding='utf-8',errors='replace') if src.exists() else ''
+          kept=[]
+          for line in text.splitlines():
+              if re.search(r'(?i)(api[_ -]?key|private[_ -]?key|mnemonic|seed phrase|password|authorization:|bearer |secret=|token=)', line):
+                  kept.append('[REDACTED SENSITIVE LINE]')
+              else:
+                  line=re.sub(r'sk-[A-Za-z0-9_-]{12,}','<redacted-key>',line)
+                  line=re.sub(r'github_pat_[A-Za-z0-9_]+','<redacted-github-token>',line)
+                  line=re.sub(r'gh[pousr]_[A-Za-z0-9]+','<redacted-github-token>',line)
+                  kept.append(line)
+          pathlib.Path('/tmp/deepseek-vps-health-context.txt').write_text('\n'.join(kept)[-9000:]+'\n',encoding='utf-8')
+          PY
+
+      - name: Ask DeepSeek using only sanitised VPS status
+        id: deepseek
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_VPS_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-v4-flash' }}
+          STATUS_RC: ${{ steps.status.outputs.rc }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${DEEPSEEK_API_KEY:-}"
+          python3 - <<'PY' > /tmp/deepseek-vps-health-payload.json
+          import json, os, pathlib
+          context=pathlib.Path('/tmp/deepseek-vps-health-context.txt').read_text(encoding='utf-8',errors='replace')
+          prompt='\n'.join([
+              'You are DEEPSEEK acting only as a bounded VPS health analyst.',
+              'Restricted status command return code: '+os.environ.get('STATUS_RC',''),
+              'Use ONLY the sanitised status below.',
+              'Report whether the bot service appears healthy and any concrete operational warning.',
+              'Do not request secrets, inspect other server paths, suggest root shells/arbitrary sudo,',
+              'access wallet/signing/private-key material, deploy code, trade, or bypass LIVE/risk controls.',
+              'Start exactly with: 🔴 AGENT: DEEPSEEK',
+              '',
+              'SANITISED VPS STATUS:',
+              context,
+          ])
+          print(json.dumps({
+              'model':os.environ.get('DEEPSEEK_VPS_MODEL') or 'deepseek-v4-flash',
+              'messages':[{'role':'user','content':prompt}],
+              'temperature':0.2,
+              'max_tokens':1200,
+              'stream':False,
+          }))
+          PY
+          set +e
+          code="$(curl -sS -o /tmp/deepseek-vps-health-response.json -w '%{http_code}' \
+            https://api.deepseek.com/chat/completions \
+            -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            --data-binary @/tmp/deepseek-vps-health-payload.json)"
+          curl_rc=$?
+          set -e
+          printf '%s\n' "${code:-0}" > /tmp/deepseek-vps-health-http.txt
+          printf '%s\n' "$curl_rc" > /tmp/deepseek-vps-health-curl-rc.txt
+          python3 - <<'PY'
+          import json, pathlib
+          p=pathlib.Path('/tmp/deepseek-vps-health-response.json')
+          try:
+              body=json.loads(p.read_text(encoding='utf-8',errors='replace')) if p.exists() else {}
+          except Exception:
+              body={}
+          text=''
+          try:
+              message=body['choices'][0]['message']
+              text=str(message.get('content') or message.get('reasoning_content') or '').strip()
+          except Exception:
+              text=''
+          if text and not text.startswith('🔴 AGENT: DEEPSEEK'):
+              text='🔴 AGENT: DEEPSEEK\n\n'+text
+          pathlib.Path('/tmp/deepseek-vps-health-analysis.txt').write_text(text,encoding='utf-8')
+          PY
+
+      - name: Publish verified GitHub-to-VPS DeepSeek result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+          STATUS_RC: ${{ steps.status.outputs.rc }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/deepseek-vps-health-result.json
+          import json, os, pathlib, re, time
+          def read(path,limit):
+              p=pathlib.Path(path)
+              return p.read_text(encoding='utf-8',errors='replace')[-limit:] if p.exists() else ''
+          status_text=read('/tmp/deepseek-vps-health-context.txt',9000)
+          analysis=read('/tmp/deepseek-vps-health-analysis.txt',1800).strip()
+          try: http_status=int(read('/tmp/deepseek-vps-health-http.txt',20).strip() or 0)
+          except Exception: http_status=0
+          try: curl_rc=int(read('/tmp/deepseek-vps-health-curl-rc.txt',20).strip() or 999)
+          except Exception: curl_rc=999
+          try: status_rc=int(os.environ.get('STATUS_RC') or 999)
+          except Exception: status_rc=999
+          provider_ok=200 <= http_status < 300 and curl_rc==0 and bool(analysis)
+          link_ok=status_rc==0 and provider_ok
+          out={
+              'schema_version':1,
+              'provider':'deepseek',
+              'generated_epoch':int(time.time()),
+              'source_commit':os.environ.get('SOURCE_SHA','')[:40],
+              'workflow_run_id':int(os.environ.get('RUN_ID') or 0),
+              'action':'inspect',
+              'status':'SUCCESS' if link_ok else 'FAILED',
+              'github_to_vps_link':True,
+              'self_hosted_runner':True,
+              'restricted_status_return_code':status_rc,
+              'provider_http_status':http_status,
+              'provider_transport_return_code':curl_rc,
+              'deepseek_analysis_available':bool(analysis),
+              'deepseek_analysis':analysis,
+              'service_active':bool(re.search(r'Active:\s+active \(running\)',status_text,re.I)),
+              'security':{
+                  'inspection_only':True,
+                  'root_shell':False,
+                  'arbitrary_sudo':False,
+                  'wallet_or_private_key_access':False,
+                  'deploy_authority':False,
+                  'live_or_risk_bypass':False,
+                  'sanitised_context_only':True,
+              },
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+          path='vps/deepseek/latest.json'
+          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+          current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+          sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/deepseek-vps-health-result.json)"
+          python3 - "$encoded" "$sha" <<'PY' > /tmp/deepseek-vps-health-put.json
+          import json,sys
+          payload={'message':'Update DeepSeek VPS health link','content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: payload['sha']=sys.argv[2]
+          print(json.dumps(payload))
+          PY
+          gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input /tmp/deepseek-vps-health-put.json >/dev/null
+          cat /tmp/deepseek-vps-health-result.json >> "$GITHUB_STEP_SUMMARY"
