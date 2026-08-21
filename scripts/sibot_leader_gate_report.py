@@ -14,6 +14,8 @@ are replaced with read-only equivalents before and after the patch-chain load.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import re
 import sqlite3
@@ -102,10 +104,14 @@ def _load_patch_chain() -> None:
         __import__(f"learnerbot.{module}")
 
 
-# Guard the base modules before patch imports.  Some patches replace these
+# Guard the base modules before patch imports. Some patches replace these
 # functions, so reapply the guards after the complete runtime composition too.
+# Import-time migration/status chatter is deliberately swallowed: only the
+# bounded funnel report is allowed into the GitHub summary/ai-reviews record.
 _install_readonly_guards()
-_load_patch_chain()
+_patch_import_output = io.StringIO()
+with contextlib.redirect_stdout(_patch_import_output), contextlib.redirect_stderr(_patch_import_output):
+    _load_patch_chain()
 _install_readonly_guards()
 
 from learnerbot import sibot_profit_guard_patch as _evm_guard  # noqa: E402
