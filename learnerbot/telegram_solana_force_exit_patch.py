@@ -144,11 +144,13 @@ install()
 # This module is the final Telegram handler patch imported by learnerbot.__main__.
 # Load the AI Council here so its MASTER/User menu and message handler stay outermost.
 # The direct-provider layer replaces fragile local CLI calls with provider HTTP APIs;
+# live-web enables fresh public lookups only when the final PasPuss answer needs them;
 # the friendly layer presents one progress card + one final reply, the limiter protects
 # shared usage, and the final branding layer makes PasPuss AI native for every role.
 from . import telegram_ai_council_patch as _ai_council  # noqa: E402,F401
 os.environ.setdefault("AI_COUNCIL_RUNTIME_ENV", "/var/tmp/ai_council_runtime.env")
 from . import ai_council_http_patch as _ai_council_http  # noqa: E402,F401
+from . import ai_council_live_web_patch as _ai_council_live_web  # noqa: E402,F401
 from . import telegram_ai_council_friendly_patch as _ai_council_friendly  # noqa: E402,F401
 from . import telegram_ai_council_rate_limit_patch as _ai_council_limits  # noqa: E402,F401
 from . import telegram_paspuss_ai_brand_patch as _paspuss_ai_brand  # noqa: E402,F401
