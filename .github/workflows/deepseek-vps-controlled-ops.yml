@@ -105,8 +105,6 @@ jobs:
           python3 - <<'PY'
           import pathlib,re
           parts=[]
-          secret_terms = ('mne'+'monic', 'seed'+' phrase')
-          sensitive = r'(?i)(api[_ -]?key|private[_ -]?key|' + '|'.join(re.escape(x) for x in secret_terms) + r'|password|authorization:|bearer |secret=|token=)'
           for title,path in (
               ('BEFORE','/tmp/deepseek-vps-before.txt'),
               ('ACTION','/tmp/deepseek-vps-action.txt'),
@@ -116,7 +114,7 @@ jobs:
               text=p.read_text(encoding='utf-8',errors='replace') if p.exists() else ''
               kept=[]
               for line in text.splitlines():
-                  if re.search(sensitive,line):
+                  if re.search(r'(?i)(api[_ -]?key|private[_ -]?key|mnemonic|seed phrase|password|authorization:|bearer |secret=|token=)',line):
                       kept.append('[REDACTED SENSITIVE LINE]')
                   else:
                       line=re.sub(r'sk-[A-Za-z0-9_-]{12,}','<redacted-key>',line)
