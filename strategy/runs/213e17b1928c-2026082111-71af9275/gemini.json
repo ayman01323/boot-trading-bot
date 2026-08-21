@@ -1,0 +1,77 @@
+{
+  "cycle_id": "213e17b1928c-2026082111-71af9275",
+  "evidence_gaps": [
+    ".strategy_cycle/evidence.json explicitly reports MISSING_RUNTIME_FORENSICS.",
+    "Lack of live telemetry to validate slippage_bps and latency_reserve_bps models.",
+    "No current sanitised profit/loss metrics for active strategy families."
+  ],
+  "evidence_sha256": "71af9275b5e7c65d0947b68e9f1d1d45098e50b1ffe73f78ff103e247f0e9158",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.8,
+      "downside_risk": "Prolonged shadow mode might delay potential yield, but prevents uncalibrated slippage losses.",
+      "evidence": [
+        {
+          "detail": "Strategy relies on independent_wallet_count >= 3 and flow_acceleration_z >= 1.2, but assumes a static 4bps net_edge_bps minimum which may not cover acceleration-induced slippage.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "MISSING_RUNTIME_FORENSICS prevents validation of the 4bps net edge threshold against real-world price impact.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Accurate baseline of true net edge during high flow acceleration without capital exposure.",
+      "id": "strat_flow_acceleration_shadow",
+      "minimum_observation": "100 eligible opportunities",
+      "rationale": "While structurally sound, the Flow Acceleration strategy's required 4bps net edge might be consumed entirely by the price impact the acceleration causes. Further shadow testing with penalized latency and slippage estimates is necessary before live probation.",
+      "shadow_test": "Simulate 100 executions per chain, aggressively penalizing net_edge_bps based on historically correlated slippage during high flow_acceleration_z periods.",
+      "strategy": "Flow Acceleration",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.7,
+      "downside_risk": "Gas spikes often correspond with structural toxicity; shadow simulated fills might not reflect true executable probability.",
+      "evidence": [
+        {
+          "detail": "MarketFeatures tracks fees_bps and latency_reserve_bps, which can be leveraged for EVM-specific gas strategies.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Identify high-margin mean-reversion setups unique to EVM congestion regimes.",
+      "id": "strat_gas_adjusted_divergence",
+      "minimum_observation": "3 observation windows, min 15 trades",
+      "rationale": "Create a new research strategy that specifically isolates EVM price dislocations where gross edge temporarily outpaces local base fee spikes, requiring latency_reserve_bps to confirm priority fee buffering.",
+      "shadow_test": "Run in SHADOW strictly on EVM for 3 observation windows. Stop and mark REWORK if simulation net_profit drops below zero after max historical fee_bps penalties are applied.",
+      "strategy": "Gas-Adjusted Early Divergence",
+      "suggested_files": [
+        "learnerbot/strategy_ai_proposals.py",
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote Liquidity Confirmed Momentum to PROMOTION_CANDIDATE",
+      "reason": "Explicitly prohibited by protocol. No live or canary readiness claims can be made without fresh runtime forensics."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "213e17b1928cfbcc15178cb8e56ad6d63dc2b266",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed due to missing runtime forensics. The codebase robustly separates SHADOW from LIVE evaluation via `strategy_lab.py`. Proposals focus on deepening shadow tests for Flow Acceleration to model slippage under volume, and introducing a new shadow hypothesis targeting EVM gas dynamics."
+}
