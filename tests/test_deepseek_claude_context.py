@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from learnerbot import ai_council
 
@@ -23,7 +24,7 @@ def test_ai_council_marks_v4_flash_as_one_million_context(monkeypatch) -> None:
     rc, out, err = ai_council.call_provider("deepseek", "test")
 
     assert (rc, out, err) == (0, "ok", "")
-    env = captured["env"]
+    env = cast(dict[str, Any], captured["env"])
     assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash[1m]"
     assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "deepseek-v4-flash[1m]"
     assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "deepseek-v4-flash[1m]"
@@ -44,7 +45,8 @@ def test_ai_council_does_not_claim_one_million_context_for_other_models(monkeypa
 
     ai_council.call_provider("deepseek", "test")
 
-    assert captured["env"]["ANTHROPIC_MODEL"] == "deepseek-chat"
+    env = cast(dict[str, Any], captured["env"])
+    assert env["ANTHROPIC_MODEL"] == "deepseek-chat"
 
 
 def test_selected_master_and_agent_workflows_use_v4_flash_1m_annotation() -> None:
@@ -59,3 +61,11 @@ def test_selected_master_and_agent_workflows_use_v4_flash_1m_annotation() -> Non
     engineering = (ROOT / ".github/workflows/deepseek-fifth-engineering-agent.yml").read_text(encoding="utf-8")
     assert "deepseek-v4-flash[1m]" in engineering
     assert 'if [[ "$DEEPSEEK_ENGINEERING_MODEL" == "deepseek-v4-flash" ]]' in engineering
+
+
+def test_selfhosted_recovery_uses_v4_flash_1m_for_both_lanes() -> None:
+    recovery = (ROOT / ".github/workflows/selfhosted-five-agent-recovery.yml").read_text(encoding="utf-8")
+    assert "DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash[1m]' }}" in recovery
+    assert "DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash[1m]' }}" in recovery
+    assert 'if [[ "$DEEPSEEK_ENGINEERING_MODEL" == "deepseek-v4-flash" ]]' in recovery
+    assert 'if [[ "$DEEPSEEK_STRATEGY_MODEL" == "deepseek-v4-flash" ]]' in recovery
