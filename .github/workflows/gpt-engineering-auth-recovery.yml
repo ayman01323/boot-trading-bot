@@ -1,0 +1,190 @@
+name: GPT Engineering Auth Recovery
+
+on:
+  push:
+    paths:
+      - '.github/gpt-engineering-auth-recovery.trigger'
+  schedule:
+    - cron: '23,53 * * * *'
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: 'Optional exact weekly engineering source'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpt-engineering-auth-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 75
+    steps:
+      - name: Resolve exact engineering source and need
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SOURCE: ${{ inputs.source_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="${INPUT_SOURCE:-}"
+          if [[ -z "$source_sha" ]]; then
+            source_sha="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/weekly/latest_source_commit.txt?ref=ai-reviews" --jq '.content' \
+              | tr -d '\n' | base64 -d | tr -d '\r\n')"
+          fi
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid engineering source.' >&2; exit 2; }
+          need=true
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/weekly/runs/${source_sha}/gpt.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/current-gpt.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s /tmp/current-gpt.json ]]; then
+            status="$(python3 - <<'PY'
+          import json
+          try: print(str(json.load(open('/tmp/current-gpt.json')).get('status') or '').upper())
+          except Exception: print('')
+          PY
+            )"
+            if [[ -n "$status" && "$status" != INCOMPLETE && "$status" != FAILED ]]; then need=false; fi
+          fi
+          echo "source=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "need=$need" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact frozen source
+        if: steps.meta.outputs.need == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch baseline
+        if: steps.meta.outputs.need == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .gpt_auth_recovery
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/weekly/runs/${SOURCE_SHA}/baseline.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > .gpt_auth_recovery/baseline.json 2>/dev/null
+          rc=$?
+          set -e
+          [[ $rc -eq 0 && -s .gpt_auth_recovery/baseline.json ]] || echo '{}' > .gpt_auth_recovery/baseline.json
+
+      - name: Explicitly authenticate Codex and run report-only audit
+        id: gpt
+        if: steps.meta.outputs.need == 'true'
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source }}
+          CODEX_HOME: ${{ runner.temp }}/codex-engineering-${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${OPENAI_API_KEY:-}"
+          mkdir -p "$CODEX_HOME"
+          chmod 700 "$CODEX_HOME"
+          trap 'rm -rf "$CODEX_HOME"' EXIT
+
+          # Explicit login avoids the Codex CLI auth-source ambiguity that produced
+          # the prior 401 Missing bearer authentication failure in unattended CI.
+          printf '%s' "$OPENAI_API_KEY" | npx -y @openai/codex@latest login --with-api-key >/tmp/codex-login.txt 2>/tmp/codex-login.err
+          npx -y @openai/codex@latest login status
+
+          cat > /tmp/gpt-engineering-auth-prompt.txt <<EOF
+          You are GPT performing an INDEPENDENT, REPORT-ONLY engineering audit of a multi-chain automated trading bot at exact frozen source commit ${SOURCE_SHA}.
+          Inspect the ENTIRE checked-out repository and .gpt_auth_recovery/baseline.json: EVM/Solana execution, accounting/P&L, databases, concurrency, retries/timeouts, configuration, security, Telegram/operator permissions, Strategy Lab/shadow systems, circuit breakers, workflows/deployment interactions and tests. Find concrete software defects and operational regressions. Do not tune strategy merely because recent profit is disappointing.
+
+          Do not edit repository files, trade, deploy, alter LIVE/risk/capital settings, touch secrets/wallets/signing, or weaken any safety gate.
+
+          Return exactly one JSON object between ENGINEERING_RECOVERY_JSON_BEGIN and ENGINEERING_RECOVERY_JSON_END with:
+          schema_version=1, provider="gpt", source_commit="${SOURCE_SHA}", scope="FULL_REPOSITORY_BUG_AUDIT", status="CLEAN|ISSUES_FOUND|INCOMPLETE", summary, findings, refusals_or_limits, report_only=true, no_live_changes=true.
+          Each finding must contain id, severity P0-P3, category, title, evidence (non-empty file/detail entries), impact, root_cause, corrective_action, tests_required, confidence 0..1, deterministic_evidence.
+          EOF
+          model_args=()
+          if [[ -n "${OPENAI_WEEKLY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_WEEKLY_AUDIT_MODEL"); fi
+          npx -y @openai/codex@latest exec --sandbox read-only --ask-for-approval never --ephemeral "${model_args[@]}" - \
+            < /tmp/gpt-engineering-auth-prompt.txt > .gpt_auth_recovery/stdout.txt 2> .gpt_auth_recovery/stderr.txt
+
+          python3 - <<'PY'
+          import json,re,pathlib,os
+          raw=pathlib.Path('.gpt_auth_recovery/stdout.txt').read_text(errors='replace')
+          m=re.search(r'ENGINEERING_RECOVERY_JSON_BEGIN\s*(\{.*?\})\s*ENGINEERING_RECOVERY_JSON_END',raw,re.S)
+          if not m: raise SystemExit('GPT engineering recovery JSON markers missing')
+          p=json.loads(m.group(1))
+          if p.get('provider')!='gpt' or p.get('source_commit')!=os.environ['SOURCE_SHA']: raise SystemExit('GPT identity mismatch')
+          if p.get('scope')!='FULL_REPOSITORY_BUG_AUDIT': raise SystemExit('GPT scope mismatch')
+          if p.get('status') not in {'CLEAN','ISSUES_FOUND','INCOMPLETE'}: raise SystemExit('GPT status invalid')
+          if p.get('report_only') is not True or p.get('no_live_changes') is not True: raise SystemExit('GPT safety flags invalid')
+          pathlib.Path('.gpt_auth_recovery/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          if p.get('status')=='INCOMPLETE': raise SystemExit('GPT returned INCOMPLETE')
+          PY
+
+      - name: Produce explicit failure report when recovery fails
+        if: steps.meta.outputs.need == 'true' && steps.gpt.outcome != 'success'
+        env:
+          SOURCE_SHA: ${{ steps.meta.outputs.source }}
+          OPENAI_PRESENT: ${{ secrets.OPENAI_API_KEY != '' }}
+        shell: bash
+        run: |
+          mkdir -p .gpt_auth_recovery
+          python3 - <<'PY'
+          import json,os,pathlib,re
+          raw=''
+          for name in ('stderr.txt','stdout.txt'):
+              p=pathlib.Path('.gpt_auth_recovery')/name
+              if p.exists(): raw += p.read_text(errors='replace')[-1600:]+'\n'
+          raw=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}','<redacted>',raw)
+          reason='OPENAI_API_KEY is missing.' if os.environ.get('OPENAI_PRESENT')!='true' else (raw.strip() or 'Explicit Codex API-key recovery failed without diagnostic output.')
+          p={'schema_version':1,'provider':'gpt','source_commit':os.environ['SOURCE_SHA'],'scope':'FULL_REPOSITORY_BUG_AUDIT','status':'INCOMPLETE','summary':'GPT engineering recovery did not complete.','findings':[],'refusals_or_limits':[reason[:1800]],'report_only':True,'no_live_changes':True}
+          pathlib.Path('.gpt_auth_recovery/gpt.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Publish recovered GPT report to ai-reviews
+        if: steps.meta.outputs.need == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > .gpt_auth_recovery/gpt.md
+          import json
+          p=json.load(open('.gpt_auth_recovery/gpt.json')); print('# GPT engineering recovery\n\n'+str(p.get('summary') or '')+'\n\nStatus: '+str(p.get('status') or ''))
+          PY
+          put_file() {
+            local path="$1" file="$2" message="$3"
+            local api="repos/${GITHUB_REPOSITORY}/contents/${path}" current sha encoded
+            current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+            sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+            encoded="$(base64 -w0 "$file")"
+            python3 - "$encoded" "$sha" "$message" <<'PY' > /tmp/gpt-put.json
+          import json,sys
+          p={'message':sys.argv[3],'content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+            gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input /tmp/gpt-put.json >/dev/null
+          }
+          put_file "weekly/runs/${SOURCE_SHA}/gpt.json" .gpt_auth_recovery/gpt.json "Recover GPT engineering audit ${SOURCE_SHA:0:12}"
+          put_file "weekly/runs/${SOURCE_SHA}/gpt.md" .gpt_auth_recovery/gpt.md "Recover GPT engineering audit ${SOURCE_SHA:0:12}"
+
+      - name: Clean recovery state
+        if: always()
+        run: rm -rf .gpt_auth_recovery /tmp/gpt-engineering-auth-prompt.txt /tmp/codex-login.txt /tmp/codex-login.err
