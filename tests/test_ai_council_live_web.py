@@ -46,7 +46,7 @@ def test_live_openai_call_requires_current_hosted_web_search(monkeypatch) -> Non
     assert captured["url"] == "https://api.openai.com/v1/responses"
     assert captured["payload"]["tools"] == [{"type": "web_search"}]
     assert captured["payload"]["tool_choice"] == "required"
-    assert "MUST use the web search tool" in captured["payload"]["input"]
+    assert "MUST use live web search" in captured["payload"]["input"]
 
 
 def test_tool_compatibility_error_retries_current_web_model(monkeypatch) -> None:
@@ -69,6 +69,54 @@ def test_tool_compatibility_error_retries_current_web_model(monkeypatch) -> None
     )
     assert (rc, out, err) == (0, "Fresh answer", "")
     assert models == ["custom-text-model", "gpt-5.6"]
+
+
+def test_openai_429_falls_back_to_grounded_gemini(monkeypatch) -> None:
+    calls = []
+
+    def fake_http(url, *, headers, payload=None, method=None, timeout=90):
+        calls.append((url, payload))
+        if "api.openai.com" in url:
+            return 429, {"error": {"message": "rate limit"}}, "", {}
+        return 200, {
+            "candidates": [{
+                "content": {"parts": [{"text": "It is 18°C in London right now."}]},
+                "groundingMetadata": {
+                    "webSearchQueries": ["London current temperature"],
+                    "groundingChunks": [{"web": {"uri": "https://example.com", "title": "Weather"}}],
+                },
+            }]
+        }, "", {}
+
+    monkeypatch.setattr(live._http, "_http_json", fake_http)
+    rc, out, err = live._call_openai(
+        _final_prompt("What is the current temperature in London?"),
+        {
+            "OPENAI_API_KEY": "openai-test",
+            "GEMINI_API_KEY": "gemini-test",
+            "GEMINI_COUNCIL_MODEL": "gemini-3.7-flash",
+        },
+    )
+    assert (rc, out, err) == (0, "It is 18°C in London right now.", "")
+    assert len(calls) == 2
+    assert calls[1][1]["tools"] == [{"google_search": {}}]
+
+
+def test_gemini_answer_without_grounding_metadata_is_rejected(monkeypatch) -> None:
+    monkeypatch.setattr(
+        live._http,
+        "_http_json",
+        lambda url, **kwargs: (
+            (429, {"error": {"message": "rate limit"}}, "", {})
+            if "api.openai.com" in url
+            else (200, {"candidates": [{"content": {"parts": [{"text": "Probably 18°C."}]}}]}, "", {})
+        ),
+    )
+    rc, out, err = live._call_openai(
+        _final_prompt("What is the current temperature in London?"),
+        {"OPENAI_API_KEY": "o", "GEMINI_API_KEY": "g"},
+    )
+    assert (rc, out, err) == (0, live.LIVE_UNAVAILABLE_TEXT, "")
 
 
 def test_static_openai_call_delegates_without_web_search(monkeypatch) -> None:
@@ -101,7 +149,7 @@ def test_failed_live_search_never_falls_back_to_offline_model(monkeypatch) -> No
     )
     rc, out, err = live._call_openai(
         _final_prompt("What is the latest news in London?"),
-        {"OPENAI_API_KEY": "test-key"},
+        {"OPENAI_API_KEY": "test-key", "GEMINI_API_KEY": "gemini-test"},
     )
     assert (rc, out, err) == (0, live.LIVE_UNAVAILABLE_TEXT, "")
     assert base_calls == []
