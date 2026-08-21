@@ -1,0 +1,209 @@
+name: Claude Exact Strategy Retry
+
+on:
+  workflow_dispatch:
+    inputs:
+      cycle_id:
+        description: 'Exact immutable strategy cycle to recover'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: claude-exact-strategy-retry-${{ inputs.cycle_id }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out orchestration main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g @anthropic-ai/claude-code@latest
+          claude --version
+
+      - name: Resolve exact published cycle context and evidence
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ inputs.cycle_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CYCLE_ID" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || { echo 'Invalid cycle id.' >&2; exit 2; }
+          mkdir -p .claude_strategy_retry
+          root="strategy/runs/${CYCLE_ID}"
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/${root}/context.json?ref=ai-reviews" \
+            --jq '.content' | tr -d '\n' | base64 -d > .claude_strategy_retry/context.json
+
+          python - <<'PY' > /tmp/claude-meta.env
+          import json
+          p=json.load(open('.claude_strategy_retry/context.json'))
+          print('SOURCE_SHA='+str(p.get('source_commit') or ''))
+          print('EVIDENCE_SHA='+str(p.get('evidence_sha256') or ''))
+          print('EVIDENCE_SOURCE='+str(p.get('evidence_source') or ''))
+          PY
+          source /tmp/claude-meta.env
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid source SHA.' >&2; exit 2; }
+          [[ "$EVIDENCE_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid evidence SHA.' >&2; exit 2; }
+
+          exact=false
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > .claude_strategy_retry/evidence.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s .claude_strategy_retry/evidence.json ]]; then
+            got="$(sha256sum .claude_strategy_retry/evidence.json | awk '{print $1}')"
+            [[ "$got" == "$EVIDENCE_SHA" ]] && exact=true
+          fi
+
+          if [[ "$exact" != true && "$EVIDENCE_SOURCE" == 'architecture-only' ]]; then
+            python - "$SOURCE_SHA" <<'PY' > .claude_strategy_retry/evidence.json
+          import json,sys
+          print(json.dumps({
+            'schema_version':1,
+            'generated_epoch':0,
+            'generated_utc':'',
+            'evidence_status':'MISSING_RUNTIME_FORENSICS',
+            'source_commit':sys.argv[1],
+            'note':'No current sanitised runtime forensics branch was available. Review code/architecture, identify evidence gaps, and do not claim live profitability or canary readiness.'
+          },indent=2,sort_keys=True))
+          PY
+            got="$(sha256sum .claude_strategy_retry/evidence.json | awk '{print $1}')"
+            [[ "$got" == "$EVIDENCE_SHA" ]] && exact=true
+          fi
+
+          [[ "$exact" == true ]] || { echo 'Could not reconstruct the exact evidence bytes for this cycle.' >&2; exit 3; }
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "evidence_sha=$EVIDENCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "evidence_source=$EVIDENCE_SOURCE" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact source reviewed by the cycle
+        env:
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$SOURCE_SHA"
+          git clean -fdx -e .claude_strategy_retry/
+
+      - name: Claude exact-cycle strategy review
+        id: claude
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_STRATEGY_MODEL: ${{ vars.CLAUDE_STRATEGY_MODEL || 'sonnet' }}
+          CYCLE_ID: ${{ inputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
+          EVIDENCE_SOURCE: ${{ steps.meta.outputs.evidence_source }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANTHROPIC_API_KEY:-}"
+          cat > /tmp/claude-exact-strategy-prompt.txt <<EOF
+          You are CLAUDE, an independent strategy reviewer for a multi-chain automated trading bot.
+          Review the checked-out repository at exact source commit ${SOURCE_SHA} and the exact immutable evidence file .claude_strategy_retry/evidence.json.
+          Cycle: ${CYCLE_ID}
+          Evidence SHA-256: ${EVIDENCE_SHA}
+          Evidence source: ${EVIDENCE_SOURCE}
+
+          Objective: durable money-weighted NET P&L after fees, slippage, price impact, gas/priority fees, latency, failed execution and exit costs. Separate strategy/market loss from execution/infrastructure failure. Missing runtime evidence does not itself make an architecture review incomplete.
+          REPORT ONLY. Do not edit code, trade, deploy, change LIVE/risk/capital settings, touch secrets/wallets/signing, add assets, weaken safety controls, or use external web research.
+
+          Return exactly one JSON report between STRATEGY_REVIEW_JSON_BEGIN and STRATEGY_REVIEW_JSON_END:
+          {
+            "schema_version":1,"provider":"claude","cycle_id":"${CYCLE_ID}",
+            "source_commit":"${SOURCE_SHA}","evidence_sha256":"${EVIDENCE_SHA}",
+            "scope":"MULTI_AGENT_STRATEGY_REVIEW","status":"HEALTHY|CHANGES_PROPOSED|INCOMPLETE",
+            "summary":"...","proposals":[],"rejected_ideas":[],"evidence_gaps":[],
+            "review_only":true,"no_live_changes":true
+          }
+          Any proposal must include id, action, strategy, chain_scope, evidence, rationale, expected_effect, downside_risk, shadow_test, minimum_observation, confidence and suggested_files.
+          EOF
+          claude -p --permission-mode plan --model "$CLAUDE_STRATEGY_MODEL" --max-turns 8 --output-format text \
+            "$(cat /tmp/claude-exact-strategy-prompt.txt)" > .claude_strategy_retry/stdout.txt 2> .claude_strategy_retry/stderr.txt
+          python - <<'PY'
+          import json,re,pathlib,os
+          raw=pathlib.Path('.claude_strategy_retry/stdout.txt').read_text(errors='replace')
+          m=re.search(r'STRATEGY_REVIEW_JSON_BEGIN\s*(\{.*?\})\s*STRATEGY_REVIEW_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Claude strategy JSON markers missing')
+          p=json.loads(m.group(1))
+          expected={'provider':'claude','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA']}
+          for k,v in expected.items():
+              if p.get(k)!=v: raise SystemExit(f'Claude {k} mismatch')
+          if p.get('status') not in {'HEALTHY','CHANGES_PROPOSED','INCOMPLETE'}: raise SystemExit('Claude status invalid')
+          if p.get('review_only') is not True or p.get('no_live_changes') is not True: raise SystemExit('Claude safety flags invalid')
+          pathlib.Path('.claude_strategy_retry/claude.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.claude_strategy_retry/claude.md').write_text('# Claude exact-cycle strategy review\n\n'+str(p.get('summary') or '')+'\n')
+          if p.get('status')=='INCOMPLETE': raise SystemExit('Claude returned INCOMPLETE')
+          PY
+
+      - name: Recover explicit incomplete Claude report
+        if: steps.claude.outcome != 'success'
+        env:
+          CYCLE_ID: ${{ inputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
+          ANTHROPIC_PRESENT: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        shell: bash
+        run: |
+          mkdir -p .claude_strategy_retry
+          python - <<'PY'
+          import json,os,pathlib,re
+          raw=''
+          for name in ('stderr.txt','stdout.txt'):
+              p=pathlib.Path('.claude_strategy_retry')/name
+              if p.exists(): raw += p.read_text(errors='replace')[-1400:]+'\n'
+          raw=re.sub(r'sk-ant-[A-Za-z0-9_-]+','<redacted>',raw)
+          reason='ANTHROPIC_API_KEY is missing.' if os.environ.get('ANTHROPIC_PRESENT')!='true' else (raw.strip() or 'Claude exact-cycle strategy execution failed.')
+          p={'schema_version':1,'provider':'claude','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ.get('SOURCE_SHA',''),'evidence_sha256':os.environ.get('EVIDENCE_SHA',''),'scope':'MULTI_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'Claude strategy review did not complete.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True}
+          pathlib.Path('.claude_strategy_retry/claude.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.claude_strategy_retry/claude.md').write_text('# Claude exact-cycle strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
+          PY
+
+      - name: Publish Claude report to the exact shared cycle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ inputs.cycle_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/claude-exact-ai-reviews
+          git worktree add --detach /tmp/claude-exact-ai-reviews origin/ai-reviews
+          dest="/tmp/claude-exact-ai-reviews/strategy/runs/${CYCLE_ID}"
+          mkdir -p "$dest"
+          cp .claude_strategy_retry/claude.json "$dest/claude.json"
+          cp .claude_strategy_retry/claude.md "$dest/claude.md"
+          cd /tmp/claude-exact-ai-reviews
+          git config user.name 'claude-exact-strategy-retry'
+          git config user.email 'claude-exact-strategy-retry@users.noreply.github.com'
+          git add "strategy/runs/${CYCLE_ID}/claude.json" "strategy/runs/${CYCLE_ID}/claude.md"
+          if ! git diff --cached --quiet; then
+            git commit -m "Recover Claude strategy report ${CYCLE_ID}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
