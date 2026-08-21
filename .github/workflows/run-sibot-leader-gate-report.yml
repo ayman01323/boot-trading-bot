@@ -1,0 +1,91 @@
+name: SiBot Leader Gate Read-Only Report
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/run-sibot-leader-gate-report.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    env:
+      REPORT_VENV: /tmp/sibot-leader-gate-${{ github.run_id }}
+      DATA_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/data
+      CSV_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot
+
+    steps:
+      - name: Check out current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out read-only report source
+        uses: actions/checkout@v4
+        with:
+          ref: claude/restore-viable-leader-thresholds
+          path: leader-report-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare report script on current-main code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f leader-report-source/scripts/sibot_leader_gate_report.py
+          cp leader-report-source/scripts/sibot_leader_gate_report.py scripts/sibot_leader_gate_report.py
+          test -d "$DATA_DIR"
+          test -d "$CSV_DIR"
+          echo "Current main: $(git rev-parse HEAD)"
+          echo "Report source: $(git -C leader-report-source rev-parse HEAD)"
+
+      - name: Build isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3.11 >/dev/null 2>&1
+          rm -rf "$REPORT_VENV"
+          python3.11 -m venv "$REPORT_VENV"
+          "$REPORT_VENV/bin/python" -m pip install \
+            --disable-pip-version-check -q \
+            -r requirements.txt
+
+      - name: Run SiBot leader gate report read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 \
+          DATA_DIR="$DATA_DIR" \
+          CSV_DIR="$CSV_DIR" \
+          "$REPORT_VENV/bin/python" scripts/sibot_leader_gate_report.py 2>&1 \
+            | sed -E 's/(account )[0-9]+/\1<redacted>/g' \
+            | tee /tmp/sibot-leader-gate-report.txt
+
+      - name: Publish report to GitHub job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## SiBot Leader Gate Read-Only Report'
+            echo
+            echo '```text'
+            if [[ -f /tmp/sibot-leader-gate-report.txt ]]; then
+              cat /tmp/sibot-leader-gate-report.txt
+            else
+              echo 'Report output was not produced.'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$REPORT_VENV"
