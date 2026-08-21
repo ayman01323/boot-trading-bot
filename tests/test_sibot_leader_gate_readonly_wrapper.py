@@ -55,12 +55,12 @@ def test_root_wrapper_is_fixed_no_argument_and_refuses_dirty_non_main_code():
 def test_root_wrapper_uses_isolated_code_config_and_database_snapshots():
     text = _text(INSTALLER)
     assert "git archive --format=tar HEAD" in text
-    assert r'cp -a "\$CSV_DIR" "\$SNAPSHOT/CSVbot"'.replace(r'\"', '"') in text
+    assert r'cp -a "\$CSV_DIR" "\$SNAPSHOT/CSVbot"' in text
     assert "source.backup(destination)" in text
     assert "?mode=ro" in text
     assert "SIBOT_GATE_SNAPSHOT=1" in text
     assert "env -i" in text
-    assert r'"\$SNAPSHOT/\$REPORT_SCRIPT"'.replace(r'\"', '"') in text
+    assert r'"\$SNAPSHOT/\$REPORT_SCRIPT"' in text
 
 
 def test_sudoers_grants_only_the_exact_report_wrapper():
