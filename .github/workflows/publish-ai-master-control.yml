@@ -118,8 +118,8 @@ jobs:
           new=json.load(open('/tmp/ai-master-control.json'))
           try: old=json.load(open('/tmp/ai-master-existing.json'))
           except Exception: old={}
-          old_no_time=dict(old); old_no_time.pop('published_epoch',None)
-          print('CHANGED=' + ('true' if old_no_time != new else 'false'))
+          old.pop('published_epoch',None)
+          print('CHANGED=' + ('true' if old != new else 'false'))
           for name in ('deepseek_github','deepseek_vps'):
               key=name+'_action_nonce'
               requested=int(new.get(key) or 0) > int(old.get(key) or 0)
