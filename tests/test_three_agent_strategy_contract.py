@@ -83,11 +83,12 @@ def test_strategy_allowlist_excludes_live_and_deployment_paths():
     assert not strategy_auto_path_allowed("CSVbot/auto_trading_settings.csv")
 
 
-def test_two_agent_low_risk_shadow_change_can_be_draft_candidate():
+def test_legacy_two_agent_low_risk_shadow_change_is_blocked_until_four_agent_cycle():
     gated = enforce_master_policy(_master())
-    assert gated["implementation_allowed"] is True
-    assert gated["status"] == "DRAFT_SHADOW_CHANGE"
-    assert gated["decisions"][0]["policy_eligible"] is True
+    assert gated["implementation_allowed"] is False
+    assert gated["status"] == "NO_ACTION"
+    assert gated["decisions"][0]["policy_eligible"] is False
+    assert any("four-agent" in x.lower() for x in gated["decisions"][0]["policy_reasons"])
 
 
 def test_single_agent_or_high_risk_or_live_scope_is_blocked():

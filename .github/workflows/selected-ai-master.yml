@@ -1,0 +1,300 @@
+name: Selected Resilient AI Master
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_run:
+    workflows:
+      - "Hourly Three-Agent Strategy Cycle"
+      - "Claude Fourth Strategy Agent"
+      - "Weekly Three-Agent Full-Bot Bug Audit"
+      - "Claude Fourth Engineering Agent"
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'strategy, engineering, or both'
+        required: false
+        default: both
+        type: choice
+        options: [both, strategy, engineering]
+
+permissions:
+  contents: write
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: selected-resilient-ai-master
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [strategy, engineering]
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install all selectable MASTER CLIs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest @google/gemini-cli@latest @anthropic-ai/claude-code@latest @github/copilot@latest
+          codex --version
+          gemini --version
+          claude --version
+          copilot --version
+
+      - name: Respect requested lane
+        id: lane
+        env:
+          MATRIX_LANE: ${{ matrix.lane }}
+          INPUT_LANE: ${{ inputs.lane }}
+        shell: bash
+        run: |
+          wanted="${INPUT_LANE:-both}"
+          if [[ "$wanted" != both && "$wanted" != "$MATRIX_LANE" ]]; then
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Load Telegram master control
+        if: steps.lane.outputs.run == 'true'
+        id: control
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ matrix.lane }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/control/latest.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/ai-control.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 || ! -s /tmp/ai-control.json ]]; then echo '{}' > /tmp/ai-control.json; fi
+          python - "$LANE" /tmp/ai-control.json <<'PY' > /tmp/control.env
+          import json,sys
+          lane=sys.argv[1]
+          try: p=json.load(open(sys.argv[2]))
+          except Exception: p={}
+          master=str(p.get(lane+'_master') or 'auto').lower()
+          if master not in {'auto','gpt','claude','gemini','copilot'}: master='auto'
+          enabled=bool(p.get(lane+'_enabled',True))
+          cycle=str(p.get(lane+'_cycle') or 'scheduled').lower()
+          if cycle not in {'scheduled','manual'}: cycle='scheduled'
+          print('MASTER='+master)
+          print('ENABLED='+('true' if enabled else 'false'))
+          print('CYCLE_MODE='+cycle)
+          print('RUN_NONCE='+str(max(0,int(p.get(lane+'_run_nonce') or 0))))
+          PY
+          source /tmp/control.env
+          echo "master=$MASTER" >> "$GITHUB_OUTPUT"
+          echo "enabled=$ENABLED" >> "$GITHUB_OUTPUT"
+          echo "cycle_mode=$CYCLE_MODE" >> "$GITHUB_OUTPUT"
+          echo "run_nonce=$RUN_NONCE" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve immutable cycle and collect every valid report
+        if: steps.lane.outputs.run == 'true' && steps.control.outputs.enabled == 'true'
+        id: cycle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LANE: ${{ matrix.lane }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .selected_master/reports
+          get_ai_file() {
+            local path="$1" out="$2"
+            set +e
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d > "$out" 2>/dev/null
+            rc=$?
+            set -e
+            [[ $rc -eq 0 && -s "$out" ]]
+          }
+
+          if [[ "$LANE" == strategy ]]; then
+            identity="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" --jq '.content' \
+              | tr -d '\n' | base64 -d | tr -d '\r\n')"
+            [[ "$identity" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || { echo 'No valid strategy cycle yet.'; echo 'found=false' >> "$GITHUB_OUTPUT"; exit 0; }
+            root="strategy/runs/${identity}"
+            get_ai_file "${root}/context.json" .selected_master/context.json || { echo 'Strategy context missing.'; echo 'found=false' >> "$GITHUB_OUTPUT"; exit 0; }
+            python - .selected_master/context.json <<'PY' > /tmp/id.env
+          import json,sys
+          p=json.load(open(sys.argv[1])); print('SOURCE='+str(p.get('source_commit') or '')); print('EVIDENCE='+str(p.get('evidence_sha256') or ''))
+          PY
+            source /tmp/id.env
+          else
+            identity="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/weekly/latest_source_commit.txt?ref=ai-reviews" --jq '.content' \
+              | tr -d '\n' | base64 -d | tr -d '\r\n')"
+            [[ "$identity" =~ ^[0-9a-f]{40}$ ]] || { echo 'No valid engineering cycle yet.'; echo 'found=false' >> "$GITHUB_OUTPUT"; exit 0; }
+            root="weekly/runs/${identity}"
+            SOURCE="$identity"
+            EVIDENCE=''
+          fi
+
+          for provider in gpt gemini claude; do
+            get_ai_file "${root}/${provider}.json" ".selected_master/reports/${provider}.json" || rm -f ".selected_master/reports/${provider}.json"
+          done
+          if ! get_ai_file "${root}/copilot.json" .selected_master/reports/copilot.json; then
+            rm -f .selected_master/reports/copilot.json
+            if [[ "$LANE" == strategy ]]; then pattern=".ai/strategy/copilot/${identity}.json"; else pattern=".ai/weekly/copilot/${identity}.json"; fi
+            while IFS=$'\t' read -r number head; do
+              [[ -n "$number" ]] || continue
+              files="$(gh pr diff "$number" --name-only 2>/dev/null || true)"
+              if grep -Fxq "$pattern" <<< "$files"; then
+                set +e
+                gh api -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/contents/${pattern}?ref=${head}" --jq '.content' 2>/dev/null \
+                  | tr -d '\n' | base64 -d > .selected_master/reports/copilot.json 2>/dev/null
+                rc=$?
+                set -e
+                [[ $rc -eq 0 && -s .selected_master/reports/copilot.json ]] && break
+              fi
+            done < <(gh pr list --state open --limit 100 --json number,headRefOid --jq '.[] | [.number,.headRefOid] | @tsv')
+          fi
+
+          count="$(find .selected_master/reports -maxdepth 1 -name '*.json' -type f | wc -l | tr -d ' ')"
+          echo "Collected ${count} candidate report file(s) for ${LANE}."
+          if [[ "$count" == 0 ]]; then echo 'found=false' >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo 'found=true' >> "$GITHUB_OUTPUT"
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "evidence=$EVIDENCE" >> "$GITHUB_OUTPUT"
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+
+      - name: Skip already-adjudicated unchanged report set
+        if: steps.cycle.outputs.found == 'true'
+        id: needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT_PATH: ${{ steps.cycle.outputs.root }}
+          PREFERRED_MASTER: ${{ steps.control.outputs.master }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          signature="$(python - <<'PY'
+          import glob,hashlib,json,os
+          rows=[]
+          for path in sorted(glob.glob('.selected_master/reports/*.json')):
+              try:
+                  p=json.load(open(path)); rows.append((os.path.basename(path),p.get('status'),p.get('source_commit'),p.get('evidence_sha256')))
+              except Exception: pass
+          raw=json.dumps({'reports':rows,'preferred':os.environ['PREFERRED_MASTER']},sort_keys=True,separators=(',',':')).encode()
+          print(hashlib.sha256(raw).hexdigest())
+          PY
+          )"
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/${ROOT_PATH}/selected_master_completion.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/selected-completion.json 2>/dev/null
+          rc=$?
+          set -e
+          needed=true
+          if [[ $rc -eq 0 && -s /tmp/selected-completion.json ]]; then
+            old="$(python -c "import json;print(json.load(open('/tmp/selected-completion.json')).get('report_set_signature',''))" 2>/dev/null || true)"
+            [[ "$old" == "$signature" ]] && needed=false
+          fi
+          echo "value=$needed" >> "$GITHUB_OUTPUT"
+          echo "signature=$signature" >> "$GITHUB_OUTPUT"
+
+      - name: Run selected MASTER with fixed fallback sequence
+        if: steps.cycle.outputs.found == 'true' && steps.needed.outputs.value == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          LANE: ${{ matrix.lane }}
+          IDENTITY: ${{ steps.cycle.outputs.identity }}
+          SOURCE_SHA: ${{ steps.cycle.outputs.source }}
+          EVIDENCE_SHA: ${{ steps.cycle.outputs.evidence }}
+          PREFERRED_MASTER: ${{ steps.control.outputs.master }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/resilient_selected_master_v2.py \
+            --lane "$LANE" \
+            --identity "$IDENTITY" \
+            --source-commit "$SOURCE_SHA" \
+            --evidence-sha "$EVIDENCE_SHA" \
+            --reports-dir .selected_master/reports \
+            --preferred-master "$PREFERRED_MASTER" \
+            --output .selected_master/master_decision.json
+
+      - name: Publish authoritative selected-master result
+        if: steps.cycle.outputs.found == 'true' && steps.needed.outputs.value == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROOT_PATH: ${{ steps.cycle.outputs.root }}
+          IDENTITY: ${{ steps.cycle.outputs.identity }}
+          LANE: ${{ matrix.lane }}
+          REPORT_SIGNATURE: ${{ steps.needed.outputs.signature }}
+          PREFERRED_MASTER: ${{ steps.control.outputs.master }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/selected-master-reviews
+          git worktree add --detach /tmp/selected-master-reviews origin/ai-reviews
+          dest="/tmp/selected-master-reviews/${ROOT_PATH}"
+          mkdir -p "$dest"
+          cp .selected_master/master_decision.json "$dest/selected_master_decision.json"
+          cp .selected_master/master_decision.json "$dest/master_decision.json"
+          python - "$LANE" "$IDENTITY" "$REPORT_SIGNATURE" "$PREFERRED_MASTER" .selected_master/master_decision.json <<'PY' > "$dest/selected_master_completion.json"
+          import json,sys,time
+          lane,identity,sig,preferred,path=sys.argv[1:6]
+          p=json.load(open(path))
+          out={
+            'lane':lane,'identity':identity,'report_set_signature':sig,'preferred_master':preferred,
+            'actual_master':p.get('actual_master'),'master_attempts':p.get('master_attempts') or [],
+            'valid_agents':p.get('valid_agents') or [],'valid_agent_count':int(p.get('valid_agent_count') or 0),
+            'unavailable_agents':p.get('unavailable_agents') or [],'failed_agent_count':int(p.get('failed_agent_count') or 0),
+            'master_decision_available':True,'cycle_continued':bool(p.get('resilient_cycle_continued')),
+            'implementation_allowed':bool(p.get('implementation_allowed')),
+            'live_auto_deploy':False,'completed_epoch':int(time.time()),
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          cd /tmp/selected-master-reviews
+          git config user.name 'selected-resilient-ai-master'
+          git config user.email 'selected-resilient-ai-master@users.noreply.github.com'
+          git add "$ROOT_PATH/master_decision.json" "$ROOT_PATH/selected_master_decision.json" "$ROOT_PATH/selected_master_completion.json"
+          if ! git diff --cached --quiet; then
+            git commit -m "Selected AI master ${LANE} ${IDENTITY:0:18}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Disabled lane note
+        if: steps.lane.outputs.run == 'true' && steps.control.outputs.enabled != 'true'
+        run: echo '${{ matrix.lane }} AI review lane is disabled by a Telegram MASTER. Trading remains independent of this AI lane.'

@@ -6,8 +6,13 @@ import re
 from pathlib import PurePosixPath, Path
 from typing import Any
 
-PROVIDERS = {"gpt", "gemini", "copilot"}
+PROVIDERS = {"gpt", "gemini", "copilot", "claude"}
 AGENT_STATUSES = {"HEALTHY", "CHANGES_PROPOSED", "INCOMPLETE"}
+STRATEGY_SCOPES = {
+    "THREE_AGENT_STRATEGY_REVIEW",  # legacy compatibility
+    "FOUR_AGENT_STRATEGY_REVIEW",
+    "MULTI_AGENT_STRATEGY_REVIEW",
+}
 STRATEGY_ACTIONS = {
     "KEEP", "IMPROVE", "REWORK", "SHADOW_MORE", "REPLACE", "DORMANT",
     "NEW_SHADOW", "ASSET_REQUEST", "RESEARCH_MORE",
@@ -30,6 +35,7 @@ _ALLOWED_EXACT = {
 _ALLOWED_PREFIXES = (
     "tests/test_strategy_",
     "tests/test_three_agent_strategy_",
+    "tests/test_four_agent_strategy_",
 )
 _PROTECTED_RE = (
     re.compile(r"^\.github/workflows/", re.I),
@@ -70,8 +76,9 @@ def validate_agent_report(report: dict, *, provider: str | None = None, cycle_id
         raise ValueError("unsupported strategy provider")
     if provider and p != provider.lower():
         raise ValueError("provider mismatch")
-    if str(report.get("scope") or "") != "THREE_AGENT_STRATEGY_REVIEW":
-        raise ValueError("scope must be THREE_AGENT_STRATEGY_REVIEW")
+    scope = str(report.get("scope") or "")
+    if scope not in STRATEGY_SCOPES:
+        raise ValueError("scope must be a supported strategy review scope")
     if report.get("review_only") is not True or report.get("no_live_changes") is not True:
         raise ValueError("independent strategy reports must be review_only and no_live_changes")
     status = str(report.get("status") or "")
@@ -165,11 +172,12 @@ def validate_master_decision(decision: dict, *, cycle_id: str | None = None,
 
 
 def enforce_master_policy(decision: dict) -> dict:
-    """Deterministically restrict GPT strategy decisions to low-risk SHADOW-only edits."""
+    """Deterministically restrict GPT decisions to four-agent, low-risk SHADOW-only edits."""
     validate_master_decision(decision)
     gated = []
     implementation_count = 0
     human_required = False
+    four_agent_evidence = decision.get("four_agent_evidence") is True
     for raw in decision.get("decisions") or []:
         row = dict(raw)
         requested = str(row.get("disposition") or "DEFER")
@@ -186,12 +194,15 @@ def enforce_master_policy(decision: dict) -> dict:
         if requested == "ACCEPT" and action not in CODE_ACTIONS:
             eligible = False
             reasons.append(f"{action} is a decision/research action, not an auto-code action")
+        if not four_agent_evidence:
+            eligible = False
+            reasons.append("requires a completed four-agent evidence set including Claude")
         if confidence < 0.85:
             eligible = False
             reasons.append("confidence below 0.85")
-        if len(agents) < 2:
+        if len(agents) < 3:
             eligible = False
-            reasons.append("requires support from at least two independent agents")
+            reasons.append("requires support from at least three of four independent agents")
         if risk not in {"LOW", "MEDIUM"}:
             eligible = False
             human_required = True
@@ -214,7 +225,7 @@ def enforce_master_policy(decision: dict) -> dict:
         row["supporting_agents"] = agents
         row["allowed_files"] = files
         row["policy_eligible"] = bool(eligible)
-        row["policy_reasons"] = reasons or (["strategy SHADOW policy requirements satisfied"] if eligible else ["not accepted for auto-code"])
+        row["policy_reasons"] = reasons or (["four-agent SHADOW policy requirements satisfied"] if eligible else ["not accepted for auto-code"])
         gated.append(row)
         if eligible:
             implementation_count += 1
@@ -223,7 +234,9 @@ def enforce_master_policy(decision: dict) -> dict:
     out["decisions"] = gated
     out["policy"] = {
         "minimum_confidence": 0.85,
-        "minimum_independent_agents": 2,
+        "minimum_independent_agents": 3,
+        "required_reviewers": ["gpt", "gemini", "copilot", "claude"],
+        "four_agent_cycle_required": True,
         "risk_allowed": ["LOW", "MEDIUM"],
         "shadow_only_required": True,
         "live_execution_files_allowed": False,

@@ -1,6 +1,9 @@
-name: Weekly Resilient Engineering Master
+name: Four-Agent Strategy Master
 
 on:
+  workflow_run:
+    workflows: ["Claude Fourth Strategy Agent"]
+    types: [completed]
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
@@ -8,10 +11,6 @@ on:
 permissions:
   actions: write
   contents: read
-
-concurrency:
-  group: weekly-resilient-engineering-master-compat
-  cancel-in-progress: false
 
 jobs:
   delegate:
@@ -23,5 +22,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh workflow run selected-ai-master.yml --ref main -f lane=engineering
-          echo 'Legacy GPT-only engineering master is disabled; selected/fallback MASTER is authoritative.'
+          gh workflow run selected-ai-master.yml --ref main -f lane=strategy
+          echo 'Four-agent completion is no longer required to keep the review cycle moving.'

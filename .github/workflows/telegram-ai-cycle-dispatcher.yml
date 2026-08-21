@@ -1,0 +1,94 @@
+name: Telegram AI Cycle Dispatcher
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: telegram-ai-cycle-dispatcher
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read published Telegram control and dispatch new run requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          get_file() {
+            local path="$1" out="$2"
+            set +e
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d > "$out" 2>/dev/null
+            rc=$?
+            set -e
+            [[ $rc -eq 0 && -s "$out" ]]
+          }
+          get_file control/latest.json /tmp/control.json || { echo 'No published Telegram AI control yet.'; exit 0; }
+          get_file control/dispatch_state.json /tmp/dispatch-state.json || echo '{}' > /tmp/dispatch-state.json
+
+          python - /tmp/control.json /tmp/dispatch-state.json /tmp/dispatch-plan.json <<'PY'
+          import json,sys
+          control=json.load(open(sys.argv[1])); state=json.load(open(sys.argv[2]))
+          out={'dispatch':[],'state':dict(state)}
+          for lane,workflow in (
+              ('strategy','hourly-three-agent-strategy-cycle.yml'),
+              ('engineering','weekly-three-agent-bug-audit.yml'),
+          ):
+              nonce=int(control.get(lane+'_run_nonce') or 0)
+              seen=int(state.get(lane+'_run_nonce') or 0)
+              if bool(control.get(lane+'_enabled',True)) and nonce>seen:
+                  out['dispatch'].append({'lane':lane,'workflow':workflow,'nonce':nonce})
+                  out['state'][lane+'_run_nonce']=nonce
+          json.dump(out,open(sys.argv[3],'w'),indent=2,sort_keys=True);open(sys.argv[3],'a').write('\n')
+          PY
+
+          while IFS=$'\t' read -r lane workflow nonce; do
+            [[ -n "$workflow" ]] || continue
+            echo "Dispatching $lane cycle request nonce=$nonce"
+            gh workflow run "$workflow" --ref main
+          done < <(python - /tmp/dispatch-plan.json <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          for x in p.get('dispatch') or []: print(x['lane']+'\t'+x['workflow']+'\t'+str(x['nonce']))
+          PY
+          )
+
+          python - /tmp/dispatch-plan.json > /tmp/new-dispatch-state.json <<'PY'
+          import json,sys
+          print(json.dumps(json.load(open(sys.argv[1])).get('state') or {},indent=2,sort_keys=True))
+          PY
+
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/ai-dispatch-reviews
+          git worktree add --detach /tmp/ai-dispatch-reviews origin/ai-reviews
+          mkdir -p /tmp/ai-dispatch-reviews/control
+          cp /tmp/new-dispatch-state.json /tmp/ai-dispatch-reviews/control/dispatch_state.json
+          cd /tmp/ai-dispatch-reviews
+          git config user.name 'telegram-ai-cycle-dispatcher'
+          git config user.email 'telegram-ai-cycle-dispatcher@users.noreply.github.com'
+          git add control/dispatch_state.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record Telegram AI cycle dispatch state'
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
