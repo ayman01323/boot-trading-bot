@@ -113,7 +113,49 @@ jobs:
           echo "evidence_source=$EVIDENCE_SOURCE" >> "$GITHUB_OUTPUT"
           echo "evidence_fresh=$EVIDENCE_FRESH" >> "$GITHUB_OUTPUT"
 
+      - name: Evaluate paid-AI cost gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/strategy/cost_gate_state.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/cost-gate-state.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 || ! -s /tmp/cost-gate-state.json ]]; then echo '{}' > /tmp/cost-gate-state.json; fi
+
+          PYTHONPATH="$GITHUB_WORKSPACE" python - "$SOURCE_SHA" "$MANUAL" <<'PY' >> "$GITHUB_OUTPUT"
+          import json,sys
+          from learnerbot.strategy_ai_cost_gate import evaluate_cost_gate
+          source_sha,manual=sys.argv[1],sys.argv[2].lower()=='true'
+          evidence=json.load(open('.strategy_cycle/evidence.json'))
+          try:
+              previous=json.load(open('/tmp/cost-gate-state.json'))
+          except Exception:
+              previous={}
+          result=evaluate_cost_gate(source_commit=source_sha,evidence=evidence,previous_state=previous,manual=manual)
+          print(f"run_ai={str(result['run_ai']).lower()}")
+          print(f"reason={result['reason']}")
+          print(f"material_sha256={result['material_sha256']}")
+          PY
+          echo "[cost-gate] $(tail -3 "$GITHUB_OUTPUT" | tr '\n' ' ')"
+
+      - name: Skip paid AI review -- no material change
+        if: steps.gate.outputs.run_ai != 'true'
+        env:
+          REASON: ${{ steps.gate.outputs.reason }}
+        shell: bash
+        run: |
+          echo "Skipping paid GPT/Gemini/Copilot review this cycle: ${REASON}"
+
       - name: Prepare common strategy prompt
+        if: steps.gate.outputs.run_ai == 'true'
         env:
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
@@ -178,6 +220,7 @@ jobs:
 
       - name: GPT independent strategy report
         id: gpt
+        if: steps.gate.outputs.run_ai == 'true'
         continue-on-error: true
         env:
           CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -224,7 +267,7 @@ jobs:
             --source-commit "$SOURCE_SHA" --evidence-sha256 "$EVIDENCE_SHA"
 
       - name: Recover GPT incomplete report
-        if: steps.gpt.outcome != 'success'
+        if: steps.gate.outputs.run_ai == 'true' && steps.gpt.outcome != 'success'
         env:
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
@@ -249,6 +292,7 @@ jobs:
 
       - name: Gemini independent strategy report
         id: gemini
+        if: steps.gate.outputs.run_ai == 'true'
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -300,7 +344,7 @@ jobs:
           PY
 
       - name: Recover Gemini incomplete report
-        if: steps.gemini.outcome != 'success'
+        if: steps.gate.outputs.run_ai == 'true' && steps.gemini.outcome != 'success'
         env:
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
@@ -326,6 +370,7 @@ jobs:
 
       - name: Create and attempt to assign Copilot the same strategy cycle
         id: copilot
+        if: steps.gate.outputs.run_ai == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
@@ -403,6 +448,7 @@ jobs:
           echo "Copilot issue #${issue} assignment state: ${state}"
 
       - name: Publish independent reports and reconciliable state
+        if: steps.gate.outputs.run_ai == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
@@ -410,6 +456,7 @@ jobs:
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
           EVIDENCE_SOURCE: ${{ steps.meta.outputs.evidence_source }}
           EVIDENCE_FRESH: ${{ steps.meta.outputs.evidence_fresh }}
+          MATERIAL_SHA: ${{ steps.gate.outputs.material_sha256 }}
           OPENAI_PRESENT: ${{ steps.creds.outputs.openai }}
           GEMINI_PRESENT: ${{ steps.creds.outputs.gemini }}
           COPILOT_TOKEN_PRESENT: ${{ steps.creds.outputs.copilot_token }}
@@ -458,6 +505,16 @@ jobs:
           PY
 
           printf '%s\n' "$CYCLE_ID" > /tmp/hourly-ai-reviews/strategy/latest_cycle_id.txt
+
+          python - <<PY > /tmp/hourly-ai-reviews/strategy/cost_gate_state.json
+          import json,time
+          print(json.dumps({
+            'last_ai_attempt_epoch':int(time.time()),
+            'last_ai_attempt_source_commit':'${SOURCE_SHA}',
+            'last_ai_attempt_material_sha256':'${MATERIAL_SHA}',
+          },indent=2,sort_keys=True))
+          PY
+
           cd /tmp/hourly-ai-reviews
           git config user.name 'hourly-three-agent-strategy-bot'
           git config user.email 'hourly-three-agent-strategy-bot@users.noreply.github.com'
