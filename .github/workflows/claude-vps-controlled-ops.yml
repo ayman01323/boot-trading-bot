@@ -3,6 +3,11 @@ name: Claude VPS Controlled Operations
 on:
   schedule:
     - cron: '*/5 * * * *'
+  workflow_run:
+    workflows:
+      - "Publish Telegram AI Master Control"
+      - "Deploy BOOT to VPS"
+    types: [completed]
   workflow_dispatch:
     inputs:
       action:
@@ -21,6 +26,7 @@ concurrency:
 
 jobs:
   operate:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 30
     steps:
@@ -70,6 +76,10 @@ jobs:
               nonce=max(nonce,seen)+1
               requested_by='github-workflow-dispatch'
           run=(action in allowed and action!='none' and nonce>seen and selected)
+          # Automatic upstream workflow completions may consume inspection requests only.
+          # Existing scheduled/manual paths retain their prior bounded test/deploy behavior.
+          if event=='workflow_run' and action!='inspect':
+              run=False
           print('ACTION='+action)
           print('NONCE='+str(nonce))
           print('SEEN='+str(seen))

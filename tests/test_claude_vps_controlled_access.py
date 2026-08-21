@@ -32,6 +32,18 @@ def test_telegram_vps_menu_is_master_only_and_deploy_requires_confirmation() -> 
     assert 'request_vps_action' in text
 
 
+def test_vps_workflow_runs_directly_after_successful_control_publish_or_deploy() -> None:
+    text = _text(".github/workflows/claude-vps-controlled-ops.yml")
+    assert 'workflow_run:' in text
+    assert '"Publish Telegram AI Master Control"' in text
+    assert '"Deploy BOOT to VPS"' in text
+    assert "if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'" in text
+    assert "if event=='workflow_run' and action!='inspect':" in text
+    assert 'run=False' in text
+    assert "cron: '*/5 * * * *'" in text
+    assert 'workflow_dispatch:' in text
+
+
 def test_vps_workflow_uses_only_existing_restricted_sudo_wrappers() -> None:
     text = _text(".github/workflows/claude-vps-controlled-ops.yml")
     assert 'runs-on: [self-hosted, linux, x64, boot-vps]' in text
