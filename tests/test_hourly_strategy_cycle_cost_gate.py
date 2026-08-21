@@ -17,9 +17,28 @@ def _step_block(name: str) -> str:
     return text[start:] if next_start < 0 else text[start:next_start]
 
 
-def test_workflow_has_expected_step_count():
-    names = re.findall(r"(?m)^\s{6}- name: .+$", _text())
-    assert len(names) == 16
+def test_workflow_has_required_named_steps():
+    names = {
+        line.strip().removeprefix("- name: ")
+        for line in re.findall(r"(?m)^\s{6}- name: .+$", _text())
+    }
+    required = {
+        "Check out exact current main without persisted GitHub credentials",
+        "Install review tools",
+        "Provider credential preflight",
+        "Resolve source and freshest available evidence",
+        "Evaluate paid-AI cost gate",
+        "Skip paid AI review -- no material change",
+        "Prepare common strategy prompt",
+        "GPT independent strategy report",
+        "Recover GPT incomplete report",
+        "Gemini independent strategy report",
+        "Recover Gemini incomplete report",
+        "Create and attempt to assign Copilot the same strategy cycle",
+        "Publish independent reports and reconciliable state",
+        "Clean workspace",
+    }
+    assert required <= names
 
 
 def test_cost_gate_step_exists_and_reads_evidence():
