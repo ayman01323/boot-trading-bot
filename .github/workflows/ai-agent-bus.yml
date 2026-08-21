@@ -3,6 +3,13 @@ name: Event-Driven AI Agent Bus
 on:
   issue_comment:
     types: [created]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/ai-agent-bus.yml'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_pending.py'
+      - 'tests/test_ai_agent_bus_delivery_fallback.py'
   push:
     branches: [main]
     paths:
@@ -17,9 +24,9 @@ permissions:
   contents: read
   issues: write
 
-# Serialise all bus work so an issue_comment event and the polling fallback
-# cannot process the same message at the same time. Every run re-checks the
-# issue before calling a provider, so queued duplicate triggers become no-ops.
+# Serialise all bus work so instant, PR-smoke, push and polling fallbacks cannot
+# process the same message at the same time. Every run re-checks issue #333 by
+# message_id before calling/publishing, so duplicate triggers become no-ops.
 concurrency:
   group: ai-agent-bus
   cancel-in-progress: false
@@ -27,34 +34,33 @@ concurrency:
 jobs:
   route:
     if: >-
-      github.event_name != 'issue_comment' ||
-      (github.event.issue.number == 333 &&
-       (github.event.comment.user.login == github.repository_owner ||
-        github.event.comment.user.login == 'github-actions[bot]'))
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.number == 333 &&
+        (github.event.comment.user.login == github.repository_owner ||
+         github.event.comment.user.login == 'github-actions[bot]'))) &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
     steps:
-      - name: Check out trusted current main without persisted credentials
+      - name: Check out trusted bus code without persisted credentials
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || 'main' }}
           fetch-depth: 1
           persist-credentials: false
 
       - name: Find latest unanswered AI bus message
         id: pending
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           REPO_OWNER: ${{ github.repository_owner }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
-            > /tmp/ai-bus-comments.json
-          python scripts/ai_agent_bus_pending.py select \
-            --comments /tmp/ai-bus-comments.json \
+          python scripts/ai_agent_bus_pending.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
             --owner "$REPO_OWNER" \
             --message-output /tmp/ai-bus-message.md \
             > /tmp/ai-bus-pending.env
@@ -134,30 +140,23 @@ jobs:
       - name: Post auditable reply to the AI bus issue
         if: steps.pending.outputs.pending == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
         shell: bash
         run: |
           set -euo pipefail
-          # Re-check immediately before publishing so a delayed duplicate trigger
+          # Re-check immediately before publishing so delayed duplicate triggers
           # cannot post a second reply for the same message id.
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
-            > /tmp/ai-bus-comments-latest.json
-          if python scripts/ai_agent_bus_pending.py has-reply \
-              --comments /tmp/ai-bus-comments-latest.json \
+          if python scripts/ai_agent_bus_pending.py has-reply-live \
+              --repo "$GITHUB_REPOSITORY" \
+              --owner "$REPO_OWNER" \
               --message-id "${{ steps.pending.outputs.message_id }}"; then
             echo "Reply already exists for ${{ steps.pending.outputs.message_id }}; skipping duplicate publish."
             exit 0
           fi
-
-          python - <<'PY' > /tmp/ai-bus-comment.json
-          import json, pathlib
-          body=pathlib.Path('/tmp/ai-bus-reply.md').read_text(encoding='utf-8',errors='replace')
-          print(json.dumps({'body': body}))
-          PY
-          gh api --method POST \
-            "repos/${GITHUB_REPOSITORY}/issues/333/comments" \
-            --input /tmp/ai-bus-comment.json >/dev/null
+          python scripts/ai_agent_bus_pending.py post-reply \
+            --repo "$GITHUB_REPOSITORY" \
+            --body-file /tmp/ai-bus-reply.md
 
       - name: Publish compact run summary
         if: always()
@@ -166,6 +165,7 @@ jobs:
           {
             echo '## AI Agent Bus'
             echo
+            echo "Event: **${GITHUB_EVENT_NAME}**"
             echo "Pending message: **${{ steps.pending.outputs.pending || 'false' }}**"
             echo "Message ID: \`${{ steps.pending.outputs.message_id || 'none' }}\`"
             echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
