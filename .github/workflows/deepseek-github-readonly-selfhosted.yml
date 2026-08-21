@@ -64,8 +64,14 @@ jobs:
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$source_sha" > /tmp/deepseek-ro-sha.txt
 
+          command -v python3.11 >/dev/null 2>&1 || {
+            echo 'python3.11 is required on the self-hosted runner' >&2
+            exit 127
+          }
+          python3.11 --version
+
           rm -rf "$DEEPSEEK_RO_VENV"
-          python3 -m venv "$DEEPSEEK_RO_VENV"
+          python3.11 -m venv "$DEEPSEEK_RO_VENV"
 
           set +e
           "$DEEPSEEK_RO_VENV/bin/python" -m pip install \
@@ -147,7 +153,7 @@ jobs:
 
           py="$DEEPSEEK_RO_VENV/bin/python"
           if [[ ! -x "$py" ]]; then
-            py='python3'
+            py='python3.11'
           fi
 
           PYTHONDONTWRITEBYTECODE=1 "$py" - <<'PY'
