@@ -1,60 +1,120 @@
-requested_sha=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff
-deploy_outcome=success
-deploy_exit=0
-run_id=32454988321
-utc=2026-08-21T06:36:17Z
+requested_sha=9a7a4265b6940b3b26455ad475e6e16eaf123b66
+deploy_outcome=failure
+deploy_exit=10
+run_id=32466224054
+utc=2026-08-21T09:06:51Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T06:35:20Z BEGIN current=5e9d67a69163412b4d3de185b4e24ce1ec62566f requested=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff
+2026-08-21T09:05:45Z BEGIN current=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff requested=9a7a4265b6940b3b26455ad475e6e16eaf123b66
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   5e9d67a..e56e545  main       -> origin/main
-Updating 5e9d67a..e56e545
+   e56e545..9a7a426  main       -> origin/main
+Updating e56e545..9a7a426
 Fast-forward
- learnerbot/polygon_live_enable_migration.py      | 158 +++++++++++++++--------
- tests/test_polygon_live_and_runtime_forensics.py |  51 +++++++-
- 2 files changed, 151 insertions(+), 58 deletions(-)
+ .github/workflows/claude-agent-smoke.yml           |  44 ++
+ .../workflows/claude-fourth-engineering-agent.yml  | 206 +++++++++
+ .github/workflows/claude-fourth-strategy-agent.yml | 331 +++++++++++++++
+ .github/workflows/four-agent-strategy-master.yml   |  26 ++
+ .github/workflows/gpt-master-strategy-action.yml   | 404 +-----------------
+ .github/workflows/publish-ai-master-control.yml    |  83 ++++
+ .github/workflows/selected-ai-master-ci.yml        |  48 +++
+ .github/workflows/selected-ai-master.yml           | 300 ++++++++++++++
+ .github/workflows/strategy-resilient-master.yml    | 459 +--------------------
+ .github/workflows/telegram-ai-cycle-dispatcher.yml |  94 +++++
+ .github/workflows/weekly-resilient-master.yml      | 425 +------------------
+ docs/AI_MASTER_CONTROL.md                          |  49 +++
+ learnerbot/ai_four_agent_health_patch.py           | 193 +++++++++
+ learnerbot/ai_master_control.py                    | 144 +++++++
+ learnerbot/telegram_ai_reports_menu_patch.py       | 171 ++++++--
+ learnerbot/three_agent_strategy_contract.py        |  29 +-
+ scripts/resilient_selected_master.py               | 430 +++++++++++++++++++
+ scripts/resilient_selected_master_v2.py            |  57 +++
+ tests/test_ai_resilient_workflows.py               |  35 +-
+ tests/test_four_agent_strategy_contract.py         | 107 +++++
+ tests/test_four_agent_workflows.py                 |  37 ++
+ tests/test_gpt_master_strategy_reconciler.py       |  84 ++--
+ tests/test_selected_ai_master_control.py           |  84 ++++
+ tests/test_strategy_resilient_agent_workflows.py   |  42 +-
+ tests/test_three_agent_strategy_contract.py        |   9 +-
+ 25 files changed, 2512 insertions(+), 1379 deletions(-)
+ create mode 100644 .github/workflows/claude-agent-smoke.yml
+ create mode 100644 .github/workflows/claude-fourth-engineering-agent.yml
+ create mode 100644 .github/workflows/claude-fourth-strategy-agent.yml
+ create mode 100644 .github/workflows/four-agent-strategy-master.yml
+ create mode 100644 .github/workflows/publish-ai-master-control.yml
+ create mode 100644 .github/workflows/selected-ai-master-ci.yml
+ create mode 100644 .github/workflows/selected-ai-master.yml
+ create mode 100644 .github/workflows/telegram-ai-cycle-dispatcher.yml
+ create mode 100644 docs/AI_MASTER_CONTROL.md
+ create mode 100644 learnerbot/ai_four_agent_health_patch.py
+ create mode 100644 learnerbot/ai_master_control.py
+ create mode 100644 scripts/resilient_selected_master.py
+ create mode 100644 scripts/resilient_selected_master_v2.py
+ create mode 100644 tests/test_four_agent_strategy_contract.py
+ create mode 100644 tests/test_four_agent_workflows.py
+ create mode 100644 tests/test_selected_ai_master_control.py
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [ 16%]
-........................................................................ [ 32%]
-........................................................................ [ 49%]
-........................................................................ [ 65%]
-........................................................................ [ 82%]
-........................................................................ [ 98%]
-......                                                                   [100%]
+.................................FF..................................... [ 15%]
+........................................................................ [ 31%]
+........................................................................ [ 47%]
+........................................................................ [ 63%]
+..........F............................................................. [ 79%]
+........................................................................ [ 95%]
+.....................                                                    [100%]
+=================================== FAILURES ===================================
+______ test_claude_workflow_uses_secret_plan_mode_and_same_cycle_identity ______
+
+    def test_claude_workflow_uses_secret_plan_mode_and_same_cycle_identity() -> None:
+        text = (ROOT / ".github/workflows/claude-fourth-strategy-agent.yml").read_text(encoding="utf-8")
+        assert "secrets.ANTHROPIC_API_KEY" in text
+        assert "@anthropic-ai/claude-code@latest" in text
+        assert "--permission-mode plan" in text
+        assert '"provider":"claude"' in text
+        assert '"scope":"MULTI_AGENT_STRATEGY_REVIEW"' in text
+        assert "evidence_sha256" in text
+        assert "no_live_changes" in text
+>       assert "git status --porcelain" in text
+E       assert 'git status --porcelain' in 'name: Claude Fourth Strategy Agent\n\non:\n  workflow_run:\n    workflows: ["Hourly Three-Agent Strategy Cycle"]\n   ...an workspace\n        if: always()\n        run: rm -rf .strategy_claude /tmp/claude-ai-reviews /tmp/claude-meta.env\n'
+
+tests/test_four_agent_workflows.py:18: AssertionError
+____ test_four_agent_master_requires_complete_set_and_three_of_four_policy _____
+
+    def test_four_agent_master_requires_complete_set_and_three_of_four_policy() -> None:
+        text = (ROOT / ".github/workflows/four-agent-strategy-master.yml").read_text(encoding="utf-8")
+>       assert "for provider in gpt gemini copilot claude" in text
+E       assert 'for provider in gpt gemini copilot claude' in 'name: Four-Agent Strategy Master\n\non:\n  workflow_run:\n    workflows: ["Claude Fourth Strategy Agent"]\n    types:...in -f lane=strategy\n          echo \'Four-agent completion is no longer required to keep the review cycle moving.\'\n'
+
+tests/test_four_agent_workflows.py:23: AssertionError
+_____________ test_master_ai_reports_menu_is_attached_and_complete _____________
+
+    def test_master_ai_reports_menu_is_attached_and_complete():
+        root = Path(__file__).resolve().parents[1]
+        menu = (root / "learnerbot" / "telegram_ai_reports_menu_patch.py").read_text(encoding="utf-8")
+        final_menu_layer = (root / "learnerbot" / "telegram_loss_alert_direction_patch.py").read_text(encoding="utf-8")
+    
+>       assert '"🤖 AI Reports"' in menu
+E       assert '"🤖 AI Reports"' in 'from __future__ import annotations\n\nimport copy\nimport html\n\nfrom . import ai_master_control as _control\nfrom ....oard\n    _ui.handle_update = handle_update\n    _ui._telegram_ai_reports_menu_patch_installed = True\n\n\ninstall()\n'
+
+tests/test_telegram_ai_reports_menu_visibility.py:9: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-438 passed, 1 warning in 32.83s
-2026-08-21T06:36:01Z TESTS PASSED; restarting learnerbot
-2026-08-21T06:36:05Z SUCCESS sha=e56e54510e47aba1e85c24cfc4a5f7434f2b04ff version=2.3.10 service=active
-     Active: active (running) since Fri 2026-08-21 07:36:01 BST; 4s ago
-   Main PID: 329469 (python)
-      Tasks: 20 (limit: 5869)
-     Memory: 629.1M (peak: 646.2M)
-        CPU: 3.488s
-     CGroup: /system.slice/learnerbot.service
-             └─329469 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [telegram-account] tid=461513364 role=USER status=ACTIVE can_auto=true evm_wallet=false evm_signing_file=false sol_wallet=true sol_signing=true sol_live=false sibot_on=true sibot_auto=false evm_exec_24h=0 sol_buy_24h=0 sol_sell_24h=0 mirroring=false
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [ai-ops-watcher] started interval=60s master-role-dynamic=true
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [config] CSVbot configuration loaded/reloaded
+=========================== short test summary info ============================
+FAILED tests/test_four_agent_workflows.py::test_claude_workflow_uses_secret_plan_mode_and_same_cycle_identity
+FAILED tests/test_four_agent_workflows.py::test_four_agent_master_requires_complete_set_and_three_of_four_policy
+FAILED tests/test_telegram_ai_reports_menu_visibility.py::test_master_ai_reports_menu_is_attached_and_complete
+3 failed, 450 passed, 1 warning in 36.81s
+2026-08-21T09:06:30Z TESTS FAILED; service remains on old running process
+HEAD is now at e56e545 Merge PR #182: require effective Polygon LIVE verification
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T06:36:15Z
+UTC: 2026-08-21T09:06:46Z
 branch: main
 sha:    e56e54510e47aba1e85c24cfc4a5f7434f2b04ff
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -65,21 +125,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 07:36:01 BST; 14s ago
+     Active: active (running) since Fri 2026-08-21 07:36:01 BST; 2h 30min ago
    Main PID: 329469 (python)
       Tasks: 20 (limit: 5869)
-     Memory: 610.2M (peak: 646.2M)
-        CPU: 12.006s
+     Memory: 590.2M (peak: 784.8M)
+        CPU: 1h 47min 56.090s
      CGroup: /system.slice/learnerbot.service
              └─329469 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [ai-agent-health] started check=60s warning_repeat=1800s master-role-dynamic=true
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 21 07:36:02 mint.yesgoodwill.com python[329469]: [config] CSVbot configuration loaded/reloaded
-Aug 21 07:36:06 mint.yesgoodwill.com python[329469]: [scan:bsc] 115379782..115379791 tx=489
-Aug 21 07:36:12 mint.yesgoodwill.com python[329469]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aidecision,aistrategy,aiupdates missing=none
+Aug 21 10:00:58 mint.yesgoodwill.com python[329469]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 10:01:03 mint.yesgoodwill.com python[329469]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 10:01:07 mint.yesgoodwill.com python[329469]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 21 10:01:50 mint.yesgoodwill.com python[329469]: [fast-market-scan] direct=4 merged=4 eligible=4 auto-events=0 seconds=58.038
+Aug 21 10:02:38 mint.yesgoodwill.com python[329469]: [fast-market-scan] direct=5 merged=5 eligible=3 auto-events=0 seconds=47.405
+Aug 21 10:03:21 mint.yesgoodwill.com python[329469]: [fast-market-scan] direct=5 merged=5 eligible=5 auto-events=0 seconds=41.332
+Aug 21 10:04:01 mint.yesgoodwill.com python[329469]: [power-discovery] v2-added=20 v3-pools=195 products=7929 auto-products=938 rejected=0 seconds=409.660
+Aug 21 10:04:04 mint.yesgoodwill.com python[329469]: [fast-market-scan] direct=2 merged=2 eligible=2 auto-events=0 seconds=41.751
+Aug 21 10:04:48 mint.yesgoodwill.com python[329469]: [fast-market-scan] direct=4 merged=4 eligible=4 auto-events=0 seconds=43.396
+Aug 21 10:05:51 mint.yesgoodwill.com python[329469]: [fast-market-scan] direct=4 merged=4 eligible=4 auto-events=0 seconds=61.754
