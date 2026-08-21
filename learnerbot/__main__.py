@@ -86,6 +86,8 @@ from . import solana_trade_diagnostics_patch  # noqa: F401
 from . import telegram_account_roles_patch  # noqa: F401
 # Explicit owner-authorised one-shot migration: arm Telegram 6760898817 for real EVM/SiBot/Solana execution only.
 from . import telegram_676_full_live_migration  # noqa: F401
+# Owner-authorised Polygon LIVE migration: enable Polygon-only direct AUTO while preserving all profit/simulation gates.
+from . import polygon_live_enable_migration  # noqa: F401
 # Per-user low-capital Solana canary: 0.0005 SOL trade + 0.005 SOL reserve for 6760898817 only.
 from . import telegram_676_solana_low_capital_migration  # noqa: F401
 # Do not let unreconciled/refundable Solana account funding block subsequent LIVE entries platform-wide.
@@ -130,7 +132,13 @@ from . import telegram_hi_keefek_patch  # noqa: F401
 from . import solana_emergency_liquidity_unwind_patch  # noqa: F401
 # Critical EVM safety fix: native transfers must include the validated destination in the signed transaction.
 from . import evm_transfer_native_hotfix_patch  # noqa: F401
-# This is deliberately the final import before CLI: refuse startup if any feature or presentation layer displaced an audited trading hook.
+# Export already-sanitised runtime forensics to a local bridge readable by the self-hosted GitHub runner.
+from . import loss_forensics_runtime_bridge_patch  # noqa: F401
+# Refuse startup if any feature or presentation layer displaced an audited trading hook.
 from . import trading_runtime_invariant_patch  # noqa: F401
+# Additional final invariant for Polygon-only AUTO focus and fresh runtime-evidence handoff.
+from . import polygon_live_runtime_invariant_patch  # noqa: F401
+# Final trade attribution layer: stamp each EVM/Solana position with immutable strategy version + exact opening Git SHA.
+from . import trade_strategy_provenance_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())

@@ -1,0 +1,85 @@
+name: Publish Runtime Forensics
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-runtime-forensics
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    env:
+      BRIDGE_PATH: /var/tmp/boot/latest_loss_forensics.json
+      STATUS_BRANCH: audit-status
+      STATUS_FILE: latest_loss_forensics.json
+    steps:
+      - name: Validate fresh sanitised runtime bridge
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$BRIDGE_PATH" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "No runtime forensics bridge file yet: $BRIDGE_PATH"
+            exit 0
+          fi
+          python3 - "$BRIDGE_PATH" <<'PY' > /tmp/runtime-forensics-meta.env
+          import json,sys,time
+          p=json.load(open(sys.argv[1],encoding='utf-8'))
+          generated=int(p.get('generated_epoch') or 0)
+          if generated <= 0:
+              raise SystemExit('runtime forensics has no generated_epoch')
+          age=max(0,int(time.time())-generated)
+          if age > 7200:
+              raise SystemExit(f'runtime forensics is stale: age={age}s')
+          if 'privacy' not in p:
+              raise SystemExit('runtime forensics privacy marker missing')
+          print('AGE='+str(age))
+          print('GENERATED='+str(generated))
+          PY
+          source /tmp/runtime-forensics-meta.env
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "age=$AGE" >> "$GITHUB_OUTPUT"
+          echo "generated=$GENERATED" >> "$GITHUB_OUTPUT"
+
+      - name: Publish evidence through ephemeral GitHub token
+        if: steps.evidence.outputs.available == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+
+          if ! gh api "repos/${repo}/git/ref/heads/${STATUS_BRANCH}" >/dev/null 2>&1; then
+            main_sha="$(gh api "repos/${repo}/git/ref/heads/main" --jq '.object.sha')"
+            gh api -X POST "repos/${repo}/git/refs" \
+              -f ref="refs/heads/${STATUS_BRANCH}" \
+              -f sha="$main_sha" >/dev/null
+          fi
+
+          existing_sha="$(gh api "repos/${repo}/contents/${STATUS_FILE}?ref=${STATUS_BRANCH}" --jq '.sha' 2>/dev/null || true)"
+          python3 - "$BRIDGE_PATH" "$STATUS_BRANCH" "$existing_sha" <<'PY' > /tmp/runtime-forensics-payload.json
+          import base64,json,sys
+          path,branch,sha=sys.argv[1:4]
+          raw=open(path,'rb').read()
+          payload={
+              'message':'Publish fresh sanitised BOOT runtime forensics',
+              'content':base64.b64encode(raw).decode(),
+              'branch':branch,
+          }
+          if sha:
+              payload['sha']=sha
+          print(json.dumps(payload))
+          PY
+          gh api -X PUT "repos/${repo}/contents/${STATUS_FILE}" \
+            --input /tmp/runtime-forensics-payload.json >/dev/null
+          echo "Published generated_epoch=${{ steps.evidence.outputs.generated }} age=${{ steps.evidence.outputs.age }}s"
