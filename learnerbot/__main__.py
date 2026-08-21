@@ -166,5 +166,7 @@ from . import telegram_solana_force_exit_patch  # noqa: F401
 # platform-restored bar -- the EVM equivalent of solana_leader_quality_restore_patch.py,
 # which already protects the Solana side the same way.
 from . import sibot_leader_quality_hard_floor_patch  # noqa: F401
+# Final MASTER AI health presentation: compact ENGINEERING/STRATEGY five-agent status rows.
+from . import ai_health_compact_report_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
