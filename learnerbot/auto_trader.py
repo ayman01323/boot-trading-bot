@@ -78,6 +78,13 @@ def _user_exec_config(app, tid, chain_id):
         "input": _dec(us("auto_input_base",global_cfg.get("auto_input_base","0.005")),"0.005"),
         "max_input": _dec(us("max_auto_input_base",global_cfg.get("max_auto_input_base","0.05")),"0.05"),
         "min_user_net": _dec(us("min_net_profit_base",global_cfg.get("min_net_profit_base","0.0002")),"0.0002"),
+        # min_net_profit_base is a flat amount in the chain's native/base token, so
+        # the same default protects very differently across chains (e.g. 0.0002 WETH
+        # is meaningful, 0.0002 WMATIC is economically negligible). Require net
+        # profit to also clear a multiple of the actual estimated gas cost, which
+        # scales correctly per chain since gas is already denominated in that
+        # chain's native token.
+        "min_gas_multiple": _dec(us("direct_market_min_gas_multiple",global_cfg.get("direct_market_min_gas_multiple","2.0")),"2.0"),
         "max_hour": max(1,int(float(us("max_auto_trades_per_hour",global_cfg.get("max_auto_trades_per_hour","5"))))),
         "cooldown": max(1,int(float(us("cooldown_seconds",global_cfg.get("cooldown_seconds","20"))))),
         "max_gas_hour": _dec(us("max_auto_expected_gas_per_hour_base",global_cfg.get("max_auto_expected_gas_per_hour_base","0.02")),"0.02"),
@@ -86,6 +93,20 @@ def _user_exec_config(app, tid, chain_id):
 
 def _candidate_score(r):
     return _dec(r.get("expected_gross_profit_base"),0)-_dec(r.get("slippage_reserve_base"),0)
+
+
+def _meets_gas_multiple_floor(sim: dict, min_gas_multiple) -> bool:
+    """Require net profit to clear a multiple of the actual estimated gas cost.
+
+    min_net_profit_base alone is a flat native-token amount, so the same default
+    protects very differently across chains (0.0002 WETH vs. 0.0002 WMATIC). Gas
+    cost is already denominated correctly per chain, so scaling the floor off it
+    is chain-appropriate without needing a separate per-chain override.
+    """
+    gas_cost=_dec(sim.get("gas_cost_base"),0)
+    if gas_cost<=0:return True
+    net_over_gas=_dec(sim.get("gross_profit"),0)-gas_cost
+    return net_over_gas>=gas_cost*_dec(min_gas_multiple,"2.0")
 
 
 def _eligible_scanner_candidate(r: dict) -> bool:
@@ -185,6 +206,8 @@ def execute_best_live_opportunity(app, opportunities: list[dict]) -> list[dict]:
             if not sim.get("simulation_ok"):
                 if route_kind=="V2_CYCLE":
                     record_execution_mismatch(app.csv_dir,trader.chain.chain_id,r.get("route_id", ""),path,str(sim.get("reason") or ""))
+                continue
+            if not _meets_gas_multiple_floor(sim,cfg["min_gas_multiple"]):
                 continue
             chosen=(r,path,amount,pre_fee_min,route_kind);chosen_sim=sim;chosen_cfg=cfg;chosen_trader=trader;chosen_plan=plan;break
         if not chosen:continue
