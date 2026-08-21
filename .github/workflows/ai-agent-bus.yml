@@ -47,46 +47,11 @@ jobs:
           gh api --paginate --slurp \
             "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
             > /tmp/ai-bus-comments.json
-
-          python - <<'PY' > /tmp/ai-bus-pending.env
-          import json
-          import os
-          import pathlib
-          import re
-
-          pages = json.loads(pathlib.Path('/tmp/ai-bus-comments.json').read_text(encoding='utf-8'))
-          comments = [row for page in pages for row in page]
-          trusted = {os.environ.get('REPO_OWNER', '').strip(), 'github-actions[bot]'}
-          message_id_re = re.compile(r'(?mi)^message_id:\s*([A-Za-z0-9._:-]{1,120})\s*$')
-
-          replied = set()
-          requests = []
-          for row in comments:
-              body = str(row.get('body') or '')
-              match = message_id_re.search(body)
-              if not match:
-                  continue
-              message_id = match.group(1)
-              if body.startswith('AI_BUS_REPLY'):
-                  replied.add(message_id)
-                  continue
-              user = ((row.get('user') or {}).get('login') or '').strip()
-              if body.startswith('AI_BUS\n') and user in trusted:
-                  requests.append((int(row.get('id') or 0), message_id, body))
-
-          pending = [row for row in requests if row[1] not in replied]
-          if not pending:
-              print('pending=false')
-              print('message_id=none')
-              print('comment_id=0')
-          else:
-              comment_id, message_id, body = max(pending, key=lambda row: row[0])
-              pathlib.Path('/tmp/ai-bus-message.md').write_text(body, encoding='utf-8')
-              print('pending=true')
-              print(f'message_id={message_id}')
-              print(f'comment_id={comment_id}')
-          PY
-
+          python scripts/ai_agent_bus_pending.py select \
+            --comments /tmp/ai-bus-comments.json \
+            --owner "$REPO_OWNER" \
+            --message-output /tmp/ai-bus-message.md \
+            > /tmp/ai-bus-pending.env
           cat /tmp/ai-bus-pending.env >> "$GITHUB_OUTPUT"
 
       - name: Set up isolated Python
@@ -169,10 +134,12 @@ jobs:
           set -euo pipefail
           # Re-check immediately before publishing so a delayed duplicate trigger
           # cannot post a second reply for the same message id.
-          if gh api --paginate --slurp \
-              "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
-              | python -c 'import json,re,sys; mid=sys.argv[1]; pages=json.load(sys.stdin); bodies=[str(r.get("body") or "") for p in pages for r in p]; raise SystemExit(0 if any(b.startswith("AI_BUS_REPLY") and re.search(r"(?mi)^message_id:\\s*"+re.escape(mid)+r"\\s*$", b) for b in bodies) else 1)' \
-                "${{ steps.pending.outputs.message_id }}"; then
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/issues/333/comments?per_page=100" \
+            > /tmp/ai-bus-comments-latest.json
+          if python scripts/ai_agent_bus_pending.py has-reply \
+              --comments /tmp/ai-bus-comments-latest.json \
+              --message-id "${{ steps.pending.outputs.message_id }}"; then
             echo "Reply already exists for ${{ steps.pending.outputs.message_id }}; skipping duplicate publish."
             exit 0
           fi
