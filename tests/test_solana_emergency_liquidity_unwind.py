@@ -1,3 +1,4 @@
+from contextlib import closing
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -88,11 +89,15 @@ def test_stop_loss_still_refuses_a_100_percent_impact_quote():
         patch._EXIT_REASON.reset(token)
 
 
-def test_emergency_exit_retries_smaller_slice_only_after_prebroadcast_impact_reject(monkeypatch):
-    patch._BACKOFF.clear()
+def _app(tmp_path):
+    return SimpleNamespace(data_dir=tmp_path / "data", csv_dir=tmp_path / "CSVbot")
+
+
+def test_emergency_exit_retries_smaller_slice_only_after_prebroadcast_impact_reject(monkeypatch, tmp_path):
+    app = _app(tmp_path)
     calls = []
 
-    def fake_close(app, tid, position, fraction, reason):
+    def fake_close(app_, tid, position, fraction, reason):
         f = Decimal(str(fraction))
         calls.append((f, reason))
         if f in {Decimal("1"), Decimal("0.75")}:
@@ -102,10 +107,10 @@ def test_emergency_exit_retries_smaller_slice_only_after_prebroadcast_impact_rej
         return {"closed": False, "signature": "sig", "reason": reason}
 
     monkeypatch.setattr(patch, "_BASE_CLOSE", fake_close)
-    monkeypatch.setattr(patch._sol, "settings", lambda app: _cfg())
+    monkeypatch.setattr(patch._sol, "settings", lambda app_: _cfg())
 
     result = patch.close_live_with_emergency_liquidity_unwind(
-        SimpleNamespace(),
+        app,
         "123",
         {"position_id": "p1"},
         Decimal(1),
@@ -115,26 +120,26 @@ def test_emergency_exit_retries_smaller_slice_only_after_prebroadcast_impact_rej
     assert [row[0] for row in calls] == [Decimal("1"), Decimal("0.75"), Decimal("0.50")]
     assert calls[-1][1] == "SOLANA_STOP_LOSS_LIQUIDITY_PARTIAL_50PCT"
     assert result["liquidity_adaptive_fraction"] == "0.50"
-    assert patch._backoff_remaining("p1") > 0
+    assert patch._backoff_remaining(app, "p1") > 0
 
 
-def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch):
-    patch._BACKOFF.clear()
+def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch, tmp_path):
+    app = _app(tmp_path)
     calls = []
     notices = []
 
-    def fake_close(app, tid, position, fraction, reason):
+    def fake_close(app_, tid, position, fraction, reason):
         calls.append(Decimal(str(fraction)))
         raise patch._exec.SolanaLiveError(
             "Economic execution guard: quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps"
         )
 
     monkeypatch.setattr(patch, "_BASE_CLOSE", fake_close)
-    monkeypatch.setattr(patch._sol, "settings", lambda app: _cfg())
-    monkeypatch.setattr(patch._live, "_notify", lambda app, tid, text: notices.append(text))
+    monkeypatch.setattr(patch._sol, "settings", lambda app_: _cfg())
+    monkeypatch.setattr(patch._live, "_notify", lambda app_, tid, text: notices.append(text))
 
     first = patch.close_live_with_emergency_liquidity_unwind(
-        SimpleNamespace(),
+        app,
         "123",
         {"position_id": "p2"},
         Decimal(1),
@@ -143,7 +148,7 @@ def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch):
     first_call_count = len(calls)
 
     second = patch.close_live_with_emergency_liquidity_unwind(
-        SimpleNamespace(),
+        app,
         "123",
         {"position_id": "p2"},
         Decimal(1),
@@ -158,3 +163,109 @@ def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch):
     assert len(notices) == 1
     assert "No transaction was broadcast" in notices[0]
     assert "100%, 75%, 50% and 25%" in notices[0]
+
+
+def test_backoff_state_survives_a_fresh_process(monkeypatch, tmp_path):
+    # Regression test for the actual bug: backoff state used to live only in an
+    # in-memory dict, so it silently reset to attempt 1 on every process restart
+    # (e.g. every deploy) instead of ever reaching its real exponential ceiling.
+    app = _app(tmp_path)
+
+    def fake_close(app_, tid, position, fraction, reason):
+        raise patch._exec.SolanaLiveError(
+            "Economic execution guard: quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps"
+        )
+
+    monkeypatch.setattr(patch, "_BASE_CLOSE", fake_close)
+    monkeypatch.setattr(patch._sol, "settings", lambda app_: _cfg())
+    monkeypatch.setattr(patch._live, "_notify", lambda *a, **k: None)
+
+    patch.close_live_with_emergency_liquidity_unwind(
+        app, "123", {"position_id": "p3"}, Decimal(1), "SOLANA_STOP_LOSS",
+    )
+    state_before = patch._load_backoff(app, "p3")
+    assert state_before["attempts"] == 1
+    assert state_before["first_blocked_epoch"] > 0
+
+    # Simulate a fresh process: nothing in memory, only the DB-backed state.
+    fresh_state = patch._load_backoff(app, "p3")
+    assert fresh_state == state_before
+
+
+def test_escalation_alert_fires_once_past_the_configured_duration(monkeypatch, tmp_path):
+    app = _app(tmp_path)
+    notices = []
+
+    def fake_close(app_, tid, position, fraction, reason):
+        raise patch._exec.SolanaLiveError(
+            "Economic execution guard: quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps"
+        )
+
+    monkeypatch.setattr(patch, "_BASE_CLOSE", fake_close)
+    monkeypatch.setattr(patch._sol, "settings", lambda app_: _cfg())
+    monkeypatch.setattr(patch._live, "_notify", lambda app_, tid, text: notices.append(text))
+
+    # Pre-seed state as if this position has already been stuck for 30 hours,
+    # past the default 24h escalation threshold, with no escalation sent yet.
+    import time
+    patch._save_backoff(app, "p4", {
+        "attempts": 5,
+        "next_retry": 0,
+        "first_blocked_epoch": int(time.time()) - 30 * 3600,
+        "last_escalation_epoch": 0,
+    })
+
+    patch.close_live_with_emergency_liquidity_unwind(
+        app, "123", {"position_id": "p4", "mint": "TestMint111"}, Decimal(1), "SOLANA_STOP_LOSS",
+    )
+
+    assert len(notices) == 2
+    assert "stuck" in notices[1]
+    assert "/solanaforceexit p4 CONFIRM" in notices[1]
+
+    # A second attempt within the same escalation window (but past its own retry
+    # backoff, so it actually re-attempts) must not re-send the escalation alert.
+    state = patch._load_backoff(app, "p4")
+    state["next_retry"] = 0
+    patch._save_backoff(app, "p4", state)
+    notices.clear()
+    patch.close_live_with_emergency_liquidity_unwind(
+        app, "123", {"position_id": "p4", "mint": "TestMint111"}, Decimal(1), "SOLANA_STOP_LOSS",
+    )
+    assert len(notices) == 1
+
+
+def test_force_close_requires_matching_owner_and_open_status(tmp_path):
+    app = _app(tmp_path)
+    with closing(patch._sol.connect(app)) as conn:
+        conn.execute(
+            "INSERT INTO positions(position_id,telegram_id,leader_wallet,mint,mode,status,token_amount_raw,"
+            "entry_cost_sol,entry_ts,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("p5", "123", "leader", "MintXYZ", "LIVE", "OPEN", "1000", "1.0", 0, 0),
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="does not belong"):
+        patch.force_close_live_position(app, "999", "p5")
+
+
+def test_force_close_uses_the_wider_manual_ceiling(monkeypatch, tmp_path):
+    app = _app(tmp_path)
+    with closing(patch._sol.connect(app)) as conn:
+        conn.execute(
+            "INSERT INTO positions(position_id,telegram_id,leader_wallet,mint,mode,status,token_amount_raw,"
+            "entry_cost_sol,entry_ts,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("p6", "123", "leader", "MintXYZ", "LIVE", "OPEN", "1000", "1.0", 0, 0),
+        )
+        conn.commit()
+
+    seen_reasons = []
+
+    def fake_close(app_, tid, position, fraction, reason):
+        seen_reasons.append(patch._EXIT_REASON.get())
+        return {"closed": True, "signature": "sig", "net_sol": "-0.8", "liquidity_adaptive_fraction": "1"}
+
+    monkeypatch.setattr(patch, "_BASE_CLOSE", fake_close)
+    result = patch.force_close_live_position(app, "123", "p6")
+    assert seen_reasons == [patch._MANUAL_FORCE_REASON]
+    assert result["closed"] is True

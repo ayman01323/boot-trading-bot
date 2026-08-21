@@ -156,5 +156,10 @@ from . import sibot_strategy_lab_throttle_patch  # noqa: F401
 # Telegram /strategylab: master-only, read-only report of real Strategy Lab
 # evidence (per-family net P&L, profit factor, trades). Reporting only.
 from . import telegram_strategy_lab_report_patch  # noqa: F401
+# Telegram /solanaforceexit POSITION_ID CONFIRM: operator-confirmed manual override
+# for a Solana position the automatic emergency-exit path can never safely close
+# (liquidity permanently gone, not a transient dip). Ownership-checked, capped
+# below a literal ~100% impact quote even when confirmed.
+from . import telegram_solana_force_exit_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
