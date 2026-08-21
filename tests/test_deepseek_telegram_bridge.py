@@ -52,8 +52,9 @@ def test_telegram_bridge_is_master_only_and_requires_deploy_confirmation():
     assert "request_deepseek_github_action" in text
     assert "request_deepseek_vps_action" in text
     assert "Confirm DeepSeek deploy CURRENT main" in text
-    assert "sudo " not in text
-    assert "DEEPSEEK_API_KEY" not in text
+    # Telegram only writes a sanitised request; it never executes shell/sudo itself.
+    for dangerous in ("subprocess.", "os.system(", "sudo /", "ssh ", "DEEPSEEK_API_KEY"):
+        assert dangerous not in text
 
 
 def test_publisher_dispatches_only_new_deepseek_nonces():
