@@ -1,0 +1,83 @@
+name: Direct Self-Hosted Deploy Current Main
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/deploy-current-main-direct.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: boot-vps-direct-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy exact pushed main commit directly
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    env:
+      TARGET_SHA: ${{ github.sha }}
+    steps:
+      - name: Deploy through restricted root wrapper
+        id: deploy
+        shell: bash
+        run: |
+          set +e
+          sudo /usr/local/sbin/deploy-boot-trading-bot "${TARGET_SHA}" 2>&1 | tee /tmp/boot-direct-deploy-output.txt
+          code=${PIPESTATUS[0]}
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit "$code"
+
+      - name: Publish direct deployment attestation
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          DEPLOY_EXIT: ${{ steps.deploy.outputs.exit_code }}
+        run: |
+          set +e
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/boot-direct-status.txt 2>&1 || true
+          {
+            echo "requested_sha=${TARGET_SHA}"
+            echo "deploy_outcome=${DEPLOY_OUTCOME:-unknown}"
+            echo "deploy_exit=${DEPLOY_EXIT:-unknown}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "=== SERVER STATUS ==="
+            cat /tmp/boot-direct-status.txt
+            echo
+            echo "=== DEPLOY OUTPUT (tail) ==="
+            tail -n 120 /tmp/boot-direct-deploy-output.txt 2>/dev/null || true
+          } > /tmp/boot-direct-attestation.txt
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-direct-deploy.txt"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/boot-direct-attestation.txt)"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Update direct VPS deployment attestation","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Create direct VPS deployment attestation","content":sys.argv[1],"branch":"server-diagnostics"}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" -d "$payload" >/dev/null
+
+          if [[ "${DEPLOY_OUTCOME:-}" != "success" || "${DEPLOY_EXIT:-}" != "0" ]]; then
+            exit 1
+          fi
