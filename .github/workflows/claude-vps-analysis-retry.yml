@@ -1,0 +1,160 @@
+name: Retry Claude VPS Analysis
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-vps-analysis-retry.yml'
+      - 'tests/test_claude_vps_analysis_retry.py'
+  workflow_run:
+    workflows:
+      - "Claude VPS Controlled Operations"
+      - "Deploy BOOT to VPS"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: claude-vps-analysis-retry
+  cancel-in-progress: false
+
+jobs:
+  analyse:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Check out current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve failed inspect commentary only
+        id: request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/vps/claude/latest.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/claude-vps-latest.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 || ! -s /tmp/claude-vps-latest.json ]]; then
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          d=json.load(open('/tmp/claude-vps-latest.json',encoding='utf-8'))
+          run=(d.get('action')=='inspect' and d.get('status')=='SUCCESS' and not bool(d.get('claude_analysis_available')))
+          print('run='+('true' if run else 'false'))
+          PY
+
+      - name: Collect fresh status through restricted wrapper
+        if: steps.request.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/claude-vps-retry-status.txt 2>&1
+
+      - name: Build redacted retry context
+        if: steps.request.outputs.run == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json,pathlib,re
+          result=json.load(open('/tmp/claude-vps-latest.json',encoding='utf-8'))
+          text=pathlib.Path('/tmp/claude-vps-retry-status.txt').read_text(encoding='utf-8',errors='replace')
+          kept=[]
+          for line in text.splitlines():
+              if re.search(r'(?i)(api[_ -]?key|private[_ -]?key|mnemonic|seed phrase|password|authorization:|bearer |secret=|token=)',line):
+                  kept.append('[REDACTED SENSITIVE LINE]')
+              else:
+                  line=re.sub(r'sk-ant-[A-Za-z0-9_-]+','<redacted-anthropic-key>',line)
+                  line=re.sub(r'github_pat_[A-Za-z0-9_]+','<redacted-github-token>',line)
+                  line=re.sub(r'gh[pousr]_[A-Za-z0-9]+','<redacted-github-token>',line)
+                  kept.append(line)
+          deterministic={
+              'action':result.get('action'),
+              'status':result.get('status'),
+              'action_return_code':result.get('action_return_code'),
+              'deployed_sha':result.get('deployed_sha'),
+              'service_active':result.get('service_active'),
+              'security':result.get('security'),
+          }
+          out='DETERMINISTIC RESULT\n'+json.dumps(deterministic,sort_keys=True)+'\n\nREDACTED FRESH STATUS\n'+'\n'.join(kept)[-12000:]+'\n'
+          pathlib.Path('/tmp/claude-vps-retry-context.txt').write_text(out,encoding='utf-8')
+          PY
+
+      - name: Claude retry bounded VPS analysis
+        if: steps.request.outputs.run == 'true'
+        id: claude
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISABLE_AUTOUPDATER: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANTHROPIC_API_KEY:-}"
+          npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-vps-retry-install.log 2>&1
+          cat > /tmp/claude-vps-retry-prompt.txt <<EOF
+          You are Claude acting only as a bounded VPS health summariser.
+          Summarise the deterministic inspection result and redacted fresh status below.
+          State whether the service appears healthy and any concrete follow-up needed.
+          Do not request or infer secrets. Do not suggest bypassing tests, wallet/signing controls, LIVE risk gates, or sudo restrictions.
+          Keep the answer under 700 characters and plain text. Do not use tools; answer from the supplied context only.
+
+          $(cat /tmp/claude-vps-retry-context.txt)
+          EOF
+          claude -p --permission-mode plan --max-turns 3 --output-format text --model "${CLAUDE_VPS_MODEL:-sonnet}" \
+            "$(cat /tmp/claude-vps-retry-prompt.txt)" > /tmp/claude-vps-retry-analysis.txt 2>/tmp/claude-vps-retry-error.txt
+
+      - name: Publish successful commentary retry
+        if: steps.request.outputs.run == 'true' && steps.claude.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,pathlib,re,time
+          p='/tmp/claude-vps-latest.json'
+          d=json.load(open(p,encoding='utf-8'))
+          analysis=pathlib.Path('/tmp/claude-vps-retry-analysis.txt').read_text(encoding='utf-8',errors='replace').strip()
+          analysis=re.sub(r'sk-ant-[A-Za-z0-9_-]+','<redacted>',analysis)
+          if not analysis or 'Reached max turns' in analysis:
+              raise SystemExit('Claude retry did not produce a completed analysis')
+          d['claude_analysis_available']=True
+          d['claude_analysis']=analysis[:1200]
+          d['claude_analysis_retry_epoch']=int(time.time())
+          d['claude_analysis_turn_limit']=3
+          open('/tmp/claude-vps-latest-updated.json','w',encoding='utf-8').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
+          PY
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/claude-vps-analysis-ai-reviews
+          git worktree add --detach /tmp/claude-vps-analysis-ai-reviews origin/ai-reviews
+          mkdir -p /tmp/claude-vps-analysis-ai-reviews/vps/claude
+          cp /tmp/claude-vps-latest-updated.json /tmp/claude-vps-analysis-ai-reviews/vps/claude/latest.json
+          cd /tmp/claude-vps-analysis-ai-reviews
+          git config user.name 'claude-vps-analysis-retry'
+          git config user.email 'claude-vps-analysis-retry@users.noreply.github.com'
+          git add vps/claude/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Complete bounded Claude VPS analysis retry'
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: No-op note
+        if: steps.request.outputs.run != 'true'
+        run: echo 'No successful inspect with missing Claude commentary requires retry.'
