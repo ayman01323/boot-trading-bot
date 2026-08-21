@@ -1,0 +1,37 @@
+name: Kick Claude VPS Control Processor
+
+on:
+  workflow_run:
+    workflows:
+      - "Publish Telegram AI Master Control"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: kick-claude-vps-control-processor
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch bounded VPS processor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This workflow never chooses a VPS operation. action=none tells the
+          # bounded processor to read the sanitised control/nonce from ai-reviews.
+          # The processor itself decides whether there is a new inspect/test/deploy
+          # request and enforces the existing Claude-selected + nonce policy.
+          gh workflow run claude-vps-controlled-ops.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref main \
+            -f action=none
