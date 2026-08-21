@@ -1,6 +1,10 @@
 name: DeepSeek VPS Controlled Operations
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/deepseek-vps-inspect.trigger'
   workflow_dispatch:
     inputs:
       action:
@@ -39,14 +43,21 @@ jobs:
       - name: Validate bounded action and source
         id: meta
         env:
+          EVENT_NAME: ${{ github.event_name }}
           ACTION: ${{ inputs.action }}
           TASK: ${{ inputs.task }}
         shell: bash
         run: |
           set -euo pipefail
           action="${ACTION:-inspect}"
-          case "$action" in inspect|test|deploy) ;; *) echo 'Unsupported VPS action' >&2; exit 2;; esac
           task="${TASK:-}"
+          if [[ "$EVENT_NAME" != 'workflow_dispatch' ]]; then
+            # Push-triggered server access is inspection-only. A repository push
+            # can never select test/deploy or broaden VPS authority.
+            action='inspect'
+            task='GitHub push-triggered bounded VPS inspection. Verify runner/service health and report concrete warnings.'
+          fi
+          case "$action" in inspect|test|deploy) ;; *) echo 'Unsupported VPS action' >&2; exit 2;; esac
           printf '%s' "$task" > /tmp/deepseek-vps-task.txt
           echo "action=$action" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
