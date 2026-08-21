@@ -8,17 +8,13 @@ from . import telegram_ui as _ui
 
 _PREV_MENU_KEYBOARD = _ui.menu_keyboard
 _PREV_HANDLE_UPDATE = _ui.handle_update
-_MASTER_HOME = _friendly._home
-_MASTER_PROCESS = _friendly._process_question
-_MASTER_STATUS_TEXT = _friendly._status_text
-_MASTER_PROMPT = _cui._prompt_question
-_MASTER_PENDING = _cui._handle_pending
-_MASTER_LEADER_PROMPT = _friendly._council._leader_prompt
+_PREV_RESUME_SESSION = _friendly._resume_session
 
 _BRAND = "PasPuss AI"
 
 
 def _is_master(app, tid) -> bool:
+    """Role check retained for account permissions; PasPuss presentation no longer branches on it."""
     return bool(_cui._master(app, tid))
 
 
@@ -27,7 +23,7 @@ def _rename_user_buttons(keyboard: dict) -> dict:
     for row in rows:
         for button in row:
             data = str(button.get("callback_data") or "")
-            if data == "aic:ask":
+            if data in {"aic:ask", "aic:home"}:
                 button["text"] = "🐾 PasPuss AI"
             elif data.startswith("aic:view:") or data.startswith("aic:lead:"):
                 button["_paspuss_hide"] = True
@@ -40,15 +36,11 @@ def _rename_user_buttons(keyboard: dict) -> dict:
 
 
 def menu_keyboard(app=None, chat_id=None):
-    keyboard = _PREV_MENU_KEYBOARD(app, chat_id)
-    if app is None or chat_id is None or _is_master(app, chat_id):
-        return keyboard
-    return _rename_user_buttons(keyboard)
+    # MASTER and non-MASTER users see the same native PasPuss entry point.
+    return _rename_user_buttons(_PREV_MENU_KEYBOARD(app, chat_id))
 
 
 def _prompt_question(app, tid) -> None:
-    if _is_master(app, tid):
-        return _MASTER_PROMPT(app, tid)
     _cui._PENDING[str(tid)] = "question"
     _ui._send(
         app,
@@ -59,10 +51,10 @@ def _prompt_question(app, tid) -> None:
 
 
 def _status_text(session: dict, stage: str, *, valid: int | None = None) -> str:
-    if str(session.get("mode") or "") == "master":
-        return _MASTER_STATUS_TEXT(session, stage, valid=valid)
+    # Session mode may remain "master" internally for audit/permissions, but it must
+    # never change the user-facing PasPuss experience.
     q = html.escape(_friendly._question_excerpt(str(session.get("question") or "")))
-    if stage in {"asking", "leader", "resumed"}:
+    if stage in {"asking", "leader", "master_ready", "resumed"}:
         detail = "🐾 <b>PasPuss is working on your question…</b>"
     elif stage == "done":
         detail = "✅ <b>Your PasPuss AI answer is ready below.</b>"
@@ -88,8 +80,6 @@ def _failure_keyboard() -> dict:
 
 
 def _home(app, tid) -> None:
-    if _is_master(app, tid):
-        return _MASTER_HOME(app, tid)
     _ui._send(
         app,
         tid,
@@ -102,9 +92,6 @@ def _home(app, tid) -> None:
 
 
 def _leader_prompt(session: dict, leader: str) -> str:
-    if str(session.get("mode") or "") == "master":
-        return _MASTER_LEADER_PROMPT(session, leader)
-
     question = str(session.get("question") or "")
     blocks: list[str] = []
     for provider in _friendly._council.PROVIDERS:
@@ -202,8 +189,7 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
 
 
 def _process_question(app, tid, session_id: str, master_mode: bool) -> None:
-    if master_mode:
-        return _MASTER_PROCESS(app, tid, session_id, master_mode)
+    # master_mode is deliberately ignored for presentation: both roles use PasPuss.
     key = (str(tid), session_id)
     try:
         session = _friendly._council.load_session(app, session_id)
@@ -232,9 +218,16 @@ def _process_question(app, tid, session_id: str, master_mode: bool) -> None:
             _cui._INFLIGHT.discard(key)
 
 
+def _resume_session(app, session: dict) -> None:
+    # Older/in-flight MASTER sessions may still be stored with mode="master". Feed a
+    # user-mode view to the recovery layer so restart recovery never reopens Leader UI.
+    if str(session.get("mode") or "") == "master":
+        session = dict(session)
+        session["mode"] = "user"
+    return _PREV_RESUME_SESSION(app, session)
+
+
 def _handle_pending(app, tid, text: str) -> bool:
-    if _is_master(app, tid):
-        return _MASTER_PENDING(app, tid, text)
     if _cui._PENDING.get(str(tid)) != "question":
         return False
     if text.startswith("/"):
@@ -262,7 +255,9 @@ def handle_update(app, update):
     cb = update.get("callback_query") or {}
     tid = ((cb.get("message") or {}).get("chat") or {}).get("id")
     data = str(cb.get("data") or "")
-    if tid is not None and not _is_master(app, tid):
+    if tid is not None:
+        # Hide technical Council controls for every role, including MASTER. Old buttons
+        # from messages sent before this release are neutralised here as well.
         if data.startswith("aic:view:") or data.startswith("aic:lead:"):
             _cui._answer_callback(app, cb, "Not available")
             _home(app, tid)
@@ -283,6 +278,7 @@ def install() -> None:
     _friendly._failure_keyboard = _failure_keyboard
     _friendly._finish_user_from_answers = _finish_user_from_answers
     _friendly._process_question = _process_question
+    _friendly._resume_session = _resume_session
     _friendly._home = _home
     _friendly._council._leader_prompt = _leader_prompt
     _cui._prompt_question = _prompt_question
