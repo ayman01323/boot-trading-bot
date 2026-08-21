@@ -1,21 +1,21 @@
-requested_sha=1ae2c7fd9b314c3527a1fce37860b4e8c8fdb952
+requested_sha=a5ad3a805ead910a6245d7e2daac1afb1dfce51a
 deploy_outcome=failure
 deploy_exit=10
-run_id=32485875830
-utc=2026-08-21T13:16:33Z
+run_id=32486014961
+utc=2026-08-21T13:18:19Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T13:15:27Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=1ae2c7fd9b314c3527a1fce37860b4e8c8fdb952
+2026-08-21T13:17:04Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=a5ad3a805ead910a6245d7e2daac1afb1dfce51a
 From github.com:ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   79f51b5..1ae2c7f  main       -> origin/main
-Updating 8906155..1ae2c7f
+   1ae2c7f..a5ad3a8  main       -> origin/main
+Updating 8906155..a5ad3a8
 Fast-forward
  .../workflows/deepseek-github-controlled-ops.yml   | 238 +++++++++++++++++++
  .github/workflows/deepseek-vps-controlled-ops.yml  | 251 +++++++++++++++++++++
- .github/workflows/engineering-agent-retry.yml      |  85 +++----
+ .github/workflows/engineering-agent-retry.yml      |   3 +-
  tests/test_deepseek_controlled_access.py           |  69 ++++++
- 4 files changed, 601 insertions(+), 42 deletions(-)
+ 4 files changed, 560 insertions(+), 1 deletion(-)
  create mode 100644 .github/workflows/deepseek-github-controlled-ops.yml
  create mode 100644 .github/workflows/deepseek-vps-controlled-ops.yml
  create mode 100644 tests/test_deepseek_controlled_access.py
@@ -77,13 +77,13 @@ tests/test_deepseek_controlled_access.py:59: AssertionError
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 FAILED tests/test_deepseek_controlled_access.py::test_deepseek_vps_access_is_manual_restricted_and_current_main_only
-1 failed, 521 passed, 1 warning in 36.22s
-2026-08-21T13:16:11Z TESTS FAILED; service remains on old running process
+1 failed, 521 passed, 1 warning in 43.74s
+2026-08-21T13:17:57Z TESTS FAILED; service remains on old running process
 HEAD is now at 8906155 Use Gemini 3.7 Flash for hourly strategy reviews
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T13:16:27Z
+UTC: 2026-08-21T13:18:14Z
 branch: main
 sha:    89061556be74c3e786de8eb999e96d03f330fb39
 origin: git@github.com:ayman01323/boot-trading-bot.git
@@ -94,16 +94,16 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 25min ago
+     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 27min ago
    Main PID: 377581 (python)
-      Tasks: 21 (limit: 5869)
-     Memory: 606.9M (peak: 771.0M)
-        CPU: 19min 44.360s
+      Tasks: 22 (limit: 5869)
+     Memory: 674.8M (peak: 771.0M)
+        CPU: 20min 37.944s
      CGroup: /system.slice/learnerbot.service
              ├─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             └─381260 git -C /root/multichain-learning-bot-v2.2-fast-direct-market show refs/remotes/origin/ai-reviews:weekly/latest_source_commit.txt
+             ├─381691 git -C /root/multichain-learning-bot-v2.2-fast-direct-market fetch --quiet origin ai-reviews:refs/remotes/origin/ai-reviews
+             └─381692 /usr/bin/ssh -o SendEnv=GIT_PROTOCOL git@github.com "git-upload-pack 'ayman01323/boot-trading-bot.git'"
 
-Aug 21 14:12:23 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
 Aug 21 14:12:31 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
 Aug 21 14:12:35 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
 Aug 21 14:12:38 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
@@ -113,3 +113,4 @@ Aug 21 14:12:57 mint.yesgoodwill.com python[377581]: [power-discovery] v2-added=
 Aug 21 14:13:44 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=45.825
 Aug 21 14:14:44 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=58.844
 Aug 21 14:16:03 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=76.350
+Aug 21 14:17:24 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=80.077
