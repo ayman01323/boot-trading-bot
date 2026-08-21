@@ -28,6 +28,18 @@ def _request(message_id: str) -> str:
     )
 
 
+def _legacy_claude_request(message_id: str) -> str:
+    return (
+        'CLAUDE_TO_GPT\n'
+        f'message_id: {message_id}\n'
+        'source_sha: abc123\n'
+        'request: Check the latest bounded report.\n'
+        'constraints: Read-only.\n'
+        'evidence: run 123.\n\n'
+        'Please reply with the result.\n'
+    )
+
+
 def _reply(message_id: str) -> str:
     return (
         'AI_BUS_REPLY\n'
@@ -82,6 +94,36 @@ def test_pending_selector_chooses_latest_unanswered_trusted_request() -> None:
     assert comment_id == 12
     assert message_id == 'new'
     assert body.startswith('AI_BUS\n')
+
+
+def test_legacy_claude_to_gpt_message_is_automatically_normalized_and_routed() -> None:
+    selected = pending.latest_pending(
+        [_comment(40, _legacy_claude_request('claude-inbound-1'))],
+        owner='ayman01323',
+    )
+    assert selected is not None
+    comment_id, message_id, body = selected
+    assert comment_id == 40
+    assert message_id == 'claude-inbound-1'
+    assert body.startswith('AI_BUS\n')
+    assert 'from: CLAUDE\n' in body
+    assert 'to: GPT\n' in body
+    assert 'mode: DIRECT\n' in body
+    assert 'Legacy Claude-to-GPT mailbox message received automatically.' in body
+    assert 'request: Check the latest bounded report.' in body
+
+
+def test_legacy_claude_to_gpt_message_respects_existing_reply_dedupe() -> None:
+    comments = [
+        _comment(50, _legacy_claude_request('claude-done')),
+        _comment(51, _reply('claude-done'), login='github-actions[bot]'),
+    ]
+    assert pending.latest_pending(comments, owner='ayman01323') is None
+
+
+def test_untrusted_legacy_claude_message_is_ignored() -> None:
+    comments = [_comment(60, _legacy_claude_request('fake-claude'), login='someone-else')]
+    assert pending.latest_pending(comments, owner='ayman01323') is None
 
 
 def test_untrusted_fake_reply_cannot_suppress_owner_request() -> None:

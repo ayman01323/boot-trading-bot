@@ -7,11 +7,17 @@ on:
       - 'learnerbot/ai_master_control.py'
       - 'learnerbot/telegram_deepseek_control_patch.py'
       - 'learnerbot/telegram_command_scope_patch.py'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_pending.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+      - '.github/workflows/ai-agent-bus.yml'
       - '.github/workflows/publish-ai-master-control.yml'
       - '.github/workflows/deepseek-github-controlled-ops.yml'
       - '.github/workflows/deepseek-github-readonly-selfhosted.yml'
       - '.github/workflows/deepseek-vps-controlled-ops.yml'
       - '.github/workflows/deepseek-telegram-bridge-ci.yml'
+      - 'tests/test_ai_agent_bus_delivery_fallback.py'
       - 'tests/test_deepseek_telegram_bridge.py'
       - 'tests/test_deepseek_controlled_access.py'
       - 'tests/test_deepseek_readonly_selfhosted_inspect.py'
@@ -43,10 +49,15 @@ jobs:
           venv="/tmp/deepseek-telegram-bridge-ci-${GITHUB_RUN_ID}"
           rm -rf "$venv"
           python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml python-dotenv
           "$venv/bin/python" -m py_compile \
             learnerbot/ai_master_control.py \
             learnerbot/telegram_deepseek_control_patch.py \
+            scripts/ai_agent_bus.py \
+            scripts/ai_agent_bus_pending.py \
+            scripts/ai_agent_bus_provider_compat.py \
+            scripts/run_ai_agent_bus.py \
+            tests/test_ai_agent_bus_delivery_fallback.py \
             tests/test_deepseek_telegram_bridge.py \
             tests/test_deepseek_controlled_access.py \
             tests/test_deepseek_readonly_selfhosted_inspect.py \
@@ -54,6 +65,7 @@ jobs:
           "$venv/bin/python" - <<'PY'
           import pathlib,yaml
           for name in (
+              '.github/workflows/ai-agent-bus.yml',
               '.github/workflows/publish-ai-master-control.yml',
               '.github/workflows/deepseek-github-controlled-ops.yml',
               '.github/workflows/deepseek-github-readonly-selfhosted.yml',

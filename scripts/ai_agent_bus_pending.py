@@ -12,6 +12,7 @@ from typing import Any
 _MESSAGE_ID_RE = re.compile(r"(?mi)^message_id:\s*([A-Za-z0-9._:-]{1,120})\s*$")
 _NEXT_LINK_RE = re.compile(r'<([^>]+)>;\s*rel="next"')
 _API_ROOT = "https://api.github.com"
+_LEGACY_CLAUDE_PREFIX = "CLAUDE_TO_GPT\n"
 
 
 def _flatten_pages(raw: Any) -> list[dict[str, Any]]:
@@ -111,6 +112,34 @@ def message_id_from_body(body: str) -> str:
     return match.group(1) if match else ""
 
 
+def normalize_request_body(body: str) -> str:
+    text = str(body or "")
+    if text.startswith("AI_BUS\n"):
+        return text
+    if not text.startswith(_LEGACY_CLAUDE_PREFIX):
+        return ""
+
+    message_id = message_id_from_body(text)
+    if not message_id:
+        return ""
+    payload = text[len(_LEGACY_CLAUDE_PREFIX):].strip()
+    if not payload:
+        return ""
+    if len(payload) > 7400:
+        payload = payload[:7400].rstrip() + "\n\n[legacy Claude message truncated by bounded AI bus]"
+
+    return (
+        "AI_BUS\n"
+        f"message_id: {message_id}\n"
+        "from: CLAUDE\n"
+        "to: GPT\n"
+        "mode: DIRECT\n"
+        "max_hops: 1\n\n"
+        "Legacy Claude-to-GPT mailbox message received automatically.\n\n"
+        f"{payload}\n"
+    )
+
+
 def replied_message_ids(comments: list[dict[str, Any]], *, owner: str | None = None) -> set[str]:
     trusted = None
     if owner is not None:
@@ -140,15 +169,16 @@ def latest_pending(
     candidates: list[tuple[int, str, str]] = []
     for row in comments:
         body = str(row.get("body") or "")
-        if not body.startswith("AI_BUS\n"):
+        normalized = normalize_request_body(body)
+        if not normalized:
             continue
         user = str(((row.get("user") or {}).get("login") or "")).strip()
         if user not in trusted:
             continue
-        message_id = message_id_from_body(body)
+        message_id = message_id_from_body(normalized)
         if not message_id or message_id in replied:
             continue
-        candidates.append((int(row.get("id") or 0), message_id, body))
+        candidates.append((int(row.get("id") or 0), message_id, normalized))
     return max(candidates, key=lambda row: row[0]) if candidates else None
 
 
