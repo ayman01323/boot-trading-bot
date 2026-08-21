@@ -1,0 +1,175 @@
+{
+  "cycle_id": "c24ee33053bb-2026082111-c0669d62",
+  "evidence_gaps": [
+    "Fresh runtime forensics within two hours, including immutable decision, quote, submission, receipt, fill, exit, and wallet-reconciliation timestamps.",
+    "Cost-complete realised or independently measured SHADOW outcomes by strategy and chain: DEX fees, slippage, price impact, EVM gas/priority/builder fees, Solana base/priority fees, rent/account effects, failed-attempt costs, and platform fees.",
+    "Money-weighted NET P&L, profit factor, drawdown, tail loss, turnover, capital duration, and confidence intervals by chain, strategy, venue, and notional band.",
+    "Terminal attribution for every eligible opportunity, explicitly separating STRATEGY/MARKET loss from EXECUTION/INFRASTRUCTURE failure while charging all economic costs.",
+    "Solana contemporaneous executable entry and sellability/exit quotes, congestion and landing outcomes, latency decay, liquidity depth, and reconciliation coverage.",
+    "EVM per-chain atomic-route outcomes, gas-estimate error, nonce/replacement/revert rates, builder or priority costs, and quote-to-fill deterioration.",
+    "Held-out and forward SHADOW samples across multiple volatility, liquidity, congestion, and fee regimes with rejected opportunities retained to detect selection bias.",
+    "Operational-efficiency measurements were absent from evidence.json: no sanitised operational_efficiency_audit snapshot, model/API call counts, workflow transfer/cadence measurements, or VPS disk usage/free-space and retention data. Host-wide network counters must not be attributed to the bot without further evidence.",
+    "Before any promotion: fresh cost-complete runtime evidence, chain-isolated statistically adequate held-out positive money-weighted NET P&L, bounded drawdown/tail loss, acceptable execution and infrastructure failure rates, complete reconciliation, and independent confirmation that all existing safety gates remain enforced."
+  ],
+  "evidence_sha256": "c0669d62096c2fbeee41fab717f74402800f8015c809547dfebcff3530b3b0d2",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.94,
+      "downside_risk": "More fields and stricter completeness rules will reduce usable samples and may leave strategies unranked longer.",
+      "evidence": [
+        {
+          "detail": "shadow_strategy_events stores fee_base and slippage_base but lacks explicit price-impact, latency, gas/priority-fee, failed-attempt cost, realised outcome, and failure-class fields; its scorecard evaluates current quote simulations only.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        },
+        {
+          "detail": "Signal net_edge_bps subtracts fees, slippage, price impact, and latency reserve, but fixed 3-6 bps entry floors are shared across chains and are not validated against realised execution distributions.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "Window net defaults to gross profit minus gross loss, fees, and slippage only; gas, priority fees, price impact, failed-execution costs, and reconciliation quality are not first-class fields.",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Produces auditable per-strategy, per-chain net-return distributions and prevents apparently profitable strategies from benefiting from omitted costs.",
+      "id": "shadow-cost-complete-outcomes-v1",
+      "minimum_observation": "At least 200 independent eligible observations per strategy and chain across multiple volatility and fee regimes, including all rejected and failed attempts, with a separately held-out time period.",
+      "rationale": "A positive quote-derived edge is not durable money-weighted NET P&L unless every chain-specific cost and failed-attempt cost is retained and later reconciled to an independent outcome.",
+      "shadow_test": "For each eligible signal, record decision-time quote, notional, DEX fees, price impact, slippage reserve, EVM gas and priority/builder fees or Solana base/priority fees and rent effects, then obtain an independent horizon outcome or simulated executable exit. Mark the observation unusable if any mandatory cost is missing, units cannot be reconciled, or the quote/exit fails. Stop the hypothesis if cost-complete money-weighted net P&L is non-positive or tail loss exceeds the predeclared bound.",
+      "strategy": "All SHADOW strategy families",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab.py",
+        "learnerbot/market_feature_adapter.py"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.98,
+      "downside_risk": "Quote polling can consume RPC/API bandwidth and may still overstate fill quality unless sampled exits and landing failures are modelled conservatively.",
+      "evidence": [
+        {
+          "detail": "load_solana_market_features deliberately sets gross edge, fees, slippage, price impact, liquidity, and sellability to zero and returns SIGNAL_ONLY_MISSING_CURRENT_EXECUTABLE_EDGE.",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "The scorecard explicitly reports solana_current_quote_edge_adapter as an evidence gap and creates no promotion evidence.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        },
+        {
+          "detail": "The live path contains simulation and wallet-balance reconciliation concepts that demonstrate the chain-specific evidence SHADOW evaluation must emulate without signing or submission.",
+          "path": "learnerbot/solana_live_executor.py"
+        }
+      ],
+      "expected_effect": "Allows Solana strategies to be assessed on contemporaneous follower economics while continuing to abstain when no positive executable edge exists.",
+      "id": "solana-executable-shadow-adapter-v1",
+      "minimum_observation": "At least 300 signals spanning 30 days, 100 cost-complete round trips, multiple congestion regimes, and explicit landed, expired, blockhash, slippage, liquidity, and RPC-failure counts.",
+      "rationale": "Leader history and positive ratios do not establish follower edge after copy latency, Jupiter route impact, priority fees, token-account/rent effects, sellability, and failed landing. Solana cannot currently produce executable SHADOW strategy evidence.",
+      "shadow_test": "Non-signingly capture a fresh entry quote and sellability round-trip for the intended size, subtract route fees, price impact, slippage, base and priority fees, expected token-account/rent effects, latency decay, and empirical failure cost. Re-quote at the decision deadline and measure independent executable exits. Reject immediately on missing sellability/liquidity/simulation data; stop if quote cadence causes rate-limit degradation or cost-complete held-out net P&L is non-positive.",
+      "strategy": "Solana leader-following and market-native signals",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.93,
+      "downside_risk": "Classification mistakes can shift blame between components; an UNKNOWN fail-closed class and immutable raw reason are required.",
+      "evidence": [
+        {
+          "detail": "The schema has a single execution_failures count and signal_skips count but no durable STRATEGY/MARKET versus EXECUTION/INFRASTRUCTURE classification.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "record_canary_result accepts only a boolean execution_failure and free-text reason, while realised negative outcomes are treated as losses.",
+          "path": "learnerbot/strategy_canary.py"
+        },
+        {
+          "detail": "Live recording converts realised net directly into wins/losses and silently suppresses recording exceptions, limiting forensic completeness.",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py"
+        }
+      ],
+      "expected_effect": "Enables correct diagnosis without forgiving the economic cost of failed execution and exposes missing evidence rather than silently biasing samples.",
+      "id": "failure-attribution-taxonomy-v1",
+      "minimum_observation": "At least 500 terminal decisions across both chain types, including at least 30 failures, with confusion-matrix review against raw receipts, simulation responses, and reconciliation records.",
+      "rationale": "Market losses should challenge the signal hypothesis, while reverted, expired, stale-quote, RPC, nonce, reconciliation, and accounting failures should challenge execution or infrastructure. Combining or dropping them corrupts strategy selection, although failure costs must still remain in portfolio NET P&L.",
+      "shadow_test": "Replay recorded outcomes through a fixed taxonomy: STRATEGY_MARKET_LOSS, EXECUTION_FAILURE, INFRASTRUCTURE_FAILURE, DATA_INCOMPLETE, and SUCCESS. Require every eligible decision to reach exactly one terminal state while all paid fees remain in money-weighted net. Stop if terminal-state coverage is below 99% or manual review disagreement exceeds 5%.",
+      "strategy": "All strategy scorecards",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab_live_recording_patch.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.97,
+      "downside_risk": "Fragmented cohorts require longer observation and will delay any promotion.",
+      "evidence": [
+        {
+          "detail": "strategy_canary_state is keyed only by strategy name, while route_canary_policy can select the same generic strategy name on multiple EVM chain slugs.",
+          "path": "learnerbot/strategy_canary.py"
+        },
+        {
+          "detail": "record_canary_result sums realised_net_base into one state and can advance after 3 and 8 cumulative trades; native base units from different chains are not economically additive.",
+          "path": "learnerbot/strategy_canary.py"
+        },
+        {
+          "detail": "EVM features retain chain_slug, showing that chain-isolated evaluation is available upstream but is lost in generic strategy state.",
+          "path": "learnerbot/market_feature_adapter.py"
+        }
+      ],
+      "expected_effect": "Keeps strategy evidence isolated by chain, venue, size band, and economic unit, preventing cross-chain contamination of lifecycle decisions.",
+      "id": "chain-isolated-money-weighting-v1",
+      "minimum_observation": "At least 100 cost-complete outcomes per chain/strategy cohort, 30 calendar days, and no promotion inference until confidence bounds on held-out money-weighted net exclude zero after failures.",
+      "rationale": "Summing native-denominated results across chains invalidates money weighting and can let one chain's economics promote another chain's strategy instance. Three or eight trades are also insufficient architecture-level evidence of durable edge.",
+      "shadow_test": "Create SHADOW-only cohort scorecards keyed by strategy, chain, venue/route class, and notional band; normalize reporting to a contemporaneous valuation unit while retaining native values. Compare pooled versus isolated conclusions. Fail the pooled hypothesis if signs differ across chains, conversion coverage is incomplete, or any cohort has non-positive held-out net P&L.",
+      "strategy": "Cross Venue Net Arbitrage and other shared-name strategies",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gpt",
+  "rejected_ideas": [
+    {
+      "idea": "Promote or declare any strategy profitable from the supplied snapshot.",
+      "reason": "The snapshot contains no fresh runtime forensics, realised fills, cost-complete outcomes, or failure distributions."
+    },
+    {
+      "idea": "Optimise win count or relax filters to increase trading frequency.",
+      "reason": "Win count is not the objective, and forced participation without positive executable edge can reduce money-weighted NET P&L."
+    },
+    {
+      "idea": "Treat current quotes or successful simulations as realised promotion evidence.",
+      "reason": "They omit adverse selection, landing failures, latency decay, and independent exit outcomes; the existing SHADOW code correctly labels them non-promotional."
+    },
+    {
+      "idea": "Reduce simulation, liquidity, sellability, wallet/signing, reserve, stop-loss, circuit-breaker, nonce, or reconciliation protections to lower costs.",
+      "reason": "Such changes could increase catastrophic or unreconciled loss and are explicitly outside the permitted optimisation boundary."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "c24ee33053bb4cac21d84e8af5ce1f95090a23b9",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. No profitability, CANARY-readiness, or LIVE-readiness conclusion is possible because evidence.json explicitly reports MISSING_RUNTIME_FORENSICS. The repository generally fails closed when executable evidence is absent, keeps SHADOW simulation separate from promotion evidence, and requires positive cost-adjusted edge. However, durable money-weighted evaluation is incomplete: Solana has no executable quote/outcome adapter; SHADOW accounting does not preserve all cost components or realised outcomes; strategy loss versus execution/infrastructure failure lacks a durable taxonomy; and generic canary state can aggregate native-denominated results across EVM chains. Preserve all wallet, signing, LIVE/ARMED, simulation, liquidity, sellability, reserve, stop-loss, nonce, and reconciliation protections."
+}
