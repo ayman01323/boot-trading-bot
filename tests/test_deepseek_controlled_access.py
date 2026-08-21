@@ -120,3 +120,23 @@ def test_sibot_leader_gate_wrapper_preserves_bounded_vps_access() -> None:
     assert tests
     for test in tests:
         test()
+
+
+def test_ai_agent_bus_delivery_fallback_runs_in_bounded_access_ci() -> None:
+    """Exercise polling fallback/dedupe regressions in the always-targeted access CI."""
+    import importlib.util
+
+    path = ROOT / "tests" / "test_ai_agent_bus_delivery_fallback.py"
+    spec = importlib.util.spec_from_file_location("ai_agent_bus_delivery_fallback_tests", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    tests = [
+        getattr(module, name)
+        for name in sorted(dir(module))
+        if name.startswith("test_") and callable(getattr(module, name))
+    ]
+    assert tests
+    for test in tests:
+        test()
