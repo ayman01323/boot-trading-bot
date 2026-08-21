@@ -7,6 +7,12 @@ on:
       - main
       - 'agent/**'
   workflow_dispatch:
+    inputs:
+      live_gemini_check:
+        description: 'Spend Gemini API quota on a live connectivity check'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -33,10 +39,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "GEMINI_API_KEY is not configured; skipping optional Gemini connectivity precheck"
+            echo "GEMINI_API_KEY is not configured"
             exit 0
           fi
-          echo "GEMINI_API_KEY is set"
+          echo "GEMINI_API_KEY is set; automatic CI will not spend API quota."
 
       - name: Compile Python
         run: python -m compileall -q learnerbot scripts tests
@@ -120,6 +126,7 @@ jobs:
           fi
 
       - name: Optional Gemini connectivity check
+        if: github.event_name == 'workflow_dispatch' && inputs.live_gemini_check == true
         continue-on-error: true
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
