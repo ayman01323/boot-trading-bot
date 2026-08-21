@@ -101,8 +101,6 @@ PRESENTATION RULES FOR THE USER-FACING ANSWER:
 
 
 def _send_final_reply(app, tid, session: dict, title: str, body: str, keyboard=None) -> None:
-    # Delegate dynamically so existing tests and downstream presentation patches can
-    # still replace the standard Telegram sender.
     return _friendly._send_final_reply(app, tid, session, title, _organise_answer_text(body), keyboard)
 
 
@@ -126,6 +124,9 @@ def _finish_user_from_answers(app, tid, session_id: str) -> None:
         )
         return
 
+    # Keep one existing progress message alive during the synthesis phase. In production
+    # this edits the same message in place; it never repeats or quotes the user's question.
+    session = _friendly._status_message(app, tid, session, _status_text(session, "leader", valid=valid))
     _friendly._chat_action(app, tid)
     try:
         result = _friendly._council.run_leader(app, session_id, "gpt")
@@ -202,7 +203,6 @@ def install() -> None:
 
     _friendly._status_text = _status_text
     _friendly._status_message = _status_message
-    # Deliberately leave _friendly._send_final_reply replaceable/testable.
     _friendly._finish_user_from_answers = _finish_user_from_answers
     _friendly._process_question = _process_question
     _friendly._council._leader_prompt = _leader_prompt
