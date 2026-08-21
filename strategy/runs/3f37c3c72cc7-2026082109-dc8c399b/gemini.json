@@ -1,0 +1,49 @@
+{
+  "cycle_id": "3f37c3c72cc7-2026082109-dc8c399b",
+  "evidence_gaps": [
+    "No sanitised runtime forensics branch available.",
+    "No data on live executed slippage, gas/priority fees impact, or strategy profitability.",
+    "Cannot evaluate execution failure rates or their economic impact on edge."
+  ],
+  "evidence_sha256": "dc8c399b3618e3e012e9cbd3e5bab4503c335840c56f3047ab358f562fbb9e3a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.88,
+      "downside_risk": "No live capital risk. Minor increase in compute and database storage requirements for shadow evaluations.",
+      "evidence": [
+        {
+          "detail": "The New Liquidity Quality strategy currently filters out opportunities with net_edge_bps < 6. Without runtime forensics, we lack evidence on whether 6 bps is the correct threshold for new pools.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Increased SHADOW hit rate for new pools, generating a statistical distribution of post-friction PnL for 3-6 bps edges.",
+      "id": "prop_nlq_shadow_expansion",
+      "minimum_observation": "7 days of SHADOW runtime logs.",
+      "rationale": "By reducing the threshold for purely SHADOW evaluation, the strategy engine can collect evidence on lower-edge opportunities without risking live capital, helping establish the true profitability boundary.",
+      "shadow_test": "Lower min_net_bps to 3 in SHADOW mode. Measure whether >=45% of entries between 3 and 6 bps yield a positive durable money-weighted PnL (accounting for max slippage, gas and failure rates).",
+      "strategy": "New Liquidity Quality",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote Cross Venue Net Arbitrage to CANARY",
+      "reason": "Missing runtime forensics. No evidence of durable money-weighted NET P&L after fees, slippage, and execution failures."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "3f37c3c72cc7b203acf47b1729ecf77bf454506a",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only strategy review. Evaluated the pure/stateless strategy definitions in cross_chain_strategy_signals.py and the SHADOW/CANARY state tracking. A SHADOW_MORE action is proposed to gather empirical data on new liquidity pool edges due to the missing runtime forensics."
+}
