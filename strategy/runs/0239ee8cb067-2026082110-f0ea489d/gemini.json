@@ -1,0 +1,52 @@
+{
+  "cycle_id": "0239ee8cb067-2026082110-f0ea489d",
+  "evidence_gaps": [
+    "No current sanitised runtime forensics branch was available (.strategy_cycle/evidence.json).",
+    "Missing recent (within 2h) shadow execution logs or real trade performance for Solana and EVM to measure execution failures."
+  ],
+  "evidence_sha256": "f0ea489d5ba953a9119415d7ae579e781ea728c862bc3312b2da575ae1bcd12a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "None, as SHADOW trading involves no real capital.",
+      "evidence": [
+        {
+          "detail": "status indicates MISSING_RUNTIME_FORENSICS; no real execution logs to confirm latency_reserve_bps or execution failures.",
+          "path": ".strategy_cycle/evidence.json"
+        },
+        {
+          "detail": "Strategies assume net_edge_bps accurately reflects latency, slippage, and fees, but the execution bridge must validate this via SHADOW trades.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        }
+      ],
+      "expected_effect": "Gather necessary runtime evidence to calibrate latency_reserve_bps and measure actual execution failure rates without capital risk.",
+      "id": "shadow-run-cross-chain",
+      "minimum_observation": "2 hours of fresh SHADOW data across at least 50 valid signal setups.",
+      "rationale": "Without fresh runtime evidence, profitability and executability cannot be established. SHADOW execution is required to measure actual slippage, price impact, latency, and priority fees before making real-capital promotion decisions.",
+      "shadow_test": "Execute strategy models in SHADOW mode for Solana and EVM, monitoring theoretical vs. actual net_edge_bps, and record execution failure rates.",
+      "strategy": "cross_chain_strategy_signals",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote cross-venue net arbitrage directly to CANARY based on structural code correctness.",
+      "reason": "Promotion prohibited because 'MISSING_RUNTIME_FORENSICS' prevents establishing current profitability/executability, breaking the strict evidence rules."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "0239ee8cb067446e1849fbeb36e89b19d0ab62e5",
+  "status": "HEALTHY",
+  "summary": "Architecture-only review completed. The cross-chain signal components mandate executable net edge over 3-6 bps across Solana and EVM after slippage, price impact, and fees. Execution failures and execution-level costs are correctly modelled in theory but cannot be verified due to the lack of live or shadow runtime forensics evidence."
+}
