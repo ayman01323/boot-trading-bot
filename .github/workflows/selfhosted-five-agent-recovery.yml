@@ -40,13 +40,19 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
           CLAUDE_ENGINEERING_MODEL: ${{ vars.CLAUDE_ENGINEERING_MODEL || 'sonnet' }}
-          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash' }}
+          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash[1m]' }}
           CLAUDE_STRATEGY_MODEL: ${{ vars.CLAUDE_STRATEGY_MODEL || 'sonnet' }}
-          DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash' }}
+          DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash[1m]' }}
           DISABLE_AUTOUPDATER: '1'
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "$DEEPSEEK_ENGINEERING_MODEL" == "deepseek-v4-flash" ]]; then
+            DEEPSEEK_ENGINEERING_MODEL="${DEEPSEEK_ENGINEERING_MODEL}[1m]"
+          fi
+          if [[ "$DEEPSEEK_STRATEGY_MODEL" == "deepseek-v4-flash" ]]; then
+            DEEPSEEK_STRATEGY_MODEL="${DEEPSEEK_STRATEGY_MODEL}[1m]"
+          fi
           TMP="/tmp/five-agent-recovery-${GITHUB_RUN_ID}"
           rm -rf "$TMP" && mkdir -p "$TMP"
 
