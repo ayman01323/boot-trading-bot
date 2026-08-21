@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 
 from . import ai_council_http_patch as _http
 
@@ -86,50 +87,96 @@ def _web_models(env: dict[str, str]) -> list[str]:
     return out
 
 
+def _live_prompt(prompt: str) -> str:
+    return str(prompt or "") + """
+
+LIVE INFORMATION RULE:
+This question depends on fresh public information. You MUST use live web search before answering. Base every time-sensitive claim on the retrieved live sources. Answer directly as PasPuss AI. Do not say that PasPuss lacks live-data or internet access. Do not mention the internal search/tool process or the underlying provider.
+"""
+
+
+def _gemini_is_grounded(body) -> bool:
+    if not isinstance(body, dict):
+        return False
+    for cand in body.get("candidates") or []:
+        if not isinstance(cand, dict):
+            continue
+        meta = cand.get("groundingMetadata") or {}
+        if isinstance(meta, dict) and (meta.get("webSearchQueries") or meta.get("groundingChunks")):
+            return True
+    return False
+
+
+def _call_gemini_grounded(prompt: str, env: dict[str, str]) -> tuple[int, str, str]:
+    key = str(env.get("GEMINI_API_KEY") or "").strip()
+    if not key:
+        return 90, "", "GEMINI_API_KEY missing"
+    model = str(
+        env.get("GEMINI_COUNCIL_MODEL")
+        or env.get("GEMINI_MASTER_MODEL")
+        or env.get("GEMINI_STRATEGY_MODEL")
+        or "gemini-3.7-flash"
+    ).strip()
+    safe_model = urllib.parse.quote(model, safe="-._")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent"
+    status, body, raw, _headers = _http._http_json(
+        url,
+        headers={
+            "x-goog-api-key": key,
+            "Content-Type": "application/json",
+        },
+        payload={
+            "contents": [{"parts": [{"text": _live_prompt(prompt)}]}],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2400},
+        },
+    )
+    text = _http._gemini_text(body)
+    if 200 <= status < 300 and text and _gemini_is_grounded(body) and not _looks_like_offline_refusal(text):
+        return 0, text, ""
+    return status or 92, "", _http._error_detail(status, body, raw, env)
+
+
 def _call_openai(prompt: str, env: dict[str, str]) -> tuple[int, str, str]:
     if not _needs_web_search(prompt):
         return _BASE_OPENAI(prompt, env)
 
     key = str(env.get("OPENAI_API_KEY") or env.get("CODEX_API_KEY") or "").strip()
-    if not key:
-        return 0, LIVE_UNAVAILABLE_TEXT, ""
+    if key:
+        live_prompt = _live_prompt(prompt)
+        for model in _web_models(env):
+            status, body, raw, _headers = _http._http_json(
+                "https://api.openai.com/v1/responses",
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                payload={
+                    "model": model,
+                    "input": live_prompt,
+                    "max_output_tokens": 2400,
+                    "tools": [{"type": "web_search"}],
+                    "tool_choice": "required",
+                },
+            )
+            text = _http._openai_text(body)
+            if 200 <= status < 300 and text and not _looks_like_offline_refusal(text):
+                return 0, text, ""
+            # Retry a known current web-capable OpenAI model only for request/model/tool
+            # compatibility errors. Quota/auth/network failures move to the independent
+            # grounded Gemini fallback rather than multiplying OpenAI failures.
+            if status not in {400, 404, 422}:
+                break
 
-    live_prompt = str(prompt or "") + """
+    # OpenAI web search can be rate-limited independently of ordinary model usage.
+    # Use Gemini 3.7 Flash + Google Search grounding as the live fallback. Accept it
+    # only when the API confirms grounding metadata was actually produced.
+    grc, gout, _gerr = _call_gemini_grounded(prompt, env)
+    if grc == 0 and gout:
+        return 0, gout, ""
 
-LIVE INFORMATION RULE:
-This question depends on fresh public information. You MUST use the web search tool before answering. Base every time-sensitive claim on the search results. Answer directly as PasPuss AI. Do not say that PasPuss lacks live-data or internet access. Do not mention the internal search/tool process.
-"""
-
-    last_status = 0
-    last_body = None
-    last_raw = ""
-    for model in _web_models(env):
-        status, body, raw, _headers = _http._http_json(
-            "https://api.openai.com/v1/responses",
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            payload={
-                "model": model,
-                "input": live_prompt,
-                "max_output_tokens": 2400,
-                "tools": [{"type": "web_search"}],
-                "tool_choice": "required",
-            },
-        )
-        text = _http._openai_text(body)
-        if 200 <= status < 300 and text and not _looks_like_offline_refusal(text):
-            return 0, text, ""
-        last_status, last_body, last_raw = status, body, raw
-        # Retry a known current web-capable model only for request/model/tool
-        # compatibility errors. Do not multiply quota/auth/network failures.
-        if status not in {400, 404, 422}:
-            break
-
-    # Freshness is a hard contract. Never substitute an offline model draft for a
-    # current fact because that can produce a confident but stale answer.
-    _ = (last_status, last_body, last_raw)
+    # Freshness is a hard contract. Never substitute an offline draft for a current
+    # fact because that can produce a confident but stale or capability-refusal answer.
     return 0, LIVE_UNAVAILABLE_TEXT, ""
 
 
