@@ -1,0 +1,179 @@
+{
+  "cycle_id": "8846ac6138a6-2026082110-3da42d7f",
+  "evidence_gaps": [
+    "Fresh-within-two-hours sanitized runtime forensics are unavailable; evidence.json reports MISSING_RUNTIME_FORENSICS.",
+    "No cost-complete transaction-level Solana outcomes covering base fees, priority fees, platform fees, price impact, slippage, rent paid/reclaimed and failed-transaction costs.",
+    "No EVM attempted-transaction reconciliation covering reverted transactions, receipt timeouts, replacement transactions, actual gas, MEV/inclusion decay and retained user net after platform fees.",
+    "No strategy-version and source-commit isolated out-of-sample net P&L series by chain, settlement asset and deployed capital.",
+    "No opportunity funnel separating no-market-edge skips, strategy rejections, liquidity/sellability failures, simulation failures, infrastructure failures and signed execution failures.",
+    "No drawdown, tail-loss, capital-at-risk, holding-time or confidence-interval evidence sufficient for promotion.",
+    "Before any promotion: require fresh runtime provenance, complete cost attribution, chain-specific out-of-sample shadow results, failure reconciliation, positive money-weighted retained net P&L with a positive lower confidence bound, acceptable drawdown, and confirmation that all execution protections remained enabled."
+  ],
+  "evidence_sha256": "3da42d7fd66c026188508701bd3cd112c5ef73ee61b3b77ea7e1a12ec2d24839",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.98,
+      "downside_risk": "Schema migration and stricter accounting will reduce apparent sample size and may invalidate historical windows lacking cost provenance.",
+      "evidence": [
+        {
+          "detail": "Window schema has no chain, settlement asset, notional, gas/priority fee, price-impact or capital-exposure dimensions.",
+          "path": "learnerbot/strategy_lab.py:79"
+        },
+        {
+          "detail": "Default net_profit is gross_profit minus gross_loss, fees and slippage only.",
+          "path": "learnerbot/strategy_lab.py:329"
+        },
+        {
+          "detail": "Metrics sum window monetary values directly, allowing unlike native units or notionals to be combined.",
+          "path": "learnerbot/strategy_lab.py:371"
+        },
+        {
+          "detail": "Promotion candidacy uses aggregated net and a profit factor derived from gross profit/loss rather than fully cost-adjusted outcomes.",
+          "path": "learnerbot/strategy_lab.py:435"
+        }
+      ],
+      "expected_effect": "Prevents false promotion from unit mixing or incomplete costs and makes evaluation reflect money-weighted retained net P&L.",
+      "id": "cost-normalized-chain-isolation-v1",
+      "minimum_observation": "At least 30 closed shadow outcomes and 10 independent windows per strategy-chain-settlement-asset cohort, with complete cost fields and no cross-asset summation.",
+      "rationale": "Promotion evidence must remain chain and currency coherent and include every executable cost. Otherwise SOL, ETH and other native amounts, or differently sized trades, can produce misleading aggregate results.",
+      "shadow_test": "In Strategy Lab only, replay identical windows under chain-and-asset partitions with observed notional, DEX/platform fees, slippage, price impact, gas or priority fees, rent treatment and failure costs. Stop and mark data unusable if any monetary row lacks chain, asset, notional or cost provenance; reject the hypothesis if normalized conclusions do not differ materially from current evaluation.",
+      "strategy": "Strategy Lab lifecycle evaluation",
+      "suggested_files": [
+        "Strategy Lab/SHADOW accounting schema and evaluator only"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.97,
+      "downside_risk": "Receipt reconciliation and causal classification add operational complexity; unknown outcomes must remain conservatively unresolved rather than guessed.",
+      "evidence": [
+        {
+          "detail": "Execution failures are stored only as an undifferentiated count.",
+          "path": "learnerbot/strategy_lab.py:96"
+        },
+        {
+          "detail": "Successful EVM cycles calculate realised net using the wallet delta and actual receipt gas.",
+          "path": "learnerbot/auto_trader.py:203"
+        },
+        {
+          "detail": "The exception path records REJECTED with blank realised net; a reverted or uncertain broadcast may therefore omit consumed gas and lacks strategy-versus-infrastructure classification.",
+          "path": "learnerbot/auto_trader.py:219"
+        },
+        {
+          "detail": "Canary recording accepts only a boolean execution_failure and free-text reason, limiting causal attribution.",
+          "path": "learnerbot/strategy_canary.py:222"
+        }
+      ],
+      "expected_effect": "Captures failure gas and opportunity costs while preventing infrastructure defects from being misdiagnosed as alpha decay.",
+      "id": "failure-attribution-net-cost-v1",
+      "minimum_observation": "At least 100 attempted executions per chain family, including at least 10 genuine failure cases, with transaction-level reconciliation and retained-net totals.",
+      "rationale": "A negative executable signal is a STRATEGY/MARKET loss. RPC failure, stale nonce, reverted transaction, receipt timeout or quote/simulation infrastructure failure is EXECUTION/INFRASTRUCTURE failure. Both affect retained net economics, but require different remediation and must not be conflated.",
+      "shadow_test": "Shadow-reconcile every attempted EVM and Solana execution into MARKET_LOSS, STRATEGY_LOSS, EXECUTION_FAILURE or INFRASTRUCTURE_FAILURE, attaching transaction status and all irreversible fees. Stop if more than 1% of broadcast attempts remain unclassified after the reconciliation horizon or if any failed on-chain transaction has zero recorded fee cost.",
+      "strategy": "Execution-aware strategy attribution",
+      "suggested_files": [
+        "Strategy Lab/SHADOW failure taxonomy and reconciliation adapter only"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.94,
+      "downside_risk": "More conservative dynamic costs may suppress many signals; this is appropriate when executable edge is not positive.",
+      "evidence": [
+        {
+          "detail": "Shadow entry and exit network/priority fees use fixed conservative estimates.",
+          "path": "learnerbot/solana_sibot.py:48"
+        },
+        {
+          "detail": "Entry validation checks signal age, executable Jupiter round trip and leader-entry deterioration.",
+          "path": "learnerbot/solana_sibot.py:748"
+        },
+        {
+          "detail": "Live-oriented architecture separately validates combined quoted price impact and slippage.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py:277"
+        },
+        {
+          "detail": "Live-oriented architecture exposes base fee, priority tip and platform-fee-equivalent costs.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py:293"
+        }
+      ],
+      "expected_effect": "Produces a more faithful Solana shadow distribution of retained net P&L and identifies regimes where apparent signal edge is consumed by execution costs.",
+      "id": "solana-dynamic-cost-shadow-v1",
+      "minimum_observation": "At least 200 eligible observations across 14 days and multiple congestion regimes, with at least 30 simulated closed positions and complete entry/exit cost records.",
+      "rationale": "Solana profitability is sensitive to time-varying priority fees, route impact, account creation/rent exposure and failed-transaction fees. Fixed shadow fee assumptions may not reproduce executable net economics during congestion.",
+      "shadow_test": "For each shadow decision, timestamp fresh forward and reverse quotes and record quoted impact, slippage, estimated compute/base/priority fees, account/rent effects and simulated failure outcome. Compare predicted retained net with a later executable quote. Fail the hypothesis if median net is non-positive, the lower confidence bound is non-positive, or cost underestimation exceeds 20% in more than 5% of observations.",
+      "strategy": "Solana leader-copy and market-entry strategies",
+      "suggested_files": [
+        "Strategy Lab/SHADOW Solana cost-model adapter only"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.88,
+      "downside_risk": "Simulation-to-inclusion latency, MEV competition and failed-transaction gas may still eliminate quoted edge.",
+      "evidence": [
+        {
+          "detail": "Scanner candidates fail closed unless exact quote, source, liquidity, route and whole-route approval fields are explicitly true.",
+          "path": "learnerbot/auto_trader.py:96"
+        },
+        {
+          "detail": "Each user wallet receives a fresh route simulation against a retained-net floor before selection.",
+          "path": "learnerbot/auto_trader.py:163"
+        },
+        {
+          "detail": "Confirmed outcomes use wallet balance change and actual receipt gas for realised net.",
+          "path": "learnerbot/auto_trader.py:203"
+        }
+      ],
+      "expected_effect": "Preserves the strongest existing EVM safety design without asserting that the strategy is profitable.",
+      "id": "evm-atomic-edge-shadow-v1",
+      "minimum_observation": "At least 100 independent eligible routes over 14 days, 30 realistically simulated or executed outcomes, and complete attempted-transaction reconciliation.",
+      "rationale": "The execution architecture appropriately requires fresh, wallet-specific, atomic executable edge and does not force trades. It should remain unchanged pending fresh outcome evidence, subject to failure-cost accounting improvements.",
+      "shadow_test": "Continue shadow measurement of quote-to-simulation-to-inclusion decay using all DEX fees, impact, slippage, gas bids, failed-attempt gas and platform fees. Stop the cohort if cost-complete net P&L is non-positive or the 95% lower confidence bound on net per unit capital is non-positive.",
+      "strategy": "EVM atomic cyclic arbitrage",
+      "suggested_files": [
+        "Strategy Lab/SHADOW EVM execution-decay study only"
+      ]
+    }
+  ],
+  "provider": "gpt",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy based on current repository architecture or raw win rate.",
+      "reason": "There is no fresh runtime evidence, and win count does not establish durable money-weighted net P&L."
+    },
+    {
+      "idea": "Relax liquidity, sellability, simulation, price-impact or positive-edge gates to increase trade frequency.",
+      "reason": "Frequency without positive executable edge increases adverse selection and cost exposure."
+    },
+    {
+      "idea": "Treat all negative outcomes as strategy losses.",
+      "reason": "Execution and infrastructure failures have distinct causes and remediation, although their irreversible fees must still reduce net P&L."
+    },
+    {
+      "idea": "Combine native-chain P&L values into one aggregate without valuation and notional normalization.",
+      "reason": "Unlike units and capital exposures make the result economically invalid."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "8846ac6138a6840527f8829d07733bd10c1b1cd4",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. The repository contains strong fail-closed quoting, simulation, liquidity, sellability and positive-edge controls, but current evaluation can overstate durable money-weighted net performance: Strategy Lab can aggregate incomparable chain-native amounts, omits explicit gas, price-impact and failure-cost fields, and does not distinguish STRATEGY/MARKET losses from EXECUTION/INFRASTRUCTURE failures. EVM failed broadcasts can also omit consumed gas from realised P&L. Solana shadow accounting relies partly on fixed fee estimates rather than observed priority-fee distributions. Runtime forensics are unavailable, so no profitability, CANARY-readiness or LIVE-readiness claim is made."
+}

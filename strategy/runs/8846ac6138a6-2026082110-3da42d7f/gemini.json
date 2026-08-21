@@ -1,0 +1,52 @@
+{
+  "cycle_id": "8846ac6138a6-2026082110-3da42d7f",
+  "evidence_gaps": [
+    "MISSING_RUNTIME_FORENSICS",
+    "No fresh-within-2h runtime evidence available."
+  ],
+  "evidence_sha256": "3da42d7fd66c026188508701bd3cd112c5ef73ee61b3b77ea7e1a12ec2d24839",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "None, as capital is not committed in SHADOW.",
+      "evidence": [
+        {
+          "detail": "StrategyLab prevents execution safety relaxation and strictly governs promotion candidates via MIN_EVALUATION_WINDOWS=3 and MIN_EVALUATION_TRADES=8.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "File indicates MISSING_RUNTIME_FORENSICS, which necessitates further shadow runtime evidence.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "No capital risk; collects sufficient out-of-sample execution data in SHADOW mode across supported chains.",
+      "id": "shadow-investigation-1",
+      "minimum_observation": "3 evaluation windows, 8 trades, 10 eligible opportunities",
+      "rationale": "Without fresh runtime forensics, no strategy can be verified for positive money-weighted net P&L after simulated fees, slippage, and price impact. Further shadow testing is required.",
+      "shadow_test": "Gather shadow executions across Solana and EVM until minimum evaluation trade criteria are met, explicitly accounting for chain-specific economics, slippage, and fees.",
+      "strategy": "Cross Venue Net Arbitrage and baseline shadow strategies",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote SHADOW strategy to LIVE or CANARY based purely on architectural review.",
+      "reason": "Missing recent runtime forensics data to support positive money-weighted net P&L after execution costs."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "8846ac6138a6840527f8829d07733bd10c1b1cd4",
+  "status": "HEALTHY",
+  "summary": "Architecture review completed. Due to missing fresh runtime forensics, live profitability or canary readiness cannot be claimed. The Strategy Laboratory design appropriately restricts automatic live promotion without thorough out-of-sample shadow evaluation."
+}
