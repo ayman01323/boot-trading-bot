@@ -1,0 +1,52 @@
+{
+  "cycle_id": "9a7a4265b694-2026082109-553d8cb7",
+  "evidence_gaps": [
+    "MISSING_RUNTIME_FORENSICS: Fresh empirical data on net P&L after fees, slippage, and execution failures.",
+    "Lack of verified live metrics distinguishing between structural strategy loss and execution platform failure."
+  ],
+  "evidence_sha256": "553d8cb7a3612c9fe66f36d6585fe5a57e5992228e009f5d52caa1b2cd3a2008",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 1.0,
+      "downside_risk": "Delays potential profitable deployments, prioritizing capital preservation.",
+      "evidence": [
+        {
+          "detail": "strategy_lab_windows schema accurately tracks net_profit, fees, slippage_cost, and execution_failures.",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "Runtime evidence status is MISSING_RUNTIME_FORENSICS.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Prevents unwarranted live promotion while preserving shadow evaluation.",
+      "id": "prop-gap-01",
+      "minimum_observation": "3 evaluation windows",
+      "rationale": "Without up-to-date runtime forensics providing empirical money-weighted net P&L after network-specific costs, no strategy can be verified as profitable or promoted. Continued shadow testing is required.",
+      "shadow_test": "Monitor SHADOW strategies for >= 3 evaluation windows to empirically verify net positive P&L after all chain-specific execution costs and failures.",
+      "strategy": "LEARNED_PATTERN",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote recent well-performing SHADOW strategies to LIVE or CANARY.",
+      "reason": "Missing runtime forensics means live profitability or canary-readiness cannot be reliably verified or claimed."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "9a7a4265b6940b3b26455ad475e6e16eaf123b66",
+  "status": "HEALTHY",
+  "summary": "Architecture-only review completed due to missing fresh runtime forensics. The codebase enforces strict separation of evaluation from live execution, explicitly distinguishing strategy/market losses from infrastructure/execution failures via detailed metrics (fees, slippage, execution_failures) in strategy_lab_windows."
+}
