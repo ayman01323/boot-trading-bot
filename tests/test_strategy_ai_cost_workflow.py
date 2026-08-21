@@ -27,22 +27,26 @@ def test_paid_review_job_runs_only_when_gate_allows_it():
     assert gate_pos < review_pos < install_pos
 
 
-def test_manual_dispatch_and_material_or_source_change_can_force_review():
+def test_manual_dispatch_is_forwarded_to_material_change_gate():
     text = _text()
     assert 'workflow_dispatch:' in text
-    assert 'MANUAL_REQUEST' in text
-    assert 'SOURCE_COMMIT_CHANGED' in text
-    assert 'MATERIAL_EVIDENCE_CHANGED' in text
-    assert 'FORCED_REFRESH_DUE' in text
+    assert 'EVENT_NAME: ${{ github.event_name }}' in text
+    assert "manual=os.environ.get('EVENT_NAME')=='workflow_dispatch'" in text
+    assert 'evaluate_cost_gate' in text
 
 
-def test_gate_persists_last_paid_attempt_without_touching_live_trading():
+def test_gate_persists_last_paid_attempt_without_touching_execution_hooks():
     text = _text()
     assert 'strategy/cost_gate/latest.json' in text
     assert 'last_ai_attempt_epoch' in text
     assert 'last_ai_attempt_material_sha256' in text
     assert 'last_ai_attempt_source_commit' in text
-    assert 'LIVE' not in text[text.index('Persist paid-AI attempt checkpoint'):text.index('review:')]
+    gate_section = text[text.index('Persist paid-AI attempt checkpoint'):text.index('review:')]
+    assert 'live_trading_settings.csv' not in gate_section
+    assert 'send_transaction' not in gate_section
+    assert 'sign_transaction' not in gate_section
+    assert 'stop_loss' not in gate_section
+    assert 'take_profit' not in gate_section
 
 
 def test_reviewer_prompt_caps_proposal_count():
