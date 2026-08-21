@@ -41,6 +41,7 @@ jobs:
           p=json.load(open(src,encoding='utf-8'))
           providers={'auto','gpt','gemini','copilot','claude'}
           cycles={'scheduled','manual'}
+          vps_actions={'none','inspect','test','deploy'}
           clean={'schema_version':1}
           for lane in ('strategy','engineering'):
               master=str(p.get(lane+'_master') or 'auto').lower()
@@ -51,6 +52,11 @@ jobs:
               clean[lane+'_cycle']=cycle
               clean[lane+'_enabled']=bool(p.get(lane+'_enabled',True))
               clean[lane+'_run_nonce']=max(0,int(p.get(lane+'_run_nonce') or 0))
+          action=str(p.get('claude_vps_action') or 'none').lower()
+          if action not in vps_actions: raise SystemExit('invalid Claude VPS action')
+          clean['claude_vps_action']=action
+          clean['claude_vps_action_nonce']=max(0,int(p.get('claude_vps_action_nonce') or 0))
+          clean['claude_vps_last_request_epoch']=max(0,int(p.get('claude_vps_last_request_epoch') or 0))
           clean['updated_epoch']=max(0,int(p.get('updated_epoch') or 0))
           clean['updated_by']=str(p.get('updated_by') or '')[:80]
           clean['published_epoch']=int(time.time())
