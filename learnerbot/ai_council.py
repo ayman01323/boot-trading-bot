@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import secrets
 import subprocess
@@ -15,7 +16,11 @@ MAX_QUESTION_CHARS = 6000
 MAX_AGENT_ANSWER_CHARS = 12000
 MAX_LEADER_INPUT_CHARS = 42000
 _PROVIDER_TIMEOUT_SECONDS = 300
+_GEMINI_DEFAULT_MODEL = "gemini-3.7-flash"
+_GEMINI_MAX_ATTEMPTS = 4
 _SESSION_RE = re.compile(r"^[0-9]{12}-[0-9a-f]{4}$")
+_GEMINI_429_RE = re.compile(r"(?:HTTP\s*)?429|RESOURCE_EXHAUSTED|Too Many Requests", re.I)
+_GEMINI_RETRY_RE = re.compile(r"(?:retry(?:Delay|\s+in)?)[\"'\s:=]+([0-9]+(?:\.[0-9]+)?)\s*s?", re.I)
 
 
 class CouncilError(RuntimeError):
@@ -41,6 +46,33 @@ def _run(cmd: list[str], prompt: str, env: dict[str, str], *, stdin: bool = Fals
         return 127, "", f"{type(exc).__name__}: {exc}"
 
 
+def _gemini_retry_seconds(out: str, err: str, attempt: int) -> float:
+    text = f"{out}\n{err}"
+    match = _GEMINI_RETRY_RE.search(text)
+    if match:
+        try:
+            return max(1.0, min(float(match.group(1)), 60.0))
+        except Exception:
+            pass
+    base = min(2 ** (attempt + 1), 30)
+    return float(base) + random.uniform(0.0, 0.75)
+
+
+def _run_gemini(cmd: list[str], env: dict[str, str]) -> tuple[int, str, str]:
+    last = (127, "", "Gemini call did not run")
+    for attempt in range(_GEMINI_MAX_ATTEMPTS):
+        last = _run(cmd, "", env)
+        rc, out, err = last
+        if rc == 0:
+            return last
+        if not _GEMINI_429_RE.search(f"{out}\n{err}"):
+            return last
+        if attempt + 1 >= _GEMINI_MAX_ATTEMPTS:
+            return last
+        time.sleep(_gemini_retry_seconds(out, err, attempt))
+    return last
+
+
 def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
     """Call one provider in read-only/non-interactive mode.
 
@@ -61,12 +93,14 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
     if provider == "gemini":
         if not str(env.get("GEMINI_API_KEY") or "").strip():
             return 90, "", "GEMINI_API_KEY missing"
-        model = str(env.get("GEMINI_MASTER_MODEL") or env.get("GEMINI_STRATEGY_MODEL") or "").strip()
-        cmd = ["gemini", "--approval-mode=plan", "--skip-trust", "--output-format", "text"]
-        if model:
-            cmd += ["--model", model]
-        cmd += ["-p", prompt]
-        return _run(cmd, "", env)
+        model = str(
+            env.get("GEMINI_COUNCIL_MODEL")
+            or env.get("GEMINI_MASTER_MODEL")
+            or env.get("GEMINI_STRATEGY_MODEL")
+            or _GEMINI_DEFAULT_MODEL
+        ).strip()
+        cmd = ["gemini", "--approval-mode=plan", "--skip-trust", "--output-format", "text", "--model", model, "-p", prompt]
+        return _run_gemini(cmd, env)
 
     if provider == "claude":
         if not str(env.get("ANTHROPIC_API_KEY") or "").strip():
