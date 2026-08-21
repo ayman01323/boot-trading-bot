@@ -137,3 +137,5 @@ install()
 # expands the presentation and health status to five independent reviewers.
 from . import telegram_four_agent_strategy_patch  # noqa: E402,F401
 from . import telegram_five_agent_patch  # noqa: E402,F401
+# MASTER Telegram can dispatch the already-bounded DeepSeek GitHub/VPS workflows.
+from . import telegram_deepseek_control_patch  # noqa: E402,F401
