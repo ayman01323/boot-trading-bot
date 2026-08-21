@@ -16,7 +16,9 @@ def test_telegram_control_publisher_keeps_five_minute_response_without_repo_chec
     assert 'git fetch' not in workflow
     assert 'git worktree' not in workflow
     assert 'Control is semantically unchanged; no ai-reviews commit/write required.' in workflow
-    assert "old.pop('published_epoch',None)" in workflow
+    assert "old_no_time=dict(old)" in workflow
+    assert "old_no_time.pop('published_epoch',None)" in workflow
+    assert "old_no_time != new" in workflow
     assert 'gh api -X PUT "$api"' in workflow
     assert "steps.publish.outputs.changed == 'true'" in workflow
     assert 'gh workflow run claude-vps-controlled-ops.yml' in workflow

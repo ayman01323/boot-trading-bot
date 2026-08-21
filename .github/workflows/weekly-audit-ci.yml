@@ -44,20 +44,32 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: weekly-ai-audit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check out tested ref without persisted credentials
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
-      - name: Install pytest
-        run: python -m pip install --disable-pip-version-check pytest
-      - name: Compile weekly audit and AI operations modules
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run weekly audit regressions in isolated venv
+        shell: bash
         run: |
-          python -m py_compile \
+          set -euo pipefail
+          venv="/tmp/weekly-audit-ci-${GITHUB_RUN_ID}"
+          trap 'rm -rf "$venv"' EXIT
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest
+          "$venv/bin/python" -m py_compile \
             learnerbot/weekly_bug_audit_contract.py \
             learnerbot/ai_ops_status.py \
             learnerbot/telegram_ai_ops_patch.py \
@@ -66,25 +78,20 @@ jobs:
             tests/test_weekly_bug_audit_contract.py \
             tests/test_ai_ops_status.py \
             tests/test_engineering_cost_bandwidth_audit.py
-      - name: Run weekly audit policy, AI operations and cost/resource tests
-        run: |
-          pytest -x -vv \
+          "$venv/bin/python" -m pytest -x -vv \
             tests/test_weekly_bug_audit_contract.py \
             tests/test_ai_ops_status.py \
             tests/test_engineering_cost_bandwidth_audit.py
-      - name: Dry-run deterministic repository baseline
-        shell: bash
-        run: |
           : > /tmp/compile.log
           : > /tmp/pytest.log
-          python scripts/weekly_bug_audit_baseline.py \
+          "$venv/bin/python" scripts/weekly_bug_audit_baseline.py \
             --root . \
             --output /tmp/weekly-baseline.json \
             --compile-log /tmp/compile.log \
             --pytest-log /tmp/pytest.log \
             --compile-rc 0 \
             --pytest-rc 0
-          python - <<'PY'
+          "$venv/bin/python" - <<'PY'
           import json
           p=json.load(open('/tmp/weekly-baseline.json',encoding='utf-8'))
           assert p['scope']=='FULL_REPOSITORY_BUG_AUDIT_BASELINE'
