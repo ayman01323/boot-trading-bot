@@ -173,7 +173,7 @@ jobs:
         run: |
           set -euo pipefail
           python - <<'PY'
-          import pathlib, subprocess, sys
+          import subprocess, sys
           changed=set()
           for cmd in (["git","diff","--name-only"],["git","ls-files","--others","--exclude-standard"]):
               changed.update(x.strip().replace('\\','/') for x in subprocess.check_output(cmd,text=True).splitlines() if x.strip())
@@ -235,4 +235,73 @@ jobs:
           This is a **draft PR only**. DeepSeek cannot merge or deploy this PR. The workflow blocks protected wallet/signing,
           LIVE/ARMED, capital/risk, deployment and safety-control paths and requires the full test suite before push.
           EOF
-          gh pr create --draft --base main --head "$BRANCH" --title "[DEEPSEEK] Bounded repository fix" --body-file /tmp/deepseek-pr.md
+          url="$(gh pr create --draft --base main --head "$BRANCH" --title "[DEEPSEEK] Bounded repository fix" --body-file /tmp/deepseek-pr.md)"
+          printf '%s\n' "$url" > /tmp/deepseek-github-pr-url.txt
+
+      - name: Publish sanitised DeepSeek GitHub result to ai-reviews
+        if: always() && steps.meta.outputs.action != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ steps.meta.outputs.action }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/deepseek-github-result.json
+          import json,os,pathlib,re,time
+          action=os.environ.get('ACTION','')
+          status='SUCCESS' if os.environ.get('JOB_STATUS')=='success' else 'FAILED'
+          summary=''
+          if action=='inspect':
+              p=pathlib.Path('/tmp/deepseek-github-inspect.txt')
+              if p.exists(): summary=p.read_text(encoding='utf-8',errors='replace').strip()[:1800]
+          elif action=='test':
+              summary='Repository compile and pytest completed successfully.' if status=='SUCCESS' else 'Repository tests did not complete successfully; inspect the workflow log.'
+          elif action=='draft_fix':
+              summary='Bounded DeepSeek draft fix completed and a draft PR was created.' if status=='SUCCESS' else 'Bounded DeepSeek draft fix did not complete successfully; no merge or deployment occurred.'
+          summary=re.sub(r'(?i)(api[_ -]?key|authorization|bearer|token|private[_ -]?key)[^\n]*','[REDACTED]',summary)
+          pr=''
+          p=pathlib.Path('/tmp/deepseek-github-pr-url.txt')
+          if p.exists(): pr=p.read_text(encoding='utf-8',errors='replace').strip()[:500]
+          task=''
+          p=pathlib.Path('/tmp/deepseek-github-task.txt')
+          if p.exists(): task=p.read_text(encoding='utf-8',errors='replace').strip()[:800]
+          out={
+              'schema_version':1,
+              'provider':'deepseek',
+              'generated_epoch':int(time.time()),
+              'source_commit':os.environ.get('SOURCE_SHA','')[:40],
+              'workflow_run_id':int(os.environ.get('RUN_ID') or 0),
+              'action':action,
+              'status':status,
+              'task':task,
+              'summary':summary,
+              'pr_url':pr,
+              'security':{
+                  'draft_pr_only':True,
+                  'self_merge':False,
+                  'deploy_from_github_workflow':False,
+                  'wallet_or_private_key_access':False,
+                  'live_or_risk_bypass':False,
+              },
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/deepseek-github-ai-reviews
+          git worktree add --detach /tmp/deepseek-github-ai-reviews origin/ai-reviews
+          mkdir -p /tmp/deepseek-github-ai-reviews/github/deepseek
+          cp /tmp/deepseek-github-result.json /tmp/deepseek-github-ai-reviews/github/deepseek/latest.json
+          cd /tmp/deepseek-github-ai-reviews
+          git config user.name 'DeepSeek'
+          git config user.email 'deepseek-agent@users.noreply.github.com'
+          git add github/deepseek/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m $'Record bounded DeepSeek GitHub result\n\nAI-Agent: DEEPSEEK'
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
