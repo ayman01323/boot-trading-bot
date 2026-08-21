@@ -20,6 +20,12 @@ def _matches_cycle(report: dict | None, status: dict) -> bool:
     return bool(cycle_id)
 
 
+def _claude_state(report: dict | None) -> str:
+    if not report:
+        return "WAITING"
+    return "INCOMPLETE" if str(report.get("status") or "").upper() == "INCOMPLETE" else "DONE"
+
+
 def strategy_status_current_cycle(repo_root):
     status = _status.read_json(repo_root, "strategy/latest_status.json")
     if not status:
@@ -29,13 +35,13 @@ def strategy_status_current_cycle(repo_root):
     out.setdefault("phase", "STRATEGY")
     cycle_id = str(out.get("cycle_id") or "")
 
-    # Derive Claude directly from this immutable cycle.  This avoids a race where
+    # Derive Claude directly from this immutable cycle. This avoids a race where
     # latest_status.json is rewritten by the original three-agent publisher after
     # Claude has already published claude.json.
     claude = None
     if cycle_id:
         claude = _status.read_json(repo_root, f"strategy/runs/{cycle_id}/claude.json")
-    out["claude"] = _status._agent_status(claude)
+    out["claude"] = _claude_state(claude)
 
     # A global latest_master_decision.json may belong to an older Strategy cycle.
     # Prefer the cycle-local decision and only accept the global alias when its
