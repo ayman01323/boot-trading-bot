@@ -4,6 +4,8 @@ from scripts import ai_agent_bus_pending as pending
 
 
 WORKFLOW = Path('.github/workflows/ai-agent-bus.yml')
+COMPAT = Path('scripts/ai_agent_bus_provider_compat.py')
+LAUNCHER = Path('scripts/run_ai_agent_bus.py')
 
 
 def _text() -> str:
@@ -45,6 +47,15 @@ def test_bus_has_instant_pr_push_and_polling_delivery_paths() -> None:
     assert "cron: '*/5 * * * *'" in text
     assert 'workflow_dispatch:' in text
     assert "github.event.pull_request.head.repo.full_name == github.repository" in text
+
+
+def test_bus_uses_known_good_self_hosted_runner_and_native_isolated_python() -> None:
+    text = _text()
+    assert 'runs-on: [self-hosted, linux, x64, boot-vps]' in text
+    assert 'python3 -m venv "$BUS_VENV"' in text
+    assert 'PYTHONPATH: ${{ github.workspace }}' in text
+    assert 'actions/setup-python' not in text
+    assert '"$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py' in text
 
 
 def test_bus_serialises_runs_and_uses_live_python_github_client() -> None:
@@ -120,10 +131,28 @@ def test_bus_rechecks_before_posting_to_prevent_duplicate_replies() -> None:
     assert 'skipping duplicate publish' in text
 
 
+def test_claude_bus_compatibility_omits_deprecated_temperature() -> None:
+    text = COMPAT.read_text(encoding='utf-8')
+    assert '_call_claude_without_deprecated_temperature' in text
+    assert '"model": model' in text
+    assert '"max_tokens": 2400' in text
+    assert '"messages": [{"role": "user", "content": prompt}]' in text
+    assert '"temperature":' not in text
+    assert 'return _http.call_provider(provider, prompt)' in text
+
+
+def test_bus_launcher_installs_compatibility_before_main() -> None:
+    text = LAUNCHER.read_text(encoding='utf-8')
+    assert 'from scripts.ai_agent_bus_provider_compat import install' in text
+    assert 'install()' in text
+    assert 'from scripts.ai_agent_bus import main' in text
+
+
 def test_provider_call_remains_bounded_and_reply_only() -> None:
     text = _text()
-    assert 'python scripts/ai_agent_bus.py' in text
     assert 'ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}' in text
     assert 'issues: write' in text
     assert 'contents: read' in text
     assert 'contents: write' not in text
+    assert 'sudo ' not in text
+    assert 'deploy-boot-trading-bot' not in text
