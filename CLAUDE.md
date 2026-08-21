@@ -1,5 +1,18 @@
 # Claude repository instructions
 
+## Agent identity routing
+
+These instructions are normally for Claude. However, some repository workflows run the `claude` CLI against the DeepSeek API. If the explicit task/prompt identifies the acting agent as **DEEPSEEK**, do **not** use the Claude handoff inbox. Instead:
+
+- fetch current `origin/main`;
+- read `.github/deepseek-handoff.md` from `origin/main`;
+- acknowledge `DEEPSEEK_HANDOFF_ACK: <handoff_id>`;
+- follow the DeepSeek handoff's `status`, `scope`, `do_not_do`, and `message` fields;
+- fail closed with `DEEPSEEK_HANDOFF_READ_FAILED` if the current handoff cannot be read;
+- re-read the DeepSeek handoff immediately before any push.
+
+When the task identifies the acting agent as Claude, use the Claude protocol below.
+
 ## Mandatory ChatGPT ↔ Claude handoff protocol
 
 This protocol applies to every Claude Code session and every task in this repository, before analysis, edits, tests, commits, or pushes.
