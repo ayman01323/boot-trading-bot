@@ -154,13 +154,14 @@ jobs:
         id: gpt
         continue-on-error: true
         env:
+          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
           SOURCE_SHA: ${{ steps.meta.outputs.source }}
         shell: bash
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY:-}"
+          test -n "${CODEX_API_KEY:-}"
           sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .engineering_retry/common_prompt.txt > /tmp/retry-gpt-prompt.txt
           cat >> /tmp/retry-gpt-prompt.txt <<'EOF'
           Return exactly one report between ENGINEERING_RETRY_JSON_BEGIN and ENGINEERING_RETRY_JSON_END. Do not write files.
