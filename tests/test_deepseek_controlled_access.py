@@ -84,3 +84,23 @@ def test_vps_deploy_has_no_user_selected_sha_or_branch() -> None:
     assert 'current="$(git rev-parse HEAD' in text
     assert 'target="$(git rev-parse origin/main' in text
     assert '"$current" == "$target"' in text
+
+
+def test_sibot_leader_gate_wrapper_preserves_bounded_vps_access() -> None:
+    """Exercise the dedicated wrapper regression in the existing access-control CI."""
+    import importlib.util
+
+    path = ROOT / "tests" / "test_sibot_leader_gate_readonly_wrapper.py"
+    spec = importlib.util.spec_from_file_location("sibot_leader_gate_wrapper_tests", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    tests = [
+        getattr(module, name)
+        for name in sorted(dir(module))
+        if name.startswith("test_") and callable(getattr(module, name))
+    ]
+    assert tests
+    for test in tests:
+        test()
