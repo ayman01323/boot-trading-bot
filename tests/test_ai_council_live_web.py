@@ -16,6 +16,22 @@ def test_current_weather_triggers_web_search() -> None:
     assert live._question_requires_live("What is the current temperature in London?") is True
 
 
+def test_current_time_with_standalone_now_triggers_live_search() -> None:
+    question = "what is the time itinisa now"
+    assert live._question_requires_live(question) is True
+    assert live._needs_web_search(_final_prompt(question)) is True
+
+
+def test_clock_question_without_now_still_triggers_live_search() -> None:
+    assert live._question_requires_live("What time is it in Tunisia?") is True
+    assert live._question_requires_live("What is the local time in Tokyo?") is True
+    assert live._question_requires_live("What date is it in Sydney?") is True
+
+
+def test_time_concept_question_stays_static() -> None:
+    assert live._question_requires_live("Explain time complexity in Big-O notation.") is False
+
+
 def test_static_question_does_not_trigger_web_search() -> None:
     assert live._needs_web_search(_final_prompt("What is the best food for an adult cat?")) is False
     assert live._question_requires_live("What is the best food for an adult cat?") is False
