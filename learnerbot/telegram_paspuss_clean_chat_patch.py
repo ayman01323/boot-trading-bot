@@ -8,7 +8,6 @@ from . import telegram_paspuss_ai_brand_patch as _brand
 from . import telegram_ui as _ui
 
 _ORIGINAL_LEADER_PROMPT = _brand._leader_prompt
-_ORIGINAL_SEND_FINAL_REPLY = _friendly._send_final_reply
 
 
 def _status_text(session: dict, stage: str, *, valid: int | None = None) -> str:
@@ -48,8 +47,6 @@ def _organise_answer_text(text: str) -> str:
     if not raw:
         return raw
 
-    # Remove visual markdown that Telegram would otherwise show literally because the
-    # final-message helper HTML-escapes model text.
     raw = raw.replace("**", "").replace("__", "")
     cleaned: list[str] = []
     for source in raw.split("\n"):
@@ -65,8 +62,6 @@ def _organise_answer_text(text: str) -> str:
     while cleaned and cleaned[-1] == "":
         cleaned.pop()
 
-    # A single long line is the main cause of the wall-of-text look. Split it into
-    # compact two-sentence paragraphs, conservatively, only when it is genuinely dense.
     nonempty = [line for line in cleaned if line]
     if len(nonempty) == 1 and len(nonempty[0]) >= 320:
         sentences = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", nonempty[0])
@@ -74,8 +69,6 @@ def _organise_answer_text(text: str) -> str:
             paragraphs = [" ".join(sentences[i : i + 2]).strip() for i in range(0, len(sentences), 2)]
             return "\n\n".join(p for p in paragraphs if p)
 
-    # If the model used line breaks but no paragraph spacing, add breathing room around
-    # prose while keeping consecutive bullet/numbered list items together.
     if "" not in cleaned and len(cleaned) >= 2:
         out: list[str] = []
         for idx, line in enumerate(cleaned):
@@ -108,7 +101,9 @@ PRESENTATION RULES FOR THE USER-FACING ANSWER:
 
 
 def _send_final_reply(app, tid, session: dict, title: str, body: str, keyboard=None) -> None:
-    return _ORIGINAL_SEND_FINAL_REPLY(app, tid, session, title, _organise_answer_text(body), keyboard)
+    # Delegate dynamically so existing tests and downstream presentation patches can
+    # still replace the standard Telegram sender.
+    return _friendly._send_final_reply(app, tid, session, title, _organise_answer_text(body), keyboard)
 
 
 def _finish_user_from_answers(app, tid, session_id: str) -> None:
@@ -171,10 +166,10 @@ def _process_question(app, tid, session_id: str, master_mode: bool) -> None:
     key = (str(tid), session_id)
     try:
         session = _friendly._council.load_session(app, session_id)
-        session = _status_message(app, tid, session, _status_text(session, "asking"))
+        session = _friendly._status_message(app, tid, session, _status_text(session, "asking"))
         _friendly._chat_action(app, tid)
         _friendly._council.run_independent_answers(app, session_id)
-        _finish_user_from_answers(app, tid, session_id)
+        _brand._finish_user_from_answers(app, tid, session_id)
     except Exception:
         try:
             session = _friendly._council.load_session(app, session_id)
@@ -188,7 +183,10 @@ def _process_question(app, tid, session_id: str, master_mode: bool) -> None:
                 _brand._failure_keyboard(),
             )
         except Exception:
-            _ui._send(app, tid, "⚠️ PasPuss AI couldn’t answer right now. Please try again.")
+            try:
+                _ui._send(app, tid, "⚠️ PasPuss AI couldn’t answer right now. Please try again.")
+            except Exception:
+                pass
     finally:
         with _cui._LOCK:
             _cui._INFLIGHT.discard(key)
@@ -204,7 +202,7 @@ def install() -> None:
 
     _friendly._status_text = _status_text
     _friendly._status_message = _status_message
-    _friendly._send_final_reply = _send_final_reply
+    # Deliberately leave _friendly._send_final_reply replaceable/testable.
     _friendly._finish_user_from_answers = _finish_user_from_answers
     _friendly._process_question = _process_question
     _friendly._council._leader_prompt = _leader_prompt
