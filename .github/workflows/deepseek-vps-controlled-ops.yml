@@ -9,6 +9,10 @@ on:
         default: inspect
         type: choice
         options: [inspect, test, deploy]
+      task:
+        description: 'Optional bounded VPS inspection task; never authorises shell/root/wallet/LIVE bypass'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -21,6 +25,9 @@ jobs:
   operate:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 35
+    env:
+      DEEPSEEK_VPS_VENV: /tmp/deepseek-vps-${{ github.run_id }}
+
     steps:
       - name: Check out exact current main without persisted credentials
         uses: actions/checkout@v4
@@ -33,13 +40,31 @@ jobs:
         id: meta
         env:
           ACTION: ${{ inputs.action }}
+          TASK: ${{ inputs.task }}
         shell: bash
         run: |
           set -euo pipefail
           action="${ACTION:-inspect}"
           case "$action" in inspect|test|deploy) ;; *) echo 'Unsupported VPS action' >&2; exit 2;; esac
+          task="${TASK:-}"
+          printf '%s' "$task" > /tmp/deepseek-vps-task.txt
           echo "action=$action" >> "$GITHUB_OUTPUT"
           echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare isolated Python 3.11 DeepSeek environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3.11 >/dev/null 2>&1 || {
+            echo 'python3.11 is required on the self-hosted boot-vps runner' >&2
+            exit 127
+          }
+          python3.11 --version
+          rm -rf "$DEEPSEEK_VPS_VENV"
+          python3.11 -m venv "$DEEPSEEK_VPS_VENV"
+          "$DEEPSEEK_VPS_VENV/bin/python" -m pip install \
+            --disable-pip-version-check -q \
+            -r requirements.txt pytest
 
       - name: Collect pre-action VPS status through restricted wrapper
         shell: bash
@@ -62,19 +87,14 @@ jobs:
               echo 'Inspection only; no VPS mutation requested.' | tee /tmp/deepseek-vps-action.txt
               ;;
             test)
-              tmpvenv="/tmp/deepseek-vps-test-${GITHUB_RUN_ID}"
-              rm -rf "$tmpvenv"
-              python3 -m venv "$tmpvenv" >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
+              PYTHONDONTWRITEBYTECODE=1 \
+                "$DEEPSEEK_VPS_VENV/bin/python" -m compileall -q learnerbot scripts tests \
+                >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
               if [[ $rc -eq 0 ]]; then
-                "$tmpvenv/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
+                PYTHONDONTWRITEBYTECODE=1 \
+                  "$DEEPSEEK_VPS_VENV/bin/python" -m pytest -q \
+                  >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
               fi
-              if [[ $rc -eq 0 ]]; then
-                "$tmpvenv/bin/python" -m compileall -q learnerbot scripts tests >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
-              fi
-              if [[ $rc -eq 0 ]]; then
-                "$tmpvenv/bin/python" -m pytest -q >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
-              fi
-              rm -rf "$tmpvenv"
               ;;
             deploy)
               git fetch --force origin main >> /tmp/deepseek-vps-action.txt 2>&1 || rc=$?
@@ -102,8 +122,9 @@ jobs:
       - name: Build sanitised DeepSeek VPS context
         shell: bash
         run: |
-          python3 - <<'PY'
-          import pathlib,re
+          "$DEEPSEEK_VPS_VENV/bin/python" - <<'PY'
+          import pathlib, re
+
           parts=[]
           for title,path in (
               ('BEFORE','/tmp/deepseek-vps-before.txt'),
@@ -125,114 +146,145 @@ jobs:
           pathlib.Path('/tmp/deepseek-vps-context.txt').write_text('\n\n'.join(parts)+'\n',encoding='utf-8')
           PY
 
-      - name: DeepSeek analyse only sanitised VPS context
+      - name: Ask DeepSeek through direct API using sanitised VPS context only
         id: deepseek
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_VPS_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-v4-flash' }}
+          DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/deepseek-vps-no-runtime.env
           ACTION: ${{ steps.meta.outputs.action }}
           ACTION_RC: ${{ steps.execute.outputs.rc }}
-          DISABLE_AUTOUPDATER: '1'
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
         shell: bash
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
-          if ! command -v claude >/dev/null 2>&1; then
-            npm install -g @anthropic-ai/claude-code@latest >/tmp/deepseek-vps-install.log 2>&1
-          fi
-          sandbox="/tmp/deepseek-vps-analysis-${GITHUB_RUN_ID}"
-          rm -rf "$sandbox" && mkdir -p "$sandbox"
-          cp /tmp/deepseek-vps-context.txt "$sandbox/context.txt"
-          cd "$sandbox"
-          export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
-          export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
-          export ANTHROPIC_MODEL="$DEEPSEEK_VPS_MODEL"
-          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_VPS_MODEL"
-          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_VPS_MODEL"
-          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_VPS_MODEL"
-          unset ANTHROPIC_API_KEY || true
-          cat > prompt.txt <<EOF
-          You are DEEPSEEK acting only as a bounded VPS health summariser.
-          Requested action: ${ACTION}; deterministic return code: ${ACTION_RC}.
-          Read ONLY context.txt in this temporary sandbox. Summarise whether the service appears healthy, whether the requested
-          action succeeded, and any concrete follow-up needed. Do not request or infer secrets. Do not inspect paths outside
-          this sandbox and do not suggest bypassing tests, wallet/signing controls, LIVE risk gates or sudo restrictions.
-          Keep the answer under 700 characters and plain text.
-          EOF
-          claude -p --permission-mode plan --max-turns 2 --output-format text \
-            "$(cat prompt.txt)\n\n$(cat context.txt)" > analysis.txt 2> error.txt
-          cp analysis.txt /tmp/deepseek-vps-analysis.txt
-          cp error.txt /tmp/deepseek-vps-error.txt
-          cd /
-          rm -rf "$sandbox"
+          PYTHONDONTWRITEBYTECODE=1 "$DEEPSEEK_VPS_VENV/bin/python" - <<'PY'
+          import os, pathlib
+          from learnerbot.ai_council_http_patch import call_provider
+
+          context = pathlib.Path('/tmp/deepseek-vps-context.txt').read_text(encoding='utf-8', errors='replace')
+          task = pathlib.Path('/tmp/deepseek-vps-task.txt').read_text(encoding='utf-8', errors='replace').strip()[:1200]
+          prompt = '\n'.join([
+              'You are DEEPSEEK acting only as a bounded VPS health analyst.',
+              'GitHub source SHA: ' + os.environ.get('SOURCE_SHA', ''),
+              'Requested VPS action: ' + os.environ.get('ACTION', 'inspect'),
+              'Deterministic action return code: ' + os.environ.get('ACTION_RC', ''),
+              'Optional user task: ' + (task or 'Summarise service health and concrete operational warnings.'),
+              '',
+              'Use ONLY the sanitised context below. Do not request or infer secrets.',
+              'Do not inspect paths outside this supplied context. Do not propose root shells, arbitrary sudo,',
+              'wallet/signing/private-key access, arbitrary deployment SHAs, or LIVE/ARMED/risk-gate bypass.',
+              'Report whether the service appears healthy, whether the requested action succeeded, and concrete follow-up.',
+              'Start exactly with: 🔴 AGENT: DEEPSEEK',
+              '',
+              'SANITISED VPS CONTEXT:',
+              context,
+          ])
+          rc, out, err = call_provider('deepseek', prompt)
+          out = str(out or '').strip()
+          if out and not out.startswith('🔴 AGENT: DEEPSEEK'):
+              out = '🔴 AGENT: DEEPSEEK\n\n' + out
+          pathlib.Path('/tmp/deepseek-vps-analysis.txt').write_text(out, encoding='utf-8')
+          pathlib.Path('/tmp/deepseek-vps-error.txt').write_text(str(err or ''), encoding='utf-8')
+          pathlib.Path('/tmp/deepseek-vps-provider-rc.txt').write_text(str(int(rc)), encoding='utf-8')
+          raise SystemExit(0 if int(rc) == 0 and out else 1)
+          PY
 
       - name: Publish sanitised DeepSeek VPS result to ai-reviews
+        if: always() && steps.meta.outputs.source_sha != ''
         env:
           GH_TOKEN: ${{ github.token }}
           ACTION: ${{ steps.meta.outputs.action }}
           ACTION_RC: ${{ steps.execute.outputs.rc }}
           TARGET_SHA: ${{ steps.execute.outputs.target_sha }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
-          DEEPSEEK_OUTCOME: ${{ steps.deepseek.outcome }}
+          RUN_ID: ${{ github.run_id }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY' > /tmp/deepseek-vps-result.json
-          import json,os,pathlib,re,time
-          def read(path,limit):
+          "$DEEPSEEK_VPS_VENV/bin/python" - <<'PY' > /tmp/deepseek-vps-result.json
+          import json, os, pathlib, re, time
+
+          def read(path, limit):
               p=pathlib.Path(path)
               return p.read_text(encoding='utf-8',errors='replace')[-limit:] if p.exists() else ''
+
           after=read('/tmp/deepseek-vps-after.txt',12000)
           action_tail=read('/tmp/deepseek-vps-action.txt',5000)
-          analysis=read('/tmp/deepseek-vps-analysis.txt',1200).strip()
+          analysis=read('/tmp/deepseek-vps-analysis.txt',1800).strip()
+          error=read('/tmp/deepseek-vps-error.txt',900).strip()
+          provider_rc_text=read('/tmp/deepseek-vps-provider-rc.txt',20).strip()
+          try:
+              provider_rc=int(provider_rc_text)
+          except Exception:
+              provider_rc=999
           if not analysis:
-              analysis=read('/tmp/deepseek-vps-error.txt',800).strip() or 'DeepSeek analysis unavailable; deterministic VPS result is still recorded.'
-          analysis=re.sub(r'(?i)(api[_ -]?key|authorization|bearer|token)[^\n]*','[REDACTED]',analysis)
+              analysis='🔴 AGENT: DEEPSEEK\n\nDeepSeek analysis unavailable: '+(error or 'provider call failed')
+          analysis=re.sub(r'(?i)(api[_ -]?key|private[_ -]?key|authorization|bearer|token)[^\n]*','[REDACTED]',analysis)
           sha=''
           m=re.search(r'(?m)^sha:\s*([0-9a-f]{40})\s*$',after)
-          if m: sha=m.group(1)
-          rc=int(os.environ.get('ACTION_RC') or 999)
+          if m:
+              sha=m.group(1)
+          action_rc=int(os.environ.get('ACTION_RC') or 999)
+          status='SUCCESS' if action_rc==0 and provider_rc==0 else 'FAILED'
           out={
-              'schema_version':1,
+              'schema_version':2,
               'provider':'deepseek',
               'generated_epoch':int(time.time()),
               'source_commit':os.environ.get('SOURCE_SHA','')[:40],
+              'workflow_run_id':int(os.environ.get('RUN_ID') or 0),
               'action':os.environ.get('ACTION','inspect'),
-              'status':'SUCCESS' if rc==0 else 'FAILED',
-              'action_return_code':rc,
+              'status':status,
+              'action_return_code':action_rc,
+              'provider_return_code':provider_rc,
               'target_sha':os.environ.get('TARGET_SHA','')[:40],
               'deployed_sha':sha,
               'service_active':bool(re.search(r'Active:\s+active \(running\)',after,re.I)),
-              'deepseek_analysis_available':os.environ.get('DEEPSEEK_OUTCOME')=='success',
-              'deepseek_analysis':analysis[:1200],
+              'deepseek_analysis_available':provider_rc==0 and bool(read('/tmp/deepseek-vps-analysis.txt',1800).strip()),
+              'deepseek_analysis':analysis[:1800],
               'sanitised_action_tail':action_tail[-2500:],
+              'github_to_vps_link':True,
+              'self_hosted_runner':True,
               'security':{
                   'root_shell':False,
                   'arbitrary_sudo':False,
                   'wallet_or_private_key_access':False,
                   'arbitrary_deploy_sha':False,
                   'deploy_current_main_via_restricted_wrapper_only':True,
+                  'live_or_risk_bypass':False,
               },
           }
           print(json.dumps(out,indent=2,sort_keys=True))
           PY
-          gh auth setup-git
-          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
-          rm -rf /tmp/deepseek-vps-ai-reviews
-          git worktree add --detach /tmp/deepseek-vps-ai-reviews origin/ai-reviews
-          mkdir -p /tmp/deepseek-vps-ai-reviews/vps/deepseek
-          cp /tmp/deepseek-vps-result.json /tmp/deepseek-vps-ai-reviews/vps/deepseek/latest.json
-          cd /tmp/deepseek-vps-ai-reviews
-          git config user.name 'DeepSeek'
-          git config user.email 'deepseek-agent@users.noreply.github.com'
-          git add vps/deepseek/latest.json
-          if ! git diff --cached --quiet; then
-            git commit -m $'Record bounded DeepSeek VPS result\n\nAI-Agent: DEEPSEEK'
-            git fetch origin ai-reviews
-            git rebase origin/ai-reviews
-            git push origin HEAD:ai-reviews
+
+          api="repos/${GITHUB_REPOSITORY}/contents/vps/deepseek/latest.json"
+          existing_sha=''
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" > /tmp/deepseek-vps-existing.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s /tmp/deepseek-vps-existing.json ]]; then
+            existing_sha="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/deepseek-vps-existing.json')).get('sha') or '')
+          PY
+            )"
           fi
+          python3 - "$existing_sha" <<'PY' > /tmp/deepseek-vps-put.json
+          import base64, json, sys
+          raw=open('/tmp/deepseek-vps-result.json','rb').read()
+          out={
+              'message':'Record bounded DeepSeek VPS result\n\nAI-Agent: DEEPSEEK',
+              'content':base64.b64encode(raw).decode(),
+              'branch':'ai-reviews',
+          }
+          if sys.argv[1]:
+              out['sha']=sys.argv[1]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/deepseek-vps-put.json >/dev/null
 
       - name: Publish human-visible result summary
         if: always()
@@ -242,10 +294,19 @@ jobs:
             echo '## 🔴 AGENT: DEEPSEEK'
             echo
             echo "VPS action: **${{ steps.meta.outputs.action }}**"
-            echo "Return code: **${{ steps.execute.outputs.rc }}**"
+            echo "Action return code: **${{ steps.execute.outputs.rc }}**"
             echo "Source SHA: \`${{ steps.meta.outputs.source_sha }}\`"
+            if [[ -s /tmp/deepseek-vps-provider-rc.txt ]]; then
+              echo "DeepSeek provider return code: **$(cat /tmp/deepseek-vps-provider-rc.txt)**"
+            fi
             if [[ -s /tmp/deepseek-vps-analysis.txt ]]; then
               echo
               cat /tmp/deepseek-vps-analysis.txt
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated DeepSeek VPS environment
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$DEEPSEEK_VPS_VENV"
