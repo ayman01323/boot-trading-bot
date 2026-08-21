@@ -5,6 +5,7 @@ from . import ai_ops_status as _status
 from . import telegram_ai_ops_patch as _tgops
 from . import telegram_ai_reports_menu_patch as _menu
 from . import telegram_four_agent_strategy_patch as _strategy4
+from .ai_agent_identity import agent_label
 
 PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
 _DISPLAY_ORDER = ("gpt", "gemini", "copilot", "claude", "deepseek")
@@ -88,10 +89,9 @@ def _five_complete(state: dict) -> bool:
 
 
 def _five_lines(state: dict) -> str:
-    return (
-        f"GPT {_icon(_v(state,'gpt'))} {_v(state,'gpt')} | Gemini {_icon(_v(state,'gemini'))} {_v(state,'gemini')}\n"
-        f"Copilot {_icon(_v(state,'copilot'))} {_v(state,'copilot')} | Claude {_icon(_v(state,'claude'))} {_v(state,'claude')}\n"
-        f"DeepSeek {_icon(_v(state,'deepseek'))} {_v(state,'deepseek')}"
+    return "\n".join(
+        f"{agent_label(name)} {_icon(_v(state, name))} {_v(state, name)}"
+        for name in _DISPLAY_ORDER
     )
 
 
@@ -110,7 +110,11 @@ def transition_messages_five_agent(previous: dict, current: dict) -> list[str]:
         replaced.append(text)
     messages = replaced
     if _five_complete(cs) and not _five_complete(ps):
-        complete = "✅ FIVE STRATEGY AGENTS COMPLETE\nGPT ✅  Gemini ✅  Copilot ✅  Claude ✅  DeepSeek ✅\nStrategy master adjudication is available or starting."
+        complete = (
+            "✅ FIVE STRATEGY AGENTS COMPLETE\n"
+            + "\n".join(f"{agent_label(name)} ✅" for name in _DISPLAY_ORDER)
+            + "\nStrategy master adjudication is available or starting."
+        )
         insert_at = next((i for i,t in enumerate(messages) if str(t).startswith("🧠 GPT MASTER STRATEGY DECISION")), len(messages))
         messages.insert(insert_at, complete)
     return messages
@@ -119,14 +123,15 @@ def transition_messages_five_agent(previous: dict, current: dict) -> list[str]:
 def strategy_text_five_agent(state: dict) -> str:
     s = (state or {}).get("strategy") or {}
     if not s.get("available"):
-        return "<b>🔬 FIVE-AGENT STRATEGY REVIEW</b>\n\nWaiting for GPT + Gemini + Copilot + Claude + DeepSeek strategy reports."
+        labels = "\n".join(agent_label(name) for name in _DISPLAY_ORDER)
+        return "<b>🔬 FIVE-AGENT STRATEGY REVIEW</b>\n\n" + labels + "\n\nWaiting for the first five-agent strategy cycle."
     counts = s.get("decision_counts") or {}
     lines = [
         "<b>🔬 FIVE-AGENT STRATEGY REVIEW</b>", "",
         f"Cycle: <code>{_tgops._safe(s.get('cycle_id'),120)}</code>",
     ]
-    for label,name in (("GPT","gpt"),("Gemini","gemini"),("Copilot","copilot"),("Claude","claude"),("DeepSeek","deepseek")):
-        lines.append(f"{label}: {_icon(_v(s,name))} <b>{_tgops._safe(_v(s,name))}</b>")
+    for name in _DISPLAY_ORDER:
+        lines.append(f"{agent_label(name)}: {_icon(_v(s,name))} <b>{_tgops._safe(_v(s,name))}</b>")
     lines.append(f"All five complete: <b>{'YES' if _five_complete(s) else 'NO'}</b>")
     if s.get("master_decision_available"):
         lines += ["", f"ACCEPT {counts.get('ACCEPT',0)} | REJECT {counts.get('REJECT',0)} | DEFER {counts.get('DEFER',0)}"]
