@@ -57,6 +57,16 @@ def _needs_web_search(prompt: str) -> bool:
     return any(re.search(pattern, question, flags=re.IGNORECASE) for pattern in _FRESH_PATTERNS)
 
 
+def _web_models(env: dict[str, str]) -> list[str]:
+    configured = str(env.get("OPENAI_COUNCIL_MODEL") or "gpt-5.6-terra").strip()
+    fallback = str(env.get("OPENAI_WEB_MODEL") or "gpt-5.4").strip()
+    out: list[str] = []
+    for model in (configured, fallback):
+        if model and model not in out:
+            out.append(model)
+    return out
+
+
 def _call_openai(prompt: str, env: dict[str, str]) -> tuple[int, str, str]:
     if not _needs_web_search(prompt):
         return _BASE_OPENAI(prompt, env)
@@ -65,30 +75,38 @@ def _call_openai(prompt: str, env: dict[str, str]) -> tuple[int, str, str]:
     if not key:
         return _BASE_OPENAI(prompt, env)
 
-    model = str(env.get("OPENAI_COUNCIL_MODEL") or "gpt-5.6-terra").strip()
     live_prompt = str(prompt or "") + """
 
 LIVE INFORMATION RULE:
 This question depends on fresh public information. Use the web search tool before answering. Base time-sensitive claims on the search results. Answer directly as PasPuss AI. Do not tell the user that you lack internet access when the search succeeds, and do not mention the internal search/tool process.
 """
 
-    status, body, raw, _headers = _http._http_json(
-        "https://api.openai.com/v1/responses",
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        payload={
-            "model": model,
-            "input": live_prompt,
-            "max_output_tokens": 2400,
-            "tools": [{"type": "web_search_preview", "search_context_size": "medium"}],
-            "tool_choice": "required",
-        },
-    )
-    text = _http._openai_text(body)
-    if 200 <= status < 300 and text:
-        return 0, text, ""
+    last_status = 0
+    last_body = None
+    last_raw = ""
+    for model in _web_models(env):
+        status, body, raw, _headers = _http._http_json(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            payload={
+                "model": model,
+                "input": live_prompt,
+                "max_output_tokens": 2400,
+                "tools": [{"type": "web_search_preview", "search_context_size": "medium"}],
+                "tool_choice": "required",
+            },
+        )
+        text = _http._openai_text(body)
+        if 200 <= status < 300 and text:
+            return 0, text, ""
+        last_status, last_body, last_raw = status, body, raw
+        # Retry with the documented web model only for request/model/tool compatibility
+        # errors. Quota/auth/network/server failures should not be multiplied.
+        if status not in {400, 404, 422}:
+            break
 
     # Preserve a useful, honest PasPuss response if the hosted search service itself
     # is temporarily unavailable. Never invent a current value.
@@ -100,7 +118,7 @@ A live lookup could not be completed for this request. Do not invent a current v
     rc, out, err = _BASE_OPENAI(fallback_prompt, env)
     if rc == 0 and out:
         return rc, out, err
-    return status or rc or 92, "", _http._error_detail(status, body, raw, env)
+    return last_status or rc or 92, "", _http._error_detail(last_status, last_body, last_raw, env)
 
 
 def install() -> None:
