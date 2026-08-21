@@ -133,6 +133,7 @@ def install():
 
 install()
 
-# Final AI Strategy presentation uses four independent reviewers (GPT, Gemini,
-# Copilot and Claude) and waits for all four before declaring completion.
+# Legacy compatibility layer is installed first, then the final DeepSeek patch
+# expands the presentation and health status to five independent reviewers.
 from . import telegram_four_agent_strategy_patch  # noqa: E402,F401
+from . import telegram_five_agent_patch  # noqa: E402,F401
