@@ -75,3 +75,10 @@ def test_four_agent_health_warns_but_does_not_stop_trading() -> None:
     assert 'cycle continued with {n}/4 valid report(s)' in text
     assert 'AI failure never disables the trading engine' in text
     assert 'selected MASTER → GPT → Claude → Gemini → other available agent' in text
+
+
+def test_documented_contract_matches_runtime_resilience_and_safety() -> None:
+    text = (ROOT / "docs/AI_MASTER_CONTROL.md").read_text(encoding="utf-8")
+    assert 'selected MASTER -> GPT -> Claude -> Gemini -> other available agent' in text
+    assert 'One valid independent report is sufficient' in text
+    assert 'AI health never disables LIVE trading' in text
