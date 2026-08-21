@@ -60,6 +60,7 @@ def test_deepseek_vps_access_is_manual_restricted_and_current_main_only() -> Non
     for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY"):
         assert forbidden not in text
 
+    # Regression guard: secret vocabulary in a defensive sanitiser is not secret access.
     # Secret-recovery phrases are intentionally present only in the sanitiser so
     # matching VPS output is redacted before it reaches the model.  Do not treat
     # those defensive regex literals themselves as a security violation.
