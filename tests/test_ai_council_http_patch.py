@@ -11,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_http_provider_patch_is_installed_before_friendly_ui() -> None:
     source = (ROOT / "learnerbot" / "telegram_solana_force_exit_patch.py").read_text(encoding="utf-8")
     assert "ai_council_http_patch" in source
+    assert source.index("AI_COUNCIL_RUNTIME_ENV") < source.index("ai_council_http_patch")
+    assert '"/var/tmp/ai_council_runtime.env"' in source
     assert source.index("ai_council_http_patch") < source.index("telegram_ai_council_friendly_patch")
     assert council.call_provider is http_patch.call_provider
 
@@ -144,8 +146,11 @@ def test_provider_error_redacts_secret() -> None:
 
 def test_runtime_secret_workflow_never_prints_credential_file() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ai-council-runtime-secrets.yml").read_text(encoding="utf-8")
-    assert "/var/tmp/boot/ai_council_runtime.env" in workflow
-    assert "chmod 600" in workflow
+    isolated = (ROOT / ".github" / "workflows" / "deploy-current-main-pr-isolated.yml").read_text(encoding="utf-8")
+    for body in (workflow, isolated):
+        assert "/var/tmp/ai_council_runtime.env" in body
+        assert "/var/tmp/boot/ai_council_runtime.env" not in body
+        assert "chmod 600" in body
     assert 'cat "$target"' not in workflow
     assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in workflow
     assert "GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}" in workflow
