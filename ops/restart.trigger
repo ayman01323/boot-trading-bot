@@ -1,1 +1,1 @@
-2026-08-22T21:54:30Z deploy secure Etherscan runtime-bridge fix
+2026-08-22T22:20:00Z deploy Alchemy-only EVM historical provider
