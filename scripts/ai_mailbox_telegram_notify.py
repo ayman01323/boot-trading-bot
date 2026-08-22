@@ -8,8 +8,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-_ALLOWED_AGENTS = {"claude", "gemini", "deepseek", "copilot"}
-_ALLOWED_KINDS = {"initiation", "reply"}
+_ALLOWED_AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
+_ALLOWED_KINDS = {"initiation", "reply", "delivery", "api_reply"}
 _MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 _STATUS_RE = re.compile(r"^[A-Z_]{2,32}$")
 
@@ -35,11 +35,12 @@ def status_from_file(path: str | None, fallback: str) -> str:
     return status if _STATUS_RE.fullmatch(status) else "UNKNOWN"
 
 
-def build_message(agent: str, kind: str, message_id: str, status: str) -> str:
+def build_message(agent: str, kind: str, message_id: str, status: str, identity: str = "") -> str:
     agent = str(agent or "").strip().lower()
     kind = str(kind or "").strip().lower()
     message_id = str(message_id or "").strip()
     status = str(status or "UNKNOWN").strip().upper()
+    identity = str(identity or "").strip().upper()
     if agent not in _ALLOWED_AGENTS:
         raise ValueError("unsupported agent")
     if kind not in _ALLOWED_KINDS:
@@ -49,20 +50,27 @@ def build_message(agent: str, kind: str, message_id: str, status: str) -> str:
     if not _STATUS_RE.fullmatch(status):
         status = "UNKNOWN"
 
-    icon = {"claude": "🟠", "gemini": "🟢", "deepseek": "🔴", "copilot": "🔵"}[agent]
+    icon = {"gpt": "⚪", "claude": "🟠", "gemini": "🟢", "deepseek": "🔴", "copilot": "🔵"}[agent]
     label = agent.upper()
-    if kind == "initiation":
-        headline = f"{icon} {label} → GPT MESSAGE"
-        action = "New agent message received for GPT."
+    if kind == "delivery":
+        headline = f"📨 GPT → {icon} {label} MESSAGE DELIVERED"
+        action = "Event signal fired; the target responder can process the new mailbox request without polling."
+    elif kind == "initiation":
+        headline = f"{icon} {label} AGENT → GPT MESSAGE"
+        action = "A message authored through the agent mailbox is ready for GPT."
+    elif kind == "api_reply":
+        headline = f"{icon} {label} API RESPONDER → GPT REPLY"
+        action = "Stateless API response received. This is not the persistent/interactive agent."
     else:
-        headline = f"{icon} {label} → GPT REPLY"
-        action = "Agent reply is ready for GPT."
+        headline = f"{icon} {label} API → GPT REPLY"
+        action = "Provider reply is ready for GPT."
+    identity_line = f"\nIdentity: {identity}" if identity else ""
     return (
         f"{headline}\n"
         f"Message ID: {message_id}\n"
-        f"Status: {status}\n"
+        f"Status: {status}{identity_line}\n"
         f"{action}\n"
-        f"Tell GPT: check {agent} mailbox"
+        "Strategy Room delivery notifications: ON"
     )
 
 
@@ -74,19 +82,15 @@ def send_telegram(token: str, chat_id: str, text: str) -> None:
     if not re.fullmatch(r"-?[0-9]{5,20}", chat_id):
         raise ValueError("TELEGRAM_MASTER_CHAT_ID is not configured")
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps(
-        {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_notification": False,
-            "protect_content": False,
-            "link_preview_options": {"is_disabled": True},
-        }
-    ).encode("utf-8")
+    payload = json.dumps({
+        "chat_id": chat_id,
+        "text": text,
+        "disable_notification": False,
+        "protect_content": False,
+        "link_preview_options": {"is_disabled": True},
+    }).encode("utf-8")
     request = urllib.request.Request(
-        url,
-        data=payload,
-        method="POST",
+        url, data=payload, method="POST",
         headers={"Content-Type": "application/json", "User-Agent": "boot-ai-mailbox-notify"},
     )
     try:
@@ -106,18 +110,17 @@ def main() -> int:
     parser.add_argument("--kind", required=True, choices=sorted(_ALLOWED_KINDS))
     parser.add_argument("--message-id", required=True)
     parser.add_argument("--status", default="UNKNOWN")
+    parser.add_argument("--identity", default="")
     parser.add_argument("--mailbox-file", default="")
     parser.add_argument("--skip-if-unconfigured", action="store_true")
     args = parser.parse_args()
-
     token = str(os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
     chat_id = str(os.environ.get("TELEGRAM_MASTER_CHAT_ID") or "").strip()
     if args.skip_if_unconfigured and (not token or not chat_id):
         print("telegram_configured=false")
         return 0
-
     status = status_from_file(args.mailbox_file or None, args.status)
-    text = build_message(args.agent, args.kind, args.message_id, status)
+    text = build_message(args.agent, args.kind, args.message_id, status, args.identity)
     send_telegram(token, chat_id, text)
     print("telegram_configured=true")
     print("telegram_sent=true")

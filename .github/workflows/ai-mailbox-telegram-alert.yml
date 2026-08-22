@@ -5,6 +5,9 @@ on:
     workflows:
       - Claude Mailbox Signal
       - Gemini Mailbox Signal
+      - GPT Mailbox Signal
+      - Claude API Mailbox Signal
+      - AI Mailbox Provider Signal
       - AI Mailbox Provider Relay
     types: [completed]
 
@@ -31,7 +34,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Send metadata-only Telegram MASTER alert
+      - name: Send identity-aware Strategy Room mailbox alert
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -61,8 +64,10 @@ jobs:
         run: |
           {
             echo
+            echo 'Strategy Room delivery notifications: ON for GPT↔Claude and GPT↔Gemini/DeepSeek/Copilot mailbox events.'
+            echo 'Persistent-agent and stateless-API identities are labelled separately.'
             echo 'Event-driven only: no schedule and no polling.'
-            echo 'Telegram receives metadata only: agent, message ID, status and GPT-attention prompt.'
-            echo 'No AI provider API is called by this workflow.'
+            echo 'Telegram receives metadata only: agent, direction/identity, message ID and status.'
+            echo 'No AI provider API is called by this alert workflow.'
             echo 'No deploy, trading, wallet/signing, LIVE/ARMED, risk/capital, runtime secret-file or sudo authority.'
           } >> "$GITHUB_STEP_SUMMARY"
