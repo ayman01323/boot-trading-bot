@@ -5,10 +5,17 @@ on:
     paths:
       - '.github/workflows/ai-mailbox-telegram-alert.yml'
       - '.github/workflows/ai-mailbox-telegram-alert-ci.yml'
+      - '.github/workflows/claude-api-mailbox-signal.yml'
+      - '.github/workflows/gpt-git-mailbox-bridge.yml'
       - 'scripts/ai_mailbox_telegram_notify.py'
       - 'scripts/ai_mailbox_telegram_event.py'
+      - 'scripts/claude_git_mailbox_bridge.py'
+      - 'scripts/gpt_git_mailbox_bridge.py'
+      - 'scripts/sibot_leader_gate_report.py'
       - 'tests/test_ai_mailbox_telegram_notify.py'
       - 'tests/test_ai_mailbox_telegram_event.py'
+      - 'tests/test_claude_git_mailbox_bridge.py'
+      - 'tests/test_gpt_git_mailbox_bridge.py'
 
 permissions:
   contents: read
@@ -24,7 +31,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Run focused tests in isolated Python 3.11 venv
+      - name: Run focused identity, notification and diagnostic tests
         shell: bash
         run: |
           set -euo pipefail
@@ -36,9 +43,27 @@ jobs:
           "$venv/bin/python" -m py_compile \
             scripts/ai_mailbox_telegram_notify.py \
             scripts/ai_mailbox_telegram_event.py \
+            scripts/claude_git_mailbox_bridge.py \
+            scripts/gpt_git_mailbox_bridge.py \
+            scripts/sibot_leader_gate_report.py \
             tests/test_ai_mailbox_telegram_notify.py \
-            tests/test_ai_mailbox_telegram_event.py
+            tests/test_ai_mailbox_telegram_event.py \
+            tests/test_claude_git_mailbox_bridge.py \
+            tests/test_gpt_git_mailbox_bridge.py
           "$venv/bin/python" -m pytest -q \
             tests/test_ai_mailbox_telegram_notify.py \
-            tests/test_ai_mailbox_telegram_event.py
+            tests/test_ai_mailbox_telegram_event.py \
+            tests/test_claude_git_mailbox_bridge.py \
+            tests/test_gpt_git_mailbox_bridge.py
+          python3 - <<'PY'
+          from pathlib import Path
+          text=Path('scripts/sibot_leader_gate_report.py').read_text(encoding='utf-8')
+          assert 'SIBOT_GATE_SNAPSHOT' in text
+          assert 'PRAGMA query_only=ON' in text
+          assert 'SOURCE_MISMATCH' in text and 'SHALLOW_COVERAGE' in text
+          assert 'min_closed_trades' in text
+          # Diagnostic must report the setting, not modify strategy thresholds.
+          assert 'set_user_setting' not in text
+          assert 'UPDATE sibot_settings' not in text
+          PY
           rm -rf "$venv"
