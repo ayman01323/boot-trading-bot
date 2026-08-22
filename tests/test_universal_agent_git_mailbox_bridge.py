@@ -156,11 +156,14 @@ class UniversalAgentMailboxTests(unittest.TestCase):
             self.assertIn("AI_AGENT_MESSAGING.md", text, path)
             self.assertIn("Delivery is automatic and event-driven", text, path)
             self.assertIn("does **not** poll", text, path)
+            self.assertIn("Example send:", text, path)
+            self.assertIn("AI_BUS", text, path)
         guide = Path("AI_AGENT_MESSAGING.md").read_text()
         self.assertIn("Automatic recipient wake-up", guide)
         self.assertIn("immediately invokes only the addressed provider", guide)
         self.assertIn("No recipient has to poll", guide)
         self.assertIn("not cryptographic proof of model identity", guide)
+        self.assertIn("Example, GPT to Claude:", guide)
 
 
 if __name__ == "__main__":

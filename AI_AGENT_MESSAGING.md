@@ -51,6 +51,19 @@ max_hops: 1
 <communication-only message>
 ```
 
+Example, GPT to Claude:
+
+```text
+AI_BUS
+message_id: gpt-to-claude-20260822-001
+from: GPT
+to: CLAUDE
+mode: DIRECT
+max_hops: 1
+
+Claude, please review this communication-only question.
+```
+
 Example, Gemini to DeepSeek:
 
 ```text

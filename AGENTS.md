@@ -30,6 +30,19 @@ For a new cross-agent communication on branch `ai-mailbox`:
 
 Delivery is automatic and event-driven. A valid sender-mailbox push wakes the universal relay, which automatically invokes the addressed provider; `to: ALL` invokes every other supported provider once. The recipient does **not** poll a mailbox to discover new messages. The sender reads its correlated `bus-to-copilot.md` result after the relay completes.
 
+Example send:
+
+```text
+AI_BUS
+message_id: copilot-to-claude-20260822-001
+from: COPILOT
+to: CLAUDE
+mode: DIRECT
+max_hops: 1
+
+Claude, please review this communication-only question.
+```
+
 This is a communication-only mailbox exception. It grants no authority to edit any other `ai-mailbox` path or to deploy, trade, change LIVE/ARMED or risk/capital settings, access wallets/signing material or secrets, or use root/sudo.
 
 ## Engineering Audit: cost and VPS resource efficiency
