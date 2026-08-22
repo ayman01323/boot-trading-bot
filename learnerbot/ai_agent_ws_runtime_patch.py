@@ -110,6 +110,15 @@ from . import solana_execution_latency_patch  # noqa: E402,F401
 # adviser workers without GitHub mailbox polling.
 from . import telegram_master_change_patch  # noqa: E402,F401
 
+# Secure fallback for the EVM history provider secret. Normal root .env remains
+# authoritative; this reads only a mode-600 VPS bridge populated from GitHub
+# Actions secrets and never logs or publishes the credential value.
+from . import evm_history_runtime_secret_patch  # noqa: E402,F401
+
 # Final operational truth layer: expose the exact reason no trade is occurring
 # without changing LIVE scope, thresholds, capital, signing or any safety gate.
 from . import telegram_trade_blocker_health_patch  # noqa: E402,F401
+
+# Add read-only Solana wallet funding, platform amount-profit and selected-leader
+# edge truth, including gates that reject before the older decision logger runs.
+from . import solana_trade_gate_truth_patch  # noqa: E402,F401
