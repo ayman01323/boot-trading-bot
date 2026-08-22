@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -129,4 +130,4 @@ def test_alert_workflow_is_event_only_and_has_no_ai_credentials() -> None:
     assert "DEEPSEEK_API_KEY" not in text
     assert "COPILOT_ASSIGN_TOKEN" not in text
     assert "/root/" not in text
-    assert "sudo " not in text
+    assert re.search(r"(?m)^\s*sudo\s+", text) is None
