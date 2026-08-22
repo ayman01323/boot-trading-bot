@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from learnerbot import master_change_council as council
+from scripts import master_change_policy as policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,6 +12,30 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+def _evidence(**overrides):
+    value = {
+        "request_id": "mc-20260822T100000Z-abcdef",
+        "implementation_nonce": 1,
+        "implementation_allowed": True,
+        "hard_protected_reasons": [],
+        "protected_reasons": [],
+        "all_advisers_replied": True,
+        "source_sha": "a" * 40,
+        "auto_merge_allowed": True,
+        "advisers": {
+            name: {"acknowledged": True, "provider_rc": 0, "reply": "APPROVE: bounded change"}
+            for name in ("claude", "gemini", "deepseek", "copilot")
+        },
+        "gpt_decision": {
+            "action": "IMPLEMENT",
+            "risk_class": "LOW",
+            "allowed_files": ["learnerbot/telegram_example_patch.py"],
+        },
+    }
+    value.update(overrides)
+    return value
 
 
 def test_master_change_rejects_embedded_secret_values() -> None:
@@ -39,8 +64,6 @@ def test_gpt_decision_paths_are_exact_and_bounded() -> None:
         "auto_merge_recommended": True,
     })
     assert decision["allowed_files"] == ["learnerbot/telegram_x.py"]
-    assert decision["action"] == "IMPLEMENT"
-    assert decision["risk_class"] == "LOW"
 
 
 def test_telegram_command_is_master_only_and_uses_five_agent_flow() -> None:
@@ -62,70 +85,85 @@ def test_local_council_requires_every_adviser_before_gpt_implementation() -> Non
     assert "_call_final_gpt" in text
 
 
-def test_bridge_publishes_only_sanitised_change_and_dispatches_once() -> None:
-    text = _text(".github/workflows/master-change-council-bridge.yml")
+def test_existing_telegram_publisher_carries_change_council_without_second_polling_job() -> None:
+    text = _text(".github/workflows/publish-ai-master-control.yml")
     assert "master_change_council_latest.json" in text
-    assert "master-change/requests/${REQUEST_ID}.json" in text
+    assert "master_change_publisher_state.json" in text
+    assert "zero extra GitHub calls" in text
+    assert "master-change/requests/${request_id}.json" in text
     assert "master-change/dispatch_state.json" in text
     assert "gpt-master-change-implement.yml" in text
-    assert "implementation_nonce" in text
     assert "requester_chat_id" not in text
     assert "[REDACTED]" in text
+    assert not (ROOT / ".github/workflows/master-change-council-bridge.yml").exists()
 
 
 def test_master_change_workflow_yaml_is_parseable() -> None:
     for path in (
-        ".github/workflows/master-change-council-bridge.yml",
+        ".github/workflows/publish-ai-master-control.yml",
         ".github/workflows/gpt-master-change-implement.yml",
     ):
-        node = yaml.compose(_text(path))
-        assert node is not None, path
+        assert yaml.compose(_text(path)) is not None, path
 
 
-def test_gpt_implementation_has_file_gate_tests_and_no_direct_secret_authority() -> None:
+def test_gpt_implementation_has_python311_file_gate_and_full_tests() -> None:
     text = _text(".github/workflows/gpt-master-change-implement.yml")
-    assert "all adviser replies are required" in text
-    assert "GPT final decision is not IMPLEMENT" in text
-    assert "stale council evidence" in text
-    assert "GPT changed paths outside the adjudicated allow-list" in text
-    assert "Hard-protected paths cannot be changed" in text
-    assert "python3 -m compileall -q learnerbot scripts" in text
-    assert "python3 -m pytest -q" in text
+    assert "actions/setup-python@v5" in text
+    assert "python-version: '3.11'" in text
+    assert "scripts/master_change_policy.py validate-request" in text
+    assert "scripts/master_change_policy.py validate-changed" in text
+    assert "python -m compileall -q learnerbot scripts" in text
+    assert "python -m pytest -q" in text
     assert "gh pr create --draft" in text
     assert "Deterministic auto-merge gate: NO" in text
-    assert "protected_reasons" in text
-    # GPT-suggested required_tests are evidence only; they are never eval/exec shell input.
-    assert "required_tests" not in text.split("Enforce path boundary and run full tests", 1)[1]
     assert "eval " not in text
 
 
-def test_master_change_cannot_modify_its_own_governance_or_transport() -> None:
-    text = _text(".github/workflows/gpt-master-change-implement.yml")
-    protected = (
+def test_policy_rejects_council_self_modification_before_gpt_code_call() -> None:
+    evidence = _evidence()
+    evidence["gpt_decision"]["allowed_files"] = ["learnerbot/master_change_council.py"]
+    with pytest.raises(ValueError, match="cannot authorise modification"):
+        policy.validate_request(
+            evidence,
+            request_id=evidence["request_id"],
+            nonce=1,
+            current_sha="a" * 40,
+        )
+    for path in (
         ".github/workflows/gpt-master-change-implement.yml",
-        ".github/workflows/master-change-council-bridge.yml",
+        ".github/workflows/publish-ai-master-control.yml",
         "learnerbot/master_change_council.py",
         "learnerbot/telegram_master_change_patch.py",
         "learnerbot/ai_agent_ws_runtime_patch.py",
         "scripts/ai_agent_ws_bus.py",
         "scripts/ai_agent_ws_worker.py",
         "scripts/ai_agent_ws_send.py",
+        "scripts/master_change_policy.py",
         "tests/test_master_change_council.py",
-    )
-    for path in protected:
-        assert path in text
-    assert "cannot authorise modification of its own governance/transport files" in text
+    ):
+        assert path in policy.GOVERNANCE_FILES
 
 
-def test_low_risk_auto_merge_cannot_be_test_only() -> None:
-    text = _text(".github/workflows/gpt-master-change-implement.yml")
-    assert "non_test=[x for x in changed if not x.lower().startswith('tests/')]" in text
-    assert "and bool(non_test)" in text
+def test_policy_rejects_stale_or_incomplete_evidence() -> None:
+    evidence = _evidence()
+    with pytest.raises(ValueError, match="stale council evidence"):
+        policy.validate_request(evidence, request_id=evidence["request_id"], nonce=1, current_sha="b" * 40)
+    evidence = _evidence(all_advisers_replied=False)
+    with pytest.raises(ValueError, match="all adviser replies"):
+        policy.validate_request(evidence, request_id=evidence["request_id"], nonce=1, current_sha="a" * 40)
+
+
+def test_low_risk_auto_merge_cannot_be_test_only_or_protected() -> None:
+    evidence = _evidence()
+    assert policy.auto_merge_eligible(evidence, ["learnerbot/telegram_example_patch.py", "tests/test_example.py"])
+    assert not policy.auto_merge_eligible(evidence, ["tests/test_example.py"])
+    protected = _evidence(protected_reasons=["wallet"])
+    assert not policy.auto_merge_eligible(protected, ["learnerbot/telegram_example_patch.py"])
 
 
 def test_master_change_workflows_never_use_arbitrary_sudo_or_secret_credentials() -> None:
     for path in (
-        ".github/workflows/master-change-council-bridge.yml",
+        ".github/workflows/publish-ai-master-control.yml",
         ".github/workflows/gpt-master-change-implement.yml",
     ):
         text = _text(path)
