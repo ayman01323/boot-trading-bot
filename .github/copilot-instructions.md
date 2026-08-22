@@ -129,6 +129,13 @@ Explicitly assess and recommend improvements for:
 
 - **API/model cost** — unnecessary paid GPT/Gemini/Claude/Copilot calls, duplicate reviews/adjudication, excessive provider fan-out, oversized context, unnecessary CLI installs and missing material-change/cache gates;
 - **server bandwidth** — self-hosted workflow cadence, repository checkouts/fetches, repeated npm/pip downloads, RPC/API polling, logs/artifacts and redundant jobs; prefer event-driven, shallow, cached and change-only transfers;
-- **disk usage** — root filesystem use/free space, runner workspaces, caches, logs, databases, worktrees/artifacts and unbounded retention/growth.
+- **disk usage** — root filesystem use/free space, runner workspaces, caches, logs, databases, worktrees/artifacts and unbounded retention/growth;
+- **trade latency and infrastructure economics** — chain-by-chain measured latency and whether a server move has a cost-adjusted trading case.
+
+For every blockchain with observed trades, state the exact measured latency metric and coverage, per-trade latency where available, current-24h p50/p95 versus the preceding six-day same-server baseline, RPC round-trip separately, and seven-day trade share. The preceding six days are the default measured normal. With fewer than five historical measurements, report `INSUFFICIENT DATA`; do not invent a normal latency or substitute expected block time for actual trade latency.
+
+Only attribute execution failures, slippage or realised P&L effects to latency when recorded evidence supports the inference. Finish the infrastructure analysis with `KEEP`, `BENCHMARK`, or `MOVE`. Compare current provider/region/monthly cost with credible alternatives, including alternative region/monthly cost, expected latency improvement, affected trade share and likely trading benefit. Unknown facts remain `UNKNOWN`; alternative prices require a source/date or must be labelled unverified.
+
+Do not recommend a move merely from ping. Require measured chain-weighted trading evidence and cost-benefit. If Solana and EVM materially favour different regions, analyse split infrastructure or chain-specific workers before moving the whole bot.
 
 Host network counters are host-wide and must not be claimed as bot-only traffic without further evidence. Cost recommendations are report-only and must never weaken wallet/signing, LIVE/ARMED, simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce or execution-reconciliation protections. Never automatically delete wallet material, databases or audit evidence.
