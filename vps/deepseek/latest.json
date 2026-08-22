@@ -1,13 +1,13 @@
 {
   "action": "inspect",
   "action_return_code": 0,
-  "deepseek_analysis": "\ud83d\udd34 AGENT: DEEPSEEK\n\nDeepSeek analysis unavailable: 8dbdeb421ad8e36. Hmm important: source SHA d20db34... vs running sha ae1e7cb... Is that a concrete warning? Need be careful: The context \\\"GitHub source SHA: d20db34...\\\" likely requested action from push. VPS context shows running sha ae1e7cb. There is a mismatch. Need report as follow-up: deployed/running commit ae1e7cb does not match push-trigger SHA d20db34; requires deployment/update to align if intended. But maybe \\\"GitHub source SHA\\\" is source of this analysis, not VPS? It says \\\"GitHub source SHA: d20db34...\\\" in prompt. The VPS context branch sha ae1e7cb. So likely mismatch. Need include as warning. Also service running, active, enabled, no tracked changes. Memory 589.8M, peak 740.1M, tasks 24, CPU 10m30. Logs show fast-market-scan mostly zero eligible/auto-events after one direct=1. power-discovery added 27, pools 216, products 7696, auto-products 934, rejected=0, took 229.990",
-  "deepseek_analysis_available": false,
+  "deepseek_analysis": "immediate memory-limit breach visible.\n- CPU usage is active but consistent with a busy Python service.\n- Git branch main is at sha ae1e7cb435635209ec5566ab28dbdeb421ad8e36, while the supplied GitHub source SHA is 1e894ee0ae59d5333363695e401ed57eadf91865. This is a deployed-SHA mismatch and should be investigated.\n- Logs show recurring `[fast-market-scan]` cycles with direct=0 merged=0 eligible=0 auto-events=0 in most recent entries. One cycle at 23:15:42 had direct=1 merged=1 eligible=1 but still auto-events=0. This may indicate low market activity or a scanner effectiveness issue.\n- Logs show a concrete error:\n  `[sibot-solana-positions] FileNotFoundError ... 'sibot_solana_positions.csv.tmp' -> 'sibot_solana_positions.csv'`\n  This is an atomic-rename failure caused by a missing temporary file. It suggests a race, stale state, or interrupted write in the CSVbot auto-export flow.\n- `[power-discovery]` completed with v2-added=27, v3-pools=216, products=7675, auto-products=927, rejected=0, seconds=307.443. No rejection warning, but runtime is long.\n\nConcrete follow-up:\n1. Inspect the `CSVbot/auto/sibot_solana_positions.csv.tmp` generation path and ensure the temporary file is written before the rename. If this repeats, add retry/atomic-write handling.\n2. Confirm whether the deployed SHA `ae1e7cb` is intentional. The inspection context requested SHA `1e894ee`; if GitHub push-triggered, verify the correct commit was checked out.\n3. Continue monitoring `fast-market-scan` zero-result cycles. If they persist beyond normal quiet-market periods, review scanner filters and data-source health.\n4. Keep an eye on memory growth; current level is not alarming, but the 547.3M trend should be watched against the 747.1M peak.\n\nNo secrets, credentials, or out-of-scope paths were accessed.",
+  "deepseek_analysis_available": true,
   "deployed_sha": "ae1e7cb435635209ec5566ab28dbdeb421ad8e36",
-  "generated_epoch": 1787436496,
+  "generated_epoch": 1787437188,
   "github_to_vps_link": true,
   "provider": "deepseek",
-  "provider_return_code": 200,
+  "provider_return_code": 0,
   "sanitised_action_tail": "Inspection only; no VPS mutation requested.\n",
   "schema_version": 2,
   "security": {
@@ -20,8 +20,8 @@
   },
   "self_hosted_runner": true,
   "service_active": true,
-  "source_commit": "d20db34b044753299c6f257cfdb1c36d3ea68de5",
-  "status": "FAILED",
-  "target_sha": "d20db34b044753299c6f257cfdb1c36d3ea68de5",
-  "workflow_run_id": 32601534508
+  "source_commit": "1e894ee0ae59d5333363695e401ed57eadf91865",
+  "status": "SUCCESS",
+  "target_sha": "1e894ee0ae59d5333363695e401ed57eadf91865",
+  "workflow_run_id": 32602048063
 }
