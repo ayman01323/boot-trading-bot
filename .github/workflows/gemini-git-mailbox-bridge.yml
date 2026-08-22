@@ -1,0 +1,144 @@
+name: Gemini Git Mailbox Bridge
+
+on:
+  workflow_run:
+    workflows: [Gemini Mailbox Signal]
+    types: [completed]
+    branches: [ai-mailbox]
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gemini-git-mailbox-bridge.yml'
+      - '.github/workflows/gemini-mailbox-signal.yml'
+      - 'scripts/gemini_git_mailbox_bridge.py'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+
+concurrency:
+  group: gemini-git-mailbox-bridge
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      BUS_VENV: /tmp/gemini-git-mailbox-${{ github.run_id }}
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Check out trusted current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Find unanswered Gemini initiating message
+        id: mailbox
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gemini_git_mailbox_bridge.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --message-output /tmp/gemini-git-mailbox-message.md \
+            > /tmp/gemini-git-mailbox.env
+          cat /tmp/gemini-git-mailbox.env >> "$GITHUB_OUTPUT"
+
+      - name: Build isolated Python environment
+        if: steps.mailbox.outputs.pending == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BUS_VENV"
+          python3 -m venv "$BUS_VENV"
+          "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+
+      - name: Validate bounded GPT-only envelope
+        if: steps.mailbox.outputs.pending == 'true'
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
+            --input /tmp/gemini-git-mailbox-message.md \
+            --output /tmp/unused.md \
+            --preflight > /tmp/gemini-git-mailbox-preflight.env
+          cat /tmp/gemini-git-mailbox-preflight.env >> "$GITHUB_OUTPUT"
+          target="$(grep '^target=' /tmp/gemini-git-mailbox-preflight.env | cut -d= -f2-)"
+          test "$target" = "gpt"
+
+      - name: Route Gemini message to GPT
+        if: steps.mailbox.outputs.pending == 'true'
+        id: route
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_COUNCIL_MODEL: ${{ vars.OPENAI_COUNCIL_MODEL || 'gpt-5.6-terra' }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/gemini-git-mailbox-no-runtime.env
+        shell: bash
+        run: |
+          set +e
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
+            --input /tmp/gemini-git-mailbox-message.md \
+            --output /tmp/gemini-git-mailbox-reply.md \
+            2>/tmp/gemini-git-mailbox-error.txt
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -ne 0 || ! -s /tmp/gemini-git-mailbox-reply.md ]]; then
+            cat > /tmp/gemini-git-mailbox-reply.md <<EOF
+          AI_BUS_REPLY
+          message_id: ${{ steps.mailbox.outputs.message_id }}
+          from: BUS
+          to: GEMINI
+          status: BLOCKED
+          mode: DIRECT
+          provider_calls: 0
+          max_hops: 1
+
+          GPT could not complete this Gemini git-mailbox message. No deployment, trading action, wallet action, runtime change, sudo expansion, or secret access was authorised by this failure.
+          EOF
+          fi
+          exit 0
+
+      - name: Publish GPT reply to fixed Gemini initiating reply path
+        if: steps.mailbox.outputs.pending == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gemini_git_mailbox_bridge.py publish-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --message-id "${{ steps.mailbox.outputs.message_id }}" \
+            --reply-file /tmp/gemini-git-mailbox-reply.md
+
+      - name: Remove isolated Python environment
+        if: always()
+        shell: bash
+        run: rm -rf "$BUS_VENV"
+
+      - name: Publish compact bridge summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Gemini Git Mailbox Bridge'
+            echo
+            echo "Event: **${GITHUB_EVENT_NAME}**"
+            echo "Pending message: **${{ steps.mailbox.outputs.pending || 'false' }}**"
+            echo "Message ID: \`${{ steps.mailbox.outputs.message_id || 'none' }}\`"
+            echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
+            echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
+            echo 'Input: `.github/ai-mailbox/gemini-init-to-gpt.md` on `ai-mailbox`'
+            echo 'Reply: `.github/ai-mailbox/gpt-to-gemini-init.md` on `ai-mailbox`'
+            echo 'No scheduled polling is used.'
+          } >> "$GITHUB_STEP_SUMMARY"
