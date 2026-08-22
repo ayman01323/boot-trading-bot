@@ -1,0 +1,60 @@
+name: Deploy Local AI Agent WebSocket Bus
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/ai_agent_ws_bus.py'
+      - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_agent_ws_send.py'
+      - 'scripts/install_ai_agent_ws_bus.sh'
+      - 'learnerbot/ai_council.py'
+      - 'learnerbot/ai_council_http_patch.py'
+      - 'AI_AGENT_MESSAGING.md'
+      - '.github/workflows/ai-agent-ws-bus-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-local-ai-agent-ws-bus
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Check out trusted main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install and restart local bus
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(id -u)" -eq 0 ]]; then
+            bash scripts/install_ai_agent_ws_bus.sh "$GITHUB_WORKSPACE"
+          elif sudo -n true 2>/dev/null; then
+            sudo -n bash scripts/install_ai_agent_ws_bus.sh "$GITHUB_WORKSPACE"
+          else
+            echo 'Self-hosted runner needs root or passwordless sudo to install systemd services.' >&2
+            exit 1
+          fi
+
+      - name: Verify services without provider calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_root() {
+            if [[ "$(id -u)" -eq 0 ]]; then "$@"; else sudo -n "$@"; fi
+          }
+          run_root systemctl is-active --quiet boot-ai-agent-bus.service
+          for agent in gpt claude gemini deepseek copilot; do
+            run_root systemctl is-active --quiet "boot-ai-agent-worker@${agent}.service"
+          done
+          echo 'Local AI agent WebSocket bus and all recipient workers are active.'
