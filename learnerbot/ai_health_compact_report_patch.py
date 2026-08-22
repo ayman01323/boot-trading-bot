@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 
 from . import ai_agent_health_warning_patch as _health_warning
+from . import ai_agent_health_process_dedupe_patch as _health_dedupe  # noqa: F401
 from . import ai_four_agent_health_patch as _health5
 from . import strategy_room as _strategy_room
 from . import telegram_ai_ops_patch as _ai_ops

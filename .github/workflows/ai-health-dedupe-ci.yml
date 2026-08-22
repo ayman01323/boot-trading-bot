@@ -1,0 +1,93 @@
+name: AI Health Telegram Dedupe CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ai-health-dedupe-ci.yml'
+      - 'learnerbot/ai_agent_health_process_dedupe_patch.py'
+      - 'learnerbot/ai_health_compact_report_patch.py'
+      - 'tests/test_ai_agent_health_process_dedupe.py'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Compile actual dedupe module
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile learnerbot/ai_agent_health_process_dedupe_patch.py
+      - name: Prove duplicate warning suppression with isolated dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          import sys
+          import tempfile
+          import types
+          from pathlib import Path
+          from types import SimpleNamespace
+
+          root = Path.cwd()
+          pkg = types.ModuleType('learnerbot')
+          pkg.__path__ = [str(root / 'learnerbot')]
+          sys.modules['learnerbot'] = pkg
+
+          health = types.ModuleType('learnerbot.ai_agent_health_warning_patch')
+          health.WARNING_SECONDS = 1800
+          health.CHECK_SECONDS = 60
+          health._state_path = lambda app: Path(app.data_dir) / '.ai_agent_health_warning_state.json'
+          health._repo_root = lambda: root
+          health.fetch_ai_reviews = lambda *a, **k: (True, 'OK')
+          health.build_health_snapshot = lambda *a, **k: {}
+          health.master_chat_ids = lambda _csv: ['5923828381']
+          health.warning_message = lambda _s: 'health warning'
+          health.recovery_message = lambda _s: 'health recovered'
+          health.unhealthy_rows = lambda s: [('engineering','gpt','x')] if s.get('bad') else []
+          health.health_signature = lambda s: hashlib.sha256(json.dumps(s, sort_keys=True).encode()).hexdigest()
+          def load(path):
+              try: return json.loads(Path(path).read_text())
+              except Exception: return {}
+          def save(path, value):
+              p=Path(path); p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(json.dumps(value))
+          health._load_state = load
+          health._save_state = save
+          health._watch_loop = lambda app: None
+          sys.modules[health.__name__] = health
+
+          telegram = types.ModuleType('learnerbot.telegram')
+          sends=[]
+          telegram.send_to_chats = lambda *a, **k: sends.append((a,k))
+          sys.modules[telegram.__name__] = telegram
+
+          name='learnerbot.ai_agent_health_process_dedupe_patch'
+          spec=importlib.util.spec_from_file_location(name, root/'learnerbot/ai_agent_health_process_dedupe_patch.py')
+          mod=importlib.util.module_from_spec(spec); sys.modules[name]=mod; spec.loader.exec_module(mod)
+
+          with tempfile.TemporaryDirectory() as td:
+              app=SimpleNamespace(data_dir=Path(td)/'data', csv_dir=Path(td)/'csv', telegram_bot_token='token')
+              app.csv_dir.mkdir()
+              assert mod._notification_cycle(app, {'bad': True}, now=1000) == 'WARNING'
+              assert mod._notification_cycle(app, {'bad': True}, now=1000) == 'NONE'
+              assert len(sends) == 1, sends
+              assert mod._notification_cycle(app, {'bad': True}, now=2800) == 'WARNING'
+              assert len(sends) == 2, sends
+          print('AI_HEALTH_DEDUPE_OK')
+          PY
+      - name: Verify compact report installs process-safe dedupe
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'ai_agent_health_process_dedupe_patch' learnerbot/ai_health_compact_report_patch.py
