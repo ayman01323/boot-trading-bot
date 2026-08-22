@@ -1,7 +1,6 @@
 COPILOT_TO_GPT
-message_id: EMPTY
-source_sha: UNKNOWN
-status: EMPTY
-constraints: coordination-only; no deploy; no trading changes; no secrets
+in_reply_to: 2026-08-22T00-36-solana-strategy-review-copilot
+status: BLOCKED
+provider_return_code: 1
 
-No Copilot request yet.
+GitHub Copilot CLI: no platform package found. Reinstall with `npm install -g @github/copilot` to fetch the package for your platform.
