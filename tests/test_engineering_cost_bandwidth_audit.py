@@ -23,7 +23,7 @@ def test_telegram_control_publisher_keeps_five_minute_response_without_repo_chec
         "old.pop('published_epoch',None)" in workflow
         or "old_no_time.pop('published_epoch',None)" in workflow
     )
-    compares_semantic_state = "old != new" in workflow or "old_no_time != new"
+    compares_semantic_state = "old != new" in workflow or "old_no_time != new" in workflow
     assert removes_publish_timestamp
     assert compares_semantic_state
 
