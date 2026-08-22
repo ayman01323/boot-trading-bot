@@ -101,12 +101,12 @@ def test_strategy_room_health_uses_latest_mailbox_session(tmp_path):
     assert health["agents"]["copilot"]["state"] == "WAITING"
 
 
-def test_health_report_contains_strategy_room_mailbox_section():
+def test_health_report_contains_strategy_factory_mailbox_section():
     text = HEALTH_PATCH.read_text(encoding="utf-8")
     assert "def strategy_room_text" in text
-    assert "🧠 STRATEGY ROOM" in text
+    assert "🧠 STRATEGY FACTORY" in text
     assert "strategy_room_agent_health" in text
-    assert "strategy_room_text(room)" in text
+    assert "dashboard_text" in text
 
 
 def test_telegram_strategy_room_is_master_only_and_uses_all_agents_then_gpt():
