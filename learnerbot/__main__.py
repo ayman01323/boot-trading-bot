@@ -168,5 +168,9 @@ from . import telegram_solana_force_exit_patch  # noqa: F401
 # platform-restored bar -- the EVM equivalent of solana_leader_quality_restore_patch.py,
 # which already protects the Solana side the same way.
 from . import sibot_leader_quality_hard_floor_patch  # noqa: F401
+# Start the loopback-only, zero-token-routing WebSocket agent bus as a daemon thread
+# owned by learnerbot. It never edits trading state and skips itself if an external
+# broker is already serving 127.0.0.1:8765.
+from . import ai_agent_ws_runtime_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
