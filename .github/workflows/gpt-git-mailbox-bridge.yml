@@ -64,7 +64,7 @@ jobs:
           python3 -m venv "$BUS_VENV"
           "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
 
-      - name: Validate bounded Claude-only envelope
+      - name: Validate bounded Claude API envelope
         if: steps.mailbox.outputs.pending == 'true'
         id: preflight
         shell: bash
@@ -78,7 +78,7 @@ jobs:
           target="$(grep '^target=' /tmp/gpt-git-mailbox-preflight.env | cut -d= -f2-)"
           test "$target" = "claude"
 
-      - name: Route GPT request to Claude
+      - name: Route GPT request to stateless Claude API responder
         if: steps.mailbox.outputs.pending == 'true'
         id: route
         env:
@@ -105,12 +105,12 @@ jobs:
           provider_calls: 0
           max_hops: 1
 
-          Claude could not complete this git-mailbox request. No deployment, trading action, wallet action, runtime change, sudo expansion, or secret access was authorised by this failure.
+          Claude API responder could not complete this request. No deployment, trading, wallet, LIVE/ARMED, risk/capital, sudo or secret authority was granted.
           EOF
           fi
           exit 0
 
-      - name: Publish Claude response to fixed ai-mailbox path
+      - name: Publish clearly-labelled Claude API response
         if: steps.mailbox.outputs.pending == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -132,14 +132,12 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## GPT Git Mailbox Bridge'
-            echo
-            echo "Event: **${GITHUB_EVENT_NAME}**"
+            echo '## GPT → Claude API Mailbox Bridge'
             echo "Pending request: **${{ steps.mailbox.outputs.pending || 'false' }}**"
             echo "Message ID: \`${{ steps.mailbox.outputs.message_id || 'none' }}\`"
-            echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
             echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
-            echo 'Input: `.github/ai-mailbox/gpt-to-claude.md` on `ai-mailbox`'
-            echo 'Reply: `.github/ai-mailbox/claude-to-gpt.md` on `ai-mailbox`'
-            echo 'Only status=REQUEST messages invoke Claude; no scheduled polling is used.'
+            echo 'Request: `.github/ai-mailbox/gpt-to-claude.md` on `ai-mailbox`'
+            echo 'Stateless API reply: `.github/ai-mailbox/claude-api-to-gpt.md` on `ai-mailbox`'
+            echo 'Persistent Claude mailbox `.github/ai-mailbox/claude-to-gpt.md` is never written by this workflow.'
+            echo 'Only status=REQUEST messages invoke the stateless Claude API responder; no scheduled polling is used.'
           } >> "$GITHUB_STEP_SUMMARY"
