@@ -7,6 +7,7 @@ import os
 import random
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from websockets.asyncio.client import connect
@@ -15,9 +16,10 @@ from learnerbot.ai_council_http_patch import call_provider
 
 AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
 DEFAULT_URL = "ws://127.0.0.1:8765"
+COPILOT_BUS_BIN_DIR = "/var/tmp/boot-copilot-cli/bin"
 CHEAP_MODELS = {
     "gpt": ("OPENAI_COUNCIL_MODEL", "gpt-5-nano"),
-    "gemini": ("GEMINI_COUNCIL_MODEL", "gemini-2.5-flash-lite"),
+    "gemini": ("GEMINI_COUNCIL_MODEL", "gemini-3.1-flash-lite"),
     "claude": ("ANTHROPIC_COUNCIL_MODEL", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_COUNCIL_MODEL", "deepseek-v4-flash"),
 }
@@ -51,14 +53,34 @@ MESSAGE:
 """
 
 
+def _restore_env(key: str, previous: object | str) -> None:
+    if previous is _MISSING:
+        os.environ.pop(key, None)
+    else:
+        os.environ[key] = str(previous)
+
+
 def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
     # Embedded workers share the learnerbot process with strategy/council logic.
-    # Never permanently change the council's model. Apply the cheaper bus model
-    # only while this one provider call holds the lock, then restore exactly what
-    # the process had before the message arrived.
+    # Never permanently change the council's model or process PATH. Apply the
+    # cheaper bus-specific setting only while this one provider call holds the
+    # lock, then restore exactly what the process had before the message arrived.
     with _PROVIDER_CALL_LOCK:
+        if agent == "copilot":
+            previous_path: object | str = os.environ.get("PATH", _MISSING)
+            configured_dir = str(os.environ.get("AI_BUS_COPILOT_BIN_DIR") or COPILOT_BUS_BIN_DIR).strip()
+            copilot_bin = Path(configured_dir) / "copilot"
+            if copilot_bin.is_file() and os.access(copilot_bin, os.X_OK):
+                current_path = str(os.environ.get("PATH") or "")
+                os.environ["PATH"] = configured_dir + (os.pathsep + current_path if current_path else "")
+            try:
+                return call_provider(agent, prompt)
+            finally:
+                _restore_env("PATH", previous_path)
+
         if agent not in CHEAP_MODELS:
             return call_provider(agent, prompt)
+
         env_key, _ = CHEAP_MODELS[agent]
         model = low_cost_model(agent)
         previous: object | str = os.environ.get(env_key, _MISSING)
@@ -66,10 +88,7 @@ def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
         try:
             return call_provider(agent, prompt)
         finally:
-            if previous is _MISSING:
-                os.environ.pop(env_key, None)
-            else:
-                os.environ[env_key] = str(previous)
+            _restore_env(env_key, previous)
 
 
 async def send_json(ws, payload: dict[str, Any]) -> None:
