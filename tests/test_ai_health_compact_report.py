@@ -20,8 +20,19 @@ def test_requested_compact_health_format():
             "copilot": {"state": "WAITING", "reason": "assignment pending"},
         }
     }
+    strategy_room = {
+        "agents": {
+            "gpt": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
+            "claude": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
+            "gemini": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
+            "deepseek": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
+            "copilot": {"state": "FAILED", "reason": "provider timeout"},
+        }
+    }
 
-    text = compact.warning_message({"engineering": engineering, "strategy": strategy})
+    text = compact.warning_message(
+        {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
+    )
 
     assert text.startswith("🤖 AI AGENT HEALTH")
     assert "🛠 ENGINEERING" in text
@@ -32,6 +43,8 @@ def test_requested_compact_health_format():
     assert "🟡 Copilot — In progress" in text
     assert "🧠 STRATEGY" in text
     assert "🟢 GPT — Working" in text
+    assert "🧠 STRATEGY ROOM" in text
+    assert "🟠 Copilot — Pipeline failure" in text
 
     # Mobile presentation must not rely on padded columns or long diagnostics.
     assert "provider probably reachable" not in text
