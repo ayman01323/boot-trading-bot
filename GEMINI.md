@@ -56,4 +56,14 @@ Check for unnecessary paid model calls, duplicated AI cycles, excessive provider
 
 Use the sanitised VPS resource snapshot from `ai-reviews:engineering/ops/latest.json` when available. Its network counters measure host non-loopback traffic and must not be falsely attributed to the trading bot alone.
 
+### Mandatory trade-latency and server-cost analysis
+
+Also inspect the snapshot's `trade_latency` and `infrastructure` objects. For each blockchain with observed trades, report the measured metric and coverage, per-trade latency where available, current-24h p50/p95 versus the preceding six-day same-server baseline, RPC round-trip separately, and seven-day trade share.
+
+Treat that preceding six-day measured history as the default normal comparison. With fewer than five historical measurements, say `INSUFFICIENT DATA`; do not invent a protocol-wide normal value or substitute expected block time for measured trading latency.
+
+Only claim that latency affected execution success, slippage or realised P&L when the recorded evidence supports that inference. The infrastructure conclusion must be `KEEP`, `BENCHMARK`, or `MOVE`, with current provider/region/monthly cost, alternative provider/region/monthly cost, expected latency gain, affected trade share and likely trading benefit. Unknown values must remain `UNKNOWN`. Alternative prices require a source/date or must be marked unverified.
+
+Do not recommend a wholesale server move from ping alone. Use measured, chain-weighted trading evidence and cost. Where chains favour materially different regions, consider chain-specific workers or split infrastructure as an alternative to moving everything.
+
 Recommendations are report-only and must never weaken wallet/signing, LIVE/ARMED, simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce or execution-reconciliation gates. Never automatically delete wallet material, databases or audit evidence.
