@@ -145,7 +145,7 @@ def _strategy_room_health() -> dict:
 
 
 def _overall_icon(health: dict | None) -> str:
-    """Collapse real provider states into one lane light for the MASTER dashboard."""
+    """Collapse real provider states into one lane light for detailed status use."""
     agents = (health or {}).get("agents") or {}
     states = [str((agents.get(provider) or {}).get("state") or "WAITING").upper() for provider in PROVIDERS]
     if not states:
@@ -171,17 +171,17 @@ def dashboard_text(
     strategy: dict | None = None,
     strategy_room: dict | None = None,
 ) -> str:
-    """MASTER Telegram dashboard: one real aggregate light per AI lane."""
-    engineering = engineering if engineering is not None else _lane_health("engineering")
-    strategy = strategy if strategy is not None else _lane_health("strategy")
-    strategy_room = strategy_room if strategy_room is not None else _strategy_room_health()
+    """MASTER Telegram dashboard: fixed three-monitor tree with no trailing status lights."""
+    # Health arguments remain accepted for compatibility with warning/report callers.
+    # The real health collectors and detailed drill-down pages are unchanged.
+    _ = engineering, strategy, strategy_room
     return "\n".join(
         [
             _AI_HEALTH_HEADING,
             "│",
-            f"├─ {_ENGINEERING_HEADING} {_overall_icon(engineering)}",
-            f"├─ {_STRATEGY_HEADING} {_overall_icon(strategy)}",
-            f"└─ {_STRATEGY_FACTORY_HEADING} {_overall_icon(strategy_room)}",
+            f"├─ {_ENGINEERING_HEADING}",
+            f"├─ {_STRATEGY_HEADING}",
+            f"└─ {_STRATEGY_FACTORY_HEADING}",
         ]
     )
 
