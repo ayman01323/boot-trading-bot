@@ -5,6 +5,7 @@ from pathlib import Path
 
 from . import ai_agent_health_warning_patch as _health_warning
 from . import ai_four_agent_health_patch as _health5
+from . import strategy_room as _strategy_room
 from . import telegram_ai_ops_patch as _ai_ops
 
 PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
@@ -147,22 +148,42 @@ def _lane_text(lane: str, health: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+def _strategy_room_health() -> dict:
+    return _strategy_room.strategy_room_agent_health(_repo_root(), int(time.time()))
+
+
+def strategy_room_text(health: dict | None = None) -> str:
+    health = health if health is not None else _strategy_room_health()
+    agents = (health or {}).get("agents") or {}
+    lines = ["🧠 STRATEGY ROOM"]
+    for provider in PROVIDERS:
+        detail = agents.get(provider) or {
+            "state": "WAITING",
+            "reason": f"{provider} has no Strategy Room mailbox result",
+        }
+        icon, status = classify_health("strategy_room", provider, detail)
+        lines.append(f"{icon} {_LABELS[provider]} — {status}")
+    return "\n".join(lines)
+
+
 def engineering_text(_state: dict | None = None) -> str:
     return _lane_text("engineering")
 
 
 def strategy_text(_state: dict | None = None) -> str:
-    return _lane_text("strategy")
+    return "\n\n".join([_lane_text("strategy"), strategy_room_text()])
 
 
 def warning_message(snapshot: dict) -> str:
     engineering = (snapshot or {}).get("engineering") or _lane_health("engineering")
     strategy = (snapshot or {}).get("strategy") or _lane_health("strategy")
+    room = (snapshot or {}).get("strategy_room") or _strategy_room_health()
     return "\n\n".join(
         [
             "🤖 AI AGENT HEALTH",
             _lane_text("engineering", engineering),
             _lane_text("strategy", strategy),
+            strategy_room_text(room),
         ]
     )
 
