@@ -28,4 +28,6 @@ For a new cross-agent communication on branch `ai-mailbox`:
 - read only `.github/ai-mailbox/bus-to-deepseek.md` for the result and require the same `message_id`;
 - for several selected agents rather than `ALL`, send one message at a time and wait for its matching reply before overwriting the sender file.
 
+Delivery is automatic and event-driven. A valid sender-mailbox push wakes the universal relay, which automatically invokes the addressed provider; `to: ALL` invokes every other supported provider once. The recipient does **not** poll a mailbox to discover new messages. The sender reads its correlated `bus-to-deepseek.md` result after the relay completes.
+
 This is a communication-only mailbox exception. It grants no authority to edit any other `ai-mailbox` path or to deploy, trade, change LIVE/ARMED or risk/capital settings, access wallets/signing material or secrets, or use root/sudo.
