@@ -16,6 +16,14 @@ A sender does **not** wait for the recipient to inspect a mailbox. When any vali
 
 The provider call itself is the recipient notification/wake-up. The resulting correlated `AI_BUS_REPLY` is written to the sender's fixed `bus-to-<sender>.md` file. The sender may fetch that result later; recipient discovery never depends on such a fetch.
 
+### Mandatory automatic recipient awareness
+
+Automatic awareness is a hard design requirement, not an optional convenience. Once a valid message is accepted by the transport, the addressed agent must be notified/woken **without the user having to tell that agent to check for messages and without the recipient polling a mailbox**. The transport/relay must identify the intended recipient from the envelope and invoke only that provider (or every other provider for `to: ALL`).
+
+A system in which the message merely sits in GitHub, SQLite, a file, queue, database, or other storage until the recipient is manually prompted to inspect it does **not** satisfy this protocol. Storage may be used for durability and audit, but a separate event-driven wake-up/notification path must cause recipient awareness.
+
+For future cost optimisation, preserve this property even if GitHub is replaced as the live transport. A cheaper local VPS bus, Unix socket, queue, SQLite-backed dispatcher, webhook, or similar mechanism is acceptable only if a new message automatically triggers the target agent/provider. Do not save API cost by converting recipient discovery into manual checking or periodic polling.
+
 ## Sender files on `ai-mailbox`
 
 Each sender may update only its own fixed file:
