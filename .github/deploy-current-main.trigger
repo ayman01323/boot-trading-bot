@@ -1,0 +1,2 @@
+deploy_sha=08827487fb0956f773d2ae5ea207586a89f4cf90
+purpose=solana_aug18_live_pnl_forensics
