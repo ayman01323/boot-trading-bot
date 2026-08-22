@@ -24,9 +24,9 @@ def test_master_dashboard_matches_requested_compact_tree():
         [
             "<b>🤖 AI AGENT HEALTH</b>",
             "│",
-            "├─ <b>🛠 ENGINEERING MONITOR</b> 🟢",
-            "├─ <b>🧠 STRATEGY MONITOR</b> 🟢",
-            "└─ <b>🧠 STRATEGY FACTORY</b> 🟡",
+            "├─ <b>🛠 ENGINEERING MONITOR</b>",
+            "├─ <b>🧠 STRATEGY MONITOR</b>",
+            "└─ <b>🧠 STRATEGY FACTORY</b>",
         ]
     )
     assert "GPT —" not in text
@@ -34,14 +34,17 @@ def test_master_dashboard_matches_requested_compact_tree():
     assert "Gemini —" not in text
     assert "DeepSeek —" not in text
     assert "Copilot —" not in text
+    assert "🟢" not in text
+    assert "🟡" not in text
+    assert "🔴" not in text
 
 
-def test_master_dashboard_turns_red_on_hard_failure():
+def test_master_dashboard_health_logic_is_still_available_for_drill_down():
     engineering = _health("WORKING", "WORKING", "WORKING", "FAILED", "WORKING")
     assert compact._overall_icon(engineering) == "🔴"
 
 
-def test_master_dashboard_waiting_is_yellow():
+def test_master_dashboard_waiting_health_logic_is_still_available():
     strategy = _health("WORKING", "WORKING", "WAITING", "WORKING", "WORKING")
     assert compact._overall_icon(strategy) == "🟡"
 
