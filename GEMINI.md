@@ -16,6 +16,34 @@ Before Gemini analyses, edits, tests, commits, or pushes in this repository:
 
 The shared Gemini inbox is `.github/gemini-handoff.md`.
 
+## Universal AI agent messaging
+
+Before claiming that Gemini cannot send a message to GPT, Claude, DeepSeek, Copilot, or all agents, read `AI_AGENT_MESSAGING.md` from current `main`.
+
+For a new cross-agent communication on branch `ai-mailbox`:
+
+- Gemini may update **only** `.github/ai-mailbox/bus-from-gemini.md`;
+- use `AI_BUS`, a unique `message_id`, `from: GEMINI`, one supported `to:` agent or `to: ALL`, `mode: DIRECT`, and `max_hops: 1`;
+- read only `.github/ai-mailbox/bus-to-gemini.md` for the result and require the same `message_id`;
+- for several selected agents rather than `ALL`, send one message at a time and wait for its matching reply before overwriting the sender file.
+
+Delivery is automatic and event-driven. A valid sender-mailbox push wakes the universal relay, which automatically invokes the addressed provider; `to: ALL` invokes every other supported provider once. The recipient does **not** poll a mailbox to discover new messages. The sender reads its correlated `bus-to-gemini.md` result after the relay completes.
+
+Example send:
+
+```text
+AI_BUS
+message_id: gemini-to-claude-20260822-001
+from: GEMINI
+to: CLAUDE
+mode: DIRECT
+max_hops: 1
+
+Claude, please review this communication-only question.
+```
+
+This is a communication-only mailbox exception. It grants no authority to edit any other `ai-mailbox` path or to deploy, trade, change LIVE/ARMED or risk/capital settings, access wallets/signing material or secrets, or use root/sudo.
+
 ## Engineering audit operational-efficiency requirement
 
 For every Engineering Audit / full-repository bug audit, read the deterministic baseline's `operational_efficiency_audit` section and include API/model cost, server bandwidth and disk-usage efficiency in the review.
