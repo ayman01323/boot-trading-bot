@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import csv
 import json
 import os
 import threading
 import time
+from string import Template
 
 from websockets.sync.client import connect
 
@@ -66,6 +68,12 @@ def _poll_lock(chain_id: int) -> threading.RLock:
         return lock
 
 
+def _bool(value, default=True) -> bool:
+    if value is None or str(value).strip() == "":
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
 def _first_env(names) -> str:
     for name in names:
         value = os.getenv(name, "").strip()
@@ -74,11 +82,69 @@ def _first_env(names) -> str:
     return ""
 
 
-def _chain_ws_url(chain_id: int) -> str:
-    """Resolve a secret-backed WSS endpoint without ever logging credentials."""
+def _expand_csv_ws_url(value: str) -> str:
+    """Expand ${ENV_VAR} placeholders without exposing values in logs."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        expanded = Template(text).substitute(os.environ).strip()
+    except (KeyError, ValueError):
+        return ""
+    return expanded if expanded.startswith(("wss://", "ws://")) else ""
+
+
+def _csv_ws_url(app, chain_id: int) -> str:
+    """Return highest-priority enabled ws_url from CSVbot/rpc_endpoints.csv."""
+    if app is None:
+        return ""
+    path = getattr(app, "csv_dir", None)
+    if path is None:
+        return ""
+    path = path / "rpc_endpoints.csv"
+    if not path.exists():
+        return ""
+
+    candidates: list[tuple[int, str]] = []
+    try:
+        with path.open("r", encoding="utf-8-sig", newline="") as fh:
+            for row in csv.DictReader(fh):
+                if not _bool(row.get("enabled"), True):
+                    continue
+                try:
+                    cid = int(str(row.get("chain_id") or "0").strip())
+                except Exception:
+                    continue
+                if cid != int(chain_id):
+                    continue
+                raw_url = (
+                    str(row.get("ws_url") or "").strip()
+                    or str(row.get("websocket_url") or "").strip()
+                )
+                url = _expand_csv_ws_url(raw_url)
+                if not url:
+                    continue
+                try:
+                    priority = int(str(row.get("priority") or "999").strip())
+                except Exception:
+                    priority = 999
+                candidates.append((priority, url))
+    except Exception:
+        return ""
+
+    return sorted(candidates, key=lambda item: item[0])[0][1] if candidates else ""
+
+
+def _chain_ws_url(chain_id: int, app=None) -> str:
+    """Resolve WSS from rpc_endpoints.csv first, then secret-backed env fallback."""
     spec = EVM_WS_CHAINS.get(int(chain_id))
     if not spec:
         return ""
+
+    csv_url = _csv_ws_url(app, chain_id)
+    if csv_url:
+        return csv_url
+
     explicit = _first_env(spec["url_envs"])
     if explicit:
         return explicit
@@ -136,7 +202,7 @@ def _chain_ws_worker(app, chain_id: int) -> None:
     backoff = 1.0
     while True:
         chain = _chain(app, chain_id)
-        url = _chain_ws_url(chain_id)
+        url = _chain_ws_url(chain_id, app)
         if chain is None or not url:
             time.sleep(15)
             continue
@@ -152,10 +218,16 @@ def _chain_ws_worker(app, chain_id: int) -> None:
                 _subscribe_new_heads(ws, chain_id)
                 print(
                     f"[evm-ws:{spec['slug']}] connected chain={chain_id} "
-                    "newHeads=true fallback_poll=true"
+                    "newHeads=true source=csv_or_env fallback_poll=true"
                 )
                 backoff = 1.0
                 for raw in ws:
+                    # rpc_endpoints.csv is part of the bot config fingerprint.  If
+                    # its selected WebSocket changes, reconnect on the next block
+                    # instead of requiring a service restart.
+                    if _chain_ws_url(chain_id, app) != url:
+                        print(f"[evm-ws:{spec['slug']}] endpoint_changed reconnect=true")
+                        break
                     try:
                         message = json.loads(raw)
                     except Exception:
@@ -218,7 +290,10 @@ def install() -> None:
     _sibot.poll_leader_blocks = poll_leader_blocks_locked
     _sibot.start_workers = start_workers_with_evm_ws
     chains = ",".join(str(cid) for cid in EVM_WS_CHAINS)
-    print(f"[evm-ws] installed chains={chains} subscription=newHeads fallback_poll=true")
+    print(
+        f"[evm-ws] installed chains={chains} subscription=newHeads "
+        "source=rpc_endpoints_csv_then_env fallback_poll=true"
+    )
 
 
 install()
