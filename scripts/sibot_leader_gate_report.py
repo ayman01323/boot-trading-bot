@@ -109,11 +109,6 @@ def _short(value: object) -> str:
     return text if len(text) <= 14 else f"{text[:7]}…{text[-5:]}"
 
 
-def _age_hours(ts: object) -> str:
-    value = _int(ts, 0)
-    return "unknown" if not value else f"{max(0.0, time.time()-value)/3600.0:.1f}h"
-
-
 def _iso(ts: object) -> str:
     value = _int(ts, 0)
     if not value:
@@ -124,6 +119,18 @@ def _iso(ts: object) -> str:
 def _coverage_days(start: object, end: object) -> float:
     a, b = _int(start, 0), _int(end, 0)
     return max(0.0, (b-a)/86400.0) if a and b and b >= a else 0.0
+
+
+def _safe_error(value: object, limit: int = 260) -> str:
+    """Return an operator-useful failure reason without exposing credentials."""
+    text = str(value or "").replace("\x00", " ").strip()
+    if not text:
+        return "<none>"
+    text = re.sub(r"(?i)(apikey=)[^&\s]+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,&]+", r"\1<redacted>", text)
+    text = re.sub(r"\b(sk|gh[opusr]?|github_pat)_[A-Za-z0-9_-]{8,}\b", "<redacted>", text)
+    text = re.sub(r"\s+", " ", text)
+    return text[: max(40, int(limit))]
 
 
 def _safe_one(conn: sqlite3.Connection, sql: str, params=()) -> dict:
@@ -284,6 +291,13 @@ def report_evm(app) -> list[tuple[str, object]]:
                    FROM wallet_trades WHERE chain_id=?""",
                 (int(chain.chain_id),),
             )
+            dominant_error = _safe_one(
+                conn,
+                """SELECT error,COUNT(*) AS n FROM wallet_history_status
+                   WHERE chain_id=? AND COALESCE(error,'')<>''
+                   GROUP BY error ORDER BY n DESC LIMIT 1""",
+                (int(chain.chain_id),),
+            )
         print(
             "  history store: "
             f"status_wallets={_int(status.get('n'))} complete={_int(status.get('complete'))} errors={_int(status.get('errors'))} "
@@ -292,11 +306,15 @@ def report_evm(app) -> list[tuple[str, object]]:
             f"wallet_trades={_int(trades.get('n'))} wallets_with_trades={_int(trades.get('wallets'))} "
             f"first_reconstructed_close={_iso(trades.get('first_close'))} last_reconstructed_close={_iso(trades.get('last_close'))}"
         )
+        print(
+            f"  dominant history error: count={_int(dominant_error.get('n'))} "
+            f"reason={_safe_error(dominant_error.get('error') or dominant_error.get('_error'))}"
+        )
         print("  worker health retention: no EVM history-worker heartbeat/error marker exists in current reliability patch; use history_status/trade timestamps as evidence")
         for ranking, metrics, stage in rows:
             wallet = str(ranking.get("wallet") or "")
             detail = _evm_history_detail(app, chain.chain_id, wallet, lookback)
-            hs, life, win = detail["history"], detail["lifetime"], detail["window"]
+            hs, life = detail["history"], detail["lifetime"]
             ranking_closed = _int(ranking.get("closed_trades"))
             print(
                 f"  candidate #{ranking.get('rank','?')} {_short(wallet)} stage={stage or 'PASS'} "
@@ -306,6 +324,7 @@ def report_evm(app) -> list[tuple[str, object]]:
                 f"fetch={_iso(hs.get('fetched_at'))} history_complete={bool(metrics.get('history_complete'))} "
                 f"unmatched_sells={_int(hs.get('unmatched_sells'))} "
                 f"rows(normal/token/internal)={_int(hs.get('normal_rows'))}/{_int(hs.get('token_rows'))}/{_int(hs.get('internal_rows'))} "
+                f"history_error={_safe_error(hs.get('error') or hs.get('_error'))} "
                 f"diagnosis={_evm_diagnosis(ranking_closed, detail, minimum, lookback)}"
             )
     return depth
@@ -361,7 +380,7 @@ def report_solana(app) -> object:
     print(
         "  history worker marker: "
         f"last_run={_iso(worker_last_run)} last_success={_iso(worker_last_success)} "
-        f"last_error={str(worker_last_error or '')[:240] or '<none>'} retention=LATEST_ONLY"
+        f"last_error={_safe_error(worker_last_error)} retention=LATEST_ONLY"
     )
     print("  Aug-18 streak proof: unavailable from worker marker alone because the state table overwrites last_run/last_success/last_error rather than retaining a time series")
     with contextlib.closing(_sol.connect(app)) as conn:
@@ -379,7 +398,7 @@ def report_solana(app) -> object:
                 f"ranking_closed={_int(ranking.get('closed_trades'))} reconstructed={_int(metrics.get('closed'))} status_closed={_int(hs.get('closed_trades'))} "
                 f"coverage={_coverage_days(hs.get('coverage_start_ts'), hs.get('coverage_end_ts')):.1f}d fetch={_iso(hs.get('fetched_at'))} "
                 f"complete={bool(metrics.get('history_complete'))} signatures={_int(hs.get('signatures'))} swaps={_int(hs.get('swaps'))} "
-                f"truncated={_int(hs.get('truncated'))} history_error={str(hs.get('error') or '')[:120] or '<none>'} "
+                f"truncated={_int(hs.get('truncated'))} history_error={_safe_error(hs.get('error'))} "
                 f"discovery_events={_int(cand.get('swap_events'))} first_seen={_iso(cand.get('first_seen'))} last_seen={_iso(cand.get('last_seen'))}"
             )
     return cfg.get("candidate_limit")
