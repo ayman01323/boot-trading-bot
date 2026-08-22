@@ -1,0 +1,22 @@
+name: Claude API Mailbox Signal
+
+on:
+  push:
+    branches: [ai-mailbox]
+    paths:
+      - '.github/ai-mailbox/claude-api-to-gpt.md'
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 2
+    steps:
+      - name: Signal stateless Claude API reply
+        shell: bash
+        run: |
+          echo 'Stateless Claude API responder mailbox update detected.'
+          echo 'This is NOT the persistent/interactive Claude agent mailbox.'
+          echo 'No provider call, checkout, secret read, deploy, trade, wallet action or sudo action occurs in this signal job.'
