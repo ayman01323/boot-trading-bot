@@ -60,3 +60,54 @@ print("EVM_WS_OVERRIDES_OK")
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
     assert "EVM_WS_OVERRIDES_OK" in result.stdout
+
+
+def test_rpc_endpoints_csv_ws_url_takes_priority_and_expands_env():
+    script = r'''
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from learnerbot import polygon_websocket_patch as mod
+
+with TemporaryDirectory() as td:
+    csv_dir = Path(td)
+    (csv_dir / "rpc_endpoints.csv").write_text(
+        "chain_id,name,url,ws_url,enabled,priority\n"
+        "137,disabled,,wss://disabled.invalid/v2/${ALCHEMY_API_KEY},false,0\n"
+        "137,alchemy,https://polygon.invalid,wss://csv-polygon.invalid/v2/${ALCHEMY_API_KEY},true,1\n"
+        "8453,alchemy,https://base.invalid,wss://csv-base.invalid/v2/${ALCHEMY_API_KEY},true,1\n",
+        encoding="utf-8",
+    )
+    app = SimpleNamespace(csv_dir=csv_dir)
+    assert mod._chain_ws_url(137, app) == "wss://csv-polygon.invalid/v2/shared"
+    assert mod._chain_ws_url(8453, app) == "wss://csv-base.invalid/v2/shared"
+    # No CSV WSS row for Arbitrum, so the environment fallback remains active.
+    assert mod._chain_ws_url(42161, app) == "wss://arb-mainnet.g.alchemy.com/v2/shared"
+print("EVM_WS_CSV_OK")
+'''
+    result = _run(script, {"ALCHEMY_API_KEY": "shared"})
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    assert "EVM_WS_CSV_OK" in result.stdout
+
+
+def test_unresolved_csv_secret_placeholder_falls_back_to_env_override():
+    script = r'''
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from learnerbot import polygon_websocket_patch as mod
+
+with TemporaryDirectory() as td:
+    csv_dir = Path(td)
+    (csv_dir / "rpc_endpoints.csv").write_text(
+        "chain_id,name,url,ws_url,enabled,priority\n"
+        "8453,alchemy,https://base.invalid,wss://base.invalid/v2/${MISSING_KEY},true,1\n",
+        encoding="utf-8",
+    )
+    app = SimpleNamespace(csv_dir=csv_dir)
+    assert mod._chain_ws_url(8453, app) == "wss://env-base.invalid/ws"
+print("EVM_WS_CSV_FALLBACK_OK")
+'''
+    result = _run(script, {"BASE_WS_URL": "wss://env-base.invalid/ws"})
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    assert "EVM_WS_CSV_FALLBACK_OK" in result.stdout
