@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import time
 from collections import Counter, defaultdict
@@ -78,6 +79,18 @@ def _short(value: object) -> str:
     return raw if len(raw) <= 18 else f"{raw[:8]}…{raw[-6:]}"
 
 
+def _safe_text(value: object, limit: int = 240) -> str:
+    text = str(value or "").replace("\x00", " ").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(?i)(apikey=)[^&\s]+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(api[_-]?key\s*[:=]\s*)[^\s,&]+", r"\1<redacted>", text)
+    text = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+", r"\1<redacted>", text)
+    text = re.sub(r"\b(sk|gh[opusr]?|github_pat)_[A-Za-z0-9_-]{8,}\b", "<redacted>", text)
+    text = re.sub(r"\s+", " ", text)
+    return text[: max(40, int(limit))]
+
+
 def _iso(ts: object) -> str:
     try:
         value = int(ts or 0)
@@ -101,9 +114,8 @@ def _summary(rows: list[dict]) -> dict:
     losses = [-v for v in vals if v < 0]
     profit = sum(wins, Decimal(0))
     loss = sum(losses, Decimal(0))
-    entries = len(rows)
     return {
-        "entries": entries,
+        "entries": len(rows),
         "closed": len(closed),
         "open": sum(1 for r in rows if r.get("status") == "OPEN"),
         "wins": len(wins),
@@ -118,7 +130,6 @@ def _summary(rows: list[dict]) -> dict:
 
 def _entry_cash(position: dict, attempt: dict | None) -> Decimal:
     attempt = attempt or {}
-    delta = 0
     try:
         delta = int(attempt.get("wallet_delta_lamports") or 0)
     except Exception:
@@ -131,8 +142,6 @@ def _entry_cash(position: dict, attempt: dict | None) -> Decimal:
         input_raw = 0
     if input_raw > 0:
         return Decimal(input_raw) / Decimal(1_000_000_000)
-    # Open rows still retain remaining cost. Closed rows are zeroed on full exit,
-    # so never pretend a zero closed-row cost is the original cash entry.
     if str(position.get("status") or "").upper() == "OPEN":
         return _d(position.get("entry_cost_sol"))
     return Decimal(0)
@@ -155,8 +164,7 @@ def _loss_flags(row: dict) -> list[str]:
         flags.append("BREAK_EVEN_EXIT")
     if "LIQUID" in reason or "EMERGENCY" in reason or "FORCE" in reason:
         flags.append("LIQUIDITY_OR_EMERGENCY_EXIT")
-    peak = float(row.get("peak_unrealised_pct") or 0.0)
-    if peak > 0:
+    if float(row.get("peak_unrealised_pct") or 0.0) > 0:
         flags.append("GAVE_BACK_PRIOR_PROFIT")
     hold = int(row.get("hold_seconds") or 0)
     if 0 < hold <= 180:
@@ -165,10 +173,9 @@ def _loss_flags(row: dict) -> list[str]:
     if pct is not None and float(pct) <= -20.0:
         flags.append("SEVERE_PRICE_MOVE_OR_EXIT_IMPACT")
     circuit_status = str(row.get("exit_circuit_status") or "").upper()
-    circuit_error = str(row.get("exit_circuit_error") or "")
     if circuit_status and circuit_status not in {"CLOSED", "COMPLETE", "SUCCESS", "EXECUTED"}:
         flags.append("EXIT_CIRCUIT_FRICTION")
-    if circuit_error:
+    if str(row.get("exit_circuit_error") or ""):
         flags.append("EXIT_EXECUTION_ERROR_RECORDED")
     entry_status = str(row.get("entry_attempt_status") or "").upper()
     if entry_status and entry_status != "EXECUTED":
@@ -182,10 +189,8 @@ def _position_rows(conn: sqlite3.Connection) -> list[dict]:
     if not _table(conn, "positions"):
         return []
     cols = _cols(conn, "positions")
-    extra = []
-    for name in ("strategy_engine", "strategy_version", "git_sha"):
-        extra.append(name if name in cols else f"'LEGACY_UNKNOWN' AS {name}")
-    rows = [dict(r) for r in conn.execute(
+    extra = [name if name in cols else f"'LEGACY_UNKNOWN' AS {name}" for name in ("strategy_engine", "strategy_version", "git_sha")]
+    return [dict(r) for r in conn.execute(
         f"""SELECT position_id,telegram_id,leader_wallet,leader_rank,mint,status,
                    token_amount_raw,entry_cost_sol,entry_ts,current_exit_sol,
                    unrealised_net_sol,unrealised_pct,peak_unrealised_pct,
@@ -197,7 +202,6 @@ def _position_rows(conn: sqlite3.Connection) -> list[dict]:
             ORDER BY entry_ts""",
         (_INCIDENT_START, _INCIDENT_START),
     ).fetchall()]
-    return rows
 
 
 def _attempt_map(conn: sqlite3.Connection) -> dict[tuple[str, str, str, str], dict]:
@@ -208,18 +212,15 @@ def _attempt_map(conn: sqlite3.Connection) -> dict[tuple[str, str, str, str], di
         """SELECT telegram_id,leader_wallet,leader_signature,mint,action,status,
                   tx_signature,input_raw,output_raw,wallet_delta_lamports,error,
                   created_at,updated_at
-           FROM live_execution_attempts
-           WHERE created_at>=? ORDER BY updated_at""",
+           FROM live_execution_attempts WHERE created_at>=? ORDER BY updated_at""",
         (_INCIDENT_START,),
     ).fetchall():
         d = dict(r)
         if str(d.get("action") or "").upper() != "BUY":
             continue
         key = (
-            str(d.get("telegram_id") or ""),
-            str(d.get("leader_wallet") or ""),
-            str(d.get("leader_signature") or ""),
-            str(d.get("mint") or ""),
+            str(d.get("telegram_id") or ""), str(d.get("leader_wallet") or ""),
+            str(d.get("leader_signature") or ""), str(d.get("mint") or ""),
         )
         out[key] = d
     return out
@@ -276,23 +277,23 @@ def _incident_report(app) -> dict:
                 "solana_corrected_live_pnl_epoch_v2",
             ):
                 row = conn.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
-                state[key] = str(row[0]) if row else ""
+                value = str(row[0]) if row else ""
+                state[key] = _safe_text(value, 320) if key.endswith(":last_error") else value
     finally:
         conn.close()
 
     sanitized = []
     for p in positions:
         key = (
-            str(p.get("telegram_id") or ""),
-            str(p.get("leader_wallet") or ""),
-            str(p.get("leader_buy_signature") or ""),
-            str(p.get("mint") or ""),
+            str(p.get("telegram_id") or ""), str(p.get("leader_wallet") or ""),
+            str(p.get("leader_buy_signature") or ""), str(p.get("mint") or ""),
         )
         attempt = attempts.get(key, {})
         circuit = circuits.get(str(p.get("position_id") or ""), {})
         entry_cash = _entry_cash(p, attempt)
         realised = _d(p.get("realised_net_sol"))
-        realised_pct = float(realised * Decimal(100) / entry_cash) if entry_cash > 0 and str(p.get("status") or "").upper() == "CLOSED" else None
+        status = str(p.get("status") or "").upper()
+        realised_pct = float(realised * Decimal(100) / entry_cash) if entry_cash > 0 and status == "CLOSED" else None
         entry_ts = int(p.get("entry_ts") or 0)
         closed_at = int(p.get("closed_at") or 0)
         row = {
@@ -301,7 +302,7 @@ def _incident_report(app) -> dict:
             "leader_id": _anon(p.get("leader_wallet"), "leader"),
             "leader_rank": int(p.get("leader_rank") or 0),
             "mint": _short(p.get("mint")),
-            "status": str(p.get("status") or "").upper(),
+            "status": status,
             "entry_utc": _iso(entry_ts),
             "closed_utc": _iso(closed_at),
             "hold_seconds": max(0, closed_at - entry_ts) if closed_at and entry_ts else 0,
@@ -311,12 +312,12 @@ def _incident_report(app) -> dict:
             "unrealised_net_sol": str(p.get("unrealised_net_sol") or "0"),
             "unrealised_pct": float(p.get("unrealised_pct") or 0.0),
             "peak_unrealised_pct": float(p.get("peak_unrealised_pct") or 0.0),
-            "exit_reason": str(p.get("exit_reason") or ""),
+            "exit_reason": _safe_text(p.get("exit_reason"), 180),
             "entry_attempt_status": str(attempt.get("status") or ""),
-            "entry_attempt_error": str(attempt.get("error") or "")[:240],
+            "entry_attempt_error": _safe_text(attempt.get("error"), 240),
             "exit_circuit_status": str(circuit.get("status") or ""),
-            "exit_circuit_error": str(circuit.get("error") or "")[:240],
-            "exit_circuit_reason": str(circuit.get("close_reason") or "")[:180],
+            "exit_circuit_error": _safe_text(circuit.get("error"), 240),
+            "exit_circuit_reason": _safe_text(circuit.get("close_reason"), 180),
             "strategy_engine": str(p.get("strategy_engine") or "LEGACY_UNKNOWN"),
             "strategy_version": str(p.get("strategy_version") or "LEGACY_UNKNOWN"),
             "git_sha": str(p.get("git_sha") or "LEGACY_UNKNOWN"),
@@ -343,7 +344,7 @@ def _incident_report(app) -> dict:
     for d in decisions:
         w = _window_name(int(d.get("ts") or 0))
         decision = str(d.get("decision") or "UNKNOWN").upper()
-        reason = str(d.get("reason") or "")[:220] or "<none>"
+        reason = _safe_text(d.get("reason"), 220) or "<none>"
         decision_windows[w][decision] += 1
         decision_reasons[w][reason] += 1
 
@@ -383,7 +384,7 @@ def _incident_report(app) -> dict:
         "positions": sanitized,
         "worker_latest_state": state,
         "decision_rows_seen": len(decisions),
-        "privacy": "Telegram IDs and leader wallets are one-way hashed; token mints and strategy SHAs are public/operational identifiers; no signing material or secrets are included.",
+        "privacy": "Telegram IDs and leader wallets are one-way hashed; token mints and strategy SHAs are public/operational identifiers; execution/circuit error text is credential-redacted; no signing material or secrets are included.",
         "interpretation_guard": "Loss flags are evidence labels, not proof of market causation. Exact on-chain slippage/price-impact attribution requires matching transaction quotes/receipts where retained.",
     }
 
