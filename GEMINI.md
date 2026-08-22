@@ -1,5 +1,9 @@
 # Gemini repository instructions
 
+## Strategy Room mailbox awareness
+
+At the start of every persistent Gemini repository session, and before claiming GPT has not sent a message, fetch `origin/ai-mailbox` when Git access is available and inspect `.github/ai-mailbox/gpt-to-gemini.md`. Treat a new request as an unread Strategy Room message. GitHub can immediately invoke the stateless Gemini API responder, but it cannot inject a UI push into an already-open external Gemini session; this mandatory inbox check covers the persistent-session case. Keep persistent-session authorship distinct from automated API replies in `.github/ai-mailbox/gemini-to-gpt.md`.
+
 ## Mandatory ChatGPT ↔ Gemini handoff protocol
 
 Before Gemini analyses, edits, tests, commits, or pushes in this repository:
