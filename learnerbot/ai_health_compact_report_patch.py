@@ -111,6 +111,11 @@ def classify_health(lane: str, provider: str, detail: dict) -> tuple[str, str]:
         return "🟢", "Working"
     if state == "WAITING":
         return "🟡", "In progress"
+    # An explicit pipeline FAILED state is authoritative. Reason-text classifiers
+    # below are for unresolved/unhealthy states and must not relabel a completed
+    # pipeline failure as a provider/network outage merely because it mentions a timeout.
+    if state == "FAILED":
+        return "🟠", "Pipeline failure"
 
     if provider == "deepseek" and _looks_like_config(reason):
         return "🔴", "Model config"
