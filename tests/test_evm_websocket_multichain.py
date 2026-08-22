@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 
-def _run(script: str, extra_env: dict[str, str]) -> subprocess.CompletedProcess:
+def _run(script: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     env = os.environ.copy()
     for name in (
         "ALCHEMY_API_KEY",
@@ -15,7 +15,7 @@ def _run(script: str, extra_env: dict[str, str]) -> subprocess.CompletedProcess:
         "BASE_WS_URL", "BASE_ALCHEMY_API_KEY",
     ):
         env.pop(name, None)
-    env.update(extra_env)
+    env.update(extra_env or {})
     return subprocess.run(
         [sys.executable, "-c", script],
         check=False,
@@ -26,43 +26,92 @@ def _run(script: str, extra_env: dict[str, str]) -> subprocess.CompletedProcess:
     )
 
 
-def test_supported_evm_websocket_chains():
+def test_supported_evm_websocket_chains_are_csv_only():
     script = r'''
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from learnerbot import polygon_websocket_patch as mod
-assert mod._chain_ws_url(137) == "wss://polygon-mainnet.g.alchemy.com/v2/shared"
-assert mod._chain_ws_url(42161) == "wss://arb-mainnet.g.alchemy.com/v2/shared"
-assert mod._chain_ws_url(56) == "wss://bnb-mainnet.g.alchemy.com/v2/shared"
-assert mod._chain_ws_url(8453) == "wss://base-mainnet.g.alchemy.com/v2/shared"
-print("EVM_WS_URLS_OK")
+
+with TemporaryDirectory() as td:
+    csv_dir = Path(td)
+    (csv_dir / "rpc_endpoints.csv").write_text(
+        "chain_id,name,url,ws_url,enabled,priority\n"
+        "137,alchemy,,wss://polygon.example/v2/polygon-secret,true,1\n"
+        "42161,alchemy,,wss://arbitrum.example/v2/arbitrum-secret,true,1\n"
+        "56,alchemy,,wss://bnb.example/v2/bnb-secret,true,1\n"
+        "8453,alchemy,,wss://base.example/v2/base-secret,true,1\n",
+        encoding="utf-8",
+    )
+    app = SimpleNamespace(csv_dir=csv_dir)
+    assert mod._chain_ws_url(137, app) == "wss://polygon.example/v2/polygon-secret"
+    assert mod._chain_ws_url(42161, app) == "wss://arbitrum.example/v2/arbitrum-secret"
+    assert mod._chain_ws_url(56, app) == "wss://bnb.example/v2/bnb-secret"
+    assert mod._chain_ws_url(8453, app) == "wss://base.example/v2/base-secret"
+print("EVM_WS_CSV_ONLY_OK")
 '''
-    result = _run(script, {"ALCHEMY_API_KEY": "shared"})
+    result = _run(script)
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "EVM_WS_URLS_OK" in result.stdout
+    assert "EVM_WS_CSV_ONLY_OK" in result.stdout
 
 
-def test_explicit_and_per_chain_overrides():
+def test_priority_and_enabled_rows_are_respected():
     script = r'''
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from learnerbot import polygon_websocket_patch as mod
-assert mod._chain_ws_url(8453) == "wss://example.invalid/base-secret"
-assert mod._chain_ws_url(56) == "wss://example.invalid/bnb-secret"
-assert mod._chain_ws_url(42161) == "wss://arb-mainnet.g.alchemy.com/v2/arb-only"
-assert mod._chain_ws_url(137) == "wss://polygon-mainnet.g.alchemy.com/v2/shared"
-print("EVM_WS_OVERRIDES_OK")
+
+with TemporaryDirectory() as td:
+    csv_dir = Path(td)
+    (csv_dir / "rpc_endpoints.csv").write_text(
+        "chain_id,name,url,ws_url,enabled,priority\n"
+        "137,disabled,,wss://disabled.example/v2/key,false,0\n"
+        "137,secondary,,wss://secondary.example/v2/key,true,2\n"
+        "137,primary,,wss://primary.example/v2/key,true,1\n",
+        encoding="utf-8",
+    )
+    app = SimpleNamespace(csv_dir=csv_dir)
+    assert mod._chain_ws_url(137, app) == "wss://primary.example/v2/key"
+print("EVM_WS_PRIORITY_OK")
+'''
+    result = _run(script)
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
+    assert "EVM_WS_PRIORITY_OK" in result.stdout
+
+
+def test_env_is_ignored_and_placeholders_are_rejected():
+    script = r'''
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from learnerbot import polygon_websocket_patch as mod
+
+with TemporaryDirectory() as td:
+    csv_dir = Path(td)
+    (csv_dir / "rpc_endpoints.csv").write_text(
+        "chain_id,name,url,ws_url,enabled,priority\n"
+        "8453,alchemy,,wss://base.example/v2/${ALCHEMY_API_KEY},true,1\n",
+        encoding="utf-8",
+    )
+    app = SimpleNamespace(csv_dir=csv_dir)
+    assert mod._chain_ws_url(8453, app) == ""
+    assert mod._chain_ws_url(42161, app) == ""
+print("EVM_WS_ENV_IGNORED_OK")
 '''
     result = _run(
         script,
         {
-            "ALCHEMY_API_KEY": "shared",
-            "BASE_WS_URL": "wss://example.invalid/base-secret",
-            "BNB_WS_URL": "wss://example.invalid/bnb-secret",
-            "ARBITRUM_ALCHEMY_API_KEY": "arb-only",
+            "ALCHEMY_API_KEY": "must-not-be-used",
+            "BASE_WS_URL": "wss://env.example/base-secret",
+            "ARBITRUM_ALCHEMY_API_KEY": "must-not-be-used",
         },
     )
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "EVM_WS_OVERRIDES_OK" in result.stdout
+    assert "EVM_WS_ENV_IGNORED_OK" in result.stdout
 
 
-def test_rpc_endpoints_csv_ws_url_takes_priority_and_expands_env():
+def test_missing_csv_returns_no_websocket_url():
     script = r'''
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -70,44 +119,11 @@ from types import SimpleNamespace
 from learnerbot import polygon_websocket_patch as mod
 
 with TemporaryDirectory() as td:
-    csv_dir = Path(td)
-    (csv_dir / "rpc_endpoints.csv").write_text(
-        "chain_id,name,url,ws_url,enabled,priority\n"
-        "137,disabled,,wss://disabled.invalid/v2/${ALCHEMY_API_KEY},false,0\n"
-        "137,alchemy,https://polygon.invalid,wss://csv-polygon.invalid/v2/${ALCHEMY_API_KEY},true,1\n"
-        "8453,alchemy,https://base.invalid,wss://csv-base.invalid/v2/${ALCHEMY_API_KEY},true,1\n",
-        encoding="utf-8",
-    )
-    app = SimpleNamespace(csv_dir=csv_dir)
-    assert mod._chain_ws_url(137, app) == "wss://csv-polygon.invalid/v2/shared"
-    assert mod._chain_ws_url(8453, app) == "wss://csv-base.invalid/v2/shared"
-    # No CSV WSS row for Arbitrum, so the environment fallback remains active.
-    assert mod._chain_ws_url(42161, app) == "wss://arb-mainnet.g.alchemy.com/v2/shared"
-print("EVM_WS_CSV_OK")
+    app = SimpleNamespace(csv_dir=Path(td))
+    assert mod._chain_ws_url(137, app) == ""
+    assert mod._chain_ws_url(999999, app) == ""
+print("EVM_WS_MISSING_CSV_OK")
 '''
-    result = _run(script, {"ALCHEMY_API_KEY": "shared"})
+    result = _run(script, {"ALCHEMY_API_KEY": "still-must-not-be-used"})
     assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "EVM_WS_CSV_OK" in result.stdout
-
-
-def test_unresolved_csv_secret_placeholder_falls_back_to_env_override():
-    script = r'''
-from pathlib import Path
-from tempfile import TemporaryDirectory
-from types import SimpleNamespace
-from learnerbot import polygon_websocket_patch as mod
-
-with TemporaryDirectory() as td:
-    csv_dir = Path(td)
-    (csv_dir / "rpc_endpoints.csv").write_text(
-        "chain_id,name,url,ws_url,enabled,priority\n"
-        "8453,alchemy,https://base.invalid,wss://base.invalid/v2/${MISSING_KEY},true,1\n",
-        encoding="utf-8",
-    )
-    app = SimpleNamespace(csv_dir=csv_dir)
-    assert mod._chain_ws_url(8453, app) == "wss://env-base.invalid/ws"
-print("EVM_WS_CSV_FALLBACK_OK")
-'''
-    result = _run(script, {"BASE_WS_URL": "wss://env-base.invalid/ws"})
-    assert result.returncode == 0, result.stdout + "\n" + result.stderr
-    assert "EVM_WS_CSV_FALLBACK_OK" in result.stdout
+    assert "EVM_WS_MISSING_CSV_OK" in result.stdout

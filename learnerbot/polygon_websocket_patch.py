@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import threading
 import time
-from string import Template
 
 from websockets.sync.client import connect
 
@@ -14,40 +12,13 @@ from . import sibot as _sibot
 
 # Keep the historical module name for compatibility with the existing Polygon
 # runtime invariant, but this patch now provides the same WebSocket fast lane to
-# all requested high-priority EVM chains.
+# all requested high-priority EVM chains.  Provider credentials live only in the
+# VPS runtime CSV, never in environment variables or this repository.
 EVM_WS_CHAINS = {
-    137: {
-        "slug": "polygon",
-        "label": "Polygon",
-        "host": "polygon-mainnet.g.alchemy.com",
-        "url_envs": ("POLYGON_WS_URL",),
-        "key_envs": ("POLYGON_ALCHEMY_API_KEY", "ALCHEMY_API_KEY"),
-    },
-    42161: {
-        "slug": "arbitrum",
-        "label": "Arbitrum",
-        "host": "arb-mainnet.g.alchemy.com",
-        "url_envs": ("ARBITRUM_WS_URL",),
-        "key_envs": ("ARBITRUM_ALCHEMY_API_KEY", "ALCHEMY_API_KEY"),
-    },
-    56: {
-        "slug": "bnb",
-        "label": "BNB Chain",
-        "host": "bnb-mainnet.g.alchemy.com",
-        "url_envs": ("BNB_WS_URL", "BSC_WS_URL"),
-        "key_envs": (
-            "BNB_ALCHEMY_API_KEY",
-            "BSC_ALCHEMY_API_KEY",
-            "ALCHEMY_API_KEY",
-        ),
-    },
-    8453: {
-        "slug": "base",
-        "label": "Base",
-        "host": "base-mainnet.g.alchemy.com",
-        "url_envs": ("BASE_WS_URL",),
-        "key_envs": ("BASE_ALCHEMY_API_KEY", "ALCHEMY_API_KEY"),
-    },
+    137: {"slug": "polygon", "label": "Polygon"},
+    42161: {"slug": "arbitrum", "label": "Arbitrum"},
+    56: {"slug": "bnb", "label": "BNB Chain"},
+    8453: {"slug": "base", "label": "Base"},
 }
 
 _START_LOCK = threading.Lock()
@@ -74,24 +45,16 @@ def _bool(value, default=True) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
-def _first_env(names) -> str:
-    for name in names:
-        value = os.getenv(name, "").strip()
-        if value:
-            return value
-    return ""
-
-
-def _expand_csv_ws_url(value: str) -> str:
-    """Expand ${ENV_VAR} placeholders without exposing values in logs."""
+def _csv_ws_value(value: str) -> str:
+    """Accept only a complete WebSocket URL stored directly in the runtime CSV."""
     text = str(value or "").strip()
     if not text:
         return ""
-    try:
-        expanded = Template(text).substitute(os.environ).strip()
-    except (KeyError, ValueError):
+    # Environment placeholders are deliberately unsupported: the Alchemy key is
+    # owned by rpc_endpoints.csv only, as requested by the operator.
+    if "$" in text:
         return ""
-    return expanded if expanded.startswith(("wss://", "ws://")) else ""
+    return text if text.startswith(("wss://", "ws://")) else ""
 
 
 def _csv_ws_url(app, chain_id: int) -> str:
@@ -121,7 +84,7 @@ def _csv_ws_url(app, chain_id: int) -> str:
                     str(row.get("ws_url") or "").strip()
                     or str(row.get("websocket_url") or "").strip()
                 )
-                url = _expand_csv_ws_url(raw_url)
+                url = _csv_ws_value(raw_url)
                 if not url:
                     continue
                 try:
@@ -136,22 +99,10 @@ def _csv_ws_url(app, chain_id: int) -> str:
 
 
 def _chain_ws_url(chain_id: int, app=None) -> str:
-    """Resolve WSS from rpc_endpoints.csv first, then secret-backed env fallback."""
-    spec = EVM_WS_CHAINS.get(int(chain_id))
-    if not spec:
+    """Resolve EVM WebSocket URL exclusively from rpc_endpoints.csv."""
+    if int(chain_id) not in EVM_WS_CHAINS:
         return ""
-
-    csv_url = _csv_ws_url(app, chain_id)
-    if csv_url:
-        return csv_url
-
-    explicit = _first_env(spec["url_envs"])
-    if explicit:
-        return explicit
-    key = _first_env(spec["key_envs"])
-    if key:
-        return f"wss://{spec['host']}/v2/{key}"
-    return ""
+    return _csv_ws_url(app, chain_id)
 
 
 def _chain(app, chain_id: int):
@@ -218,11 +169,11 @@ def _chain_ws_worker(app, chain_id: int) -> None:
                 _subscribe_new_heads(ws, chain_id)
                 print(
                     f"[evm-ws:{spec['slug']}] connected chain={chain_id} "
-                    "newHeads=true source=csv_or_env fallback_poll=true"
+                    "newHeads=true source=rpc_endpoints_csv fallback_poll=true"
                 )
                 backoff = 1.0
                 for raw in ws:
-                    # rpc_endpoints.csv is part of the bot config fingerprint.  If
+                    # rpc_endpoints.csv is part of the bot config fingerprint. If
                     # its selected WebSocket changes, reconnect on the next block
                     # instead of requiring a service restart.
                     if _chain_ws_url(chain_id, app) != url:
@@ -249,7 +200,7 @@ def _chain_ws_worker(app, chain_id: int) -> None:
                             str(exc)[:180],
                         )
         except Exception as exc:
-            # Do not print url: provider URLs commonly embed private API keys.
+            # Do not print url: provider URLs embed the private API key in CSV.
             print(f"[evm-ws:{spec['slug']}]", type(exc).__name__, str(exc)[:180])
             time.sleep(backoff)
             backoff = min(backoff * 2.0, 30.0)
@@ -292,13 +243,13 @@ def install() -> None:
     chains = ",".join(str(cid) for cid in EVM_WS_CHAINS)
     print(
         f"[evm-ws] installed chains={chains} subscription=newHeads "
-        "source=rpc_endpoints_csv_then_env fallback_poll=true"
+        "source=rpc_endpoints_csv_only fallback_poll=true"
     )
 
 
 install()
 
 # This module is already loaded late in startup by the Polygon runtime invariant,
-# after the Solana reliability/cursor patches have installed.  Importing the
+# after the Solana reliability/cursor patches have installed. Importing the
 # Solana WSS patch here preserves that ordering without moving any trading hooks.
 from . import solana_websocket_patch as _solana_ws  # noqa: E402,F401
