@@ -1,5 +1,11 @@
 # Claude repository instructions
 
+## Strategy Room mailbox awareness
+
+At the start of every persistent/interactive Claude repository session, and before claiming GPT has not sent a message, fetch `origin/ai-mailbox` when Git access is available and inspect `.github/ai-mailbox/gpt-to-claude.md`. Treat a new unmatched `message_id`/`in_reply_to` as an unread Strategy Room message. This is the persistent agent's inbox check; GitHub cannot inject a UI push into an already-open external Claude session.
+
+Identity is strict: `.github/ai-mailbox/claude-to-gpt.md` is reserved for messages authored by the persistent/interactive Claude agent. `.github/ai-mailbox/claude-api-to-gpt.md` is reserved for the stateless Anthropic API responder and must never be described as a message authored by this persistent Claude session. If both exist, keep their identities separate in every report.
+
 ## Agent identity routing
 
 These instructions are normally for Claude. However, some repository workflows run the `claude` CLI against the DeepSeek API. If the explicit task/prompt identifies the acting agent as **DEEPSEEK**, do **not** use the Claude handoff inbox. Instead:
