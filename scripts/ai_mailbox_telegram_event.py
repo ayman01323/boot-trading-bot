@@ -77,7 +77,6 @@ def _event_from_text(agent: str, kind: str, expected_prefix: str, text: str) -> 
     key = "message_id" if kind == "initiation" else "in_reply_to"
     message_id = str(headers.get(key) or "").strip()
     status = str(headers.get("status") or "UNKNOWN").strip().upper()
-    # build_message performs the bounded identifier/status validation.
     build_message(agent, kind, message_id, status)
     return {"agent": agent, "kind": kind, "message_id": message_id, "status": status}
 
@@ -109,12 +108,19 @@ def resolve_provider_replies(repo: str, started_at: str, updated_at: str, token:
         if not sha:
             continue
         detail = _github_json(f"https://api.github.com/repos/{repo}/commits/{sha}", token)
-        files = detail.get("files") if isinstance(detail, dict) else []
-        for item in files or []:
+        if not isinstance(detail, dict):
+            continue
+        commit = detail.get("commit") or {}
+        commit_message = str(commit.get("message") or "").splitlines()[0].strip() if isinstance(commit, dict) else ""
+        files = detail.get("files") or []
+        for item in files:
             path = str((item or {}).get("filename") or "")
             if path not in _REPLY_PATHS:
                 continue
             agent, prefix = _REPLY_PATHS[path]
+            expected_commit_prefix = f"{agent.title()} to GPT mailbox "
+            if not commit_message.startswith(expected_commit_prefix):
+                continue
             text = _fetch_content(repo, path, sha, token)
             event = _event_from_text(agent, "reply", prefix, text)
             key = (agent, event["message_id"])
