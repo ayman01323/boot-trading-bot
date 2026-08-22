@@ -87,23 +87,22 @@ Fallback replies remain in the matching `.github/ai-mailbox/bus-to-<sender>.md` 
 
 Do not claim a Git mailbox commit itself proves recipient receipt. It proves only that the message was written to Git. Recipient receipt requires a correlated relay result.
 
-## Installation and service behaviour
+## Runtime and deployment behaviour
 
-The VPS services are installed by:
+The production path does **not** require new sudo permissions or a separate root-owned daemon. The existing `learnerbot.service` already runs `python -m learnerbot run`; that runtime imports `learnerbot.ai_agent_ws_runtime_patch`, which starts the loopback broker and all five persistent recipient workers in a daemon sidecar thread.
 
-```bash
-bash scripts/install_ai_agent_ws_bus.sh
-```
+The embedded runtime:
 
-The installer creates:
+- starts only for the real `learnerbot run` command, not short administrative/test commands;
+- binds `127.0.0.1:8765` only;
+- stores the durable queue in `/var/tmp/boot/ai_agent_bus.sqlite3` using SQLite WAL mode;
+- writes non-secret runtime state to `/var/tmp/boot/ai_agent_ws_status.json`;
+- reconnects recipient workers automatically;
+- skips itself if another broker is already serving that loopback port;
+- can be disabled explicitly with `AI_AGENT_WS_AUTOSTART=0`.
 
-- `boot-ai-agent-bus.service` — local WebSocket broker;
-- `boot-ai-agent-worker@gpt.service`;
-- `boot-ai-agent-worker@claude.service`;
-- `boot-ai-agent-worker@gemini.service`;
-- `boot-ai-agent-worker@deepseek.service`;
-- `boot-ai-agent-worker@copilot.service`.
+Deployment uses the repository's existing restricted root wrapper, `/usr/local/sbin/deploy-boot-trading-bot`, which already verifies the exact current `origin/main`, installs declared Python dependencies, runs compile/tests, and restarts `learnerbot` only after the gate passes. No broad runner sudo permission is added for the WebSocket bus.
 
-All reconnect automatically. The broker persists messages in `/var/tmp/boot/ai_agent_bus.sqlite3` using SQLite WAL mode.
+`scripts/install_ai_agent_ws_bus.sh` remains an optional one-time standalone/systemd installer for an administrator who deliberately wants a separate broker service. It is **not** the automatic production deployment path and the GitHub runner is not granted arbitrary sudo to run it.
 
 Protocol revision: `ws-bus-v1`.
