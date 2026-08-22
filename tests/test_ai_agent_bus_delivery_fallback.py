@@ -87,7 +87,9 @@ def test_bus_serialises_runs_and_uses_live_python_github_client() -> None:
     assert 'scripts/ai_agent_bus_pending.py select-live' in text
     assert 'scripts/ai_agent_bus_pending.py has-reply-live' in text
     assert 'scripts/ai_agent_bus_pending.py post-reply' in text
-    assert 'gh api' not in text
+    assert text.count('gh api') == 2
+    assert 'api="repos/${GITHUB_REPOSITORY}/contents/github/ai-agent-bus/latest.json"' in text
+    assert "'branch': 'ai-reviews'" in text
     assert '--slurp' not in text
 
 
@@ -203,7 +205,9 @@ def test_provider_call_remains_bounded_and_reply_only() -> None:
     text = _text()
     assert 'ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}' in text
     assert 'issues: write' in text
-    assert 'contents: read' in text
-    assert 'contents: write' not in text
+    assert 'contents: write' in text
+    assert 'Publish sanitised reply snapshot for MASTER Telegram alerts' in text
+    assert 'api="repos/${GITHUB_REPOSITORY}/contents/github/ai-agent-bus/latest.json"' in text
+    assert "'branch': 'ai-reviews'" in text
     assert 'sudo ' not in text
     assert 'deploy-boot-trading-bot' not in text
