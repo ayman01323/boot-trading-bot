@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import time
 from contextlib import closing
 from decimal import Decimal
@@ -48,10 +49,19 @@ def _d(v, default="0") -> Decimal:
     return _sol._dec(v, default)
 
 
+def _quote_headers() -> dict[str, str]:
+    """Match the production Jupiter quote auth without constructing a signer."""
+    headers = dict(_HEADERS)
+    api_key = os.getenv("JUPITER_API_KEY", "").strip()
+    if api_key:
+        headers["x-api-key"] = api_key
+    return headers
+
+
 def _quote_only(input_mint: str, output_mint: str, amount_raw: int, slippage_bps: int) -> dict:
     """Read-only Jupiter quote. No taker/wallet is required and nothing is signed
-    or broadcast -- this is the same quote-only request the emergency-liquidity
-    layer uses to test a slice before ever attempting a real close."""
+    or broadcast -- this is the same quote-only request the execution guard uses
+    before ever attempting a real close."""
     params = {
         "inputMint": str(input_mint),
         "outputMint": str(output_mint),
@@ -59,9 +69,23 @@ def _quote_only(input_mint: str, output_mint: str, amount_raw: int, slippage_bps
         "slippageBps": str(int(slippage_bps)),
         "excludeRouters": "jupiterz",
     }
-    r = requests.get(f"{_exec.JUPITER_BASE}/order", params=params, headers=_HEADERS, timeout=30)
+    r = requests.get(
+        f"{_exec.JUPITER_BASE}/order",
+        params=params,
+        headers=_quote_headers(),
+        timeout=30,
+    )
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    # Jupiter can return HTTP 200 with an application-level error. Treat that as
+    # unavailable rather than accidentally interpreting a missing impact field as
+    # a healthy quote. A positive output amount is mandatory for a usable quote.
+    if data.get("errorCode") or _sol._int(data.get("outAmount") or data.get("outputAmount"), 0) <= 0:
+        raise _exec.SolanaLiveError(
+            "Jupiter quote failed: "
+            + str(data.get("errorMessage") or data.get("errorCode") or "no positive output")
+        )
+    return data
 
 
 def _combined_impact_slippage_bps(quote: dict, slippage_bps: int) -> Decimal:
@@ -155,7 +179,7 @@ def check_open_position_liquidity(app) -> None:
         except Exception:
             # A failed/unavailable quote is not itself evidence of a liquidity
             # problem (could be a transient RPC/API issue); skip silently and try
-            # again next cycle rather than alerting on noise.
+            # again on the next configured health-check cadence.
             continue
         finally:
             _mark_checked(app, pid)
