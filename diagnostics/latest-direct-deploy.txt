@@ -1,12 +1,12 @@
-requested_sha=3a292d75e1bddf72ae75d726bdc0a626edb0cfc7
+requested_sha=cba9456ee45abb57de3b75b3f8f3c6bd95620622
 deploy_outcome=failure
 deploy_exit=10
-run_id=32544155344
-utc=2026-08-22T01:44:24Z
+run_id=32544354082
+utc=2026-08-22T01:46:53Z
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-22T01:44:23Z
+UTC: 2026-08-22T01:46:53Z
 branch: main
 sha:    1fcbc0bf5a8d3db5bb0869e862b596006a7fd0d4
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -17,17 +17,14 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Sat 2026-08-22 01:28:36 BST; 1h 15min ago
+     Active: active (running) since Sat 2026-08-22 01:28:36 BST; 1h 18min ago
    Main PID: 510009 (python)
       Tasks: 21 (limit: 5869)
-     Memory: 642.8M (peak: 788.2M)
-        CPU: 50min 41.441s
+     Memory: 542.0M (peak: 788.2M)
+        CPU: 52min 19.985s
      CGroup: /system.slice/learnerbot.service
              └─510009 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 22 02:37:21 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=48.563
-Aug 22 02:38:03 mint.yesgoodwill.com python[510009]: [learn:base] patterns=558
-Aug 22 02:38:04 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=41.882
 Aug 22 02:38:46 mint.yesgoodwill.com python[510009]: [power-discovery] v2-added=20 v3-pools=198 products=8040 auto-products=991 rejected=0 seconds=469.630
 Aug 22 02:38:46 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=41.292
 Aug 22 02:39:30 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=42.825
@@ -35,17 +32,16 @@ Aug 22 02:40:38 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=1
 Aug 22 02:41:36 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=55.214
 Aug 22 02:42:43 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=66.316
 Aug 22 02:43:45 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=61.330
+Aug 22 02:44:43 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=56.963
+Aug 22 02:45:37 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=52.278
+Aug 22 02:46:26 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=48.546
 
 === DEPLOY OUTPUT (tail) ===
- .../workflows/gpt-strategy-room-controlled-ops.yml | 212 +++++++++++++
- .../workflows/publish-strategy-room-request.yml    | 148 +++++++++
- .github/workflows/selected-ai-master-ci.yml        |  25 +-
- learnerbot/ai_bus_telegram_alert_patch.py          | 150 ++++++++++
- learnerbot/ai_health_compact_report_patch.py       |  23 +-
- .../sibot_leader_quality_hard_floor_patch.py       |   5 +
+ .../solana_position_liquidity_health_patch.py      | 214 ++++++++++++++
  learnerbot/strategy_room.py                        | 231 +++++++++++++++
  learnerbot/telegram_hi_keefek_patch.py             |   2 +
  learnerbot/telegram_strategy_room_patch.py         | 329 +++++++++++++++++++++
+ learnerbot/trading_runtime_invariant_patch.py      |  10 +-
  requirements.txt                                   |   1 +
  scripts/ai_mailbox_telegram_event.py               | 185 ++++++++++++
  scripts/ai_mailbox_telegram_notify.py              | 128 ++++++++
@@ -58,8 +54,10 @@ Aug 22 02:43:45 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0
  tests/test_ai_mailbox_telegram_notify.py           |  74 +++++
  tests/test_gemini_git_mailbox_bridge.py            | 158 ++++++++++
  tests/test_provider_git_mailbox_bridge.py          |  66 +++++
+ tests/test_solana_position_liquidity_health.py     | 206 +++++++++++++
+ tests/test_solana_runtime_composition.py           |   4 +-
  tests/test_strategy_room.py                        | 150 ++++++++++
- 33 files changed, 3042 insertions(+), 122 deletions(-)
+ 37 files changed, 3472 insertions(+), 126 deletions(-)
  create mode 100644 .github/workflows/ai-agent-bus-telegram-snapshot.yml
  create mode 100644 .github/workflows/ai-bus-telegram-ci.yml
  create mode 100644 .github/workflows/ai-mailbox-provider-signal.yml
@@ -71,6 +69,7 @@ Aug 22 02:43:45 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0
  create mode 100644 .github/workflows/gpt-strategy-room-controlled-ops.yml
  create mode 100644 .github/workflows/publish-strategy-room-request.yml
  create mode 100644 learnerbot/ai_bus_telegram_alert_patch.py
+ create mode 100644 learnerbot/solana_position_liquidity_health_patch.py
  create mode 100644 learnerbot/strategy_room.py
  create mode 100644 learnerbot/telegram_strategy_room_patch.py
  create mode 100644 scripts/ai_mailbox_telegram_event.py
@@ -82,20 +81,21 @@ Aug 22 02:43:45 mint.yesgoodwill.com python[510009]: [fast-market-scan] direct=0
  create mode 100644 tests/test_ai_mailbox_telegram_notify.py
  create mode 100644 tests/test_gemini_git_mailbox_bridge.py
  create mode 100644 tests/test_provider_git_mailbox_bridge.py
+ create mode 100644 tests/test_solana_position_liquidity_health.py
  create mode 100644 tests/test_strategy_room.py
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
 ..............................................................F......... [ 10%]
 ........................................................................ [ 20%]
-........................................................................ [ 31%]
-........................................................................ [ 41%]
+........................................................................ [ 30%]
+........................................................................ [ 40%]
 ........................................................................ [ 51%]
-........................................................................ [ 62%]
-........................................................................ [ 72%]
-........................................................................ [ 83%]
-........................................................................ [ 93%]
-.............................................                            [100%]
+........................................................................ [ 61%]
+........................................................................ [ 71%]
+........................................................................ [ 81%]
+........................................................................ [ 92%]
+........................................................                 [100%]
 =================================== FAILURES ===================================
 _____________________ test_requested_compact_health_format _____________________
 
@@ -154,6 +154,6 @@ tests/test_ai_health_compact_report.py:47: AssertionError
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 FAILED tests/test_ai_health_compact_report.py::test_requested_compact_health_format
-1 failed, 692 passed, 1 warning in 45.79s
-2026-08-22T01:44:23Z TESTS FAILED; service remains on old running process
+1 failed, 703 passed, 1 warning in 46.56s
+2026-08-22T01:46:52Z TESTS FAILED; service remains on old running process
 HEAD is now at 1fcbc0b Merge pull request #343 from ayman01323/fix/gpt-git-mailbox-bridge
