@@ -3,8 +3,8 @@ name: Publish Telegram AI Master Control
 on:
   schedule:
     # Keep the operator-facing control bridge responsive without cloning/fetching the
-    # repository every five minutes. The job below transfers only a tiny JSON object
-    # and does nothing when the semantic control state has not changed.
+    # repository every five minutes. The job below transfers only tiny JSON objects
+    # and does nothing when semantic control/change state has not changed.
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
@@ -203,3 +203,171 @@ jobs:
             --ref main \
             -f action="$ACTION"
           echo "Dispatched DeepSeek VPS action=$ACTION from Telegram bridge."
+
+      - name: Publish changed MASTER change council decision without extra polling
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=/var/tmp/boot/master_change_council_latest.json
+          local_state=/var/tmp/boot/master_change_publisher_state.json
+          if [[ ! -s "$src" ]]; then
+            echo 'No MASTER change council decision exists yet.'
+            exit 0
+          fi
+
+          # Cheapest common path: compare two tiny local values first. No extra
+          # GitHub API request is made when the council revision is unchanged.
+          key="$(python3 - "$src" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1],encoding='utf-8'))
+          print(str(p.get('request_id') or '')+':'+str(int(p.get('bridge_revision') or 0)))
+          PY
+          )"
+          seen="$(python3 - "$local_state" <<'PY'
+          import json,sys
+          try: print(str(json.load(open(sys.argv[1],encoding='utf-8')).get('key') or ''))
+          except Exception: print('')
+          PY
+          )"
+          if [[ -n "$key" && "$key" == "$seen" ]]; then
+            echo "MASTER change council unchanged ($key); zero extra GitHub calls."
+            exit 0
+          fi
+
+          python3 - "$src" /tmp/master-change.json <<'PY'
+          import json,re,sys
+          src,out=sys.argv[1:3]
+          p=json.load(open(src,encoding='utf-8'))
+          rid=str(p.get('request_id') or '')
+          if not re.fullmatch(r'mc-[A-Za-z0-9T-]{10,80}',rid): raise SystemExit('invalid request_id')
+          request=str(p.get('request') or '').replace('\x00','').strip()[:3500]
+          if not request: raise SystemExit('empty request')
+          def scrub(v,limit):
+              s=str(v or '').replace('\x00','')[:limit]
+              s=re.sub(r'\bsk-[A-Za-z0-9_-]{12,}\b','[REDACTED]',s)
+              s=re.sub(r'(?i)(authorization\s*:\s*bearer\s+)\S+',r'\1[REDACTED]',s)
+              s=re.sub(r'(?i)((?:private[_ -]?key|mnemonic|seed phrase)\s*[:=]\s*)\S.{8,}',r'\1[REDACTED]',s)
+              return s
+          advisers={}
+          for name in ('claude','gemini','deepseek','copilot'):
+              row=(p.get('advisers') or {}).get(name) or {}
+              advisers[name]={
+                  'acknowledged':bool(row.get('acknowledged')),
+                  'provider_rc':int(row.get('provider_rc')) if row.get('provider_rc') is not None else None,
+                  'reply':scrub(row.get('reply'),12000),
+                  'error':scrub(row.get('error'),1200),
+                  'message_id':scrub(row.get('message_id'),140),
+              }
+          d=p.get('gpt_decision') or {}
+          action=str(d.get('action') or '').upper()
+          if action and action not in {'IMPLEMENT','REJECT','HUMAN_REVIEW'}: raise SystemExit('invalid GPT action')
+          risk=str(d.get('risk_class') or '').upper()
+          if risk and risk not in {'LOW','MEDIUM','HIGH','CRITICAL'}: raise SystemExit('invalid risk class')
+          files=[]
+          for x in d.get('allowed_files') or []:
+              path=str(x or '').replace('\\','/').strip().lstrip('/')
+              if not path or '*' in path or '..' in path.split('/') or len(path)>300: continue
+              if path not in files: files.append(path)
+              if len(files)>=20: break
+          clean={
+              'schema_version':1,
+              'request_id':rid,
+              'request':scrub(request,3500),
+              'source_sha':str(p.get('source_sha') or '')[:40],
+              'created_epoch':max(0,int(p.get('created_epoch') or 0)),
+              'updated_epoch':max(0,int(p.get('updated_epoch') or 0)),
+              'status':str(p.get('status') or '')[:80],
+              'attempt':max(0,int(p.get('attempt') or 0)),
+              'hard_protected_reasons':[scrub(x,120) for x in (p.get('hard_protected_reasons') or [])[:20]],
+              'protected_reasons':[scrub(x,120) for x in (p.get('protected_reasons') or [])[:20]],
+              'advisers':advisers,
+              'all_advisers_replied':bool(p.get('all_advisers_replied')),
+              'gpt_decision':{
+                  'action':action,
+                  'risk_class':risk,
+                  'summary':scrub(d.get('summary'),900),
+                  'reasoning':scrub(d.get('reasoning'),3000),
+                  'allowed_files':files,
+                  'required_tests':[scrub(x,300) for x in (d.get('required_tests') or [])[:12]],
+                  'auto_merge_recommended':bool(d.get('auto_merge_recommended')),
+              },
+              'implementation_allowed':bool(p.get('implementation_allowed')),
+              'auto_merge_allowed':bool(p.get('auto_merge_allowed')),
+              'implementation_nonce':max(0,int(p.get('implementation_nonce') or 0)),
+              'bridge_revision':max(0,int(p.get('bridge_revision') or 0)),
+          }
+          json.dump(clean,open(out,'w',encoding='utf-8'),indent=2,sort_keys=True);open(out,'a').write('\n')
+          PY
+
+          get_content() {
+            local path="$1" out="$2"
+            set +e
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" > /tmp/master-change-api.json 2>/dev/null
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 ]]; then echo '{}' > "$out"; return 1; fi
+            python3 - /tmp/master-change-api.json "$out" <<'PY'
+          import base64,json,sys
+          p=json.load(open(sys.argv[1])); raw=base64.b64decode((p.get('content') or '').replace('\n',''))
+          open(sys.argv[2],'wb').write(raw)
+          PY
+          }
+          put_file() {
+            local path="$1" file="$2" message="$3" api current sha rc
+            api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+            set +e
+            current="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" 2>/dev/null)"
+            rc=$?
+            set -e
+            sha=''
+            if [[ $rc -eq 0 && -n "$current" ]]; then sha="$(printf '%s' "$current" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"; fi
+            python3 - "$file" "$sha" "$message" <<'PY' > /tmp/master-change-put.json
+          import base64,json,sys
+          file,sha,msg=sys.argv[1:4]
+          out={'message':msg,'content':base64.b64encode(open(file,'rb').read()).decode(),'branch':'ai-reviews'}
+          if sha: out['sha']=sha
+          print(json.dumps(out))
+          PY
+            gh api -X PUT "$api" --input /tmp/master-change-put.json >/dev/null
+          }
+
+          request_id="$(python3 -c "import json;print(json.load(open('/tmp/master-change.json'))['request_id'])")"
+          revision="$(python3 -c "import json;print(int(json.load(open('/tmp/master-change.json')).get('bridge_revision') or 0))")"
+          implementation_nonce="$(python3 -c "import json;print(int(json.load(open('/tmp/master-change.json')).get('implementation_nonce') or 0))")"
+          implementation_allowed="$(python3 -c "import json;print('true' if json.load(open('/tmp/master-change.json')).get('implementation_allowed') else 'false')")"
+
+          put_file "master-change/requests/${request_id}.json" /tmp/master-change.json "Publish MASTER change ${request_id}"
+          put_file "master-change/latest_request.json" /tmp/master-change.json "Update latest MASTER change ${request_id}"
+
+          get_content "master-change/dispatch_state.json" /tmp/master-change-dispatch-state.json || echo '{}' > /tmp/master-change-dispatch-state.json
+          dispatch_key="${request_id}:${implementation_nonce}"
+          dispatch_seen="$(python3 - /tmp/master-change-dispatch-state.json <<'PY'
+          import json,sys
+          try: print(str(json.load(open(sys.argv[1])).get('last_dispatch_key') or ''))
+          except Exception: print('')
+          PY
+          )"
+          if [[ "$implementation_allowed" == true && "$implementation_nonce" -gt 0 && "$dispatch_key" != "$dispatch_seen" ]]; then
+            gh workflow run gpt-master-change-implement.yml \
+              --repo "$GITHUB_REPOSITORY" --ref main \
+              -f request_id="$request_id" \
+              -f implementation_nonce="$implementation_nonce"
+            python3 - "$dispatch_key" <<'PY' > /tmp/master-change-new-dispatch-state.json
+          import json,sys,time
+          print(json.dumps({'schema_version':1,'last_dispatch_key':sys.argv[1],'updated_epoch':int(time.time())},indent=2,sort_keys=True))
+          PY
+            put_file "master-change/dispatch_state.json" /tmp/master-change-new-dispatch-state.json "Record MASTER change dispatch ${request_id}"
+          fi
+
+          python3 - "$key" "$request_id" "$revision" <<'PY'
+          import json,os,sys,time
+          path='/var/tmp/boot/master_change_publisher_state.json'
+          tmp=path+'.tmp'
+          value={'schema_version':1,'key':sys.argv[1],'request_id':sys.argv[2],'bridge_revision':int(sys.argv[3]),'updated_epoch':int(time.time())}
+          with open(tmp,'w',encoding='utf-8') as fh: json.dump(value,fh,indent=2,sort_keys=True); fh.write('\n'); fh.flush(); os.fsync(fh.fileno())
+          os.chmod(tmp,0o644); os.replace(tmp,path)
+          PY
+          echo "Published MASTER change council revision ${key}."
