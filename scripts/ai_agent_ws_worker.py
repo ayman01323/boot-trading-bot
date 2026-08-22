@@ -19,9 +19,18 @@ DEFAULT_URL = "ws://127.0.0.1:8765"
 COPILOT_BUS_BIN_DIR = "/var/tmp/boot-copilot-cli/bin"
 CHEAP_MODELS = {
     "gpt": ("OPENAI_COUNCIL_MODEL", "gpt-5-nano"),
-    "gemini": ("GEMINI_COUNCIL_MODEL", "gemini-3.1-flash-lite"),
+    "gemini": ("GEMINI_COUNCIL_MODEL", "gemini-3.5-flash-lite"),
     "claude": ("ANTHROPIC_COUNCIL_MODEL", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_COUNCIL_MODEL", "deepseek-v4-flash"),
+}
+# Retired bus-model overrides can survive in the VPS environment long after the
+# repository default changes. Canonicalise only provider-declared retired aliases
+# so a stale environment variable cannot keep routine inter-agent delivery broken.
+_RETIRED_MODEL_ALIASES = {
+    "gemini": {
+        "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
+        "models/gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
+    },
 }
 _PROVIDER_CALL_LOCK = threading.Lock()
 _MISSING = object()
@@ -32,7 +41,9 @@ def low_cost_model(agent: str) -> str:
         return "provider-default"
     _, default = CHEAP_MODELS[agent]
     override_key = f"AI_BUS_{agent.upper()}_MODEL"
-    return str(os.environ.get(override_key) or default).strip()
+    raw = str(os.environ.get(override_key) or default).strip()
+    aliases = _RETIRED_MODEL_ALIASES.get(agent, {})
+    return aliases.get(raw.lower(), raw)
 
 
 def build_prompt(agent: str, message: dict[str, Any]) -> str:
