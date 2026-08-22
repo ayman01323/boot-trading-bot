@@ -110,17 +110,21 @@ from . import solana_execution_latency_patch  # noqa: E402,F401
 # adviser workers without GitHub mailbox polling.
 from . import telegram_master_change_patch  # noqa: E402,F401
 
-# Secure fallback for the EVM history provider secret. Normal root .env remains
-# authoritative; this reads only a mode-600 VPS bridge populated from GitHub
-# Actions secrets and never logs or publishes the credential value.
-from . import evm_history_runtime_secret_patch  # noqa: E402,F401
+# EVM historical leader reconstruction uses only the complete Alchemy HTTP URLs
+# stored in VPS-local rpc_endpoints.csv. No ALCHEMY_API_KEY or ETHERSCAN_API_KEY
+# environment variable is required by this path.
+from . import sibot_alchemy_history_patch  # noqa: E402,F401
 
 # Final operational truth layer: expose the exact reason no trade is occurring
 # without changing LIVE scope, thresholds, capital, signing or any safety gate.
 from . import telegram_trade_blocker_health_patch  # noqa: E402,F401
 
+# Replace the legacy global Etherscan dependency status with per-chain Alchemy
+# history-provider readiness.
+from . import trade_blocker_alchemy_history_patch  # noqa: E402,F401
+
 # Sanitise any upstream HTTP error before it reaches Telegram or the redacted
-# health JSON; explorer URLs can otherwise contain API-key query parameters.
+# health JSON; provider URLs can contain private API credentials.
 from . import trade_blocker_secret_redaction_patch  # noqa: E402,F401
 
 # Add read-only Solana wallet funding, platform amount-profit and selected-leader
