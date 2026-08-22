@@ -32,6 +32,7 @@ from learnerbot import solana_exit_circuit_breaker_patch as exit_circuit
 from learnerbot import transaction_audit_worker_patch as audit_worker
 from learnerbot import telegram_ui as telegram_ui
 from learnerbot import trading_runtime_invariant_patch  # noqa
+from learnerbot import solana_position_liquidity_health_patch as liquidity_health
 from learnerbot import profit_control_loop_patch as profit_control
 from learnerbot import solana_profit_first_live_correction_patch as profit_first
 from learnerbot import solana_partial_sell_profit_guard_patch as partial_guard
@@ -60,7 +61,8 @@ assert validation._PREV_BUY is reserve._buy_with_simulated_reserve
 assert executor.SolanaLiveExecutor._simulate is reserve._simulate_with_wallet_snapshot
 
 assert sol.evaluate_position is rent.evaluate_position_economic
-assert sol.monitor_positions is exit_circuit._monitor_with_exit_reconciliation
+assert sol.monitor_positions is liquidity_health.monitor_positions_with_liquidity_health
+assert liquidity_health._PREV_MONITOR_POSITIONS is exit_circuit._monitor_with_exit_reconciliation
 assert exit_circuit._MONITOR_INNER is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
 assert sol.start_workers is workers.start_workers_reliable
