@@ -140,6 +140,10 @@ from . import trading_runtime_invariant_patch  # noqa: F401
 # breaker that the first-day rollback loosened; keeps first-day timing/frequency
 # settings and the positive-executable-edge preflight untouched.
 from . import solana_leader_quality_restore_patch  # noqa: F401
+# Read-only liquidity re-quote on already-open LIVE Solana positions, on a slower
+# cadence than the ordinary position-monitor loop. Can only send a Telegram warning
+# early -- never signs, broadcasts, closes or resizes a position.
+from . import solana_position_liquidity_health_patch  # noqa: F401
 # Additional final invariant for Polygon-only AUTO focus and fresh runtime-evidence handoff.
 from . import polygon_live_runtime_invariant_patch  # noqa: F401
 # Final trade attribution layer: stamp each EVM/Solana position with immutable strategy version + exact opening Git SHA.

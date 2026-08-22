@@ -38,6 +38,7 @@ from learnerbot import solana_partial_sell_profit_guard_patch as partial_guard
 from learnerbot import solana_positive_edge_entry_gate_patch as positive_edge
 from learnerbot import solana_first_day_strategy_restore_patch as first_day
 from learnerbot import solana_leader_quality_restore_patch as quality_restore
+from learnerbot import solana_position_liquidity_health_patch as liquidity_health
 from learnerbot import solana_live_executor as executor
 from learnerbot import solana_sibot as sol
 
@@ -60,7 +61,8 @@ assert validation._PREV_BUY is reserve._buy_with_simulated_reserve
 assert executor.SolanaLiveExecutor._simulate is reserve._simulate_with_wallet_snapshot
 
 assert sol.evaluate_position is rent.evaluate_position_economic
-assert sol.monitor_positions is exit_circuit._monitor_with_exit_reconciliation
+assert sol.monitor_positions is liquidity_health.monitor_positions_with_liquidity_health
+assert liquidity_health._PREV_MONITOR_POSITIONS is exit_circuit._monitor_with_exit_reconciliation
 assert exit_circuit._MONITOR_INNER is live.monitor_positions
 assert sol.monitor_leaders is cursor.monitor_leaders_reliable
 assert sol.start_workers is workers.start_workers_reliable
