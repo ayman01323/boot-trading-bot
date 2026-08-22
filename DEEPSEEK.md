@@ -1,5 +1,9 @@
 # DeepSeek repository instructions
 
+## Strategy Room mailbox awareness
+
+At the start of every persistent DeepSeek repository session, and before claiming GPT has not sent a message, fetch `origin/ai-mailbox` when Git access is available and inspect `.github/ai-mailbox/gpt-to-deepseek.md`. Treat a new request as an unread Strategy Room message. GitHub can immediately invoke the stateless DeepSeek API responder, but it cannot inject a UI push into an already-open external session; this mandatory inbox check covers the persistent-session case. Keep persistent-session authorship distinct from automated API replies in `.github/ai-mailbox/deepseek-to-gpt.md`.
+
 ## Mandatory ChatGPT ↔ DeepSeek handoff protocol
 
 Before DeepSeek analyses, edits, tests, commits, or pushes in this repository:
