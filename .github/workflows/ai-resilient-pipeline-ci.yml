@@ -10,9 +10,12 @@ on:
       - '.github/workflows/strategy-review-after-main-change.yml'
       - '.github/workflows/ai-resilient-pipeline-ci.yml'
       - 'learnerbot/ai_agent_health_warning_patch.py'
+      - 'learnerbot/ai_agent_health_process_dedupe_patch.py'
+      - 'learnerbot/ai_health_compact_report_patch.py'
       - 'learnerbot/strategy_canary_source_guard_patch.py'
       - 'learnerbot/telegram_hi_keefek_patch.py'
       - 'tests/test_ai_agent_health_warning.py'
+      - 'tests/test_ai_agent_health_process_dedupe.py'
       - 'tests/test_strategy_canary_source_guard_patch.py'
       - 'tests/test_ai_resilient_workflows.py'
   workflow_dispatch:
@@ -35,8 +38,11 @@ jobs:
         run: |
           python -m py_compile \
             learnerbot/ai_agent_health_warning_patch.py \
+            learnerbot/ai_agent_health_process_dedupe_patch.py \
+            learnerbot/ai_health_compact_report_patch.py \
             learnerbot/strategy_canary_source_guard_patch.py \
             tests/test_ai_agent_health_warning.py \
+            tests/test_ai_agent_health_process_dedupe.py \
             tests/test_strategy_canary_source_guard_patch.py \
             tests/test_ai_resilient_workflows.py
       - name: Parse new workflows and bash-syntax-check every run block
@@ -53,7 +59,7 @@ jobs:
             '.github/workflows/strategy-review-after-main-change.yml',
           ]
           for path in paths:
-              data=yaml.safe_load(pathlib.Path(path).read_text(encoding='utf-8'))
+              data=yaml.safe_load(pathlib.Path(name if False else path).read_text(encoding='utf-8'))
               jobs=data.get('jobs') or {}
               assert jobs, f'{path}: no jobs parsed'
               for job_name,job in jobs.items():
@@ -73,6 +79,7 @@ jobs:
         run: |
           pytest -x -vv \
             tests/test_ai_agent_health_warning.py \
+            tests/test_ai_agent_health_process_dedupe.py \
             tests/test_strategy_canary_source_guard_patch.py \
             tests/test_ai_resilient_workflows.py \
             tests/test_strategy_canary.py \
