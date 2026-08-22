@@ -1,0 +1,76 @@
+name: Engineering Execution Latency Snapshot
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: engineering-execution-latency-snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Build sanitised high-resolution execution latency report
+        env:
+          DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin="${DEPLOY_ROOT}/.venv/bin/python"
+          [[ -x "$python_bin" ]] || python_bin="$(command -v python3)"
+          PYTHONPATH="${DEPLOY_ROOT}:${PYTHONPATH:-}" "$python_bin" - <<'PY' > /tmp/engineering-execution-latency.json
+          import json
+          from learnerbot.config import AppSettings
+          from learnerbot.execution_latency import summary
+
+          app = AppSettings.load()
+          payload = {
+              "schema_version": 1,
+              "scope": "SANITISED_HIGH_RESOLUTION_EXECUTION_LATENCY_NO_SECRETS",
+              "execution_stages": summary(app),
+              "privacy": {
+                  "no_wallet_addresses": True,
+                  "no_transaction_hashes": True,
+                  "no_rpc_urls": True,
+                  "no_api_keys": True,
+                  "no_private_keys": True,
+              },
+          }
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish snapshot to ai-reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/engineering/ops/execution-latency-latest.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" --jq '.sha' 2>/dev/null || true)"
+          python3 - "$existing_sha" <<'PY' > /tmp/engineering-execution-latency-put.json
+          import base64,json,sys
+          raw=open('/tmp/engineering-execution-latency.json','rb').read()
+          body={
+              'message':'Update Engineering high-resolution execution latency snapshot',
+              'content':base64.b64encode(raw).decode(),
+              'branch':'ai-reviews',
+          }
+          if sys.argv[1]: body['sha']=sys.argv[1]
+          print(json.dumps(body))
+          PY
+          gh api -X PUT "$api" --input /tmp/engineering-execution-latency-put.json >/dev/null
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/engineering-execution-latency.json'))['execution_stages']
+          print('samples_24h=',p.get('samples_24h'))
+          print('samples_7d=',p.get('samples_7d'))
+          print('infrastructure_conclusion=',p.get('infrastructure_conclusion'))
+          print('recommendation=',p.get('recommendation'))
+          PY
