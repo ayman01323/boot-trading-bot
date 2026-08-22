@@ -1,0 +1,168 @@
+name: AI Bus Telegram Direct Alert
+
+on:
+  workflow_run:
+    workflows:
+      - Event-Driven AI Agent Bus
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-bus-telegram-direct
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'issue_comment'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 3
+    steps:
+      - name: Push fresh AI bus reply directly to Telegram MASTER
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_MASTER_CHAT_ID: ${{ vars.TELEGRAM_MASTER_CHAT_ID || '5923828381' }}
+          SOURCE_RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import datetime as dt
+          import json
+          import os
+          import re
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          github_token = (os.environ.get('GITHUB_TOKEN') or '').strip()
+          telegram_token = (os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+          chat_id = (os.environ.get('TELEGRAM_MASTER_CHAT_ID') or '').strip()
+          started_at = (os.environ.get('SOURCE_RUN_STARTED_AT') or '').strip()
+
+          if not telegram_token or not re.fullmatch(r'-?[0-9]{5,20}', chat_id):
+              print('telegram_configured=false')
+              raise SystemExit(0)
+
+          start_epoch = 0
+          if started_at:
+              try:
+                  start_epoch = int(dt.datetime.fromisoformat(started_at.replace('Z', '+00:00')).timestamp())
+              except ValueError:
+                  pass
+
+          url = f'https://api.github.com/repos/{repo}/contents/github/ai-agent-bus/latest.json?ref=ai-reviews'
+          req = urllib.request.Request(
+              url,
+              headers={
+                  'Authorization': f'Bearer {github_token}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'boot-ai-bus-telegram-direct',
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=15) as response:
+                  envelope = json.loads(response.read().decode('utf-8'))
+              snapshot = json.loads(base64.b64decode(envelope['content']).decode('utf-8'))
+          except Exception as exc:
+              print(f'snapshot_read_failed={type(exc).__name__}')
+              raise SystemExit(0)
+
+          try:
+              generated_epoch = int(snapshot.get('generated_epoch') or 0)
+          except (TypeError, ValueError):
+              generated_epoch = 0
+
+          # workflow_run may also fire for a bus run that had no pending message.
+          # Only send when the snapshot was created by this just-completed run.
+          if not generated_epoch or (start_epoch and generated_epoch < start_epoch - 5):
+              print('telegram_skipped=stale_snapshot')
+              raise SystemExit(0)
+          if generated_epoch > int(time.time()) + 60:
+              print('telegram_skipped=future_snapshot')
+              raise SystemExit(0)
+
+          message_id = str(snapshot.get('message_id') or '').strip()[:160]
+          if not message_id:
+              print('telegram_skipped=missing_message_id')
+              raise SystemExit(0)
+
+          providers = [str(x).upper() for x in snapshot.get('providers') or [] if str(x).strip()]
+          provider_text = ', '.join(providers) or str(snapshot.get('to') or 'AGENT').upper()[:80]
+          status = str(snapshot.get('status') or 'UNKNOWN').upper()[:40]
+          icon = '✅' if status == 'COMPLETED' else ('⚠️' if status == 'BLOCKED' else 'ℹ️')
+          preview = str(snapshot.get('preview') or '').replace('\x00', ' ')
+          preview = re.sub(r'\b(?:sk|sess)-[A-Za-z0-9_-]{8,}\b', '<redacted>', preview)
+          preview = re.sub(r'\bAIza[A-Za-z0-9_-]{20,}\b', '<redacted>', preview)
+          preview = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}', 'Bearer <redacted>', preview)
+          preview = re.sub(r'\s+', ' ', preview).strip()[:650]
+
+          lines = [
+              '🤖 AI AGENT MESSAGE',
+              f'Agent: {provider_text}',
+              f'Status: {icon} {status}',
+              f'Message ID: {message_id}',
+          ]
+          if preview:
+              lines.extend(['', f'Reply: {preview}'])
+          text = '\n'.join(lines)
+
+          tg_url = f'https://api.telegram.org/bot{telegram_token}/sendMessage'
+          payload = json.dumps({
+              'chat_id': chat_id,
+              'text': text,
+              'disable_notification': False,
+              'protect_content': True,
+              'link_preview_options': {'is_disabled': True},
+          }).encode('utf-8')
+
+          last_error = None
+          for attempt in range(1, 4):
+              request = urllib.request.Request(
+                  tg_url,
+                  data=payload,
+                  method='POST',
+                  headers={'Content-Type': 'application/json', 'User-Agent': 'boot-ai-bus-telegram-direct'},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=15) as response:
+                      result = json.loads(response.read().decode('utf-8', errors='replace') or '{}')
+                  if result.get('ok'):
+                      print('telegram_configured=true')
+                      print('telegram_sent=true')
+                      print(f'message_id={message_id}')
+                      print(f'agent={provider_text}')
+                      raise SystemExit(0)
+                  last_error = 'telegram_api_rejected'
+              except urllib.error.HTTPError as exc:
+                  last_error = f'http_{int(exc.code or 500)}'
+              except Exception as exc:
+                  last_error = type(exc).__name__
+              if attempt < 3:
+                  time.sleep(attempt)
+
+          print('telegram_configured=true')
+          print('telegram_sent=false')
+          print(f'telegram_error={last_error or "unknown"}')
+          raise SystemExit(0)
+          PY
+
+      - name: Cost and safety summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo 'Event-driven Telegram push: **enabled**'
+            echo 'Idle polling/fetching: **none**'
+            echo 'GitHub-hosted runner minutes: **none (self-hosted)**'
+            echo 'Extra AI/provider calls for notification: **0**'
+            echo 'Telegram API calls: **only when a fresh bus reply exists**'
+            echo 'No deploy, trading, LIVE/ARMED, risk/capital, wallet/signing or sudo authority.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -3,9 +3,9 @@ name: AI Bus Telegram Alert Tests
 on:
   pull_request:
     paths:
-      - '.github/workflows/ai-agent-bus-telegram-snapshot.yml'
+      - '.github/workflows/ai-agent-bus.yml'
+      - '.github/workflows/ai-bus-telegram-direct.yml'
       - '.github/workflows/ai-bus-telegram-ci.yml'
-      - 'learnerbot/ai_bus_telegram_alert_patch.py'
       - 'learnerbot/telegram_hi_keefek_patch.py'
       - 'tests/test_ai_bus_telegram_alerts.py'
   workflow_dispatch:
@@ -34,24 +34,26 @@ jobs:
           python3 -m venv "$TEST_VENV"
           "$TEST_VENV/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml
 
-      - name: Compile notification module and tests
+      - name: Compile regression tests
         shell: bash
         run: |
           set -euo pipefail
-          "$TEST_VENV/bin/python" -m py_compile \
-            learnerbot/ai_bus_telegram_alert_patch.py \
-            tests/test_ai_bus_telegram_alerts.py
+          "$TEST_VENV/bin/python" -m py_compile tests/test_ai_bus_telegram_alerts.py
 
-      - name: Parse snapshot workflow
+      - name: Parse direct and bus workflows
         shell: bash
         run: |
           set -euo pipefail
           "$TEST_VENV/bin/python" - <<'PY'
           import pathlib, yaml
-          path = pathlib.Path('.github/workflows/ai-agent-bus-telegram-snapshot.yml')
-          data = yaml.safe_load(path.read_text(encoding='utf-8'))
-          assert data.get('jobs', {}).get('publish'), 'snapshot publish job missing'
-          print('WORKFLOW_OK', path)
+          for name in (
+              '.github/workflows/ai-agent-bus.yml',
+              '.github/workflows/ai-bus-telegram-direct.yml',
+          ):
+              path = pathlib.Path(name)
+              data = yaml.safe_load(path.read_text(encoding='utf-8'))
+              assert isinstance(data, dict) and data.get('jobs'), f'jobs missing: {name}'
+              print('WORKFLOW_OK', path)
           PY
 
       - name: Run Telegram bus regression tests
