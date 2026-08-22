@@ -102,6 +102,7 @@ def test_master_change_workflow_yaml_is_parseable() -> None:
     for path in (
         ".github/workflows/publish-ai-master-control.yml",
         ".github/workflows/gpt-master-change-implement.yml",
+        ".github/workflows/master-change-council-protected-deploy.yml",
     ):
         assert yaml.compose(_text(path)) is not None, path
 
@@ -132,6 +133,7 @@ def test_policy_rejects_council_self_modification_before_gpt_code_call() -> None
     for path in (
         ".github/workflows/gpt-master-change-implement.yml",
         ".github/workflows/publish-ai-master-control.yml",
+        ".github/workflows/master-change-council-protected-deploy.yml",
         "learnerbot/master_change_council.py",
         "learnerbot/telegram_master_change_patch.py",
         "learnerbot/ai_agent_ws_runtime_patch.py",
@@ -161,7 +163,7 @@ def test_low_risk_auto_merge_cannot_be_test_only_or_protected() -> None:
     assert not policy.auto_merge_eligible(protected, ["learnerbot/telegram_example_patch.py"])
 
 
-def test_master_change_workflows_never_use_arbitrary_sudo_or_secret_credentials() -> None:
+def test_master_change_runtime_workflows_never_use_arbitrary_sudo_or_secret_credentials() -> None:
     for path in (
         ".github/workflows/publish-ai-master-control.yml",
         ".github/workflows/gpt-master-change-implement.yml",
@@ -172,3 +174,13 @@ def test_master_change_workflows_never_use_arbitrary_sudo_or_secret_credentials(
         assert "secrets.PRIVATE" not in text
         assert "secrets.WALLET" not in text
         assert "secrets.MNEMONIC" not in text
+
+
+def test_deploy_workflow_uses_only_existing_restricted_root_wrappers() -> None:
+    text = _text(".github/workflows/master-change-council-protected-deploy.yml")
+    assert 'sudo /usr/local/sbin/deploy-boot-trading-bot "$target"' in text
+    assert "sudo /usr/local/sbin/status-boot-trading-bot" in text
+    for forbidden in ("sudo bash", "sudo sh", "sudo -i", "sudo su", "PRIVATE_KEY", "secrets.WALLET"):
+        assert forbidden not in text
+    assert "routing_model_calls':0" in text
+    assert "expected=[^[:space:]]*aichange" in text
