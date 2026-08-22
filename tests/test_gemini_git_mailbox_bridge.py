@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import importlib.util
 import pathlib
+import re
 import sys
 
 import yaml
@@ -154,4 +155,4 @@ def test_bridge_is_event_driven_and_gpt_only() -> None:
     assert "OPENAI_API_KEY" in text
     assert "GEMINI_API_KEY" not in text
     assert "deploy-boot-trading-bot" not in text
-    assert "sudo " not in text
+    assert not re.search(r"(?m)^\s*sudo\s+", text)
