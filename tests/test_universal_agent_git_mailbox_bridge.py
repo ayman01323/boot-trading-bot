@@ -145,6 +145,7 @@ class UniversalAgentMailboxTests(unittest.TestCase):
         self.assertIn("ANTHROPIC_API_KEY", relay)
         self.assertIn("GEMINI_API_KEY", relay)
         self.assertIn("DEEPSEEK_API_KEY", relay)
+        self.assertIn("COPILOT_GITHUB_TOKEN", relay)
         self.assertIn("COPILOT_ASSIGN_TOKEN", relay)
         self.assertNotRegex(relay, re.compile(r"(?m)^\s*sudo\s+"))
         self.assertNotIn("deploy-boot-trading-bot", relay)
