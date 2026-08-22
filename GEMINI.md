@@ -42,7 +42,7 @@ Treat delivery states precisely:
 
 Do not claim another agent received a message unless the send reaches at least `ACKNOWLEDGED`.
 
-Routing itself uses no model. Routine recipient workers use the low-cost model policy in `AI_AGENT_MESSAGING.md`; Gemini's own routine worker defaults to `gemini-2.5-flash-lite`. Do not escalate to a more expensive model merely for acknowledgements, status checks or short coordination.
+Routing itself uses no model. Routine recipient workers use the low-cost model policy in `AI_AGENT_MESSAGING.md`; Gemini's own routine worker defaults to `gemini-3.1-flash-lite`. Do not escalate to a more expensive model merely for acknowledgements, status checks or short coordination.
 
 The older `ai-mailbox` Git protocol is fallback-only when the local WebSocket bus is genuinely unavailable or a durable Git handoff is specifically required. Do not create Git commits for ordinary agent conversation when the local bus is available.
 
