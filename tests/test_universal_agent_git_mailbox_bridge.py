@@ -135,6 +135,8 @@ class UniversalAgentMailboxTests(unittest.TestCase):
         for agent in bridge.AGENTS:
             self.assertIn(f"bus-from-{agent}.md", signal)
             self.assertIn(agent, relay)
+        self.assertIn("workflow_run:", relay)
+        self.assertIn("Universal AI Bus Mailbox Signal", relay)
         self.assertNotIn("schedule:", signal)
         self.assertNotIn("schedule:", relay)
         self.assertIn("mode=", relay)
@@ -148,11 +150,17 @@ class UniversalAgentMailboxTests(unittest.TestCase):
         self.assertNotIn("deploy-boot-trading-bot", relay)
         self.assertNotIn("protected deploy", relay.lower())
 
-    def test_all_agent_instruction_files_point_to_shared_guide(self) -> None:
+    def test_all_agent_instruction_files_teach_automatic_wake_up(self) -> None:
         for path in ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "DEEPSEEK.md"]:
             text = Path(path).read_text()
             self.assertIn("AI_AGENT_MESSAGING.md", text, path)
-            self.assertIn("universal", text.lower(), path)
+            self.assertIn("Delivery is automatic and event-driven", text, path)
+            self.assertIn("does **not** poll", text, path)
+        guide = Path("AI_AGENT_MESSAGING.md").read_text()
+        self.assertIn("Automatic recipient wake-up", guide)
+        self.assertIn("immediately invokes only the addressed provider", guide)
+        self.assertIn("No recipient has to poll", guide)
+        self.assertIn("not cryptographic proof of model identity", guide)
 
 
 if __name__ == "__main__":
