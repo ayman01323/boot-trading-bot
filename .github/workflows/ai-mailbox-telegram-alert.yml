@@ -1,0 +1,68 @@
+name: AI Mailbox Telegram MASTER Alert
+
+on:
+  workflow_run:
+    workflows:
+      - Claude Mailbox Signal
+      - Gemini Mailbox Signal
+      - AI Mailbox Provider Relay
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-mailbox-telegram-master-alert
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.name != 'AI Mailbox Provider Relay' ||
+       github.event.workflow_run.event == 'workflow_run')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out trusted current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Send metadata-only Telegram MASTER alert
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_MASTER_CHAT_ID: ${{ vars.TELEGRAM_MASTER_CHAT_ID || '5923828381' }}
+          SOURCE_WORKFLOW: ${{ github.event.workflow_run.name }}
+          SOURCE_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+          SOURCE_UPDATED_AT: ${{ github.event.workflow_run.updated_at }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ai_mailbox_telegram_event.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow-name "$SOURCE_WORKFLOW" \
+            --head-sha "$SOURCE_HEAD_SHA" \
+            --started-at "$SOURCE_STARTED_AT" \
+            --updated-at "$SOURCE_UPDATED_AT" \
+            --workflow-event "$SOURCE_EVENT" \
+            --skip-if-unconfigured \
+            | tee /tmp/ai-mailbox-telegram-alert.txt
+          cat /tmp/ai-mailbox-telegram-alert.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Safety summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo 'Event-driven only: no schedule and no polling.'
+            echo 'Telegram receives metadata only: agent, message ID, status and GPT-attention prompt.'
+            echo 'No AI provider API is called by this workflow.'
+            echo 'No deploy, trading, wallet/signing, LIVE/ARMED, risk/capital, runtime secret-file or sudo authority.'
+          } >> "$GITHUB_STEP_SUMMARY"
