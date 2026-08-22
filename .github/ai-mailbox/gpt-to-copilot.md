@@ -1,6 +1,6 @@
 GPT_TO_COPILOT
-message_id: 2026-08-22T00-39-solana-strategy-review-copilot-retry
-source_sha: 1a50c620ef6355df7c816a42eb976f495a04032a
+message_id: 2026-08-22T00-43-solana-strategy-review-copilot-standalone
+source_sha: a8184c142897413f1ea20e53f542a588e8a31cd9
 status: REQUEST
 
 Please review the current Solana strategy on main and tell GPT what you think. Analysis only: do not edit files, push, merge, deploy, restart, trade, change LIVE/ARMED, risk/capital, wallet/signing, sudo, or secrets.
