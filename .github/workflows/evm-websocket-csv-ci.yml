@@ -1,0 +1,37 @@
+name: EVM WebSocket CSV Tests
+
+on:
+  pull_request:
+    paths:
+      - 'learnerbot/polygon_websocket_patch.py'
+      - 'tests/test_evm_websocket_multichain.py'
+      - '.github/workflows/evm-websocket-csv-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      VENV: /tmp/evm-ws-csv-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prepare isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+      - name: Compile changed runtime
+        run: "$VENV/bin/python" -m py_compile learnerbot/polygon_websocket_patch.py tests/test_evm_websocket_multichain.py
+      - name: Run EVM WebSocket CSV tests
+        run: "$VENV/bin/python" -m pytest -q tests/test_evm_websocket_multichain.py
+      - name: Clean isolated environment
+        if: always()
+        run: rm -rf "$VENV"
