@@ -31,8 +31,14 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Use repository Python version
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
       - name: Load and validate published GPT decision
-        id: request
         env:
           GH_TOKEN: ${{ github.token }}
           REQUEST_ID: ${{ inputs.request_id }}
@@ -45,51 +51,11 @@ jobs:
           gh api -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/contents/master-change/requests/${REQUEST_ID}.json?ref=ai-reviews" \
             --jq '.content' | tr -d '\n' | base64 -d > /tmp/master-change.json
-          python3 - "$REQUEST_ID" "$IMPLEMENTATION_NONCE" <<'PY'
-          import json,subprocess,sys
-          rid,nonce=sys.argv[1],int(sys.argv[2])
-          p=json.load(open('/tmp/master-change.json',encoding='utf-8'))
-          if p.get('request_id') != rid: raise SystemExit('request_id mismatch')
-          if int(p.get('implementation_nonce') or 0) != nonce: raise SystemExit('implementation nonce mismatch')
-          if not p.get('implementation_allowed'): raise SystemExit('implementation is not authorised by the published deterministic gate')
-          if p.get('hard_protected_reasons'): raise SystemExit('hard-protected request cannot be implemented by this lane')
-          if not p.get('all_advisers_replied'): raise SystemExit('all adviser replies are required')
-          advisers=p.get('advisers') or {}
-          for name in ('claude','gemini','deepseek','copilot'):
-              row=advisers.get(name) or {}
-              if not row.get('acknowledged') or int(row.get('provider_rc') if row.get('provider_rc') is not None else 1) != 0 or not str(row.get('reply') or '').strip():
-                  raise SystemExit(f'{name} adviser did not complete successfully')
-          d=p.get('gpt_decision') or {}
-          if str(d.get('action') or '').upper() != 'IMPLEMENT': raise SystemExit('GPT final decision is not IMPLEMENT')
-          allowed=d.get('allowed_files') or []
-          if not allowed or len(allowed)>20: raise SystemExit('invalid allowed_files')
-          governance={
-              '.github/workflows/gpt-master-change-implement.yml',
-              '.github/workflows/master-change-council-bridge.yml',
-              'learnerbot/master_change_council.py',
-              'learnerbot/telegram_master_change_patch.py',
-              'learnerbot/ai_agent_ws_runtime_patch.py',
-              'scripts/ai_agent_ws_bus.py',
-              'scripts/ai_agent_ws_worker.py',
-              'scripts/ai_agent_ws_send.py',
-              'tests/test_master_change_council.py',
-          }
-          clean=[]
-          for path in allowed:
-              s=str(path or '').replace('\\','/').strip().lstrip('/')
-              if not s or '*' in s or '..' in s.split('/') or s != path:
-                  raise SystemExit(f'invalid allowed file: {path!r}')
-              clean.append(s)
-          forbidden=sorted(set(clean) & governance)
-          if forbidden:
-              raise SystemExit('MASTER council cannot authorise modification of its own governance/transport files: '+', '.join(forbidden))
-          current=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-          source=str(p.get('source_sha') or '')
-          if source != current:
-              raise SystemExit(f'stale council evidence: request source={source} current main={current}; submit/retry against current main')
-          open('/tmp/allowed-files.txt','w',encoding='utf-8').write('\n'.join(clean)+'\n')
-          PY
-          echo "request_id=$REQUEST_ID" >> "$GITHUB_OUTPUT"
+          python scripts/master_change_policy.py validate-request \
+            --evidence /tmp/master-change.json \
+            --request-id "$REQUEST_ID" \
+            --nonce "$IMPLEMENTATION_NONCE" \
+            --allowed-out /tmp/allowed-files.txt
 
       - name: Set up GPT implementation tooling
         env:
@@ -98,15 +64,14 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${OPENAI_API_KEY:-}"
-          python3 -m pip install -q --upgrade pip
-          python3 -m pip install -q -r requirements.txt 'pytest>=8,<9'
+          python -m pip install --disable-pip-version-check -q -r requirements.txt 'pytest>=8,<9'
           npm install -g @openai/codex@latest >/dev/null
           codex --version
 
       - name: Initialise auditable result
         shell: bash
         run: |
-          python3 - <<'PY'
+          python - <<'PY'
           import json,time
           p=json.load(open('/tmp/master-change.json'))
           out={
@@ -151,53 +116,15 @@ jobs:
           rm -rf .master_change
 
       - name: Enforce path boundary and run full tests
-        id: verify
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import pathlib,subprocess,sys
-          allowed={x.strip() for x in open('/tmp/allowed-files.txt',encoding='utf-8') if x.strip()}
-          governance={
-              '.github/workflows/gpt-master-change-implement.yml',
-              '.github/workflows/master-change-council-bridge.yml',
-              'learnerbot/master_change_council.py',
-              'learnerbot/telegram_master_change_patch.py',
-              'learnerbot/ai_agent_ws_runtime_patch.py',
-              'scripts/ai_agent_ws_bus.py',
-              'scripts/ai_agent_ws_worker.py',
-              'scripts/ai_agent_ws_send.py',
-              'tests/test_master_change_council.py',
-          }
-          raw=subprocess.check_output(['git','status','--porcelain'],text=True)
-          changed=[]
-          for line in raw.splitlines():
-              path=line[3:].strip().replace('\\','/')
-              if ' -> ' in path: path=path.split(' -> ',1)[1]
-              if path: changed.append(path)
-          if not changed:
-              raise SystemExit('GPT produced no tracked change')
-          bad=[p for p in changed if p not in allowed]
-          if bad:
-              print('GPT changed paths outside the adjudicated allow-list:',*bad,sep='\n',file=sys.stderr)
-              raise SystemExit(3)
-          hard=[]
-          for p in changed:
-              low=p.lower()
-              if p in governance:
-                  hard.append(p)
-              if low.startswith('.env') or '/.env' in low or 'private_key' in low or 'mnemonic' in low or 'seed_phrase' in low:
-                  hard.append(p)
-              if low == 'scripts/install_github_deployer.sh':
-                  hard.append(p)
-          if hard:
-              print('Hard-protected paths cannot be changed by the MASTER council lane:',*sorted(set(hard)),sep='\n',file=sys.stderr)
-              raise SystemExit(4)
-          pathlib.Path('/tmp/changed-files.txt').write_text('\n'.join(changed)+'\n')
-          PY
-          python3 -m compileall -q learnerbot scripts
-          python3 -m pytest -q
-          python3 - <<'PY'
+          python scripts/master_change_policy.py validate-changed \
+            --allowed /tmp/allowed-files.txt \
+            --changed-out /tmp/changed-files.txt
+          python -m compileall -q learnerbot scripts
+          python -m pytest -q
+          python - <<'PY'
           import json,time
           p='/tmp/master-change-result.json'; d=json.load(open(p)); d['state']='TESTS_PASSED'; d['detail']='GPT patch stayed inside the adjudicated file boundary and the full test suite passed.'; d['updated_epoch']=int(time.time()); open(p,'w').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY
@@ -217,13 +144,11 @@ jobs:
           while IFS= read -r path; do git add -- "$path"; done < /tmp/changed-files.txt
           git commit -m "GPT MASTER change ${REQUEST_ID}"
           git push -u origin "$branch"
-          summary="$(python3 -c "import json;print((json.load(open('/tmp/master-change.json')).get('gpt_decision') or {}).get('summary') or 'MASTER Telegram change')")"
+          summary="$(python -c "import json;print((json.load(open('/tmp/master-change.json')).get('gpt_decision') or {}).get('summary') or 'MASTER Telegram change')")"
           pr_url="$(gh pr create --draft --base main --head "$branch" --title "GPT MASTER change ${REQUEST_ID}" --body "MASTER Telegram request adjudicated by Claude, Gemini, DeepSeek, Copilot and final GPT.\n\nGPT summary: ${summary}\n\nFull pytest passed before this draft PR was created. Protected trading/security changes are never auto-merged by this lane.")"
           sha="$(git rev-parse HEAD)"
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          python3 - "$pr_url" "$branch" "$sha" <<'PY'
+          python - "$pr_url" "$branch" "$sha" <<'PY'
           import json,sys,time
           p='/tmp/master-change-result.json'; d=json.load(open(p)); d.update({'state':'DRAFT_PR_READY','detail':'GPT implemented the change and full tests passed. Draft PR created.','pr_url':sys.argv[1],'branch':sys.argv[2],'implemented_sha':sys.argv[3],'updated_epoch':int(time.time())}); open(p,'w').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY
@@ -236,55 +161,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          eligible="$(python3 - <<'PY'
-          import json,pathlib
-          p=json.load(open('/tmp/master-change.json'))
-          d=p.get('gpt_decision') or {}
-          changed=[x.strip() for x in open('/tmp/changed-files.txt') if x.strip()]
-          governance={
-              '.github/workflows/gpt-master-change-implement.yml',
-              '.github/workflows/master-change-council-bridge.yml',
-              'learnerbot/master_change_council.py',
-              'learnerbot/telegram_master_change_patch.py',
-              'learnerbot/ai_agent_ws_runtime_patch.py',
-              'scripts/ai_agent_ws_bus.py',
-              'scripts/ai_agent_ws_worker.py',
-              'scripts/ai_agent_ws_send.py',
-              'tests/test_master_change_council.py',
-          }
-          def safe(path):
-              if path in governance: return False
-              low=path.lower(); name=pathlib.PurePosixPath(path).name.lower()
-              if low.startswith('docs/') or low.endswith('.md'): return True
-              if low.startswith('tests/'): return True
-              if low.startswith('learnerbot/telegram_'): return True
-              if low.startswith('learnerbot/') and ('report' in name or 'status' in name): return True
-              if low.startswith('scripts/') and ('report' in name or 'status' in name): return True
-              return False
-          non_test=[x for x in changed if not x.lower().startswith('tests/')]
-          ok=(
-              bool(p.get('auto_merge_allowed'))
-              and str(d.get('risk_class') or '').upper()=='LOW'
-              and not p.get('protected_reasons')
-              and bool(non_test)
-              and all(safe(x) for x in changed)
-          )
-          print('true' if ok else 'false')
-          PY
-          )"
+          eligible="$(python scripts/master_change_policy.py auto-merge --evidence /tmp/master-change.json --changed /tmp/changed-files.txt)"
           if [[ "$eligible" != true ]]; then
             echo 'Deterministic auto-merge gate: NO. Draft PR remains for review.'
             exit 0
           fi
           gh pr ready "$PR_URL"
           if gh pr merge "$PR_URL" --squash --delete-branch; then
-            python3 - <<'PY'
+            python - <<'PY'
           import json,time
           p='/tmp/master-change-result.json'; d=json.load(open(p)); d['state']='AUTO_MERGED'; d['detail']='LOW-risk GPT change passed the deterministic auto-merge gate and was merged after full tests.'; d['updated_epoch']=int(time.time()); open(p,'w').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY
           else
-            echo 'Repository merge protection prevented immediate merge; PR remains ready for review.'
-            python3 - <<'PY'
+            python - <<'PY'
           import json,time
           p='/tmp/master-change-result.json'; d=json.load(open(p)); d['state']='PR_READY'; d['detail']='LOW-risk auto-merge was eligible, but repository protection prevented immediate merge. PR remains ready.'; d['updated_epoch']=int(time.time()); open(p,'w').write(json.dumps(d,indent=2,sort_keys=True)+'\n')
           PY
@@ -304,7 +193,7 @@ jobs:
           {"schema_version":1,"request_id":"${REQUEST_ID}","state":"FAILED","detail":"Implementation failed before result initialisation.","pr_url":"","branch":"","implemented_sha":""}
           EOF
           fi
-          python3 - "$JOB_STATUS" <<'PY'
+          python - "$JOB_STATUS" <<'PY'
           import json,sys,time
           p='/tmp/master-change-result.json'; d=json.load(open(p));
           if sys.argv[1] != 'success' and d.get('state') in {'RUNNING','TESTS_PASSED'}:
@@ -319,8 +208,8 @@ jobs:
             rc=$?
             set -e
             sha=''
-            if [[ $rc -eq 0 && -n "$current" ]]; then sha="$(printf '%s' "$current" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"; fi
-            python3 - "$file" "$sha" "$message" <<'PY' > /tmp/result-put.json
+            if [[ $rc -eq 0 && -n "$current" ]]; then sha="$(printf '%s' "$current" | python -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"; fi
+            python - "$file" "$sha" "$message" <<'PY' > /tmp/result-put.json
           import base64,json,sys
           file,sha,msg=sys.argv[1:4]; out={'message':msg,'content':base64.b64encode(open(file,'rb').read()).decode(),'branch':'ai-reviews'}
           if sha: out['sha']=sha
