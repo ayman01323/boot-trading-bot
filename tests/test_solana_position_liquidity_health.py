@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from learnerbot import solana_position_liquidity_health_patch as patch
 
 
@@ -78,6 +80,46 @@ def test_combined_impact_slippage_bps_from_price_impact_field():
 def test_combined_impact_slippage_bps_from_price_impact_pct_field():
     combined = patch._combined_impact_slippage_bps({"priceImpactPct": 0.02}, 50)
     assert combined == patch.Decimal("250")  # 200 bps + 50 bps slippage
+
+
+def test_quote_only_uses_configured_jupiter_api_key_and_positive_output(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"outAmount": "123", "priceImpact": "0.5"}
+
+    def fake_get(url, *, params, headers, timeout):
+        captured.update(url=url, params=params, headers=headers, timeout=timeout)
+        return _Response()
+
+    monkeypatch.setenv("JUPITER_API_KEY", "secret-test-key")
+    monkeypatch.setattr(patch.requests, "get", fake_get)
+
+    quote = patch._quote_only("mint-a", patch._sol.WSOL_MINT, 1000, 50)
+
+    assert quote["outAmount"] == "123"
+    assert captured["headers"]["x-api-key"] == "secret-test-key"
+    assert captured["params"]["amount"] == "1000"
+    assert captured["params"]["excludeRouters"] == "jupiterz"
+    assert captured["timeout"] == 30
+
+
+def test_quote_only_rejects_http_200_application_error(monkeypatch):
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"errorCode": 12, "errorMessage": "no route"}
+
+    monkeypatch.setattr(patch.requests, "get", lambda *a, **k: _Response())
+
+    with pytest.raises(patch._exec.SolanaLiveError, match="no route"):
+        patch._quote_only("mint-a", patch._sol.WSOL_MINT, 1000, 50)
 
 
 def test_alerts_when_quote_crosses_warning_threshold(monkeypatch):
