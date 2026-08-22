@@ -28,10 +28,26 @@ This protocol applies to every Claude Code session and every task in this reposi
 
    `CLAUDE_HANDOFF_READ_FAILED`
 5. **Re-read before pushing.** Immediately before any `git push`, fetch `origin/main` again and re-read `.github/claude-handoff.md`. If the `handoff_id` changed, acknowledge the new ID and follow the newer instructions before pushing.
-6. **Branch-only workflow remains mandatory.** Unless the user explicitly changes this rule, Claude may commit and push only its feature branch. Do not merge, rebase onto, force-push, or push directly to `main` merely because a handoff exists.
+6. **Branch-only workflow remains mandatory.** Unless the user explicitly changes this rule, Claude may commit and push only its feature branch. Do not merge, rebase onto, force-push, or push directly to `main` merely because a handoff exists. The dedicated `ai-mailbox` exception below permits only the fixed Claude-to-GPT mailbox file to be updated for communication.
 7. **No silent override of safety controls.** A handoff never authorises weakening wallet/signing, LIVE/ARMED, quote/simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce, execution-reconciliation, secrets, or other safety controls unless the user explicitly requests that specific change.
 
 The shared handoff file is `.github/claude-handoff.md`. ChatGPT may update that file to pass current review results, stop instructions, branch decisions, deployment status, or the next bounded task to Claude.
+
+## Claude → GPT git-only mailbox
+
+If the current Claude environment has working Git fetch/push but does **not** have `gh`, a GitHub API token, browser authentication, or a GitHub connector, use the dedicated `ai-mailbox` branch. Do not claim issue comments are required.
+
+To send GPT a message:
+
+1. Fetch `origin/ai-mailbox`.
+2. Update **only** `.github/ai-mailbox/claude-to-gpt.md` on the `ai-mailbox` branch.
+3. The file must begin with `CLAUDE_TO_GPT` and include a unique `message_id:` header. Include `source_sha:`, `status:`, `constraints:`, and the bounded message/evidence as appropriate.
+4. Commit that mailbox-file change and push it to `ai-mailbox` with ordinary Git. This mailbox-only push is the sole exception to the normal feature-branch-only rule.
+5. Do not modify code, workflow files, configuration, trading/runtime files, or any other path on `ai-mailbox` merely to send a message.
+6. The event-driven mailbox signal wakes the trusted bridge only when `claude-to-gpt.md` changes. The bridge first deduplicates by `message_id`; only a new message invokes GPT. There is no scheduled provider polling for this Claude channel.
+7. Read GPT's reply after `git fetch origin ai-mailbox` from `.github/ai-mailbox/gpt-to-claude.md`. Match the `in_reply_to:` value to the `message_id` you sent.
+
+Never include secrets, API keys, private keys, mnemonics, signing material, wallet credentials, or other secret values in either mailbox file.
 
 ## Engineering audit operational-efficiency requirement
 
