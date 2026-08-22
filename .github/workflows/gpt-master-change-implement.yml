@@ -46,7 +46,7 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/contents/master-change/requests/${REQUEST_ID}.json?ref=ai-reviews" \
             --jq '.content' | tr -d '\n' | base64 -d > /tmp/master-change.json
           python3 - "$REQUEST_ID" "$IMPLEMENTATION_NONCE" <<'PY'
-          import json,re,subprocess,sys
+          import json,subprocess,sys
           rid,nonce=sys.argv[1],int(sys.argv[2])
           p=json.load(open('/tmp/master-change.json',encoding='utf-8'))
           if p.get('request_id') != rid: raise SystemExit('request_id mismatch')
@@ -63,15 +63,31 @@ jobs:
           if str(d.get('action') or '').upper() != 'IMPLEMENT': raise SystemExit('GPT final decision is not IMPLEMENT')
           allowed=d.get('allowed_files') or []
           if not allowed or len(allowed)>20: raise SystemExit('invalid allowed_files')
+          governance={
+              '.github/workflows/gpt-master-change-implement.yml',
+              '.github/workflows/master-change-council-bridge.yml',
+              'learnerbot/master_change_council.py',
+              'learnerbot/telegram_master_change_patch.py',
+              'learnerbot/ai_agent_ws_runtime_patch.py',
+              'scripts/ai_agent_ws_bus.py',
+              'scripts/ai_agent_ws_worker.py',
+              'scripts/ai_agent_ws_send.py',
+              'tests/test_master_change_council.py',
+          }
+          clean=[]
           for path in allowed:
               s=str(path or '').replace('\\','/').strip().lstrip('/')
               if not s or '*' in s or '..' in s.split('/') or s != path:
                   raise SystemExit(f'invalid allowed file: {path!r}')
+              clean.append(s)
+          forbidden=sorted(set(clean) & governance)
+          if forbidden:
+              raise SystemExit('MASTER council cannot authorise modification of its own governance/transport files: '+', '.join(forbidden))
           current=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
           source=str(p.get('source_sha') or '')
           if source != current:
               raise SystemExit(f'stale council evidence: request source={source} current main={current}; submit/retry against current main')
-          open('/tmp/allowed-files.txt','w',encoding='utf-8').write('\n'.join(allowed)+'\n')
+          open('/tmp/allowed-files.txt','w',encoding='utf-8').write('\n'.join(clean)+'\n')
           PY
           echo "request_id=$REQUEST_ID" >> "$GITHUB_OUTPUT"
 
@@ -142,6 +158,17 @@ jobs:
           python3 - <<'PY'
           import pathlib,subprocess,sys
           allowed={x.strip() for x in open('/tmp/allowed-files.txt',encoding='utf-8') if x.strip()}
+          governance={
+              '.github/workflows/gpt-master-change-implement.yml',
+              '.github/workflows/master-change-council-bridge.yml',
+              'learnerbot/master_change_council.py',
+              'learnerbot/telegram_master_change_patch.py',
+              'learnerbot/ai_agent_ws_runtime_patch.py',
+              'scripts/ai_agent_ws_bus.py',
+              'scripts/ai_agent_ws_worker.py',
+              'scripts/ai_agent_ws_send.py',
+              'tests/test_master_change_council.py',
+          }
           raw=subprocess.check_output(['git','status','--porcelain'],text=True)
           changed=[]
           for line in raw.splitlines():
@@ -157,7 +184,7 @@ jobs:
           hard=[]
           for p in changed:
               low=p.lower()
-              if low in {'.github/workflows/gpt-master-change-implement.yml','.github/workflows/master-change-council-bridge.yml'}:
+              if p in governance:
                   hard.append(p)
               if low.startswith('.env') or '/.env' in low or 'private_key' in low or 'mnemonic' in low or 'seed_phrase' in low:
                   hard.append(p)
@@ -210,21 +237,36 @@ jobs:
         run: |
           set -euo pipefail
           eligible="$(python3 - <<'PY'
-          import json,os,pathlib
+          import json,pathlib
           p=json.load(open('/tmp/master-change.json'))
           d=p.get('gpt_decision') or {}
           changed=[x.strip() for x in open('/tmp/changed-files.txt') if x.strip()]
+          governance={
+              '.github/workflows/gpt-master-change-implement.yml',
+              '.github/workflows/master-change-council-bridge.yml',
+              'learnerbot/master_change_council.py',
+              'learnerbot/telegram_master_change_patch.py',
+              'learnerbot/ai_agent_ws_runtime_patch.py',
+              'scripts/ai_agent_ws_bus.py',
+              'scripts/ai_agent_ws_worker.py',
+              'scripts/ai_agent_ws_send.py',
+              'tests/test_master_change_council.py',
+          }
           def safe(path):
+              if path in governance: return False
               low=path.lower(); name=pathlib.PurePosixPath(path).name.lower()
-              if low.startswith('docs/') or low.startswith('tests/') or low.endswith('.md'): return True
+              if low.startswith('docs/') or low.endswith('.md'): return True
+              if low.startswith('tests/'): return True
               if low.startswith('learnerbot/telegram_'): return True
               if low.startswith('learnerbot/') and ('report' in name or 'status' in name): return True
               if low.startswith('scripts/') and ('report' in name or 'status' in name): return True
               return False
+          non_test=[x for x in changed if not x.lower().startswith('tests/')]
           ok=(
               bool(p.get('auto_merge_allowed'))
               and str(d.get('risk_class') or '').upper()=='LOW'
               and not p.get('protected_reasons')
+              and bool(non_test)
               and all(safe(x) for x in changed)
           )
           print('true' if ok else 'false')
