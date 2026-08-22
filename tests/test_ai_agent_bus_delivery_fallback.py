@@ -153,7 +153,8 @@ def test_pending_selector_treats_trusted_existing_reply_as_processed() -> None:
         _comment(31, _reply('done'), login='github-actions[bot]'),
     ]
     assert pending.latest_pending(comments, owner='ayman01323') is None
-    assert pending.has_reply(comments, 'protected', owner='ayman01323') is False
+    assert pending.has_reply(comments, 'done', owner='ayman01323') is True
+    assert pending.has_reply(comments, 'missing', owner='ayman01323') is False
 
 
 def test_python_github_client_follows_comment_pagination_without_gh_cli() -> None:
