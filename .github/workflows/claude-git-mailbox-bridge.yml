@@ -1,0 +1,185 @@
+name: Claude Git Mailbox Bridge
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-git-mailbox-bridge.yml'
+      - 'scripts/claude_git_mailbox_bridge.py'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+      - 'CLAUDE.md'
+      - 'tests/test_claude_git_mailbox_bridge.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-git-mailbox-bridge.yml'
+      - 'scripts/claude_git_mailbox_bridge.py'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+      - 'CLAUDE.md'
+      - 'tests/test_claude_git_mailbox_bridge.py'
+
+concurrency:
+  group: claude-git-mailbox-bridge
+  cancel-in-progress: false
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tested ref without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run bounded bridge regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="/tmp/claude-git-mailbox-test-${GITHUB_RUN_ID}"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml python-dotenv
+          "$venv/bin/python" -m py_compile \
+            scripts/claude_git_mailbox_bridge.py \
+            scripts/ai_agent_bus.py \
+            scripts/ai_agent_bus_provider_compat.py \
+            scripts/run_ai_agent_bus.py \
+            tests/test_claude_git_mailbox_bridge.py
+          "$venv/bin/python" - <<'PY'
+          import pathlib,yaml
+          value=yaml.safe_load(pathlib.Path('.github/workflows/claude-git-mailbox-bridge.yml').read_text(encoding='utf-8'))
+          assert isinstance(value,dict) and 'jobs' in value
+          PY
+          "$venv/bin/python" -m pytest -q tests/test_claude_git_mailbox_bridge.py
+          rm -rf "$venv"
+
+  bridge:
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      BUS_VENV: /tmp/claude-git-mailbox-${{ github.run_id }}
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Check out trusted current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Find unanswered Claude git-mailbox message
+        id: mailbox
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/claude_git_mailbox_bridge.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --message-output /tmp/claude-git-mailbox-message.md \
+            > /tmp/claude-git-mailbox.env
+          cat /tmp/claude-git-mailbox.env >> "$GITHUB_OUTPUT"
+
+      - name: Build isolated Python environment
+        if: steps.mailbox.outputs.pending == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BUS_VENV"
+          python3 -m venv "$BUS_VENV"
+          "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+
+      - name: Validate bounded GPT-only envelope
+        if: steps.mailbox.outputs.pending == 'true'
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
+            --input /tmp/claude-git-mailbox-message.md \
+            --output /tmp/unused.md \
+            --preflight > /tmp/claude-git-mailbox-preflight.env
+          cat /tmp/claude-git-mailbox-preflight.env >> "$GITHUB_OUTPUT"
+          test "${{ steps.preflight.outputs.target }}" = "gpt" || true
+
+      - name: Route Claude message to GPT
+        if: steps.mailbox.outputs.pending == 'true'
+        id: route
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_COUNCIL_MODEL: ${{ vars.OPENAI_COUNCIL_MODEL || 'gpt-5.6-terra' }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/claude-git-mailbox-no-runtime.env
+        shell: bash
+        run: |
+          set +e
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
+            --input /tmp/claude-git-mailbox-message.md \
+            --output /tmp/claude-git-mailbox-reply.md \
+            2>/tmp/claude-git-mailbox-error.txt
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -ne 0 || ! -s /tmp/claude-git-mailbox-reply.md ]]; then
+            cat > /tmp/claude-git-mailbox-reply.md <<EOF
+          AI_BUS_REPLY
+          message_id: ${{ steps.mailbox.outputs.message_id }}
+          from: BUS
+          to: CLAUDE
+          status: BLOCKED
+          mode: DIRECT
+          provider_calls: 0
+          max_hops: 1
+
+          GPT could not complete this git-mailbox message. No deployment, trading action, wallet action, runtime change, sudo expansion, or secret access was authorised by this failure.
+          EOF
+          fi
+          exit 0
+
+      - name: Publish GPT reply to fixed ai-mailbox path
+        if: steps.mailbox.outputs.pending == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # This helper can write only .github/ai-mailbox/gpt-to-claude.md
+          # on the dedicated ai-mailbox branch and dedupes by in_reply_to.
+          python3 scripts/claude_git_mailbox_bridge.py publish-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --message-id "${{ steps.mailbox.outputs.message_id }}" \
+            --reply-file /tmp/claude-git-mailbox-reply.md
+
+      - name: Remove isolated Python environment
+        if: always()
+        shell: bash
+        run: rm -rf "$BUS_VENV"
+
+      - name: Publish compact bridge summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Claude Git Mailbox Bridge'
+            echo
+            echo "Pending message: **${{ steps.mailbox.outputs.pending || 'false' }}**"
+            echo "Message ID: \`${{ steps.mailbox.outputs.message_id || 'none' }}\`"
+            echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
+            echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
+            echo 'Input: `.github/ai-mailbox/claude-to-gpt.md` on `ai-mailbox`'
+            echo 'Reply: `.github/ai-mailbox/gpt-to-claude.md` on `ai-mailbox`'
+          } >> "$GITHUB_STEP_SUMMARY"
