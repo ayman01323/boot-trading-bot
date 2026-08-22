@@ -1,0 +1,62 @@
+name: Universal AI Agent Messaging CI
+
+on:
+  pull_request:
+    paths:
+      - 'AI_AGENT_MESSAGING.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'DEEPSEEK.md'
+      - 'scripts/universal_agent_git_mailbox_bridge.py'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+      - 'tests/test_universal_agent_git_mailbox_bridge.py'
+      - 'tests/test_ai_agent_bus.py'
+      - '.github/workflows/universal-ai-bus-mailbox-signal.yml'
+      - '.github/workflows/universal-ai-bus-mailbox-relay.yml'
+      - '.github/workflows/universal-ai-agent-messaging-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-tests:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Build isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/universal-ai-agent-messaging-ci"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+      - name: Compile messaging bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VENV/bin/python" -m py_compile \
+            scripts/universal_agent_git_mailbox_bridge.py \
+            scripts/ai_agent_bus.py \
+            scripts/run_ai_agent_bus.py \
+            tests/test_universal_agent_git_mailbox_bridge.py
+      - name: Run focused universal messaging tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VENV/bin/python" -m pytest -q \
+            tests/test_universal_agent_git_mailbox_bridge.py \
+            tests/test_ai_agent_bus.py
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$VENV"

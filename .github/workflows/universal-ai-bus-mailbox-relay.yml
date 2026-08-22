@@ -1,0 +1,226 @@
+name: Universal AI Bus Mailbox Relay
+# Communication-only event bridge. No schedule/polling; DIRECT mode and max_hops=1 are enforced by the mailbox bridge.
+
+on:
+  workflow_run:
+    workflows: [Universal AI Bus Mailbox Signal]
+    types: [completed]
+    branches: [ai-mailbox]
+  workflow_dispatch:
+    inputs:
+      sender:
+        description: 'Sender mailbox to process, or all'
+        required: false
+        default: all
+        type: choice
+        options: [all, gpt, claude, gemini, deepseek, copilot]
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/universal-ai-bus-mailbox-relay.yml'
+      - '.github/workflows/universal-ai-bus-mailbox-signal.yml'
+      - 'scripts/universal_agent_git_mailbox_bridge.py'
+      - 'scripts/ai_agent_bus.py'
+      - 'scripts/ai_agent_bus_provider_compat.py'
+      - 'scripts/run_ai_agent_bus.py'
+      - 'AI_AGENT_MESSAGING.md'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - 'DEEPSEEK.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: universal-ai-bus-mailbox-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        sender: [gpt, claude, gemini, deepseek, copilot]
+    env:
+      BUS_VENV: /tmp/universal-ai-bus-${{ matrix.sender }}-${{ github.run_id }}
+      PYTHONPATH: ${{ github.workspace }}
+
+    steps:
+      - name: Respect manual sender selection
+        id: selected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.sender }}
+          SENDER: ${{ matrix.sender }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          requested="${REQUESTED:-all}"
+          if [[ "$EVENT_NAME" == workflow_dispatch && "$requested" != all && "$requested" != "$SENDER" ]]; then
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out trusted current main without persisted credentials
+        if: steps.selected.outputs.run == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Detect new fixed sender mailbox message
+        if: steps.selected.outputs.run == 'true'
+        id: mailbox
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SENDER: ${{ matrix.sender }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/universal_agent_git_mailbox_bridge.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --sender "$SENDER" \
+            --message-output /tmp/universal-ai-bus-in.md \
+            > /tmp/universal-ai-bus-meta.env
+          cat /tmp/universal-ai-bus-meta.env >> "$GITHUB_OUTPUT"
+
+      - name: Build isolated Python environment
+        if: steps.mailbox.outputs.pending == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BUS_VENV"
+          python3 -m venv "$BUS_VENV"
+          "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+
+      - name: Validate bounded universal AI bus envelope
+        if: steps.mailbox.outputs.pending == 'true'
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
+            --input /tmp/universal-ai-bus-in.md \
+            --output /tmp/unused.md \
+            --preflight > /tmp/universal-ai-bus-preflight.env
+          cat /tmp/universal-ai-bus-preflight.env >> "$GITHUB_OUTPUT"
+          mode="$(grep '^mode=' /tmp/universal-ai-bus-preflight.env | cut -d= -f2-)"
+          test "$mode" = direct
+
+      - name: Prepare standalone Copilot CLI when needed and space permits
+        if: steps.mailbox.outputs.pending == 'true' && steps.preflight.outputs.needs_copilot == 'true'
+        id: copilot_cli
+        shell: bash
+        run: |
+          set +e
+          if command -v copilot >/dev/null 2>&1; then
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')"
+          if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < 350000 )); then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo 'reason=insufficient-runner-disk' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          prefix="$RUNNER_TEMP/universal-ai-bus-copilot-cli"
+          rm -rf "$prefix"
+          curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
+          rc=$?
+          if [[ $rc -eq 0 && -x "$prefix/bin/copilot" ]]; then
+            echo "$prefix/bin" >> "$GITHUB_PATH"
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo "install_rc=$rc" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+
+      - name: Route message once through bounded AI bus
+        if: steps.mailbox.outputs.pending == 'true'
+        id: route
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_COUNCIL_MODEL: ${{ vars.OPENAI_COUNCIL_MODEL || 'gpt-5.6-terra' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_COUNCIL_MODEL: ${{ vars.ANTHROPIC_COUNCIL_MODEL || 'sonnet' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.7-flash' }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/universal-ai-bus-no-runtime.env
+        shell: bash
+        run: |
+          set +e
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
+            --input /tmp/universal-ai-bus-in.md \
+            --output /tmp/universal-ai-bus-reply.md \
+            2>/tmp/universal-ai-bus-error.txt
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -ne 0 || ! -s /tmp/universal-ai-bus-reply.md ]]; then
+            cat > /tmp/universal-ai-bus-reply.md <<EOF
+          AI_BUS_REPLY
+          message_id: ${{ steps.mailbox.outputs.message_id }}
+          from: BUS
+          to: ${{ matrix.sender }}
+          status: BLOCKED
+          mode: DIRECT
+          provider_calls: 0
+          max_hops: 1
+
+          The bounded universal AI bus could not complete this communication request. No deploy, trading, LIVE/ARMED, risk/capital, wallet/signing, secret, root, or sudo authority was granted.
+          EOF
+          fi
+          exit 0
+
+      - name: Publish reply to fixed sender reply mailbox
+        if: steps.mailbox.outputs.pending == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SENDER: ${{ matrix.sender }}
+          MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/universal_agent_git_mailbox_bridge.py publish-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --sender "$SENDER" \
+            --message-id "$MESSAGE_ID" \
+            --reply-file /tmp/universal-ai-bus-reply.md
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$BUS_VENV"
+
+      - name: Universal relay summary
+        if: always() && steps.selected.outputs.run == 'true'
+        env:
+          SENDER: ${{ matrix.sender }}
+          PENDING: ${{ steps.mailbox.outputs.pending }}
+          MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
+          TARGET: ${{ steps.mailbox.outputs.target }}
+          ROUTER_RC: ${{ steps.route.outputs.rc }}
+        shell: bash
+        run: |
+          {
+            echo "## ${SENDER} universal AI bus mailbox"
+            echo
+            echo "Pending message: **${PENDING:-false}**"
+            echo "Message ID: \`${MESSAGE_ID:-none}\`"
+            echo "Target: **${TARGET:-none}**"
+            echo "Provider return code: **${ROUTER_RC:-not-run}**"
+            echo 'Mode: DIRECT; max_hops: 1.'
+            echo 'No scheduled polling is used.'
+          } >> "$GITHUB_STEP_SUMMARY"

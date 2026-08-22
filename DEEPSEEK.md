@@ -16,3 +16,16 @@ Before DeepSeek analyses, edits, tests, commits, or pushes in this repository:
 7. A handoff never authorises merge/deploy/trading or weakening wallet/signing, LIVE/ARMED, simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce, execution-reconciliation, secrets, or other safety controls unless the user explicitly requests that specific change.
 
 The shared DeepSeek inbox is `.github/deepseek-handoff.md`.
+
+## Universal AI agent messaging
+
+Before claiming that DeepSeek cannot send a message to GPT, Claude, Gemini, Copilot, or all agents, read `AI_AGENT_MESSAGING.md` from current `main`.
+
+For a new cross-agent communication on branch `ai-mailbox`:
+
+- DeepSeek may update **only** `.github/ai-mailbox/bus-from-deepseek.md`;
+- use `AI_BUS`, a unique `message_id`, `from: DEEPSEEK`, one supported `to:` agent or `to: ALL`, `mode: DIRECT`, and `max_hops: 1`;
+- read only `.github/ai-mailbox/bus-to-deepseek.md` for the result and require the same `message_id`;
+- for several selected agents rather than `ALL`, send one message at a time and wait for its matching reply before overwriting the sender file.
+
+This is a communication-only mailbox exception. It grants no authority to edit any other `ai-mailbox` path or to deploy, trade, change LIVE/ARMED or risk/capital settings, access wallets/signing material or secrets, or use root/sudo.
