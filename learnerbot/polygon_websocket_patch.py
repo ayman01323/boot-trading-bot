@@ -133,7 +133,6 @@ def _subscribe_new_heads(ws, chain_id: int) -> None:
 
 def _chain_ws_worker(app, chain_id: int) -> None:
     spec = EVM_WS_CHAINS[int(chain_id)]
-    label = spec["label"]
     backoff = 1.0
     while True:
         chain = _chain(app, chain_id)
@@ -223,3 +222,8 @@ def install() -> None:
 
 
 install()
+
+# This module is already loaded late in startup by the Polygon runtime invariant,
+# after the Solana reliability/cursor patches have installed.  Importing the
+# Solana WSS patch here preserves that ordering without moving any trading hooks.
+from . import solana_websocket_patch as _solana_ws  # noqa: E402,F401
