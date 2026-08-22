@@ -79,9 +79,13 @@ jobs:
           Reply with exactly: COPILOT_AUTH_SMOKE_OK
           EOF
           "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py --input /tmp/copilot-smoke.md --output /tmp/copilot-smoke-reply.md
-          grep -q '^status: COMPLETED$' /tmp/copilot-smoke-reply.md
-          grep -Eq '^### COPILOT .* COMPLETED .* rc 0$' /tmp/copilot-smoke-reply.md
-          grep -q 'COPILOT_AUTH_SMOKE_OK' /tmp/copilot-smoke-reply.md
+          if ! grep -q '^status: COMPLETED$' /tmp/copilot-smoke-reply.md || \
+             ! grep -Eq '^### COPILOT .* COMPLETED .* rc 0$' /tmp/copilot-smoke-reply.md || \
+             ! grep -q 'COPILOT_AUTH_SMOKE_OK' /tmp/copilot-smoke-reply.md; then
+            echo 'Sanitised Copilot bus result:'
+            sed -n '1,80p' /tmp/copilot-smoke-reply.md
+            exit 1
+          fi
 
       - name: Publish non-secret result
         if: always()
