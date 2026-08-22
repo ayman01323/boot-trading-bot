@@ -95,16 +95,16 @@ jobs:
           python3 -m venv "$RELAY_VENV"
           "$RELAY_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
 
-      - name: Set up Node for pending Copilot request
-        if: steps.mailbox.outputs.pending == 'true' && matrix.provider == 'copilot'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install bounded Copilot CLI only when needed
+      - name: Install standalone Copilot CLI only when needed
         if: steps.mailbox.outputs.pending == 'true' && matrix.provider == 'copilot'
         shell: bash
-        run: npm_config_ignore_scripts=false npm install -g --force @github/copilot@latest
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/copilot-cli"
+          rm -rf "$prefix"
+          curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          "$prefix/bin/copilot" --version
 
       - name: Ask provider once using mailbox content only
         if: steps.mailbox.outputs.pending == 'true'
