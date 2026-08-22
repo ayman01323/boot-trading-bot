@@ -2,8 +2,8 @@ name: Engineering VPS Resource Snapshot
 
 on:
   schedule:
-    # Four tiny, checkout-free samples per day are enough to expose bandwidth and
-    # disk trends to the weekly Engineering Audit without creating material traffic.
+    # Four tiny, checkout-free samples per day are enough to expose bandwidth,
+    # disk and trading-latency trends to the weekly Engineering Audit.
     - cron: '11 */6 * * *'
   workflow_dispatch:
 
@@ -17,9 +17,16 @@ concurrency:
 jobs:
   snapshot:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Collect non-secret host counters
+      - name: Collect non-secret host counters and trade latency
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+          ENGINEERING_CURRENT_SERVER_PROVIDER: ${{ vars.ENGINEERING_CURRENT_SERVER_PROVIDER }}
+          ENGINEERING_CURRENT_SERVER_REGION: ${{ vars.ENGINEERING_CURRENT_SERVER_REGION }}
+          ENGINEERING_CURRENT_SERVER_MONTHLY_COST: ${{ vars.ENGINEERING_CURRENT_SERVER_MONTHLY_COST }}
+          ENGINEERING_CURRENT_SERVER_CURRENCY: ${{ vars.ENGINEERING_CURRENT_SERVER_CURRENCY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -59,9 +66,9 @@ jobs:
           runner_root='/opt/actions-runner/_work'
           bridge_root='/var/tmp/boot'
           print(json.dumps({
-              'schema_version':1,
+              'schema_version':2,
               'generated_epoch':int(time.time()),
-              'scope':'HOST_RESOURCE_COUNTERS_NO_SECRETS',
+              'scope':'HOST_RESOURCE_AND_TRADE_LATENCY_COUNTERS_NO_SECRETS',
               'disk':{
                   'mount':'/',
                   'total_bytes':int(total),
@@ -85,6 +92,67 @@ jobs:
                   'no_packet_contents':True,
               },
           },indent=2,sort_keys=True))
+          PY
+
+          # Fetch only the small measurement script from main. This keeps the
+          # snapshot checkout-free while ensuring its analysis contract is current.
+          latency_ok=false
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/scripts/engineering_trade_latency_snapshot.py?ref=main" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/engineering_trade_latency_snapshot.py
+          fetch_rc=$?
+          if [[ $fetch_rc -eq 0 && -s /tmp/engineering_trade_latency_snapshot.py ]]; then
+            python_bin="${DEPLOY_ROOT}/.venv/bin/python"
+            [[ -x "$python_bin" ]] || python_bin="$(command -v python3)"
+            PYTHONPATH="${DEPLOY_ROOT}:${PYTHONPATH:-}" "$python_bin" \
+              /tmp/engineering_trade_latency_snapshot.py \
+              --output /tmp/engineering-trade-latency.json >/tmp/engineering-latency.log 2>&1
+            latency_rc=$?
+            if [[ $latency_rc -eq 0 && -s /tmp/engineering-trade-latency.json ]]; then
+              latency_ok=true
+            fi
+          fi
+          set -e
+
+          if [[ "$latency_ok" != true ]]; then
+            python3 - <<'PY' > /tmp/engineering-trade-latency.json
+          import json,time
+          print(json.dumps({
+              'schema_version':1,
+              'generated_epoch':int(time.time()),
+              'trade_latency':{
+                  'required_engineering_review':True,
+                  'available':False,
+                  'reason':'self-hosted trade latency collector did not complete; do not invent latency values',
+                  'chains':[],
+                  'report_requirements':[
+                      'Report latency as INSUFFICIENT DATA until measured telemetry is available.',
+                      'Never substitute estimated protocol latency for measured trade latency.',
+                  ],
+              },
+              'infrastructure':{
+                  'current_server':{'known':False,'provider':None,'region':None,'monthly_cost':None,'source':'not_configured_or_collector_unavailable'},
+                  'candidate_prices_in_snapshot':False,
+              },
+              'privacy':{
+                  'no_wallet_addresses':True,
+                  'no_raw_transaction_hashes':True,
+                  'no_rpc_urls_or_credentials':True,
+                  'no_private_keys':True,
+              },
+          },indent=2,sort_keys=True))
+          PY
+          fi
+
+          python3 - <<'PY'
+          import json
+          host=json.load(open('/tmp/engineering-vps-current.json',encoding='utf-8'))
+          latency=json.load(open('/tmp/engineering-trade-latency.json',encoding='utf-8'))
+          host['trade_latency']=latency.get('trade_latency') or {'available':False,'chains':[]}
+          host['infrastructure']=latency.get('infrastructure') or {}
+          host['trade_latency_privacy']=latency.get('privacy') or {}
+          open('/tmp/engineering-vps-current.json','w',encoding='utf-8').write(json.dumps(host,indent=2,sort_keys=True)+'\n')
           PY
 
       - name: Calculate deltas from prior sample
@@ -131,6 +199,7 @@ jobs:
               'disk_used_percent':disk_pct,
               'bandwidth_status':'MEASURED' if total_delta is not None else 'BASELINE_PENDING',
               'bandwidth_plan_limit_known':False,
+              'trade_latency_review_required':True,
           }
           open('/tmp/engineering-vps-final.json','w',encoding='utf-8').write(json.dumps(cur,indent=2,sort_keys=True)+'\n')
           PY
@@ -147,7 +216,7 @@ jobs:
           import base64,json,sys
           raw=open('/tmp/engineering-vps-final.json','rb').read()
           p={
-              'message':'Update engineering VPS resource snapshot',
+              'message':'Update engineering VPS resource and trade latency snapshot',
               'content':base64.b64encode(raw).decode(),
               'branch':'ai-reviews',
           }
@@ -162,4 +231,9 @@ jobs:
           print('disk_free_bytes=',p['disk']['free_bytes'])
           print('network_megabytes_per_hour=',p['trend']['network_megabytes_per_hour'])
           print('disk_status=',p['alerts']['disk_status'])
+          latency=p.get('trade_latency') or {}
+          print('trade_latency_chains=',len(latency.get('chains') or []))
+          print('trade_latency_trades_7d=',latency.get('total_trades_7d'))
+          server=(p.get('infrastructure') or {}).get('current_server') or {}
+          print('current_server_cost_known=',bool(server.get('monthly_cost')))
           PY
