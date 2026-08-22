@@ -6,9 +6,11 @@ from pathlib import Path
 from . import ai_agent_health_warning_patch as _health_warning
 from . import ai_agent_health_process_dedupe_patch as _health_dedupe  # noqa: F401
 from . import ai_four_agent_health_patch as _health5
+from . import execution_latency as _execution_latency
 from . import strategy_room as _strategy_room
 from . import telegram_ai_ops_patch as _ai_ops
 from . import telegram_ai_reports_menu_patch as _menu
+from .config import AppSettings
 
 PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
 _LABELS = {
@@ -216,8 +218,45 @@ def strategy_room_text(health: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+def _stage_line(label: str, stats: dict, *, coarse: bool = False) -> str:
+    count = int((stats or {}).get("count") or 0)
+    p50 = (stats or {}).get("p50_ms")
+    p95 = (stats or {}).get("p95_ms")
+    suffix = " <i>(coarse)</i>" if coarse else ""
+    if count <= 0 or p50 is None or p95 is None:
+        return f"{label}: <b>collecting</b>{suffix}"
+    return f"{label}: <b>{float(p50):.1f} / {float(p95):.1f} ms</b> p50/p95{suffix}"
+
+
+def _execution_latency_text() -> str:
+    try:
+        report = _execution_latency.summary(AppSettings.load())
+    except Exception as exc:
+        return (
+            "<b>⚡ EXECUTION LATENCY</b>\n"
+            f"Telemetry unavailable: <code>{type(exc).__name__}</code>"
+        )
+    current = report.get("current_24h") or {}
+    lines = [
+        "<b>⚡ EXECUTION LATENCY — SOLANA LIVE</b>",
+        f"Samples: <b>{int(report.get('samples_24h') or 0)}</b> (24h) • <b>{int(report.get('samples_7d') or 0)}</b> (7d)",
+        _stage_line("Receiving event", current.get("receive_delay_ms") or {}, coarse=True),
+        _stage_line("Strategy/preflight", current.get("strategy_ms") or {}),
+        _stage_line("Transaction construction", current.get("transaction_construction_ms") or {}),
+        _stage_line("Jupiter order", current.get("order_ms") or {}),
+        _stage_line("Simulation", current.get("simulation_ms") or {}),
+        _stage_line("Execute", current.get("execute_ms") or {}),
+        _stage_line("Execution total", current.get("execution_total_ms") or {}),
+        "",
+        f"Infrastructure: <b>{str(report.get('infrastructure_conclusion') or 'BENCHMARK')}</b>",
+        str(report.get("recommendation") or "Collect measured samples before changing servers."),
+        "Benchmark regions: <b>Frankfurt • Amsterdam • London</b>",
+    ]
+    return "\n".join(lines)
+
+
 def engineering_text(_state: dict | None = None) -> str:
-    return _lane_text("engineering")
+    return "\n\n".join([_lane_text("engineering"), _execution_latency_text()])
 
 
 def strategy_text(_state: dict | None = None) -> str:
