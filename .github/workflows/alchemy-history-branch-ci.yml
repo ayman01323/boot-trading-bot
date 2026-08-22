@@ -1,0 +1,37 @@
+name: Alchemy History Branch CI
+
+on:
+  push:
+    branches: ['gpt/alchemy-history-only']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 30
+    env:
+      CI_VENV: /tmp/alchemy-history-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Build isolated test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$CI_VENV"
+          python3 -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+      - name: Compile
+        run: "$CI_VENV/bin/python" -m compileall -q learnerbot scripts tests
+      - name: Focused Alchemy history tests
+        run: "$CI_VENV/bin/python" -m pytest -x -vv tests/test_sibot_alchemy_history.py tests/test_imports.py tests/test_main_import_order.py tests/test_sibot.py tests/test_sibot_evm_worker_reliability.py"
+      - name: Full regression suite
+        run: "$CI_VENV/bin/python" -m pytest -q"
+      - name: Cleanup
+        if: always()
+        run: rm -rf "$CI_VENV"
