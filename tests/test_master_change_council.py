@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from learnerbot import master_change_council as council
 
@@ -70,6 +71,15 @@ def test_bridge_publishes_only_sanitised_change_and_dispatches_once() -> None:
     assert "implementation_nonce" in text
     assert "requester_chat_id" not in text
     assert "[REDACTED]" in text
+
+
+def test_master_change_workflow_yaml_is_parseable() -> None:
+    for path in (
+        ".github/workflows/master-change-council-bridge.yml",
+        ".github/workflows/gpt-master-change-implement.yml",
+    ):
+        node = yaml.compose(_text(path))
+        assert node is not None, path
 
 
 def test_gpt_implementation_has_file_gate_tests_and_no_direct_secret_authority() -> None:
