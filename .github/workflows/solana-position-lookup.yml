@@ -1,0 +1,159 @@
+name: Solana Position Lookup
+
+on:
+  workflow_dispatch:
+    inputs:
+      position_id:
+        description: 'Exact 32-hex Solana SiBot position id'
+        required: true
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: solana-position-lookup
+  cancel-in-progress: false
+
+jobs:
+  lookup:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.number == 333 &&
+       github.event.comment.user.login == github.repository_owner &&
+       startsWith(github.event.comment.body, 'POSITION_LOOKUP '))
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      LOOKUP_WRAPPER: /usr/local/sbin/lookup-solana-sibot-position
+
+    steps:
+      - name: Check out trusted current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve and validate exact position id
+        id: input
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_POSITION_ID: ${{ inputs.position_id }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            position_id="${DISPATCH_POSITION_ID:-}"
+          else
+            position_id="${COMMENT_BODY#POSITION_LOOKUP }"
+          fi
+          if [[ ! "$position_id" =~ ^[0-9a-f]{32}$ ]]; then
+            echo 'Invalid position id; expected exactly 32 lowercase hexadecimal characters.' >&2
+            exit 2
+          fi
+          printf '%s\n' "$position_id" > /tmp/solana-position-id.txt
+          echo "position_id=$position_id" >> "$GITHUB_OUTPUT"
+
+      - name: Verify restricted lookup wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$LOOKUP_WRAPPER" || {
+            echo 'Restricted Solana position lookup wrapper is not installed on the VPS.' >&2
+            echo 'Install once as root from the deployed main checkout with:' >&2
+            echo 'sudo -E bash scripts/install_solana_position_lookup_wrapper.sh' >&2
+            exit 3
+          }
+          sudo -n -l "$LOOKUP_WRAPPER" >/dev/null
+
+      - name: Query fixed Solana positions table read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n "$LOOKUP_WRAPPER" < /tmp/solana-position-id.txt \
+            | tee /tmp/solana-position-result.json
+          python3 -m json.tool /tmp/solana-position-result.json >/dev/null
+
+      - name: Publish lookup to GitHub job summary
+        shell: bash
+        run: |
+          {
+            echo '## Solana Position Lookup'
+            echo
+            echo '```json'
+            cat /tmp/solana-position-result.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish sanitised latest result to ai-reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/solana-position-published.json
+          import json, os, pathlib, time
+          result=json.loads(pathlib.Path('/tmp/solana-position-result.json').read_text(encoding='utf-8'))
+          out={
+              'schema_version':1,
+              'generated_epoch':int(time.time()),
+              'workflow_run_id':int(os.environ.get('RUN_ID') or 0),
+              'source_commit':os.environ.get('SOURCE_SHA','')[:40],
+              'read_only':True,
+              'result':result,
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+          api="repos/${GITHUB_REPOSITORY}/contents/github/solana-position-lookup/latest.json"
+          existing_sha=''
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" \
+            > /tmp/solana-position-existing.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s /tmp/solana-position-existing.json ]]; then
+            existing_sha="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/solana-position-existing.json')).get('sha') or '')
+          PY
+            )"
+          fi
+          python3 - "$existing_sha" <<'PY' > /tmp/solana-position-put.json
+          import base64, json, sys
+          raw=open('/tmp/solana-position-published.json','rb').read()
+          payload={
+              'message':'Record bounded Solana position lookup',
+              'content':base64.b64encode(raw).decode(),
+              'branch':'ai-reviews',
+          }
+          if sys.argv[1]:
+              payload['sha']=sys.argv[1]
+          print(json.dumps(payload))
+          PY
+          gh api -X PUT "$api" --input /tmp/solana-position-put.json >/dev/null
+
+      - name: Reply on issue bus when comment-triggered
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'POSITION_LOOKUP_REPLY'
+            echo "position_id: ${{ steps.input.outputs.position_id }}"
+            echo
+            echo '```json'
+            cat /tmp/solana-position-result.json
+            echo '```'
+          } > /tmp/solana-position-comment.md
+          gh issue comment 333 --repo "$GITHUB_REPOSITORY" --body-file /tmp/solana-position-comment.md
