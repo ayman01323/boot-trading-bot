@@ -1,13 +1,16 @@
 name: Claude Git Mailbox Bridge
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  workflow_run:
+    workflows: [Claude Mailbox Signal]
+    types: [completed]
+    branches: [ai-mailbox]
   workflow_dispatch:
   push:
     branches: [main]
     paths:
       - '.github/workflows/claude-git-mailbox-bridge.yml'
+      - '.github/workflows/claude-mailbox-signal.yml'
       - 'scripts/claude_git_mailbox_bridge.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
@@ -18,6 +21,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/claude-git-mailbox-bridge.yml'
+      - '.github/workflows/claude-mailbox-signal.yml'
       - 'scripts/claude_git_mailbox_bridge.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
@@ -59,14 +63,21 @@ jobs:
             tests/test_claude_git_mailbox_bridge.py
           "$venv/bin/python" - <<'PY'
           import pathlib,yaml
-          value=yaml.safe_load(pathlib.Path('.github/workflows/claude-git-mailbox-bridge.yml').read_text(encoding='utf-8'))
-          assert isinstance(value,dict) and 'jobs' in value
+          for name in (
+              '.github/workflows/claude-git-mailbox-bridge.yml',
+              '.github/workflows/claude-mailbox-signal.yml',
+          ):
+              value=yaml.safe_load(pathlib.Path(name).read_text(encoding='utf-8'))
+              assert isinstance(value,dict) and 'jobs' in value, name
           PY
           "$venv/bin/python" -m pytest -q tests/test_claude_git_mailbox_bridge.py
           rm -rf "$venv"
 
   bridge:
-    if: github.event_name != 'pull_request'
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.conclusion == 'success')
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
     permissions:
@@ -116,7 +127,8 @@ jobs:
             --output /tmp/unused.md \
             --preflight > /tmp/claude-git-mailbox-preflight.env
           cat /tmp/claude-git-mailbox-preflight.env >> "$GITHUB_OUTPUT"
-          test "${{ steps.preflight.outputs.target }}" = "gpt" || true
+          target="$(grep '^target=' /tmp/claude-git-mailbox-preflight.env | cut -d= -f2-)"
+          test "$target" = "gpt"
 
       - name: Route Claude message to GPT
         if: steps.mailbox.outputs.pending == 'true'
@@ -157,8 +169,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # This helper can write only .github/ai-mailbox/gpt-to-claude.md
-          # on the dedicated ai-mailbox branch and dedupes by in_reply_to.
           python3 scripts/claude_git_mailbox_bridge.py publish-live \
             --repo "$GITHUB_REPOSITORY" \
             --message-id "${{ steps.mailbox.outputs.message_id }}" \
@@ -176,10 +186,12 @@ jobs:
           {
             echo '## Claude Git Mailbox Bridge'
             echo
+            echo "Event: **${GITHUB_EVENT_NAME}**"
             echo "Pending message: **${{ steps.mailbox.outputs.pending || 'false' }}**"
             echo "Message ID: \`${{ steps.mailbox.outputs.message_id || 'none' }}\`"
             echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
             echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
             echo 'Input: `.github/ai-mailbox/claude-to-gpt.md` on `ai-mailbox`'
             echo 'Reply: `.github/ai-mailbox/gpt-to-claude.md` on `ai-mailbox`'
+            echo 'No scheduled polling is used.'
           } >> "$GITHUB_STEP_SUMMARY"
