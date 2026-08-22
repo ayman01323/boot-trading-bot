@@ -87,8 +87,7 @@ _cli._app = _app_with_hiiii
 from . import backup_telegram_alert_patch  # noqa: E402,F401
 # Warn ACTIVE MASTER accounts every 30 minutes while an AI reporting agent is unhealthy.
 from . import ai_agent_health_warning_patch  # noqa: E402,F401
-# Notify ACTIVE MASTER accounts once for each new AI bus reply published to ai-reviews.
-from . import ai_bus_telegram_alert_patch  # noqa: E402,F401
+# AI bus reply notifications are event-driven in GitHub Actions; no 60-second ai-reviews poller is loaded here.
 # Reconcile stale primary Strategy status with the resilient per-cycle Master/assignment artifacts.
 from . import ai_agent_health_master_reconcile_patch  # noqa: E402,F401
 # A newly deployed strategy implementation must be reviewed at that exact source before live CANARY can use it.

@@ -42,7 +42,7 @@ def test_missing_settings_still_get_the_platform_floor(tmp_path, monkeypatch):
     assert cfg["min_copied_win_rate_pct"] == "50"
     assert cfg["min_copied_profit_factor"] == "1.50"
     assert cfg["leader_suspend_minutes"] == "1440"
-    assert cfg["require_complete_history"] == "true"
+    assert cfg["require_complete_history"] == "false"
 
 
 def test_ceilings_cannot_be_raised_past_platform_default(tmp_path, monkeypatch):
@@ -73,7 +73,18 @@ def test_tighter_ceiling_override_is_left_alone(tmp_path, monkeypatch):
     assert cfg["max_leader_drawdown_pct"] == "5"
 
 
-def test_require_complete_history_cannot_be_disabled_by_a_user(tmp_path, monkeypatch):
+def test_stale_true_history_setting_is_forced_false_at_effective_runtime(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+
+    def fake_prev(app_, tid, chain_id=0):
+        return {"require_complete_history": "true"}
+
+    monkeypatch.setattr(floor_patch, "_PREV_USER_SETTINGS", fake_prev)
+    cfg = floor_patch.user_settings_with_quality_floor(app, "123", 56)
+    assert cfg["require_complete_history"] == "false"
+
+
+def test_false_history_setting_remains_false(tmp_path, monkeypatch):
     app = _app(tmp_path)
 
     def fake_prev(app_, tid, chain_id=0):
@@ -81,7 +92,7 @@ def test_require_complete_history_cannot_be_disabled_by_a_user(tmp_path, monkeyp
 
     monkeypatch.setattr(floor_patch, "_PREV_USER_SETTINGS", fake_prev)
     cfg = floor_patch.user_settings_with_quality_floor(app, "123", 56)
-    assert cfg["require_complete_history"] == "true"
+    assert cfg["require_complete_history"] == "false"
 
 
 def test_other_keys_pass_through_untouched(tmp_path, monkeypatch):
