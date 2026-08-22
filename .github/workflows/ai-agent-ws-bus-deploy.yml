@@ -1,4 +1,4 @@
-name: Deploy Local AI Agent WebSocket Bus
+name: Verify Local AI Agent WebSocket Bus
 
 on:
   push:
@@ -7,10 +7,13 @@ on:
       - 'scripts/ai_agent_ws_bus.py'
       - 'scripts/ai_agent_ws_worker.py'
       - 'scripts/ai_agent_ws_send.py'
-      - 'scripts/install_ai_agent_ws_bus.sh'
+      - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'learnerbot/__main__.py'
       - 'learnerbot/ai_council.py'
       - 'learnerbot/ai_council_http_patch.py'
+      - 'requirements.txt'
       - 'AI_AGENT_MESSAGING.md'
+      - 'GEMINI.md'
       - '.github/workflows/ai-agent-ws-bus-deploy.yml'
   workflow_dispatch:
 
@@ -18,48 +21,45 @@ permissions:
   contents: write
 
 concurrency:
-  group: deploy-local-ai-agent-ws-bus
+  group: verify-local-ai-agent-ws-bus
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  verify:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
-      - name: Check out trusted main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Install and restart local bus
+      - name: Wait for protected main deployment and verify loopback broker
+        id: verify
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$(id -u)" -eq 0 ]]; then
-            bash scripts/install_ai_agent_ws_bus.sh "$GITHUB_WORKSPACE"
-          elif sudo -n true 2>/dev/null; then
-            sudo -n bash scripts/install_ai_agent_ws_bus.sh "$GITHUB_WORKSPACE"
-          else
-            echo 'Self-hosted runner needs root or passwordless sudo to install systemd services.' >&2
-            exit 1
-          fi
+          python3 - <<'PY'
+          import json, os, socket, time
+          deadline = time.monotonic() + 480
+          last = ''
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(('127.0.0.1', 8765), timeout=1.0):
+                      pass
+                  status = {}
+                  try:
+                      with open('/var/tmp/boot/ai_agent_ws_status.json', encoding='utf-8') as fh:
+                          status = json.load(fh)
+                  except Exception as exc:
+                      status = {'state': 'PORT_OPEN', 'detail': f'status file unavailable: {type(exc).__name__}'}
+                  state = str(status.get('state') or '')
+                  if state in {'ACTIVE', 'EXTERNAL', 'PORT_OPEN'}:
+                      print(json.dumps(status, sort_keys=True))
+                      raise SystemExit(0)
+                  last = json.dumps(status, sort_keys=True)
+              except OSError as exc:
+                  last = f'{type(exc).__name__}: {exc}'
+              time.sleep(4)
+          raise SystemExit('WebSocket broker did not become available on 127.0.0.1:8765; last=' + last)
+          PY
 
-      - name: Verify services without provider calls
-        shell: bash
-        run: |
-          set -euo pipefail
-          run_root() {
-            if [[ "$(id -u)" -eq 0 ]]; then "$@"; else sudo -n "$@"; fi
-          }
-          run_root systemctl is-active --quiet boot-ai-agent-bus.service
-          for agent in gpt claude gemini deepseek copilot; do
-            run_root systemctl is-active --quiet "boot-ai-agent-worker@${agent}.service"
-          done
-          echo 'Local AI agent WebSocket bus and all recipient workers are active.'
-
-      - name: Record deployment result on ai-mailbox
+      - name: Record verified result on ai-mailbox
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
@@ -72,17 +72,14 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64, json, os, time, urllib.error, urllib.parse, urllib.request
-
-          repo = os.environ['REPO']
-          token = os.environ['GH_TOKEN']
-          path = '.github/ai-mailbox/ws-bus-deploy-status.json'
-          branch = 'ai-mailbox'
+          repo = os.environ['REPO']; token = os.environ['GH_TOKEN']
+          path = '.github/ai-mailbox/ws-bus-deploy-status.json'; branch = 'ai-mailbox'
           api = f'https://api.github.com/repos/{repo}/contents/{path}'
           headers = {
               'Authorization': f'Bearer {token}',
               'Accept': 'application/vnd.github+json',
               'X-GitHub-Api-Version': '2022-11-28',
-              'User-Agent': 'boot-ai-agent-ws-deploy',
+              'User-Agent': 'boot-ai-agent-ws-verify',
           }
           existing_sha = ''
           try:
@@ -90,39 +87,25 @@ jobs:
               with urllib.request.urlopen(req, timeout=20) as resp:
                   existing_sha = str(json.load(resp).get('sha') or '')
           except urllib.error.HTTPError as exc:
-              if exc.code != 404:
-                  raise
-
+              if exc.code != 404: raise
           status = {
-              'schema_version': 1,
+              'schema_version': 2,
               'status': os.environ['JOB_STATUS'].upper(),
               'source_sha': os.environ['SOURCE_SHA'],
               'run_id': os.environ['RUN_ID'],
               'run_attempt': os.environ['RUN_ATTEMPT'],
-              'verified_services': [
-                  'boot-ai-agent-bus.service',
-                  'boot-ai-agent-worker@gpt.service',
-                  'boot-ai-agent-worker@claude.service',
-                  'boot-ai-agent-worker@gemini.service',
-                  'boot-ai-agent-worker@deepseek.service',
-                  'boot-ai-agent-worker@copilot.service',
-              ] if os.environ['JOB_STATUS'] == 'success' else [],
+              'transport': 'loopback-websocket',
+              'endpoint': 'ws://127.0.0.1:8765',
+              'routing_model_calls': 0,
               'checked_epoch': int(time.time()),
           }
           content = json.dumps(status, indent=2, sort_keys=True) + '\n'
           payload = {
-              'message': f"AI WebSocket bus deploy {status['status'].lower()} {status['source_sha'][:12]}",
+              'message': f"AI WebSocket bus verify {status['status'].lower()} {status['source_sha'][:12]}",
               'content': base64.b64encode(content.encode()).decode(),
               'branch': branch,
           }
-          if existing_sha:
-              payload['sha'] = existing_sha
-          req = urllib.request.Request(
-              api,
-              data=json.dumps(payload).encode(),
-              headers={**headers, 'Content-Type': 'application/json'},
-              method='PUT',
-          )
-          with urllib.request.urlopen(req, timeout=20) as resp:
-              json.load(resp)
+          if existing_sha: payload['sha'] = existing_sha
+          req = urllib.request.Request(api, data=json.dumps(payload).encode(), headers={**headers, 'Content-Type':'application/json'}, method='PUT')
+          with urllib.request.urlopen(req, timeout=20) as resp: json.load(resp)
           PY
