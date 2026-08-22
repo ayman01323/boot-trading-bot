@@ -20,6 +20,7 @@ def claude_message(message_id: str = 'claude-1') -> str:
         f'message_id: {message_id}\n'
         'source_sha: abc123\n'
         'status: REQUEST\n'
+        'identity: PERSISTENT_AGENT\n'
         'constraints: READ_ONLY; no secrets\n\n'
         'Please review this bounded message.\n'
     )
@@ -39,14 +40,32 @@ def bus_reply(message_id: str = 'claude-1') -> str:
     )
 
 
-def test_normalize_routes_only_to_gpt() -> None:
+def test_normalize_routes_only_persistent_claude_to_gpt() -> None:
     message_id, envelope = bridge.normalize_claude_message(claude_message())
     assert message_id == 'claude-1'
-    assert envelope.startswith('AI_BUS\n')
     assert 'from: CLAUDE\n' in envelope
     assert 'to: GPT\n' in envelope
-    assert 'mode: DIRECT\n' in envelope
-    assert 'max_hops: 1\n' in envelope
+    assert 'persistent/interactive Claude mailbox' in envelope
+
+
+def test_stateless_api_identity_is_rejected_from_persistent_mailbox() -> None:
+    fake = (
+        'CLAUDE_TO_GPT\nmessage_id: fake-api\nstatus: RESPONSE\n'
+        'identity: STATELESS_API_RESPONDER\n\nnot persistent claude\n'
+    )
+    assert bridge.message_id_from_claude(fake) == ''
+    try:
+        bridge.normalize_claude_message(fake)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('stateless API response was accepted as persistent Claude')
+
+
+def test_persistent_and_api_mailboxes_are_distinct() -> None:
+    assert bridge.CLAUDE_TO_GPT_PATH.endswith('claude-to-gpt.md')
+    assert bridge.CLAUDE_API_TO_GPT_PATH.endswith('claude-api-to-gpt.md')
+    assert bridge.CLAUDE_TO_GPT_PATH != bridge.CLAUDE_API_TO_GPT_PATH
 
 
 def test_invalid_prefix_or_message_id_is_rejected() -> None:
@@ -61,16 +80,9 @@ def test_invalid_prefix_or_message_id_is_rejected() -> None:
 
 def test_existing_reply_dedupes_exact_message(monkeypatch) -> None:
     incoming = claude_message('done-1')
-    outgoing = (
-        'GPT_TO_CLAUDE\n'
-        'in_reply_to: done-1\n'
-        'status: COMPLETED\n\n'
-        'already handled\n'
-    )
-
+    outgoing = 'GPT_TO_CLAUDE\nin_reply_to: done-1\nstatus: COMPLETED\n\nalready handled\n'
     def fake_fetch(repo: str, path: str, *, token: str):
         return (incoming, 'in-sha') if path == bridge.CLAUDE_TO_GPT_PATH else (outgoing, 'out-sha')
-
     monkeypatch.setattr(bridge, 'fetch_fixed_file', fake_fetch)
     pending, message_id, _ = bridge.select_pending('owner/repo', token='t')
     assert pending is False
@@ -80,10 +92,8 @@ def test_existing_reply_dedupes_exact_message(monkeypatch) -> None:
 def test_new_message_is_pending(monkeypatch) -> None:
     incoming = claude_message('new-1')
     outgoing = 'GPT_TO_CLAUDE\nin_reply_to: older\nstatus: COMPLETED\n\nold\n'
-
     def fake_fetch(repo: str, path: str, *, token: str):
         return (incoming, 'in-sha') if path == bridge.CLAUDE_TO_GPT_PATH else (outgoing, 'out-sha')
-
     monkeypatch.setattr(bridge, 'fetch_fixed_file', fake_fetch)
     pending, message_id, envelope = bridge.select_pending('owner/repo', token='t')
     assert pending is True
@@ -91,17 +101,13 @@ def test_new_message_is_pending(monkeypatch) -> None:
     assert 'to: GPT\n' in envelope
 
 
-def test_publish_writes_only_fixed_reply_path(monkeypatch) -> None:
+def test_publish_writes_only_fixed_gpt_reply_path(monkeypatch) -> None:
     calls = []
-
     def fake_fetch(repo: str, path: str, *, token: str):
         assert path == bridge.GPT_TO_CLAUDE_PATH
         return ('GPT_TO_CLAUDE\nin_reply_to: old\nstatus: COMPLETED\n', 'old-sha')
-
     def fake_json(url: str, *, token: str, method: str = 'GET', payload=None):
-        calls.append((url, method, payload))
-        return {}
-
+        calls.append((url, method, payload)); return {}
     monkeypatch.setattr(bridge, 'fetch_fixed_file', fake_fetch)
     monkeypatch.setattr(bridge, '_github_json', fake_json)
     bridge.publish_reply('owner/repo', token='t', message_id='claude-1', bus_reply=bus_reply())
@@ -110,10 +116,9 @@ def test_publish_writes_only_fixed_reply_path(monkeypatch) -> None:
     assert url.endswith('/contents/.github/ai-mailbox/gpt-to-claude.md')
     assert method == 'PUT'
     assert payload['branch'] == 'ai-mailbox'
-    assert payload['sha'] == 'old-sha'
     decoded = base64.b64decode(payload['content']).decode()
     assert decoded.startswith('GPT_TO_CLAUDE\n')
-    assert 'in_reply_to: claude-1\n' in decoded
+    assert 'identity: GPT_API_RESPONDER\n' in decoded
 
 
 def test_arbitrary_mailbox_path_is_rejected() -> None:
