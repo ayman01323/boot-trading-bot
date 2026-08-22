@@ -150,20 +150,26 @@ class UniversalAgentMailboxTests(unittest.TestCase):
         self.assertNotIn("deploy-boot-trading-bot", relay)
         self.assertNotIn("protected deploy", relay.lower())
 
-    def test_all_agent_instruction_files_teach_automatic_wake_up(self) -> None:
+    def test_agent_instructions_reference_websocket_primary_and_git_fallback(self) -> None:
         for path in ["AGENTS.md", "CLAUDE.md", "GEMINI.md", "DEEPSEEK.md"]:
             text = Path(path).read_text()
             self.assertIn("AI_AGENT_MESSAGING.md", text, path)
-            self.assertIn("Delivery is automatic and event-driven", text, path)
-            self.assertIn("does **not** poll", text, path)
-            self.assertIn("Example send:", text, path)
-            self.assertIn("AI_BUS", text, path)
+
+        gemini = Path("GEMINI.md").read_text()
+        self.assertIn("scripts/ai_agent_ws_send.py", gemini)
+        self.assertIn("--from gemini", gemini)
+        self.assertIn("ACKNOWLEDGED", gemini)
+        self.assertIn("does not poll GitHub", gemini)
+
         guide = Path("AI_AGENT_MESSAGING.md").read_text()
-        self.assertIn("Automatic recipient wake-up", guide)
-        self.assertIn("immediately invokes only the addressed provider", guide)
-        self.assertIn("No recipient has to poll", guide)
-        self.assertIn("not cryptographic proof of model identity", guide)
-        self.assertIn("Example, GPT to Claude:", guide)
+        self.assertIn("local VPS WebSocket bus", guide)
+        self.assertIn("zero AI/model tokens", guide)
+        self.assertIn("Automatic recipient awareness", guide)
+        self.assertIn("must not poll GitHub", guide)
+        self.assertIn("ACKNOWLEDGED", guide)
+        self.assertIn("GitHub mailbox fallback", guide)
+        self.assertIn("Do not claim a Git mailbox commit itself proves recipient receipt", guide)
+        self.assertIn("/usr/local/sbin/deploy-boot-trading-bot", guide)
 
 
 if __name__ == "__main__":
