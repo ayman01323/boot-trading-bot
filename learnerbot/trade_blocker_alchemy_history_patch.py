@@ -1,0 +1,113 @@
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from . import sibot as _sibot
+from . import telegram_trade_blocker_health_patch as _health
+
+_PREV_SNAPSHOT = _health._snapshot
+_PREV_BUILD_REPORT = _health.build_report
+
+
+def _providers(app):
+    out = {}
+    for chain in _health.load_chains(app, enabled_only=True):
+        if str(getattr(chain, "type", "EVM") or "EVM").upper() != "EVM":
+            continue
+        provider_fn = getattr(_sibot, "history_provider", None)
+        provider = str(provider_fn(app, chain) if callable(provider_fn) else "MISSING").upper()
+        out[str(chain.slug)] = provider
+    return out
+
+
+def _snapshot(app, tid):
+    result = _PREV_SNAPSHOT(app, tid)
+    providers = _providers(app)
+    ready = bool(providers) and all(value == "ALCHEMY" for value in providers.values())
+    result["evm_history_providers"] = providers
+    result["evm_history_ready"] = ready
+    # Keep the legacy field true when history is ready so older renderers do not
+    # emit a false Etherscan warning before build_report replaces the wording.
+    result["etherscan_configured"] = ready
+    return result
+
+
+def build_report(app, tid) -> str:
+    snapshot = _snapshot(app, tid)
+    text = _PREV_BUILD_REPORT(app, tid)
+    providers = snapshot.get("evm_history_providers") or {}
+    if snapshot.get("evm_history_ready"):
+        replacement = "🟢 EVM history provider: <b>ALCHEMY RPC</b>"
+    else:
+        missing = ", ".join(slug.upper() for slug, provider in providers.items() if provider != "ALCHEMY") or "enabled EVM chains"
+        replacement = f"🔴 Alchemy history endpoint missing: <b>{missing}</b>"
+    text = text.replace("🟢 EVM history dependency: <b>Etherscan key configured</b>", replacement)
+    text = text.replace("🔴 EVM history dependency: <b>ETHERSCAN_API_KEY MISSING</b>", replacement)
+    text = text.replace("\n   SiBot cannot verify EVM leader histories until the VPS secret is configured.", "")
+    return text
+
+
+def _publish_startup_health(app):
+    masters = [
+        str(user.get("telegram_id") or "")
+        for user in _health.all_users(app.csv_dir, enabled_only=True)
+        if str(user.get("role") or "").upper() == "MASTER" and str(user.get("telegram_id") or "")
+    ]
+    tid = masters[0] if masters else ""
+    snapshot = _snapshot(app, tid) if tid else {
+        "generated_epoch": int(time.time()),
+        "polygon_focus": bool(_health._polygon.focus_enabled(app)),
+        "evm_history_providers": _providers(app),
+    }
+    providers = snapshot.get("evm_history_providers") or _providers(app)
+    ready = bool(providers) and all(provider == "ALCHEMY" for provider in providers.values())
+    safe = {
+        "generated_epoch": snapshot.get("generated_epoch"),
+        "evm_history_ready": ready,
+        "evm_history_provider": "ALCHEMY" if ready else "MISSING",
+        "evm_history_providers": providers,
+        "polygon_focus": snapshot.get("polygon_focus"),
+        "platform_auto": snapshot.get("platform_auto"),
+        "evm": snapshot.get("evm", {}),
+        "fast_market": snapshot.get("fast_market", {}),
+    }
+    path = Path(app.data_dir) / "trade_blocker_health.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(safe, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    print(
+        "[trade-blocker-health] evm_history=%s polygon_focus=%s"
+        % ("ALCHEMY" if ready else "MISSING", safe["polygon_focus"])
+    )
+    if not ready and masters and app.telegram_bot_token:
+        marker = Path(app.data_dir) / ".evm_history_dependency_warning_epoch"
+        last = _health._epoch(marker.read_text(encoding="utf-8").strip()) if marker.exists() else 0
+        if int(time.time()) - last >= 12 * 3600:
+            missing = ", ".join(slug.upper() for slug, provider in providers.items() if provider != "ALCHEMY") or "enabled EVM chains"
+            for master_tid in masters:
+                try:
+                    _health.send_message(
+                        app.telegram_bot_token,
+                        master_tid,
+                        "🔴 <b>EVM SiBot Alchemy history blocked</b>\n"
+                        f"No complete Alchemy HTTP endpoint is configured for <b>{missing}</b> in "
+                        "<code>rpc_endpoints.csv</code>. Use <code>/whynotrade</code> for the funnel.",
+                        parse_mode="HTML",
+                        protect_content=True,
+                    )
+                except Exception:
+                    pass
+            marker.write_text(str(int(time.time())) + "\n", encoding="utf-8")
+
+
+def install():
+    if getattr(_health, "_alchemy_history_health_patch_installed", False):
+        return
+    _health._snapshot = _snapshot
+    _health.build_report = build_report
+    _health._publish_startup_health = _publish_startup_health
+    _health._alchemy_history_health_patch_installed = True
+
+
+install()
