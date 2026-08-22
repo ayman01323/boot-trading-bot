@@ -126,6 +126,10 @@ from . import sibot_alchemy_rate_limit_patch  # noqa: E402,F401
 # refresh implementation and leaves provider selection/history gating untouched.
 from . import sibot_alchemy_internal_trace_patch  # noqa: E402,F401
 
+# Retry transient provider throttles promptly and serialise history backfills
+# across EVM chains so multiple workers do not burst the same Alchemy account.
+from . import sibot_alchemy_retry_queue_patch  # noqa: E402,F401
+
 # Final operational truth layer: expose the exact reason no trade is occurring
 # without changing LIVE scope, thresholds, capital, signing or any safety gate.
 from . import telegram_trade_blocker_health_patch  # noqa: E402,F401
