@@ -17,6 +17,9 @@ _LABELS = {
     "deepseek": "DeepSeek",
     "copilot": "Copilot",
 }
+_ENGINEERING_HEADING = "🛠 ENGINEERING Monitor"
+_STRATEGY_HEADING = "🧠 STRATEGY Monitor"
+_STRATEGY_FACTORY_HEADING = "🧠 STRATEGY Factory and Implementation"
 
 # Keep the five-agent health collectors aligned with the compact display order.
 _health5.PROVIDERS = PROVIDERS
@@ -136,7 +139,7 @@ def _lane_health(lane: str) -> dict:
 
 def _lane_text(lane: str, health: dict | None = None) -> str:
     health = health if health is not None else _lane_health(lane)
-    heading = "🛠 ENGINEERING" if lane == "engineering" else "🧠 STRATEGY"
+    heading = _ENGINEERING_HEADING if lane == "engineering" else _STRATEGY_HEADING
     agents = (health or {}).get("agents") or {}
     lines = [heading]
     for provider in PROVIDERS:
@@ -156,7 +159,7 @@ def _strategy_room_health() -> dict:
 def strategy_room_text(health: dict | None = None) -> str:
     health = health if health is not None else _strategy_room_health()
     agents = (health or {}).get("agents") or {}
-    lines = ["🧠 STRATEGY ROOM"]
+    lines = [_STRATEGY_FACTORY_HEADING]
     for provider in PROVIDERS:
         detail = agents.get(provider) or {
             "state": "WAITING",
