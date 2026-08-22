@@ -1,20 +1,10 @@
 name: Verify Local AI Agent WebSocket Bus
 
 on:
-  push:
+  workflow_run:
+    workflows: [Deploy BOOT to VPS]
+    types: [completed]
     branches: [main]
-    paths:
-      - 'scripts/ai_agent_ws_bus.py'
-      - 'scripts/ai_agent_ws_worker.py'
-      - 'scripts/ai_agent_ws_send.py'
-      - 'learnerbot/ai_agent_ws_runtime_patch.py'
-      - 'learnerbot/__main__.py'
-      - 'learnerbot/ai_council.py'
-      - 'learnerbot/ai_council_http_patch.py'
-      - 'requirements.txt'
-      - 'AI_AGENT_MESSAGING.md'
-      - 'GEMINI.md'
-      - '.github/workflows/ai-agent-ws-bus-deploy.yml'
   workflow_dispatch:
 
 permissions:
@@ -26,17 +16,19 @@ concurrency:
 
 jobs:
   verify:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 10
+    timeout-minutes: 3
     steps:
-      - name: Wait for protected main deployment and verify loopback broker
-        id: verify
+      - name: Verify loopback broker without model calls
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, socket, time
-          deadline = time.monotonic() + 480
+          import json, socket, time
+          deadline = time.monotonic() + 90
           last = ''
           while time.monotonic() < deadline:
               try:
@@ -55,8 +47,8 @@ jobs:
                   last = json.dumps(status, sort_keys=True)
               except OSError as exc:
                   last = f'{type(exc).__name__}: {exc}'
-              time.sleep(4)
-          raise SystemExit('WebSocket broker did not become available on 127.0.0.1:8765; last=' + last)
+              time.sleep(3)
+          raise SystemExit('WebSocket broker unavailable on 127.0.0.1:8765; last=' + last)
           PY
 
       - name: Record verified result on ai-mailbox
@@ -66,7 +58,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          SOURCE_SHA: ${{ github.sha }}
+          DEPLOYED_SHA: ${{ github.event.workflow_run.head_sha }}
           JOB_STATUS: ${{ job.status }}
         shell: bash
         run: |
@@ -91,7 +83,7 @@ jobs:
           status = {
               'schema_version': 2,
               'status': os.environ['JOB_STATUS'].upper(),
-              'source_sha': os.environ['SOURCE_SHA'],
+              'source_sha': os.environ.get('DEPLOYED_SHA') or '',
               'run_id': os.environ['RUN_ID'],
               'run_attempt': os.environ['RUN_ATTEMPT'],
               'transport': 'loopback-websocket',
