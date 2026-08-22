@@ -1,4 +1,4 @@
 DeepSeek GitHub-to-VPS full-link inspection trigger
-requested: 2026-08-22T22:21Z
+requested: 2026-08-22T22:25Z
 mode: inspect-only
-focus: verify deployed SHA after Alchemy-only EVM history merge; report startup trade-blocker-health and any sibot-history/Alchemy errors
+focus: post-deploy Alchemy-only EVM history; report deployed SHA, trade-blocker-health, and any recent sibot-history or AlchemyHistoryError lines; no mutation
