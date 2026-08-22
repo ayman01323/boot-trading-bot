@@ -1,0 +1,48 @@
+name: SiBot History Depth Diagnostic CI
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/sibot_leader_gate_report.py'
+      - 'scripts/install_sibot_leader_gate_wrapper.sh'
+      - 'tests/test_sibot_leader_gate_readonly_wrapper.py'
+      - '.github/workflows/sibot-history-depth-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-tests:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    env:
+      VENV: /tmp/sibot-history-depth-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Compile and verify read-only contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q pytest
+          "$VENV/bin/python" -m py_compile scripts/sibot_leader_gate_report.py tests/test_sibot_leader_gate_readonly_wrapper.py
+          bash -n scripts/install_sibot_leader_gate_wrapper.sh
+          "$VENV/bin/python" -m pytest -q tests/test_sibot_leader_gate_readonly_wrapper.py
+      - name: Verify new diagnostic fields are read-only evidence only
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'ranking_closed=' scripts/sibot_leader_gate_report.py
+          grep -q 'first_reconstructed_close=' scripts/sibot_leader_gate_report.py
+          grep -q 'worker:history:last_success' scripts/sibot_leader_gate_report.py
+          grep -q 'retention=LATEST_ONLY' scripts/sibot_leader_gate_report.py
+          grep -q 'Threshold decision: DIAGNOSTIC ONLY' scripts/sibot_leader_gate_report.py
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$VENV"
