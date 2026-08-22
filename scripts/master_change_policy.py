@@ -9,6 +9,7 @@ from pathlib import Path
 GOVERNANCE_FILES = frozenset({
     ".github/workflows/gpt-master-change-implement.yml",
     ".github/workflows/publish-ai-master-control.yml",
+    ".github/workflows/master-change-council-protected-deploy.yml",
     "learnerbot/master_change_council.py",
     "learnerbot/telegram_master_change_patch.py",
     "learnerbot/ai_agent_ws_runtime_patch.py",
