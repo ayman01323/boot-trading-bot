@@ -20,17 +20,14 @@ on:
       - 'scripts/ai_agent_bus_pending.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
       - 'scripts/run_ai_agent_bus.py'
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
 
-# Serialise all bus work so instant, PR-smoke, push and polling fallbacks cannot
-# process the same message at the same time. Every run re-checks issue #333 by
-# message_id before calling/publishing, so duplicate triggers become no-ops.
+# Serialise event-driven bus work. Every run re-checks issue #333 by message_id
+# before calling/publishing, so duplicate event triggers become no-ops.
 concurrency:
   group: ai-agent-bus
   cancel-in-progress: false
@@ -94,16 +91,16 @@ jobs:
             --preflight > /tmp/ai-bus-preflight.env
           cat /tmp/ai-bus-preflight.env >> "$GITHUB_OUTPUT"
 
-      - name: Set up Node only when Copilot may be addressed
-        if: steps.pending.outputs.pending == 'true' && steps.preflight.outputs.needs_copilot == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install bounded Copilot CLI only when needed
+      - name: Install standalone Copilot CLI only when needed
         if: steps.pending.outputs.pending == 'true' && steps.preflight.outputs.needs_copilot == 'true'
         shell: bash
-        run: npm install -g @github/copilot@latest
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/copilot-cli"
+          rm -rf "$prefix"
+          curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          "$prefix/bin/copilot" --version
 
       - name: Route message to addressed provider(s)
         if: steps.pending.outputs.pending == 'true'
@@ -150,8 +147,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Re-check immediately before publishing so delayed duplicate triggers
-          # cannot post a second reply for the same message id.
           if python3 scripts/ai_agent_bus_pending.py has-reply-live \
               --repo "$GITHUB_REPOSITORY" \
               --owner "$REPO_OWNER" \
@@ -182,4 +177,5 @@ jobs:
             echo "Mode: **${{ steps.preflight.outputs.mode || 'none' }}**"
             echo "Copilot setup needed: **${{ steps.preflight.outputs.needs_copilot || 'false' }}**"
             echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
+            echo 'Scheduled polling: **disabled**'
           } >> "$GITHUB_STEP_SUMMARY"
