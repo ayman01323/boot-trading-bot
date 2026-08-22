@@ -54,10 +54,10 @@ The bus must optimise total cost, not merely token price:
 Default routine worker models:
 
 - GPT: `gpt-5-nano`;
-- Gemini: `gemini-2.5-flash-lite`;
-- Claude: cheapest available Haiku model (resolved by the existing provider layer);
+- Gemini: `gemini-3.1-flash-lite`;
+- Claude: `claude-haiku-4-5`;
 - DeepSeek: `deepseek-v4-flash`;
-- Copilot: existing bounded Copilot CLI/provider path.
+- Copilot: existing bounded Copilot CLI/provider path using a persistent one-time CLI installation at `/var/tmp/boot-copilot-cli/bin/copilot`.
 
 Override a worker model only when needed with `AI_BUS_GPT_MODEL`, `AI_BUS_GEMINI_MODEL`, `AI_BUS_CLAUDE_MODEL`, or `AI_BUS_DEEPSEEK_MODEL`.
 
@@ -102,6 +102,8 @@ The embedded runtime:
 - can be disabled explicitly with `AI_AGENT_WS_AUTOSTART=0`.
 
 Deployment uses the repository's existing restricted root wrapper, `/usr/local/sbin/deploy-boot-trading-bot`, which already verifies the exact current `origin/main`, installs declared Python dependencies, runs compile/tests, and restarts `learnerbot` only after the gate passes. No broad runner sudo permission is added for the WebSocket bus.
+
+The protected WebSocket deployment also installs GitHub Copilot CLI once, without sudo, under `/var/tmp/boot-copilot-cli` if it is missing. The worker only prepends that persistent directory to `PATH` for the duration of a Copilot message, so there is no repeated installation cost and no effect on unrelated learnerbot subprocesses.
 
 `scripts/install_ai_agent_ws_bus.sh` remains an optional one-time standalone/systemd installer for an administrator who deliberately wants a separate broker service. It is **not** the automatic production deployment path and the GitHub runner is not granted arbitrary sudo to run it.
 
