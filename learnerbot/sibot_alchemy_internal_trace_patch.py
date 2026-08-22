@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import time
+from contextlib import closing
 
 from . import sibot as _sibot
 from . import sibot_alchemy_history_patch as _alchemy
+
+# Capture the Alchemy provider's queue function before this final migration layer
+# replaces it. We fall back to it once legacy Etherscan-error candidates are gone.
+_PREV_NEXT_HISTORY_WALLET = _sibot._next_history_wallet
 
 # Alchemy's Transfers endpoint currently exposes internal-transfer history only
 # on Ethereum mainnet, Polygon mainnet and Base mainnet. Arbitrum and BNB may
@@ -46,6 +51,44 @@ def _trace_candidate_hashes(normal_rows, token_rows, wallet: str, routers: set[s
         seen.add(h)
         out.append(h)
     return out
+
+
+def _first_legacy_candidate(candidates, legacy_wallets) -> str | None:
+    legacy = {str(wallet or "").lower() for wallet in legacy_wallets if str(wallet or "").strip()}
+    for wallet in candidates:
+        candidate = str(wallet or "").lower()
+        if candidate and candidate in legacy:
+            return candidate
+    return None
+
+
+def _next_history_wallet(app, chain):
+    """Migrate current high-priority candidates before old low-value rows.
+
+    The original queue sorts by oldest fetched_at. During an explorer-provider
+    migration that can spend many cycles refreshing stale low-priority wallets
+    while the current Top-20 candidates still carry obsolete Etherscan errors.
+    Preserve candidate ranking order for those legacy errors, then fall back to
+    the normal age-based Alchemy queue once migration is complete.
+    """
+    if not _alchemy.alchemy_rpc_url(app, int(chain.chain_id)):
+        return _PREV_NEXT_HISTORY_WALLET(app, chain)
+
+    cfg = _sibot.platform_settings(app, chain.chain_id)
+    limit = max(20, min(500, _sibot._int(cfg.get("history_candidate_wallets"), 40)))
+    candidates = [str(wallet or "").lower() for wallet in _sibot._candidate_wallets(app, chain, limit)]
+    if candidates:
+        with closing(_sibot.connect(app)) as conn:
+            rows = conn.execute(
+                """SELECT wallet FROM wallet_history_status
+                   WHERE chain_id=? AND error LIKE '%ETHERSCAN_API_KEY%'""",
+                (chain.chain_id,),
+            ).fetchall()
+        chosen = _first_legacy_candidate(candidates, [row["wallet"] for row in rows])
+        if chosen:
+            return chosen
+
+    return _PREV_NEXT_HISTORY_WALLET(app, chain)
 
 
 def refresh_wallet_history(app, chain, wallet: str) -> dict:
@@ -119,6 +162,7 @@ def install() -> None:
     if getattr(_sibot, "_alchemy_internal_trace_patch_installed", False):
         return
     _sibot.refresh_wallet_history = refresh_wallet_history
+    _sibot._next_history_wallet = _next_history_wallet
     _sibot._alchemy_internal_trace_patch_installed = True
 
 
