@@ -1,0 +1,134 @@
+name: AI Agent Bus Telegram Snapshot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ai-agent-bus-telegram-snapshot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.issue.number == 333 &&
+      github.event.comment.user.login == 'github-actions[bot]' &&
+      startsWith(github.event.comment.body, 'AI_BUS_REPLY')
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Build sanitised reply snapshot
+        env:
+          EVENT_PATH: ${{ github.event_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/ai-bus-telegram-snapshot.json
+          import json, os, re, time
+
+          event = json.load(open(os.environ['EVENT_PATH'], encoding='utf-8'))
+          body = str((event.get('comment') or {}).get('body') or '')
+          headers = {}
+          lines = body.splitlines()
+          for line in lines[1:]:
+              if not line.strip():
+                  break
+              if ':' in line:
+                  key, value = line.split(':', 1)
+                  headers[key.strip().lower()] = value.strip()
+
+          providers = []
+          for match in re.finditer(r'(?m)^###\s+(GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT)\s+·', body):
+              name = match.group(1).upper()
+              if name not in providers:
+                  providers.append(name)
+
+          chunks = []
+          for part in re.split(r'(?m)^###\s+(?:GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT)\s+·[^\n]*\n', body)[1:]:
+              text = part.strip()
+              if text:
+                  chunks.append(text)
+          preview = ' | '.join(chunks) if chunks else ''
+          preview = re.sub(r'\b(?:sk|sess)-[A-Za-z0-9_-]{8,}\b', '<redacted>', preview)
+          preview = re.sub(r'\bAIza[A-Za-z0-9_-]{20,}\b', '<redacted>', preview)
+          preview = re.sub(r'\s+', ' ', preview).strip()[:700]
+
+          try:
+              provider_calls = int(headers.get('provider_calls') or 0)
+          except ValueError:
+              provider_calls = 0
+
+          print(json.dumps({
+              'schema_version': 1,
+              'generated_epoch': int(time.time()),
+              'message_id': headers.get('message_id', '')[:160],
+              'from': headers.get('from', '')[:40],
+              'to': headers.get('to', '')[:40],
+              'status': headers.get('status', 'UNKNOWN')[:40].upper(),
+              'provider_calls': provider_calls,
+              'providers': providers,
+              'preview': preview,
+              'issue_number': 333,
+              'issue_comment_id': int((event.get('comment') or {}).get('id') or 0),
+          }, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish snapshot to ai-reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/github/ai-agent-bus/latest.json"
+          existing_sha=''
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" \
+            > /tmp/ai-bus-telegram-existing.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s /tmp/ai-bus-telegram-existing.json ]]; then
+            existing_sha="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/ai-bus-telegram-existing.json')).get('sha') or '')
+          PY
+            )"
+          fi
+
+          python3 - "$existing_sha" <<'PY' > /tmp/ai-bus-telegram-put.json
+          import base64, json, sys
+          raw = open('/tmp/ai-bus-telegram-snapshot.json', 'rb').read()
+          payload = {
+              'message': 'Record AI bus reply for Telegram notification',
+              'content': base64.b64encode(raw).decode(),
+              'branch': 'ai-reviews',
+          }
+          if sys.argv[1]:
+              payload['sha'] = sys.argv[1]
+          print(json.dumps(payload))
+          PY
+
+          gh api -X PUT "$api" --input /tmp/ai-bus-telegram-put.json >/dev/null
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## AI Agent Bus Telegram Snapshot'
+            echo
+            if [[ -s /tmp/ai-bus-telegram-snapshot.json ]]; then
+              python3 - <<'PY'
+          import json
+          x=json.load(open('/tmp/ai-bus-telegram-snapshot.json'))
+          print(f"Message ID: `{x.get('message_id') or 'unknown'}`")
+          print(f"Status: **{x.get('status') or 'UNKNOWN'}**")
+          print(f"Providers: **{', '.join(x.get('providers') or []) or 'none'}**")
+          print('AI calls added by this workflow: **0**')
+          PY
+            else
+              echo 'Snapshot was not produced.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

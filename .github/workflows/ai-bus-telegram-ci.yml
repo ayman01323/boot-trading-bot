@@ -1,0 +1,64 @@
+name: AI Bus Telegram Alert Tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ai-agent-bus-telegram-snapshot.yml'
+      - '.github/workflows/ai-bus-telegram-ci.yml'
+      - 'learnerbot/ai_bus_telegram_alert_patch.py'
+      - 'learnerbot/telegram_hi_keefek_patch.py'
+      - 'tests/test_ai_bus_telegram_alerts.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    env:
+      TEST_VENV: /tmp/ai-bus-telegram-ci-${{ github.run_id }}
+    steps:
+      - name: Check out PR source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build isolated test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TEST_VENV"
+          python3 -m venv "$TEST_VENV"
+          "$TEST_VENV/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml
+
+      - name: Compile notification module and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$TEST_VENV/bin/python" -m py_compile \
+            learnerbot/ai_bus_telegram_alert_patch.py \
+            tests/test_ai_bus_telegram_alerts.py
+
+      - name: Parse snapshot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$TEST_VENV/bin/python" - <<'PY'
+          import pathlib, yaml
+          path = pathlib.Path('.github/workflows/ai-agent-bus-telegram-snapshot.yml')
+          data = yaml.safe_load(path.read_text(encoding='utf-8'))
+          assert data.get('jobs', {}).get('publish'), 'snapshot publish job missing'
+          print('WORKFLOW_OK', path)
+          PY
+
+      - name: Run Telegram bus regression tests
+        shell: bash
+        run: "$TEST_VENV/bin/python -m pytest -q tests/test_ai_bus_telegram_alerts.py"
+
+      - name: Remove isolated test environment
+        if: always()
+        shell: bash
+        run: rm -rf "$TEST_VENV"
