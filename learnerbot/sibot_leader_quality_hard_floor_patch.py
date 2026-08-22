@@ -65,3 +65,8 @@ def install():
 
 
 install()
+
+# This module is the final patch imported before learnerbot.cli in __main__.py.
+# Load the MASTER-only Strategy Room here so its Telegram menu/handler remains
+# outermost without moving or weakening any audited EVM/Solana trading hook above.
+from . import telegram_strategy_room_patch as _telegram_strategy_room  # noqa: E402,F401

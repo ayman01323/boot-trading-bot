@@ -1,0 +1,212 @@
+name: GPT Strategy Room Controlled Draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Bounded Strategy Room action'
+        required: true
+        type: choice
+        options: [draft_shadow_fix]
+      task:
+        description: 'Sanitised Strategy Room implementation task'
+        required: true
+        type: string
+      request_nonce:
+        description: 'Auditable Strategy Room request nonce'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: gpt-strategy-room-controlled-draft
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    env:
+      WORK_VENV: /tmp/strategy-room-gpt-${{ github.run_id }}
+      BRANCH_NAME: strategy-room/gpt-${{ github.run_id }}
+      TASK: ${{ inputs.task }}
+      REQUEST_NONCE: ${{ inputs.request_nonce }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+    steps:
+      - name: Check out trusted main without persisted GitHub credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate bounded request
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.action }}" == 'draft_shadow_fix' ]]
+          [[ -n "$TASK" ]]
+          [[ ${#TASK} -le 1200 ]]
+          [[ "$REQUEST_NONCE" =~ ^[0-9]+$ ]]
+          [[ -n "${OPENAI_API_KEY:-}" ]]
+
+      - name: Create isolated draft branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -b "$BRANCH_NAME"
+
+      - name: Ask GPT to implement only the bounded SHADOW task
+        id: gpt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/strategy-room-prompt.txt <<'EOF'
+          You are GPT implementing one operator-approved-for-drafting Strategy Room task in the boot-trading-bot repository.
+
+          This is a DRAFT-PR-ONLY, SHADOW/Strategy-Lab change. You may edit ONLY paths accepted by learnerbot.three_agent_strategy_contract.strategy_auto_path_allowed(). In practice this is limited to Strategy Lab / shadow research code and related tests/docs.
+
+          STRICTLY FORBIDDEN:
+          - .github/workflows or any workflow/action configuration
+          - CSVbot or runtime configuration
+          - live_executor, auto_trader, solana_live or any LIVE execution path
+          - stop-loss/take-profit, trading thresholds, capital, risk limits, reserves or position sizing
+          - wallets, signing, private keys, credentials, secrets, transfers or transactions
+          - deployment, restart, merge, auto-merge, or changing LIVE/ARMED state
+          - contracts
+
+          Requirements:
+          1. Make the smallest implementation that satisfies the task.
+          2. Keep it SHADOW/research-only.
+          3. Add or update focused tests for the changed behaviour.
+          4. Do not commit, push, open/merge PRs, deploy, or touch runtime state; the workflow handles the draft PR after validation.
+          5. If the task cannot be completed within the allowed paths, make no changes and explain why in stdout.
+
+          TASK:
+          EOF
+          printf '%s\n' "$TASK" >> /tmp/strategy-room-prompt.txt
+          codex --ask-for-approval never exec --sandbox workspace-write --ephemeral - < /tmp/strategy-room-prompt.txt
+
+      - name: Enforce Strategy Lab SHADOW file allow-list
+        id: scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only --diff-filter=ACMRT > /tmp/changed-files.txt
+          git ls-files --others --exclude-standard >> /tmp/changed-files.txt
+          sort -u /tmp/changed-files.txt -o /tmp/changed-files.txt
+          if [[ ! -s /tmp/changed-files.txt ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'GPT made no repository changes. No PR will be opened.'
+            exit 0
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          from learnerbot.three_agent_strategy_contract import strategy_auto_path_allowed
+
+          files=[x.strip() for x in Path('/tmp/changed-files.txt').read_text().splitlines() if x.strip()]
+          bad=[p for p in files if not strategy_auto_path_allowed(p)]
+          if bad:
+              raise SystemExit('Strategy Room scope violation: ' + ', '.join(bad))
+          print('Allowed changed files:')
+          for path in files:
+              print(' -', path)
+          PY
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Run focused validation
+        if: steps.scope.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$WORK_VENV"
+          python3 -m venv "$WORK_VENV"
+          "$WORK_VENV/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            if [[ "$file" == *.py ]]; then
+              "$WORK_VENV/bin/python" -m py_compile "$file"
+            fi
+          done < /tmp/changed-files.txt
+
+          mapfile -t changed_tests < <(grep '^tests/test_.*\.py$' /tmp/changed-files.txt || true)
+          baseline=(tests/test_cross_chain_strategy_signals.py tests/test_market_feature_shadow_executor.py)
+          tests=()
+          for test in "${changed_tests[@]}" "${baseline[@]}"; do
+            [[ -f "$test" ]] || continue
+            if [[ " ${tests[*]} " != *" $test "* ]]; then tests+=("$test"); fi
+          done
+          if [[ ${#tests[@]} -gt 0 ]]; then
+            "$WORK_VENV/bin/python" -m pytest -q "${tests[@]}"
+          fi
+
+      - name: Re-check scope after tests
+        if: steps.scope.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only --diff-filter=ACMRT > /tmp/changed-files-final.txt
+          git ls-files --others --exclude-standard >> /tmp/changed-files-final.txt
+          sort -u /tmp/changed-files-final.txt -o /tmp/changed-files-final.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          from learnerbot.three_agent_strategy_contract import strategy_auto_path_allowed
+          files=[x.strip() for x in Path('/tmp/changed-files-final.txt').read_text().splitlines() if x.strip()]
+          bad=[p for p in files if not strategy_auto_path_allowed(p)]
+          if bad: raise SystemExit('Post-test scope violation: ' + ', '.join(bad))
+          if not files: raise SystemExit('No changes remain after validation')
+          PY
+
+      - name: Commit and push validated draft branch
+        if: steps.scope.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          while IFS= read -r file; do
+            [[ -z "$file" ]] || git add -- "$file"
+          done < /tmp/changed-files-final.txt
+          git commit -m "Strategy Room GPT shadow draft ${REQUEST_NONCE}"
+          gh auth setup-git
+          git push origin "$BRANCH_NAME"
+
+      - name: Open draft PR only
+        if: steps.scope.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/pr-body.md <<EOF
+          Strategy Room GPT draft request: \`${REQUEST_NONCE}\`
+
+          Task: ${TASK}
+
+          Safety envelope:
+          - SHADOW / Strategy Lab allow-list only
+          - focused tests passed before push
+          - no LIVE execution, thresholds, capital, risk, CSV, wallet/signing or workflow files allowed
+          - draft PR only; this workflow cannot merge or deploy
+
+          Human review is required before any further action.
+          EOF
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --head "$BRANCH_NAME" \
+            --draft \
+            --title "Strategy Room: GPT shadow draft ${REQUEST_NONCE}" \
+            --body-file /tmp/pr-body.md
+
+      - name: Clean isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$WORK_VENV"
