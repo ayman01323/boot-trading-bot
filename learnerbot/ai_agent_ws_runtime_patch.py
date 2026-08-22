@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import socket
+import threading
+import time
+from pathlib import Path
+
+_STARTED = False
+_THREAD: threading.Thread | None = None
+HOST = "127.0.0.1"
+PORT = 8765
+DB_PATH = "/var/tmp/boot/ai_agent_bus.sqlite3"
+STATUS_PATH = "/var/tmp/boot/ai_agent_ws_status.json"
+AGENTS = ("gpt", "claude", "gemini", "deepseek", "copilot")
+
+
+def _port_open() -> bool:
+    try:
+        with socket.create_connection((HOST, PORT), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _write_status(state: str, detail: str = "") -> None:
+    try:
+        import json
+        path = Path(STATUS_PATH)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "schema_version": 1,
+            "state": state,
+            "detail": str(detail or "")[:500],
+            "host": HOST,
+            "port": PORT,
+            "workers": list(AGENTS),
+            "pid": os.getpid(),
+            "updated_epoch": int(time.time()),
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+async def _run_embedded() -> None:
+    from scripts.ai_agent_ws_bus import run as run_broker
+    from scripts.ai_agent_ws_worker import run as run_worker
+
+    broker = asyncio.create_task(run_broker(HOST, PORT, DB_PATH, os.environ.get("AI_AGENT_BUS_TOKEN", "")))
+    await asyncio.sleep(0.35)
+    if broker.done():
+        await broker
+    workers = [
+        asyncio.create_task(run_worker(agent, f"ws://{HOST}:{PORT}", os.environ.get("AI_AGENT_BUS_TOKEN", "")))
+        for agent in AGENTS
+    ]
+    _write_status("ACTIVE", "embedded learnerbot WebSocket broker and persistent workers started")
+    print("[ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/copilot workers", flush=True)
+    await asyncio.gather(broker, *workers)
+
+
+def _thread_main() -> None:
+    try:
+        asyncio.run(_run_embedded())
+    except Exception as exc:
+        _write_status("FAILED", f"{type(exc).__name__}: {exc}")
+        print(f"[ai-agent-ws] sidecar failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+def install() -> None:
+    global _STARTED, _THREAD
+    if _STARTED:
+        return
+    _STARTED = True
+    if str(os.environ.get("AI_AGENT_WS_AUTOSTART", "1")).strip().lower() in {"0", "false", "no", "off"}:
+        _write_status("DISABLED", "AI_AGENT_WS_AUTOSTART disabled")
+        return
+    if _port_open():
+        _write_status("EXTERNAL", "port already served; embedded sidecar not started")
+        print("[ai-agent-ws] existing local broker detected; embedded sidecar skipped", flush=True)
+        return
+    _THREAD = threading.Thread(target=_thread_main, name="ai-agent-ws-sidecar", daemon=True)
+    _THREAD.start()
+    _write_status("STARTING", "embedded learnerbot sidecar thread launched")
+
+
+install()
