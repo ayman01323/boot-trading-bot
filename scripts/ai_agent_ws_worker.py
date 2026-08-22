@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import random
+import threading
 import time
 from typing import Any
 
@@ -20,6 +21,7 @@ CHEAP_MODELS = {
     "claude": ("ANTHROPIC_COUNCIL_MODEL", "haiku"),
     "deepseek": ("DEEPSEEK_COUNCIL_MODEL", "deepseek-v4-flash"),
 }
+_PROVIDER_CALL_LOCK = threading.Lock()
 
 
 def configure_low_cost_model(agent: str) -> str:
@@ -50,6 +52,14 @@ MESSAGE:
 """
 
 
+def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
+    # Embedded workers share one process. The existing Copilot compatibility path
+    # temporarily adjusts process environment variables, so serialise provider
+    # calls to prevent cross-provider credential/model races.
+    with _PROVIDER_CALL_LOCK:
+        return call_provider(agent, prompt)
+
+
 async def send_json(ws, payload: dict[str, Any]) -> None:
     await ws.send(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
 
@@ -61,7 +71,7 @@ async def handle_message(ws, agent: str, message: dict[str, Any]) -> None:
     await send_json(ws, {"type": "ack", "message_id": message_id})
     prompt = build_prompt(agent, message)
     started = time.monotonic()
-    rc, out, err = await asyncio.to_thread(call_provider, agent, prompt)
+    rc, out, err = await asyncio.to_thread(_call_provider_locked, agent, prompt)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     answer = str(out or "").strip()
     error = str(err or "").strip()
