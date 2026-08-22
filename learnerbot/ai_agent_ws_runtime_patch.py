@@ -115,6 +115,11 @@ from . import telegram_master_change_patch  # noqa: E402,F401
 # environment variable is required by this path.
 from . import sibot_alchemy_history_patch  # noqa: E402,F401
 
+# Alchemy applies compute-units-per-second throughput limits. Install bounded
+# Retry-After/exponential-backoff handling and smaller read-only RPC batches before
+# the chain-specific internal-flow layer uses the shared provider helpers.
+from . import sibot_alchemy_rate_limit_patch  # noqa: E402,F401
+
 # Arbitrum and BNB require trace-based internal native-flow reconstruction because
 # Alchemy Transfers can return a valid empty internal result on those networks.
 # Keep this layer after the base Alchemy provider so it only replaces the wallet
