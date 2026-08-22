@@ -79,12 +79,19 @@ This exception grants no authority to modify any other `ai-mailbox` path. The un
 
 ## Engineering audit operational-efficiency requirement
 
-Whenever Claude performs the repository's Engineering Audit / full-bot bug audit, it must also review the `operational_efficiency_audit` object in the deterministic baseline and, when available, the sanitised VPS snapshot at `ai-reviews:engineering/ops/latest.json`.
+Whenever Claude or a DeepSeek-routed Claude CLI performs the repository's Engineering Audit / full-bot bug audit, it must also review the `operational_efficiency_audit` object in the deterministic baseline and, when available, the sanitised VPS snapshot at `ai-reviews:engineering/ops/latest.json`.
 
 Every completed engineering audit must explicitly assess:
 
 1. **API/model cost** — unnecessary paid OpenAI/Gemini/Claude/Copilot calls, duplicate reviews/adjudication, excessive provider fan-out, oversized prompts/context, unnecessary CLI installs, missing cache/material-change gates, and opportunities to use deterministic checks before paid AI.
 2. **Server bandwidth** — self-hosted workflow frequency, repository checkouts/fetches, repeated npm/pip downloads, RPC/API polling, logs/artifacts, redundant jobs and other avoidable transfers. Prefer event-driven, shallow, cached and change-only transfers.
 3. **Disk usage** — root-filesystem utilisation/free space, runner workspaces, caches, logs, databases, temporary worktrees/artifacts and unbounded retention/growth.
+4. **Trade latency and infrastructure economics** — the snapshot's `trade_latency` and `infrastructure` objects must be analysed chain by chain.
 
-Recommendations are advisory/report-only. Never reduce API or bandwidth cost by weakening wallet/signing, LIVE/ARMED, quote/simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce or execution-reconciliation protections. Never automatically delete wallet material, databases or audit evidence.
+For each blockchain with observed trades, state the exact latency metric and coverage, per-trade latency evidence where available, current-24h p50/p95 against the preceding six-day same-server baseline, RPC round-trip separately, and seven-day trade share. The preceding six days are the default measured **normal** comparison. If there are fewer than five historical measurements, state `INSUFFICIENT DATA`; never fabricate a normal value or use expected protocol block time as if it were measured trade latency.
+
+Only attribute worse success, slippage or realised P&L to latency when recorded evidence supports that inference. End the infrastructure section with `KEEP`, `BENCHMARK`, or `MOVE`. Compare current provider, region and monthly cost with each credible alternative's provider, region, monthly cost, expected latency improvement, affected trade share and likely trading benefit. Keep unknown facts `UNKNOWN`. Alternative pricing must have a source/date or be marked unverified.
+
+Do not recommend a server move merely from ping. Require a cost-adjusted, chain-weighted trading case. If Solana and EVM materially favour different locations, analyse split infrastructure or chain-specific workers before recommending a wholesale migration.
+
+Recommendations are advisory/report-only. Never reduce API, bandwidth or infrastructure cost by weakening wallet/signing, LIVE/ARMED, quote/simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce or execution-reconciliation protections. Never automatically delete wallet material, databases or audit evidence.
