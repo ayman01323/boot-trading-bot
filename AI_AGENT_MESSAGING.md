@@ -105,3 +105,5 @@ The installer creates:
 - `boot-ai-agent-worker@copilot.service`.
 
 All reconnect automatically. The broker persists messages in `/var/tmp/boot/ai_agent_bus.sqlite3` using SQLite WAL mode.
+
+Protocol revision: `ws-bus-v1`.
