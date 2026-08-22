@@ -1,0 +1,88 @@
+name: Temporary MASTER Change Council Verify
+
+on:
+  push:
+    branches: [agent/master-telegram-change-council]
+    paths:
+      - '.github/workflows/_temporary-master-change-verify.yml'
+      - '.github/workflows/gpt-master-change-implement.yml'
+      - '.github/workflows/master-change-council-bridge.yml'
+      - 'learnerbot/master_change_council.py'
+      - 'learnerbot/telegram_master_change_patch.py'
+      - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'tests/test_master_change_council.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-master-change-verify
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    env:
+      VENV: /tmp/master-change-verify-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Compile and focused regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+          "$VENV/bin/python" -m compileall -q learnerbot scripts tests
+          "$VENV/bin/python" -m pytest -q \
+            tests/test_master_change_council.py \
+            tests/test_imports.py \
+            tests/test_main_import_order.py \
+            tests/test_universal_agent_git_mailbox_bridge.py \
+            tests/test_telegram_roles_and_command_scope.py
+
+      - name: Publish verification result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/master-change-system-verify.json
+          import json,os,time
+          print(json.dumps({
+              'schema_version':1,
+              'status':os.environ['JOB_STATUS'].upper(),
+              'tested_sha':os.environ['GITHUB_SHA'],
+              'run_id':os.environ['GITHUB_RUN_ID'],
+              'scope':['compileall','master-change','import-order','universal-agent-messaging','telegram-role-scope'],
+              'updated_epoch':int(time.time()),
+          },indent=2,sort_keys=True))
+          PY
+          api="repos/${GITHUB_REPOSITORY}/contents/master-change/system-verify.json"
+          set +e
+          current="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" 2>/dev/null)"
+          rc=$?
+          set -e
+          sha=''
+          if [[ $rc -eq 0 && -n "$current" ]]; then
+            sha="$(printf '%s' "$current" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"
+          fi
+          python3 - "$sha" <<'PY' > /tmp/put.json
+          import base64,json,sys
+          raw=open('/tmp/master-change-system-verify.json','rb').read()
+          out={'message':'Publish MASTER change system verification','content':base64.b64encode(raw).decode(),'branch':'ai-reviews'}
+          if sys.argv[1]: out['sha']=sys.argv[1]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/put.json >/dev/null
+
+      - name: Clean verification environment
+        if: always()
+        run: rm -rf "$VENV"
