@@ -115,6 +115,12 @@ from . import telegram_master_change_patch  # noqa: E402,F401
 # environment variable is required by this path.
 from . import sibot_alchemy_history_patch  # noqa: E402,F401
 
+# Arbitrum and BNB require trace-based internal native-flow reconstruction because
+# Alchemy Transfers can return a valid empty internal result on those networks.
+# Keep this layer after the base Alchemy provider so it only replaces the wallet
+# refresh implementation and leaves provider selection/history gating untouched.
+from . import sibot_alchemy_internal_trace_patch  # noqa: E402,F401
+
 # Final operational truth layer: expose the exact reason no trade is occurring
 # without changing LIVE scope, thresholds, capital, signing or any safety gate.
 from . import telegram_trade_blocker_health_patch  # noqa: E402,F401
