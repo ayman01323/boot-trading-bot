@@ -43,13 +43,16 @@ from . import solana_first_day_strategy_restore_patch as _first_day_strategy
 # keeping first-day's frequency/timing settings and the positive-executable-edge
 # preflight intact. See solana_leader_quality_restore_patch.py for the rationale.
 from . import solana_leader_quality_restore_patch as _quality_restore
+# Final observational layer over open-position monitoring: a read-only liquidity
+# re-quote that can only notify, never close/resize/execute.
+from . import solana_position_liquidity_health_patch as _liquidity_health
 
 
 def _recompose_execution_validation():
     """Make final executor composition independent of earlier import-cache order.
 
     Some Telegram/runtime modules can import the validation patch before the later
-    efficiency/atomic wrappers are installed.  The validation module deliberately
+    efficiency/atomic wrappers are installed. The validation module deliberately
     has an idempotency flag, so a later normal import will not re-run install().
     At the final audited runtime boundary we know the exact intended inner stack;
     re-bind those captured inner functions and then restore validation as the
@@ -65,7 +68,7 @@ def _recompose_execution_validation():
 
 
 def install():
-    # This is intentionally a repair-then-verify boundary.  It does not weaken an
+    # This is intentionally a repair-then-verify boundary. It does not weaken an
     # invariant: it restores the one exact audited execution composition and then
     # checks all identities below. Any later displacement still fails closed.
     _recompose_execution_validation()
@@ -88,7 +91,8 @@ def install():
         "solana_buy_reserve_inner": _validation._PREV_BUY is _reserve._buy_with_simulated_reserve,
         "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
-        "solana_monitor_reconciliation_outer": _sol.monitor_positions is _exit_circuit._monitor_with_exit_reconciliation,
+        "solana_monitor_liquidity_health_outer": _sol.monitor_positions is _liquidity_health.monitor_positions_with_liquidity_health,
+        "solana_monitor_reconciliation_inner": _liquidity_health._PREV_MONITOR_POSITIONS is _exit_circuit._monitor_with_exit_reconciliation,
         "solana_monitor_positions_inner": _exit_circuit._MONITOR_INNER is _live.monitor_positions,
         "solana_reconciliation_hook": _sol.reconcile_pending_exit_circuits is _exit_circuit.reconcile_pending_exit_circuits,
         "solana_leader_cursor": _sol.monitor_leaders is _cursor.monitor_leaders_reliable,
