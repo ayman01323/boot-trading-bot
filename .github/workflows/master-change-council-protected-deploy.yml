@@ -1,0 +1,113 @@
+name: Deploy MASTER Telegram Change Council
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/master-change-council-protected-deploy.yml'
+      - '.github/workflows/gpt-master-change-implement.yml'
+      - '.github/workflows/publish-ai-master-control.yml'
+      - 'learnerbot/master_change_council.py'
+      - 'learnerbot/telegram_master_change_patch.py'
+      - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'scripts/master_change_policy.py'
+      - 'tests/test_master_change_council.py'
+      - 'docs/MASTER_TELEGRAM_CHANGE_COUNCIL.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deploy-master-telegram-change-council
+  cancel-in-progress: true
+
+jobs:
+  deploy-and-verify:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    steps:
+      - name: Deploy exact current main through restricted wrapper
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${GITHUB_SHA}"
+          [[ "$target" =~ ^[0-9a-f]{40}$ ]]
+          sudo /usr/local/sbin/deploy-boot-trading-bot "$target" 2>&1 | tee /tmp/master-change-deploy.txt
+
+      - name: Verify service, WebSocket workers and MASTER command registration
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=false
+          for _ in 1 2 3 4 5 6; do
+            sudo /usr/local/sbin/status-boot-trading-bot > /tmp/master-change-status.txt 2>&1 || true
+            if grep -q '\[telegram-ai-ops-commands\] verified=true' /tmp/master-change-status.txt \
+               && grep -Eq 'expected=[^[:space:]]*aichange' /tmp/master-change-status.txt \
+               && grep -q '\[ai-agent-ws\] embedded broker active' /tmp/master-change-status.txt; then
+              found=true
+              break
+            fi
+            sleep 3
+          done
+          cat /tmp/master-change-status.txt
+          [[ "$found" == true ]]
+          python3 - <<'PY'
+          import json,socket
+          with socket.create_connection(('127.0.0.1',8765),timeout=2):
+              pass
+          try:
+              p=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
+          except Exception as exc:
+              raise SystemExit(f'WebSocket status unavailable: {exc}')
+          if p.get('state') not in {'ACTIVE','EXTERNAL'}:
+              raise SystemExit(f'WebSocket not active: {p}')
+          required={'gpt','claude','gemini','deepseek','copilot'}
+          if not required.issubset(set(p.get('workers') or [])):
+              raise SystemExit(f'missing WebSocket workers: {p}')
+          print(json.dumps(p,sort_keys=True))
+          PY
+
+      - name: Publish deployment result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_STATUS: ${{ job.status }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/master-change-deploy-result.json
+          import json,os,time
+          print(json.dumps({
+              'schema_version':1,
+              'status':os.environ['JOB_STATUS'].upper(),
+              'deploy_outcome':os.environ.get('DEPLOY_OUTCOME',''),
+              'verify_outcome':os.environ.get('VERIFY_OUTCOME',''),
+              'source_sha':os.environ['GITHUB_SHA'],
+              'run_id':os.environ['GITHUB_RUN_ID'],
+              'full_repo_test_gate':'deploy-boot-trading-bot',
+              'telegram_master_command':'aichange',
+              'websocket_endpoint':'ws://127.0.0.1:8765',
+              'routing_model_calls':0,
+              'updated_epoch':int(time.time()),
+          },indent=2,sort_keys=True))
+          PY
+          api="repos/${GITHUB_REPOSITORY}/contents/master-change/deploy-status.json"
+          set +e
+          current="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" 2>/dev/null)"
+          rc=$?
+          set -e
+          sha=''
+          if [[ $rc -eq 0 && -n "$current" ]]; then sha="$(printf '%s' "$current" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"; fi
+          python3 - "$sha" <<'PY' > /tmp/master-change-deploy-put.json
+          import base64,json,sys
+          raw=open('/tmp/master-change-deploy-result.json','rb').read()
+          out={'message':'Publish MASTER change deployment status','content':base64.b64encode(raw).decode(),'branch':'ai-reviews'}
+          if sys.argv[1]: out['sha']=sys.argv[1]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/master-change-deploy-put.json >/dev/null
