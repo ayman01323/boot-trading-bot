@@ -22,8 +22,8 @@ from . import sibot as _sibot
 # 2026-08-22: the read-only gate report showed require_complete_history=true alone
 # eliminating 100% of Top-20 candidates on every EVM chain (BSC, Base, Ethereum,
 # Arbitrum, Polygon) at the history_complete stage, before any other gate was ever
-# evaluated -- the same failure mode already fixed on the Solana side. No longer
-# force this key; every other floor/ceiling below is unchanged pending new evidence.
+# evaluated.  That gate is now explicitly false at the final effective-settings
+# layer, matching Solana.  Every other floor/ceiling below remains unchanged.
 _QUALITY_FLOORS = {
     "min_closed_trades": "50",
     "min_win_rate_pct": "55",
@@ -49,6 +49,10 @@ def _d(v, default="0") -> Decimal:
 
 def user_settings_with_quality_floor(app, telegram_id, chain_id=0) -> dict:
     cfg = dict(_PREV_USER_SETTINGS(app, telegram_id, chain_id))
+    # Final fail-safe: even if an old/stale persisted wildcard row survives until
+    # the settings migration writes it back, the live leader-quality gate must see
+    # the current policy immediately.  This is the only relaxed quality key.
+    cfg["require_complete_history"] = "false"
     for key, floor in _QUALITY_FLOORS.items():
         cfg[key] = str(max(_d(cfg.get(key), floor), _d(floor)))
     for key, ceiling in _QUALITY_CEILINGS.items():
@@ -62,7 +66,7 @@ def install():
     _sibot.user_settings = user_settings_with_quality_floor
     _sibot._leader_quality_hard_floor_installed = True
     print(
-        "[sibot-leader-quality-floor] history_complete=passthrough win_rate>=55% pf>=1.5 "
+        "[sibot-leader-quality-floor] history_complete=false win_rate>=55% pf>=1.5 "
         "recent_win_rate>=55% recent_pf>=1.10 drawdown<=20% copied_win_rate>=50% "
         "copied_pf>=1.50 consecutive_loss_limit<=2 min_copied_trades_for_guard<=3 "
         "leader_suspend>=1440m no_per_user_override_past_platform_floor=true"
