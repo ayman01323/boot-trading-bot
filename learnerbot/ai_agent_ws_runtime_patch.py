@@ -100,6 +100,11 @@ def install() -> None:
 
 install()
 
+# Observational only: install high-resolution Solana LIVE timing after the audited
+# trading invariant. It measures existing calls and never changes strategy, LIVE,
+# signing, reserve, simulation, liquidity or execution safety decisions.
+from . import solana_execution_latency_patch  # noqa: E402,F401
+
 # MASTER Telegram change requests depend on this local bus. Import the final
 # command patch after the bus runtime has installed so /aichange can route to all
 # adviser workers without GitHub mailbox polling.
