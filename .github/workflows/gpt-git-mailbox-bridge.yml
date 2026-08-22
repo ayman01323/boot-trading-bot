@@ -11,6 +11,7 @@ on:
     paths:
       - '.github/workflows/gpt-git-mailbox-bridge.yml'
       - '.github/workflows/gpt-mailbox-signal.yml'
+      - '.github/workflows/claude-api-mailbox-signal.yml'
       - 'scripts/gpt_git_mailbox_bridge.py'
       - 'scripts/claude_git_mailbox_bridge.py'
       - 'scripts/ai_agent_bus.py'
@@ -33,7 +34,6 @@ jobs:
     env:
       BUS_VENV: /tmp/gpt-git-mailbox-${{ github.run_id }}
       PYTHONPATH: ${{ github.workspace }}
-
     steps:
       - name: Check out trusted current main without persisted credentials
         uses: actions/checkout@v4
@@ -41,7 +41,6 @@ jobs:
           ref: main
           fetch-depth: 1
           persist-credentials: false
-
       - name: Find unanswered GPT git-mailbox request
         id: mailbox
         env:
@@ -49,12 +48,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/gpt_git_mailbox_bridge.py select-live \
-            --repo "$GITHUB_REPOSITORY" \
-            --message-output /tmp/gpt-git-mailbox-message.md \
-            > /tmp/gpt-git-mailbox.env
+          python3 scripts/gpt_git_mailbox_bridge.py select-live --repo "$GITHUB_REPOSITORY" --message-output /tmp/gpt-git-mailbox-message.md > /tmp/gpt-git-mailbox.env
           cat /tmp/gpt-git-mailbox.env >> "$GITHUB_OUTPUT"
-
       - name: Build isolated Python environment
         if: steps.mailbox.outputs.pending == 'true'
         shell: bash
@@ -63,22 +58,16 @@ jobs:
           rm -rf "$BUS_VENV"
           python3 -m venv "$BUS_VENV"
           "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
-
-      - name: Validate bounded Claude-only envelope
+      - name: Validate bounded Claude API envelope
         if: steps.mailbox.outputs.pending == 'true'
         id: preflight
         shell: bash
         run: |
           set -euo pipefail
-          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
-            --input /tmp/gpt-git-mailbox-message.md \
-            --output /tmp/unused.md \
-            --preflight > /tmp/gpt-git-mailbox-preflight.env
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py --input /tmp/gpt-git-mailbox-message.md --output /tmp/unused.md --preflight > /tmp/gpt-git-mailbox-preflight.env
           cat /tmp/gpt-git-mailbox-preflight.env >> "$GITHUB_OUTPUT"
-          target="$(grep '^target=' /tmp/gpt-git-mailbox-preflight.env | cut -d= -f2-)"
-          test "$target" = "claude"
-
-      - name: Route GPT request to Claude
+          test "$(grep '^target=' /tmp/gpt-git-mailbox-preflight.env | cut -d= -f2-)" = "claude"
+      - name: Route GPT request to stateless Claude API responder
         if: steps.mailbox.outputs.pending == 'true'
         id: route
         env:
@@ -88,10 +77,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py \
-            --input /tmp/gpt-git-mailbox-message.md \
-            --output /tmp/gpt-git-mailbox-reply.md \
-            2>/tmp/gpt-git-mailbox-error.txt
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py --input /tmp/gpt-git-mailbox-message.md --output /tmp/gpt-git-mailbox-reply.md 2>/tmp/gpt-git-mailbox-error.txt
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           if [[ $rc -ne 0 || ! -s /tmp/gpt-git-mailbox-reply.md ]]; then
@@ -105,41 +91,33 @@ jobs:
           provider_calls: 0
           max_hops: 1
 
-          Claude could not complete this git-mailbox request. No deployment, trading action, wallet action, runtime change, sudo expansion, or secret access was authorised by this failure.
+          Claude API responder could not complete this request. No deployment, trading, wallet, LIVE/ARMED, risk/capital, sudo or secret authority was granted.
           EOF
           fi
           exit 0
-
-      - name: Publish Claude response to fixed ai-mailbox path
+      - name: Publish clearly-labelled Claude API response
         if: steps.mailbox.outputs.pending == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/gpt_git_mailbox_bridge.py publish-live \
-            --repo "$GITHUB_REPOSITORY" \
-            --request-id "${{ steps.mailbox.outputs.message_id }}" \
-            --reply-file /tmp/gpt-git-mailbox-reply.md
-
+          python3 scripts/gpt_git_mailbox_bridge.py publish-live --repo "$GITHUB_REPOSITORY" --request-id "${{ steps.mailbox.outputs.message_id }}" --reply-file /tmp/gpt-git-mailbox-reply.md
       - name: Remove isolated Python environment
         if: always()
         shell: bash
         run: rm -rf "$BUS_VENV"
-
       - name: Publish compact bridge summary
         if: always()
         shell: bash
         run: |
           {
-            echo '## GPT Git Mailbox Bridge'
-            echo
-            echo "Event: **${GITHUB_EVENT_NAME}**"
+            echo '## GPT → Claude API Mailbox Bridge'
             echo "Pending request: **${{ steps.mailbox.outputs.pending || 'false' }}**"
             echo "Message ID: \`${{ steps.mailbox.outputs.message_id || 'none' }}\`"
-            echo "Target: **${{ steps.preflight.outputs.target || 'none' }}**"
             echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
-            echo 'Input: `.github/ai-mailbox/gpt-to-claude.md` on `ai-mailbox`'
-            echo 'Reply: `.github/ai-mailbox/claude-to-gpt.md` on `ai-mailbox`'
-            echo 'Only status=REQUEST messages invoke Claude; no scheduled polling is used.'
+            echo 'Request: `.github/ai-mailbox/gpt-to-claude.md`'
+            echo 'API reply: `.github/ai-mailbox/claude-api-to-gpt.md`'
+            echo 'The persistent Claude agent mailbox `.github/ai-mailbox/claude-to-gpt.md` is never overwritten by this workflow.'
+            echo 'Only a new status=REQUEST invokes the stateless Claude API responder; no polling is used.'
           } >> "$GITHUB_STEP_SUMMARY"
