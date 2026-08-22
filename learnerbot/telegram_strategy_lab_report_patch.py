@@ -119,3 +119,6 @@ def install():
 
 
 install()
+
+# Final MASTER-only operations summary wraps all prior Telegram menu/command layers.
+from . import telegram_master_ai_dashboard_patch as _master_ai_dashboard  # noqa: E402,F401
