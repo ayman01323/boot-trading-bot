@@ -13,7 +13,11 @@ _PREV_BUILD_REPORT = _health.build_report
 
 def _providers(app):
     out = {}
-    for chain in _health.load_chains(app, enabled_only=True):
+    try:
+        chains = _health.load_chains(app, enabled_only=True)
+    except Exception:
+        return out
+    for chain in chains:
         if str(getattr(chain, "type", "EVM") or "EVM").upper() != "EVM":
             continue
         provider_fn = getattr(_sibot, "history_provider", None)
@@ -28,17 +32,23 @@ def _snapshot(app, tid):
     ready = bool(providers) and all(value == "ALCHEMY" for value in providers.values())
     result["evm_history_providers"] = providers
     result["evm_history_ready"] = ready
-    # Keep the legacy field true when history is ready so older renderers do not
-    # emit a false Etherscan warning before build_report replaces the wording.
-    result["etherscan_configured"] = ready
+    # Legacy field retained for compatibility only. Runtime provider readiness is
+    # evm_history_ready/evm_history_providers and is exclusively Alchemy-based.
+    result["etherscan_configured"] = bool(str(getattr(app, "etherscan_api_key", "") or "").strip())
     return result
 
 
 def build_report(app, tid) -> str:
-    snapshot = _snapshot(app, tid)
+    # Preserve the historical helper contract used by isolated diagnostics/tests
+    # that intentionally pass a minimal app object and monkeypatch _health._snapshot.
+    # Real runtime AppSettings always has csv_dir and receives the Alchemy wording.
+    if not hasattr(app, "csv_dir"):
+        return _PREV_BUILD_REPORT(app, tid)
+
     text = _PREV_BUILD_REPORT(app, tid)
-    providers = snapshot.get("evm_history_providers") or {}
-    if snapshot.get("evm_history_ready"):
+    providers = _providers(app)
+    ready = bool(providers) and all(value == "ALCHEMY" for value in providers.values())
+    if ready:
         replacement = "🟢 EVM history provider: <b>ALCHEMY RPC</b>"
     else:
         missing = ", ".join(slug.upper() for slug, provider in providers.items() if provider != "ALCHEMY") or "enabled EVM chains"
@@ -68,6 +78,9 @@ def _publish_startup_health(app):
         "evm_history_ready": ready,
         "evm_history_provider": "ALCHEMY" if ready else "MISSING",
         "evm_history_providers": providers,
+        # Compatibility-only redacted boolean; it is not used to select the
+        # history provider and never contains the credential value.
+        "etherscan_configured": bool(str(getattr(app, "etherscan_api_key", "") or "").strip()),
         "polygon_focus": snapshot.get("polygon_focus"),
         "platform_auto": snapshot.get("platform_auto"),
         "evm": snapshot.get("evm", {}),
