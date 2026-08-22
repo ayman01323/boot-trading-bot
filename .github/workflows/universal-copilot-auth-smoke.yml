@@ -1,0 +1,86 @@
+name: Universal Copilot Auth Smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/universal-ai-bus-mailbox-relay.yml'
+      - '.github/workflows/universal-copilot-auth-smoke.yml'
+      - 'scripts/ai_agent_bus.py'
+      - 'learnerbot/ai_council.py'
+      - 'learnerbot/ai_council_http_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  copilot-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install bounded runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q python-dotenv
+          prefix="$RUNNER_TEMP/copilot-cli"
+          curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Copilot secret presence without printing values
+        id: secret
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${COPILOT_GITHUB_TOKEN:-}" ]] && echo 'github_token_present=true' >> "$GITHUB_OUTPUT" || echo 'github_token_present=false' >> "$GITHUB_OUTPUT"
+          [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]] && echo 'assign_token_present=true' >> "$GITHUB_OUTPUT" || echo 'assign_token_present=false' >> "$GITHUB_OUTPUT"
+          if [[ -z "${COPILOT_GITHUB_TOKEN:-}" && -z "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            echo 'No Copilot credential is configured.' >&2
+            exit 1
+          fi
+
+      - name: Make one communication-only Copilot call
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+          AI_COUNCIL_RUNTIME_ENV: /tmp/no-runtime-env
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/copilot-smoke.md <<'EOF'
+          AI_BUS
+          message_id: copilot-auth-smoke-pr381
+          from: GPT
+          to: COPILOT
+          mode: DIRECT
+          max_hops: 1
+
+          Reply with exactly: COPILOT_AUTH_SMOKE_OK
+          EOF
+          python scripts/run_ai_agent_bus.py --input /tmp/copilot-smoke.md --output /tmp/copilot-smoke-reply.md
+          grep -q '^status: COMPLETED$' /tmp/copilot-smoke-reply.md
+          grep -q '^### COPILOT .* COMPLETED .* rc 0$' /tmp/copilot-smoke-reply.md
+          grep -q 'COPILOT_AUTH_SMOKE_OK' /tmp/copilot-smoke-reply.md
+
+      - name: Publish non-secret result
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Copilot auth smoke'
+            echo "COPILOT_GITHUB_TOKEN present: **${{ steps.secret.outputs.github_token_present || 'unknown' }}**"
+            echo "COPILOT_ASSIGN_TOKEN present: **${{ steps.secret.outputs.assign_token_present || 'unknown' }}**"
+            echo 'No credential values were printed.'
+          } >> "$GITHUB_STEP_SUMMARY"
