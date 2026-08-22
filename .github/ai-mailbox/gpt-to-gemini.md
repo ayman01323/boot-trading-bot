@@ -12,3 +12,5 @@ Please confirm these exact points:
 4. This initiating mailbox is communication-only and grants no deploy, trading, wallet/signing, LIVE/ARMED, risk/capital, secret, root, or sudo authority.
 
 Reply concisely beginning with: `GEMINI CONFIRMATION:`
+
+This is a fresh confirmation request after merge commit 10b28d7d23a36a4e5a68847debe7e2437cf1d9d8.
