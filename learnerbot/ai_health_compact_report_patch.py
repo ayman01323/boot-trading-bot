@@ -17,9 +17,11 @@ _LABELS = {
     "deepseek": "DeepSeek",
     "copilot": "Copilot",
 }
-_ENGINEERING_HEADING = "🛠 ENGINEERING Monitor"
-_STRATEGY_HEADING = "🧠 STRATEGY Monitor"
-_STRATEGY_FACTORY_HEADING = "🧠 STRATEGY Factory and Implementation"
+_AI_HEALTH_HEADING = "<b>🤖 AI AGENT HEALTH</b>"
+_ENGINEERING_HEADING = "<b>🛠 ENGINEERING MONITOR</b>"
+_STRATEGY_HEADING = "<b>🧠 STRATEGY MONITOR</b>"
+_STRATEGY_FACTORY_HEADING = "<b>🧠 STRATEGY FACTORY AND IMPLEMENTATION</b>"
+_ORIGINAL_SEND_TO_CHATS = _health_warning._tg.send_to_chats
 
 # Keep the five-agent health collectors aligned with the compact display order.
 _health5.PROVIDERS = PROVIDERS
@@ -184,12 +186,18 @@ def warning_message(snapshot: dict) -> str:
     room = (snapshot or {}).get("strategy_room") or _strategy_room_health()
     return "\n\n".join(
         [
-            "🤖 AI AGENT HEALTH",
+            _AI_HEALTH_HEADING,
             _lane_text("engineering", engineering),
             _lane_text("strategy", strategy),
             strategy_room_text(room),
         ]
     )
+
+
+def _send_to_chats_with_health_html(token, chat_ids, text, **kwargs):
+    if str(text or "").startswith(_AI_HEALTH_HEADING):
+        kwargs.setdefault("parse_mode", "HTML")
+    return _ORIGINAL_SEND_TO_CHATS(token, chat_ids, text, **kwargs)
 
 
 def install() -> None:
@@ -202,6 +210,12 @@ def install() -> None:
     _health5._strategy_text = strategy_text
     _ai_ops._engineering_text = engineering_text
     _ai_ops._strategy_text = strategy_text
+
+    # Automatic health warnings use Telegram HTML only for this compact report,
+    # so the headers render bold without changing formatting for other messages.
+    if not getattr(_health_warning._tg, "_compact_health_html_installed", False):
+        _health_warning._tg.send_to_chats = _send_to_chats_with_health_html
+        _health_warning._tg._compact_health_html_installed = True
 
     _ai_ops._compact_ai_health_report_installed = True
 
