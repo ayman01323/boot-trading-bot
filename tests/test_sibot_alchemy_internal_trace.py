@@ -23,6 +23,20 @@ def test_trace_candidates_are_only_successful_direct_router_token_flows():
     assert patch._trace_candidate_hashes(normal, token, WALLET, {ROUTER.lower()}) == ["0xaaa"]
 
 
+def test_legacy_migration_preserves_current_candidate_priority():
+    candidates = ["0xTop", "0xMiddle", "0xOldest"]
+    # Database age/order is deliberately reversed. Current candidate quality/order
+    # must win during the one-time Etherscan -> Alchemy migration.
+    legacy = ["0xoldest", "0xmiddle", "0xtop"]
+    assert patch._first_legacy_candidate(candidates, legacy) == "0xtop"
+
+
+def test_legacy_migration_skips_candidates_already_migrated():
+    candidates = ["0xTop", "0xNext", "0xThird"]
+    legacy = ["0xnext", "0xthird"]
+    assert patch._first_legacy_candidate(candidates, legacy) == "0xnext"
+
+
 def _install_common(monkeypatch, chain_id, calls):
     monkeypatch.setattr(patch._alchemy, "alchemy_rpc_url", lambda app, cid: "https://example.g.alchemy.com/v2/redacted")
     monkeypatch.setattr(patch._sibot, "platform_settings", lambda app, cid: {})
