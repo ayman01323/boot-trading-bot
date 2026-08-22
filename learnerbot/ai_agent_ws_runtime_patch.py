@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +23,13 @@ def _port_open() -> bool:
             return True
     except OSError:
         return False
+
+
+def _is_runtime_run_command() -> bool:
+    # The production service runs `python -m learnerbot run`. Avoid starting a
+    # daemon sidecar for short administrative commands such as `chains` or
+    # `telegram-test`, and avoid unnecessary provider worker connections in tests.
+    return len(sys.argv) >= 2 and str(sys.argv[1]).strip().lower() == "run"
 
 
 def _write_status(state: str, detail: str = "") -> None:
@@ -76,6 +84,8 @@ def install() -> None:
     if _STARTED:
         return
     _STARTED = True
+    if not _is_runtime_run_command():
+        return
     if str(os.environ.get("AI_AGENT_WS_AUTOSTART", "1")).strip().lower() in {"0", "false", "no", "off"}:
         _write_status("DISABLED", "AI_AGENT_WS_AUTOSTART disabled")
         return
