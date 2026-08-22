@@ -120,5 +120,7 @@ def install():
 
 install()
 
-# Final MASTER-only operations summary wraps all prior Telegram menu/command layers.
+# MASTER dashboard is loaded after all prior Telegram menu/command layers.
 from . import telegram_master_ai_dashboard_patch as _master_ai_dashboard  # noqa: E402,F401
+# Final presentation override: the compact three-lane AI health tree must win.
+from . import telegram_master_ai_health_tree_patch as _master_ai_health_tree  # noqa: E402,F401
