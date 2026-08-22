@@ -31,6 +31,23 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
     steps:
+      - name: Ensure persistent Copilot CLI once without sudo
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix=/var/tmp/boot-copilot-cli
+          bin="$prefix/bin/copilot"
+          if [[ ! -x "$bin" ]]; then
+            rm -rf "$prefix"
+            mkdir -p "$prefix"
+            installer="$RUNNER_TEMP/copilot-install.sh"
+            curl -fsSL https://gh.io/copilot-install -o "$installer"
+            test -s "$installer"
+            PREFIX="$prefix" bash "$installer"
+          fi
+          test -x "$bin"
+          "$bin" --version
+
       - name: Deploy exact current main through restricted root wrapper
         id: deploy
         shell: bash
@@ -46,6 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo /usr/local/sbin/status-boot-trading-bot 2>&1 | tee /tmp/ai-agent-ws-server-status.txt
+          test -x /var/tmp/boot-copilot-cli/bin/copilot
           python3 - <<'PY'
           import json, socket, time
           deadline = time.monotonic() + 45
@@ -102,7 +120,7 @@ jobs:
           except urllib.error.HTTPError as exc:
               if exc.code != 404: raise
           status={
-              'schema_version':3,
+              'schema_version':4,
               'status':os.environ['JOB_STATUS'].upper(),
               'deploy_outcome':os.environ.get('DEPLOY_OUTCOME',''),
               'verify_outcome':os.environ.get('VERIFY_OUTCOME',''),
@@ -112,7 +130,8 @@ jobs:
               'transport':'loopback-websocket',
               'endpoint':'ws://127.0.0.1:8765',
               'routing_model_calls':0,
-              'privilege_model':'existing restricted deploy/status wrappers only',
+              'copilot_cli_path':'/var/tmp/boot-copilot-cli/bin/copilot',
+              'privilege_model':'existing restricted deploy/status wrappers only; Copilot CLI installed non-root under /var/tmp',
               'checked_epoch':int(time.time()),
           }
           content=json.dumps(status,indent=2,sort_keys=True)+'\n'
