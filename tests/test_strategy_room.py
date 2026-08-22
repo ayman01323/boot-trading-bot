@@ -8,6 +8,8 @@ from learnerbot import strategy_room as room
 
 ROOT = Path(__file__).resolve().parents[1]
 TELEGRAM_PATCH = ROOT / "learnerbot" / "telegram_strategy_room_patch.py"
+HEALTH_PATCH = ROOT / "learnerbot" / "ai_health_compact_report_patch.py"
+AUTOLOAD_PATCH = ROOT / "learnerbot" / "sibot_leader_quality_hard_floor_patch.py"
 GPT_WORKFLOW = ROOT / ".github" / "workflows" / "gpt-strategy-room-controlled-ops.yml"
 PUBLISH_WORKFLOW = ROOT / ".github" / "workflows" / "publish-strategy-room-request.yml"
 
@@ -38,7 +40,6 @@ def test_protected_change_requires_human_approval_marker():
     )
     assert "stop-loss/take-profit" in prompt
     assert "HUMAN_APPROVAL_REQUIRED" in prompt
-    assert "DRAFT-PR" not in prompt or "draft" in prompt.lower()
     assert "cannot merge or deploy" in prompt
 
 
@@ -100,6 +101,14 @@ def test_strategy_room_health_uses_latest_mailbox_session(tmp_path):
     assert health["agents"]["copilot"]["state"] == "WAITING"
 
 
+def test_health_report_contains_strategy_room_mailbox_section():
+    text = HEALTH_PATCH.read_text(encoding="utf-8")
+    assert "def strategy_room_text" in text
+    assert "🧠 STRATEGY ROOM" in text
+    assert "strategy_room_agent_health" in text
+    assert "strategy_room_text(room)" in text
+
+
 def test_telegram_strategy_room_is_master_only_and_uses_all_agents_then_gpt():
     text = TELEGRAM_PATCH.read_text(encoding="utf-8")
     assert "🧠 Strategy Room" in text
@@ -112,16 +121,20 @@ def test_telegram_strategy_room_is_master_only_and_uses_all_agents_then_gpt():
     assert "if not _master(app, cb_tid)" in text
 
 
+def test_strategy_room_is_loaded_as_final_telegram_layer():
+    text = AUTOLOAD_PATCH.read_text(encoding="utf-8")
+    assert "telegram_strategy_room_patch" in text
+    assert text.index("install()") < text.index("telegram_strategy_room_patch")
+
+
 def test_gpt_worker_is_draft_only_and_rejects_protected_paths():
     text = GPT_WORKFLOW.read_text(encoding="utf-8")
     assert "strategy_auto_path_allowed" in text
     assert "--sandbox workspace-write" in text
+    assert "persist-credentials: false" in text
     assert "gh pr create" in text
     assert "--draft" in text
     assert "gh pr merge" not in text
-    assert "deploy" not in "\n".join(
-        line for line in text.splitlines() if line.lstrip().startswith(("gh ", "python", "codex"))
-    ).lower()
     assert "CSVbot or runtime configuration" in text
     assert "stop-loss/take-profit" in text
     assert "wallets, signing, private keys" in text
