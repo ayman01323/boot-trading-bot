@@ -35,15 +35,15 @@ def test_requested_compact_health_format():
     )
 
     assert text.startswith("🤖 AI AGENT HEALTH")
-    assert "🛠 ENGINEERING" in text
+    assert "🛠 ENGINEERING Monitor" in text
     assert "🟠 GPT — Report validation" in text
     assert "🟠 Claude — Pipeline failure" in text
     assert "🟢 Gemini — Working" in text
     assert "🔴 DeepSeek — Model config" in text
     assert "🟡 Copilot — In progress" in text
-    assert "🧠 STRATEGY" in text
+    assert "🧠 STRATEGY Monitor" in text
     assert "🟢 GPT — Working" in text
-    assert "🧠 STRATEGY ROOM" in text
+    assert "🧠 STRATEGY Factory and Implementation" in text
     assert "🔴 Copilot — Provider/network" in text
 
     # Mobile presentation must not rely on padded columns or long diagnostics.
