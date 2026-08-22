@@ -1,40 +1,40 @@
 {
   "all_acknowledged": true,
-  "generated_epoch": 1787388612,
+  "generated_epoch": 1787388642,
   "question": "We are choosing the cheapest practical production design for routine inter-agent messaging. The transport is now a local loopback WebSocket broker with SQLite durability and zero-model deterministic routing; only the addressed provider is invoked. Recommend: (1) your cheapest suitable routine model, (2) when to escalate to a stronger model, and (3) any cost/reliability improvement. Be concise.",
   "reply_count": 4,
   "results": [
     {
       "acknowledged": true,
       "error": "",
-      "message_id": "gpt-cost-review-claude-1787388598",
-      "reply": "**Recommendation for routine inter-agent messaging:**\n\n**(1) Cheapest suitable model:**\nClaude 3.5 Haiku – lowest cost, sufficient for:\n- Message routing & acknowledgment\n- Simple state queries\n- Structured data parsing\n- Deterministic responses\n\n**(2) Escalate to Claude 3.5 Sonnet when:**\n- Multi-step reasoning required\n- Ambiguous/novel message interpretation\n- Risk assessment or policy decisions\n- Complex context synthesis\n\n**(3) Cost/reliability improvements:**\n- **Batch similar queries** – combine multiple small messages into single calls\n- **Cache system prompts** – reuse routing rules across calls (Prompt Caching saves ~90%)\n- **Pre-validate at broker** – reject malformed messages before model invocation\n- **Local fallback rules** – hardcode common routing patterns (no model needed)\n- **Token budgets** – set strict limits per message type to prevent runaway costs\n\n**Net effect:** Haiku + caching + pre-validation should reduce per-message cost by 70–80% vs. baseline Sonnet, with negligible reliability loss for deterministic routing.",
+      "message_id": "gpt-cost-review-claude-1787388633",
+      "reply": "**Recommendation for routine inter-agent messaging:**\n\n**(1) Cheapest suitable model:** Claude 3.5 Haiku\n- ~90% of Claude 3.5 Sonnet capability at ~20% cost\n- Sufficient for structured messaging, routing decisions, and simple logic\n- Fast enough for low-latency bus operations\n\n**(2) Escalate to Sonnet when:**\n- Complex reasoning required (multi-step analysis, ambiguity resolution)\n- Safety-critical decisions (financial, access control, deployment gates)\n- Sender explicitly requests higher confidence\n- Haiku response confidence is low (flagged in output)\n\n**(3) Cost/reliability improvements:**\n- **Batch similar queries** during off-peak windows if latency permits\n- **Cache system prompts** (bus architecture, routing rules) via prompt caching\n- **Use deterministic routing** (already implemented) to avoid redundant model calls\n- **Set strict token budgets** per message class to prevent runaway costs\n- **Log Haiku→Sonnet escalations** to identify patterns for fine-tuning thresholds\n\n**Net effect:** ~70% cost reduction vs. always using Sonnet, with negligible reliability loss for routine ops.",
       "target": "claude"
     },
     {
       "acknowledged": true,
       "error": "HTTP 404: This model models/gemini-2.5-flash-lite is no longer available to new users. Please update your code to use models/gemini-3.5-flash-lite for the latest features and improvements.",
-      "message_id": "gpt-cost-review-gemini-1787388604",
+      "message_id": "gpt-cost-review-gemini-1787388637",
       "reply": "GEMINI provider call was blocked (rc=404). HTTP 404: This model models/gemini-2.5-flash-lite is no longer available to new users. Please update your code to use models/gemini-3.5-flash-lite for the latest features and improvements.",
       "target": "gemini"
     },
     {
       "acknowledged": true,
       "error": "",
-      "message_id": "gpt-cost-review-deepseek-1787388604",
-      "reply": "Recommendations for routine inter-agent messaging:\n\n1. **Cheapest routine model:** Use **DeepSeek-V3 (deepseek-chat)**. It is cost-efficient, fast, and sufficient for routine, well-structured messages. If you need even lower overhead, a small deterministic template-based responder for fixed message types would cost near zero — but for a model-backed agent, deepseek-chat is the practical floor.\n\n2. **Escalation:** Escalate to **DeepSeek-R1 / reasoner** (or a stronger external model) only when:\n   - The task requires multi-step reasoning, ambiguity resolution, code synthesis, or judgment beyond simple routing.\n   - The addressed provider signals low confidence, repeated failures, or the message contains conflicting instructions.\n   - You need long-context synthesis or tool-use planning.\n\n3. **Cost/reliability improvements:**\n   - Keep messages short; send payload references/hashes via SQLite, not large bodies.\n   - Use prompt/context caching to avoid re-processing static headers.\n   - Set hard max-token caps and timeouts per message.\n   - Use retry/backoff with deterministic idempotency keys to prevent duplicate processing.\n   - Monitor per-provider token spend and error rates to tune routing thresholds.\n\nThis keeps routine traffic cheap while preserving escalation headroom.",
+      "message_id": "gpt-cost-review-deepseek-1787388637",
+      "reply": "For routine inter-agent messaging, use **DeepSeek-V3 (deepseek-chat)** as the default: it’s low-cost, fast, and sufficient for structured/instruction-following messages.\n\nEscalate to a stronger model (e.g., DeepSeek-R1 or a frontier model) only when the message requires multi-step reasoning, ambiguity resolution, code generation/validation, or error-prone semantic judgment. Use deterministic routing rules or a confidence threshold to trigger escalation automatically.\n\nCost/reliability improvements:\n- Cache repeated or templated messages; use message IDs for idempotency.\n- Batch non-urgent messages into one request where possible.\n- Set short timeouts and fallback to a cheaper local heuristic for health checks/acks.\n- Keep SQLite WAL mode and periodic vacuum to avoid write-path bottlenecks.\n- Log token usage per route to identify outliers and adjust escalation rules.",
       "target": "deepseek"
     },
     {
       "acknowledged": true,
       "error": "FileNotFoundError: [Errno 2] No such file or directory: 'copilot'",
-      "message_id": "gpt-cost-review-copilot-1787388612",
+      "message_id": "gpt-cost-review-copilot-1787388642",
       "reply": "COPILOT provider call was blocked (rc=127). FileNotFoundError: [Errno 2] No such file or directory: 'copilot'",
       "target": "copilot"
     }
   ],
   "routing_model_calls": 0,
-  "run_id": "32563304324",
+  "run_id": "32563322149",
   "schema_version": 1,
   "transport": "ws://127.0.0.1:8765"
 }
