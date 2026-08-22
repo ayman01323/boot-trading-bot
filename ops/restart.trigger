@@ -1,1 +1,1 @@
-2026-08-22T22:40:00Z deploy Alchemy internal trace reconstruction fix
+2026-08-22T22:44:00Z deploy Telegram auto-update category toggle fix
