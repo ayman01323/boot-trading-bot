@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 # Serialise event-driven bus work. Every run re-checks issue #333 by message_id
@@ -158,6 +158,93 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --body-file /tmp/ai-bus-reply.md
 
+      - name: Publish sanitised reply snapshot for MASTER Telegram alerts
+        if: steps.pending.outputs.pending == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s /tmp/ai-bus-reply.md
+          python3 - <<'PY' > /tmp/ai-bus-telegram-snapshot.json
+          import json, re, time
+
+          body = open('/tmp/ai-bus-reply.md', encoding='utf-8').read()
+          headers = {}
+          for line in body.splitlines()[1:]:
+              if not line.strip():
+                  break
+              if ':' in line:
+                  key, value = line.split(':', 1)
+                  headers[key.strip().lower()] = value.strip()
+
+          providers = []
+          for match in re.finditer(r'(?m)^###\s+(GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT)\s+·', body):
+              name = match.group(1).upper()
+              if name not in providers:
+                  providers.append(name)
+
+          chunks = []
+          for part in re.split(r'(?m)^###\s+(?:GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT)\s+·[^\n]*\n', body)[1:]:
+              text = part.strip()
+              if text:
+                  chunks.append(text)
+          preview = ' | '.join(chunks)
+          preview = re.sub(r'\b(?:sk|sess)-[A-Za-z0-9_-]{8,}\b', '<redacted>', preview)
+          preview = re.sub(r'\bAIza[A-Za-z0-9_-]{20,}\b', '<redacted>', preview)
+          preview = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}', 'Bearer <redacted>', preview)
+          preview = re.sub(r'\s+', ' ', preview).strip()[:700]
+
+          try:
+              provider_calls = int(headers.get('provider_calls') or 0)
+          except ValueError:
+              provider_calls = 0
+
+          print(json.dumps({
+              'schema_version': 2,
+              'generated_epoch': int(time.time()),
+              'message_id': headers.get('message_id', '')[:160],
+              'from': headers.get('from', '')[:40],
+              'to': headers.get('to', '')[:40],
+              'status': headers.get('status', 'UNKNOWN')[:40].upper(),
+              'provider_calls': provider_calls,
+              'providers': providers,
+              'preview': preview,
+              'source': 'ai-agent-bus-inline',
+          }, indent=2, sort_keys=True))
+          PY
+
+          api="repos/${GITHUB_REPOSITORY}/contents/github/ai-agent-bus/latest.json"
+          existing_sha=''
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" \
+            > /tmp/ai-bus-telegram-existing.json 2>/dev/null
+          lookup_rc=$?
+          set -e
+          if [[ $lookup_rc -eq 0 && -s /tmp/ai-bus-telegram-existing.json ]]; then
+            existing_sha="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/ai-bus-telegram-existing.json')).get('sha') or '')
+          PY
+            )"
+          fi
+
+          python3 - "$existing_sha" <<'PY' > /tmp/ai-bus-telegram-put.json
+          import base64, json, sys
+          raw = open('/tmp/ai-bus-telegram-snapshot.json', 'rb').read()
+          payload = {
+              'message': 'Record AI bus reply for MASTER Telegram notification',
+              'content': base64.b64encode(raw).decode(),
+              'branch': 'ai-reviews',
+          }
+          if sys.argv[1]:
+              payload['sha'] = sys.argv[1]
+          print(json.dumps(payload))
+          PY
+
+          gh api -X PUT "$api" --input /tmp/ai-bus-telegram-put.json >/dev/null
+          echo "Published Telegram snapshot for ${{ steps.pending.outputs.message_id }}"
+
       - name: Remove isolated Python environment
         if: always()
         shell: bash
@@ -177,5 +264,6 @@ jobs:
             echo "Mode: **${{ steps.preflight.outputs.mode || 'none' }}**"
             echo "Copilot setup needed: **${{ steps.preflight.outputs.needs_copilot || 'false' }}**"
             echo "Router return code: **${{ steps.route.outputs.rc || 'not-run' }}**"
+            echo 'Telegram snapshot: **inline with this bus run**'
             echo 'Scheduled polling: **disabled**'
           } >> "$GITHUB_STEP_SUMMARY"
