@@ -1,0 +1,165 @@
+name: Install and Verify Copilot Server Runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/copilot-server-runtime.yml'
+      - '.github/agents/**'
+      - '.github/copilot-server-runtime.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: copilot-server-runtime
+  cancel-in-progress: true
+
+jobs:
+  install-and-verify:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+    steps:
+      - name: Install official Copilot CLI into isolated VPS runtime
+        id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/var/tmp/boot-copilot-cli
+          stage=/var/tmp/boot-copilot-cli.next
+          previous=/var/tmp/boot-copilot-cli.previous
+          rm -rf "$stage" "$previous"
+          mkdir -p "$stage"
+
+          # GitHub documents this installer for Linux/macOS. Install into the
+          # exact isolated path already consumed by scripts/ai_agent_ws_worker.py.
+          curl -fsSL https://gh.io/copilot-install -o /tmp/boot-copilot-install.sh
+          PREFIX="$stage" bash /tmp/boot-copilot-install.sh
+          test -x "$stage/bin/copilot"
+
+          version="$($stage/bin/copilot --version 2>&1 | head -n 1 | tr -d '\r')"
+          if [[ -d "$target" ]]; then
+            mv "$target" "$previous"
+          fi
+          mv "$stage" "$target"
+          rm -rf "$previous"
+          chmod -R a+rX "$target"
+
+          echo "installed=true" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          echo "Copilot CLI installed at $target/bin/copilot"
+          echo "Version: $version"
+
+      - name: Verify token-backed Copilot request without exposing credentials
+        id: smoke
+        shell: bash
+        run: |
+          set +e
+          bin=/var/tmp/boot-copilot-cli/bin/copilot
+          token_source=none
+          token="${COPILOT_GITHUB_TOKEN:-}"
+          if [[ -n "$token" ]]; then
+            token_source=copilot_github_token
+          elif [[ -n "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            token="${COPILOT_ASSIGN_TOKEN}"
+            token_source=copilot_assign_token_fallback
+          fi
+
+          ok=false
+          reason=""
+          if [[ ! -x "$bin" ]]; then
+            reason="copilot binary missing after install"
+          elif [[ -z "$token" ]]; then
+            reason="no Copilot credential secret is configured"
+          else
+            export COPILOT_GITHUB_TOKEN="$token"
+            work="$(mktemp -d /tmp/boot-copilot-smoke.XXXXXX)"
+            cd "$work"
+            timeout 120 "$bin" \
+              --no-auto-update \
+              --no-ask-user \
+              --no-custom-instructions \
+              --no-remote \
+              --no-remote-export \
+              -s -p 'Reply with exactly COPILOT_OK. Do not inspect files and do not use tools.' \
+              >/tmp/boot-copilot-smoke.out 2>/tmp/boot-copilot-smoke.err
+            rc=$?
+            if [[ $rc -eq 0 ]] && grep -Fxq 'COPILOT_OK' /tmp/boot-copilot-smoke.out; then
+              ok=true
+            else
+              reason="Copilot CLI request failed or did not return the expected health response (rc=$rc)"
+            fi
+            rm -rf "$work"
+          fi
+
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          echo "token_source=$token_source" >> "$GITHUB_OUTPUT"
+          printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
+          if [[ "$ok" == true ]]; then
+            echo "Copilot CLI authenticated request: OK"
+          else
+            echo "Copilot CLI authenticated request: NOT READY"
+            echo "$reason"
+          fi
+          exit 0
+
+      - name: Publish redacted Copilot server health
+        shell: bash
+        env:
+          INSTALLED: ${{ steps.install.outputs.installed }}
+          VERSION: ${{ steps.install.outputs.version }}
+          AUTH_OK: ${{ steps.smoke.outputs.ok }}
+          TOKEN_SOURCE: ${{ steps.smoke.outputs.token_source }}
+          REASON: ${{ steps.smoke.outputs.reason }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/copilot-server-runtime-health.json
+          import json, os, pathlib, time
+          path = pathlib.Path('/var/tmp/boot-copilot-cli/bin/copilot')
+          print(json.dumps({
+              'checked_epoch': int(time.time()),
+              'binary_path': str(path),
+              'installed': path.is_file(),
+              'executable': os.access(path, os.X_OK),
+              'version': str(os.environ.get('VERSION') or '')[:120],
+              'credential_present': str(os.environ.get('TOKEN_SOURCE') or 'none') != 'none',
+              'credential_source': str(os.environ.get('TOKEN_SOURCE') or 'none'),
+              'authenticated_smoke_test': str(os.environ.get('AUTH_OK') or '').lower() == 'true',
+              'status': 'WORKING' if str(os.environ.get('AUTH_OK') or '').lower() == 'true' else 'NOT_READY',
+              'reason': str(os.environ.get('REASON') or '')[:240],
+              'secret_value_exposed': False,
+              'worker_expected_path_match': str(path) == '/var/tmp/boot-copilot-cli/bin/copilot',
+          }, indent=2, sort_keys=True))
+          PY
+
+          path='health/copilot_server_runtime.json'
+          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+          current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=ai-reviews" 2>/dev/null || true)"
+          sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/copilot-server-runtime-health.json)"
+          python3 - "$encoded" "$sha" <<'PY' > /tmp/copilot-server-runtime-put.json
+          import json, sys
+          payload = {
+              'message': 'Update redacted Copilot server runtime health',
+              'content': sys.argv[1],
+              'branch': 'ai-reviews',
+          }
+          if sys.argv[2]:
+              payload['sha'] = sys.argv[2]
+          print(json.dumps(payload))
+          PY
+          gh api --method PUT -H 'Accept: application/vnd.github+json' "$api" --input /tmp/copilot-server-runtime-put.json >/dev/null
+          cat /tmp/copilot-server-runtime-health.json
+
+      - name: Fail visibly if Copilot authentication is not ready
+        if: steps.smoke.outputs.ok != 'true'
+        shell: bash
+        run: |
+          echo 'Copilot CLI is installed, but its authenticated server smoke test is not ready.' >&2
+          echo 'Use a fine-grained token with Copilot Requests permission as COPILOT_GITHUB_TOKEN, then rerun this workflow.' >&2
+          exit 1
