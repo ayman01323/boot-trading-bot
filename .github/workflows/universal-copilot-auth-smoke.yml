@@ -15,26 +15,34 @@ permissions:
 
 jobs:
   copilot-smoke:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 10
+    env:
+      BUS_VENV: /tmp/copilot-auth-smoke-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install bounded runtime dependencies
+      - name: Prepare bounded Copilot runtime
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -q python-dotenv
-          prefix="$RUNNER_TEMP/copilot-cli"
-          curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
-          echo "$prefix/bin" >> "$GITHUB_PATH"
+          rm -rf "$BUS_VENV"
+          python3 -m venv "$BUS_VENV"
+          "$BUS_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+          if ! command -v copilot >/dev/null 2>&1; then
+            free_kb="$(df -Pk "$RUNNER_TEMP" | awk 'NR==2 {print $4}')"
+            if [[ ! "$free_kb" =~ ^[0-9]+$ ]] || (( free_kb < 350000 )); then
+              echo "Insufficient free runner disk for bounded Copilot CLI install." >&2
+              exit 2
+            fi
+            prefix="$RUNNER_TEMP/copilot-auth-smoke-cli"
+            rm -rf "$prefix"
+            curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
+            echo "$prefix/bin" >> "$GITHUB_PATH"
+          fi
 
       - name: Verify Copilot secret presence without printing values
         id: secret
@@ -69,9 +77,9 @@ jobs:
 
           Reply with exactly: COPILOT_AUTH_SMOKE_OK
           EOF
-          python scripts/run_ai_agent_bus.py --input /tmp/copilot-smoke.md --output /tmp/copilot-smoke-reply.md
+          "$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py --input /tmp/copilot-smoke.md --output /tmp/copilot-smoke-reply.md
           grep -q '^status: COMPLETED$' /tmp/copilot-smoke-reply.md
-          grep -q '^### COPILOT .* COMPLETED .* rc 0$' /tmp/copilot-smoke-reply.md
+          grep -Eq '^### COPILOT .* COMPLETED .* rc 0$' /tmp/copilot-smoke-reply.md
           grep -q 'COPILOT_AUTH_SMOKE_OK' /tmp/copilot-smoke-reply.md
 
       - name: Publish non-secret result
@@ -84,3 +92,8 @@ jobs:
             echo "COPILOT_ASSIGN_TOKEN present: **${{ steps.secret.outputs.assign_token_present || 'unknown' }}**"
             echo 'No credential values were printed.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$BUS_VENV"
