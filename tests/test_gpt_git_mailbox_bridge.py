@@ -17,7 +17,7 @@ Please assess the strategy.
     assert request_id_from_gpt(text.replace("status: REQUEST", "status: COMPLETED")) == ""
 
 
-def test_normalize_targets_claude_once():
+def test_normalize_discloses_stateless_claude_api_identity():
     text = """GPT_TO_CLAUDE
 message_id: test-2
 status: REQUEST
@@ -28,10 +28,10 @@ Review this.
     message_id, envelope = normalize_gpt_request(text)
     assert message_id == "test-2"
     assert envelope.startswith("AI_BUS\nmessage_id: test-2\nfrom: GPT\nto: CLAUDE\nmode: DIRECT\nmax_hops: 1")
-    assert "GPT_TO_CLAUDE" in envelope
+    assert "stateless Anthropic API responder" in envelope
 
 
-def test_claude_reply_is_response_and_dedupes_original_request():
+def test_claude_api_reply_is_not_persistent_claude():
     bus_reply = """AI_BUS_REPLY
 message_id: test-3
 from: BUS
@@ -46,8 +46,9 @@ max_hops: 1
 Looks sound; watch realised follower edge.
 """
     reply = build_claude_mailbox_reply("test-3", bus_reply)
-    assert reply.startswith("CLAUDE_TO_GPT\nmessage_id: claude-reply-")
-    assert "status: RESPONSE" in reply
+    assert reply.startswith("CLAUDE_API_TO_GPT\nmessage_id: claude-api-reply-")
+    assert "identity: STATELESS_API_RESPONDER" in reply
+    assert "persistent_agent: false" in reply
+    assert "not a message authored by the persistent/interactive Claude agent" in reply
     assert "in_reply_to: test-3" in reply
     assert reply_to_request_id(reply) == "test-3"
-    assert "Looks sound" in reply
