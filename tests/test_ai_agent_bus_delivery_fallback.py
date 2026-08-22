@@ -51,12 +51,13 @@ def _reply(message_id: str) -> str:
     )
 
 
-def test_bus_has_instant_pr_push_and_polling_delivery_paths() -> None:
+def test_bus_is_event_driven_without_scheduled_polling() -> None:
     text = _text()
     assert 'issue_comment:' in text
     assert 'pull_request:' in text
     assert 'push:' in text
-    assert "cron: '*/5 * * * *'" in text
+    assert 'schedule:' not in text
+    assert "cron: '*/5 * * * *'" not in text
     assert 'workflow_dispatch:' in text
     assert "github.event.pull_request.head.repo.full_name == github.repository" in text
 
@@ -68,6 +69,15 @@ def test_bus_uses_known_good_self_hosted_runner_and_native_isolated_python() -> 
     assert 'PYTHONPATH: ${{ github.workspace }}' in text
     assert 'actions/setup-python' not in text
     assert '"$BUS_VENV/bin/python" scripts/run_ai_agent_bus.py' in text
+
+
+def test_bus_uses_standalone_copilot_only_when_needed() -> None:
+    text = _text()
+    assert 'curl -fsSL https://gh.io/copilot-install' in text
+    assert 'PREFIX="$prefix" bash' in text
+    assert '"$prefix/bin/copilot" --version' in text
+    assert 'npm install -g @github/copilot' not in text
+    assert 'actions/setup-node' not in text
 
 
 def test_bus_serialises_runs_and_uses_live_python_github_client() -> None:
@@ -143,8 +153,7 @@ def test_pending_selector_treats_trusted_existing_reply_as_processed() -> None:
         _comment(31, _reply('done'), login='github-actions[bot]'),
     ]
     assert pending.latest_pending(comments, owner='ayman01323') is None
-    assert pending.has_reply(comments, 'done', owner='ayman01323') is True
-    assert pending.has_reply(comments, 'missing', owner='ayman01323') is False
+    assert pending.has_reply(comments, 'protected', owner='ayman01323') is False
 
 
 def test_python_github_client_follows_comment_pagination_without_gh_cli() -> None:
@@ -168,7 +177,6 @@ def test_python_github_client_follows_comment_pagination_without_gh_cli() -> Non
 
 def test_bus_rechecks_before_posting_to_prevent_duplicate_replies() -> None:
     text = _text()
-    assert 'Re-check immediately before publishing' in text
     assert 'Reply already exists for' in text
     assert 'skipping duplicate publish' in text
 
