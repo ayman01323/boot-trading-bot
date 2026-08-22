@@ -8,6 +8,7 @@ from . import ai_agent_health_process_dedupe_patch as _health_dedupe  # noqa: F4
 from . import ai_four_agent_health_patch as _health5
 from . import strategy_room as _strategy_room
 from . import telegram_ai_ops_patch as _ai_ops
+from . import telegram_ai_reports_menu_patch as _menu
 
 PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
 _LABELS = {
@@ -20,7 +21,7 @@ _LABELS = {
 _AI_HEALTH_HEADING = "<b>🤖 AI AGENT HEALTH</b>"
 _ENGINEERING_HEADING = "<b>🛠 ENGINEERING MONITOR</b>"
 _STRATEGY_HEADING = "<b>🧠 STRATEGY MONITOR</b>"
-_STRATEGY_FACTORY_HEADING = "<b>🧠 STRATEGY FACTORY AND IMPLEMENTATION</b>"
+_STRATEGY_FACTORY_HEADING = "<b>🧠 STRATEGY FACTORY</b>"
 _ORIGINAL_SEND_TO_CHATS = _health_warning._tg.send_to_chats
 
 # Keep the five-agent health collectors aligned with the compact display order.
@@ -139,7 +140,54 @@ def _lane_health(lane: str) -> dict:
     return _health5._strategy_health(root, now)
 
 
+def _strategy_room_health() -> dict:
+    return _strategy_room.strategy_room_agent_health(_repo_root(), int(time.time()))
+
+
+def _overall_icon(health: dict | None) -> str:
+    """Collapse real provider states into one lane light for the MASTER dashboard."""
+    agents = (health or {}).get("agents") or {}
+    states = [str((agents.get(provider) or {}).get("state") or "WAITING").upper() for provider in PROVIDERS]
+    if not states:
+        return "🟡"
+
+    hard_failure = {
+        "NOT_WORKING",
+        "FAILED",
+        "ERROR",
+        "BLOCKED",
+        "BLOCKED_AUTH",
+        "INCOMPLETE",
+    }
+    if any(state in hard_failure or state.startswith("BLOCKED_") for state in states):
+        return "🔴"
+    if all(state == "WORKING" for state in states):
+        return "🟢"
+    return "🟡"
+
+
+def dashboard_text(
+    engineering: dict | None = None,
+    strategy: dict | None = None,
+    strategy_room: dict | None = None,
+) -> str:
+    """MASTER Telegram dashboard: one real aggregate light per AI lane."""
+    engineering = engineering if engineering is not None else _lane_health("engineering")
+    strategy = strategy if strategy is not None else _lane_health("strategy")
+    strategy_room = strategy_room if strategy_room is not None else _strategy_room_health()
+    return "\n".join(
+        [
+            _AI_HEALTH_HEADING,
+            "│",
+            f"├─ {_ENGINEERING_HEADING} {_overall_icon(engineering)}",
+            f"├─ {_STRATEGY_HEADING} {_overall_icon(strategy)}",
+            f"└─ {_STRATEGY_FACTORY_HEADING} {_overall_icon(strategy_room)}",
+        ]
+    )
+
+
 def _lane_text(lane: str, health: dict | None = None) -> str:
+    """Detailed drill-down retained for the dedicated audit/strategy pages."""
     health = health if health is not None else _lane_health(lane)
     heading = _ENGINEERING_HEADING if lane == "engineering" else _STRATEGY_HEADING
     agents = (health or {}).get("agents") or {}
@@ -152,10 +200,6 @@ def _lane_text(lane: str, health: dict | None = None) -> str:
         icon, status = classify_health(lane, provider, detail)
         lines.append(f"{icon} {_LABELS[provider]} — {status}")
     return "\n".join(lines)
-
-
-def _strategy_room_health() -> dict:
-    return _strategy_room.strategy_room_agent_health(_repo_root(), int(time.time()))
 
 
 def strategy_room_text(health: dict | None = None) -> str:
@@ -184,14 +228,13 @@ def warning_message(snapshot: dict) -> str:
     engineering = (snapshot or {}).get("engineering") or _lane_health("engineering")
     strategy = (snapshot or {}).get("strategy") or _lane_health("strategy")
     room = (snapshot or {}).get("strategy_room") or _strategy_room_health()
-    return "\n\n".join(
-        [
-            _AI_HEALTH_HEADING,
-            _lane_text("engineering", engineering),
-            _lane_text("strategy", strategy),
-            strategy_room_text(room),
-        ]
-    )
+    return dashboard_text(engineering, strategy, room)
+
+
+def home_text(_app, _state: dict) -> str:
+    # Replace the legacy provider-heavy AI Reports home screen with the same
+    # compact MASTER dashboard. Buttons still provide drill-down/control pages.
+    return dashboard_text()
 
 
 def _send_to_chats_with_health_html(token, chat_ids, text, **kwargs):
@@ -210,6 +253,9 @@ def install() -> None:
     _health5._strategy_text = strategy_text
     _ai_ops._engineering_text = engineering_text
     _ai_ops._strategy_text = strategy_text
+
+    # MASTER AI Reports home dashboard: remove the legacy expanded provider view.
+    _menu._home_text = home_text
 
     # Automatic health warnings use Telegram HTML only for this compact report,
     # so the headers render bold without changing formatting for other messages.
