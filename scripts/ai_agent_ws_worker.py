@@ -18,20 +18,19 @@ DEFAULT_URL = "ws://127.0.0.1:8765"
 CHEAP_MODELS = {
     "gpt": ("OPENAI_COUNCIL_MODEL", "gpt-5-nano"),
     "gemini": ("GEMINI_COUNCIL_MODEL", "gemini-2.5-flash-lite"),
-    "claude": ("ANTHROPIC_COUNCIL_MODEL", "haiku"),
+    "claude": ("ANTHROPIC_COUNCIL_MODEL", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_COUNCIL_MODEL", "deepseek-v4-flash"),
 }
 _PROVIDER_CALL_LOCK = threading.Lock()
+_MISSING = object()
 
 
-def configure_low_cost_model(agent: str) -> str:
+def low_cost_model(agent: str) -> str:
     if agent not in CHEAP_MODELS:
         return "provider-default"
-    key, default = CHEAP_MODELS[agent]
+    _, default = CHEAP_MODELS[agent]
     override_key = f"AI_BUS_{agent.upper()}_MODEL"
-    model = str(os.environ.get(override_key) or default).strip()
-    os.environ[key] = model
-    return model
+    return str(os.environ.get(override_key) or default).strip()
 
 
 def build_prompt(agent: str, message: dict[str, Any]) -> str:
@@ -53,11 +52,24 @@ MESSAGE:
 
 
 def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
-    # Embedded workers share one process. The existing Copilot compatibility path
-    # temporarily adjusts process environment variables, so serialise provider
-    # calls to prevent cross-provider credential/model races.
+    # Embedded workers share the learnerbot process with strategy/council logic.
+    # Never permanently change the council's model. Apply the cheaper bus model
+    # only while this one provider call holds the lock, then restore exactly what
+    # the process had before the message arrived.
     with _PROVIDER_CALL_LOCK:
-        return call_provider(agent, prompt)
+        if agent not in CHEAP_MODELS:
+            return call_provider(agent, prompt)
+        env_key, _ = CHEAP_MODELS[agent]
+        model = low_cost_model(agent)
+        previous: object | str = os.environ.get(env_key, _MISSING)
+        os.environ[env_key] = model
+        try:
+            return call_provider(agent, prompt)
+        finally:
+            if previous is _MISSING:
+                os.environ.pop(env_key, None)
+            else:
+                os.environ[env_key] = str(previous)
 
 
 async def send_json(ws, payload: dict[str, Any]) -> None:
@@ -90,7 +102,7 @@ async def handle_message(ws, agent: str, message: dict[str, Any]) -> None:
 
 
 async def run(agent: str, url: str, token: str) -> None:
-    model = configure_low_cost_model(agent)
+    model = low_cost_model(agent)
     delay = 1.0
     while True:
         try:
