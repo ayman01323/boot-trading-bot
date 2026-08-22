@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 8
     env:
       VENV: /tmp/sibot-history-depth-ci-${{ github.run_id }}
+      BRIDGE: /var/tmp/boot/latest_loss_forensics.json
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +57,47 @@ jobs:
           grep -q 'git_sha' learnerbot/solana_incident_forensics_patch.py
           grep -q 'interpretation_guard' learnerbot/solana_incident_forensics_patch.py
           ! grep -Eq 'set_user_setting|live_enabled\s*=|stop_loss_pct.*=|take_profit_pct.*=' learnerbot/solana_incident_forensics_patch.py
+      - name: Read fresh sanitised Solana incident evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$BRIDGE"
+          python3 - "$BRIDGE" <<'PY'
+          import json,sys,time
+          p=json.load(open(sys.argv[1],encoding='utf-8'))
+          generated=int(p.get('generated_epoch') or 0)
+          age=max(0,int(time.time())-generated)
+          if generated <= 0 or age > 1800:
+              raise SystemExit(f'forensics bridge missing/stale: generated={generated} age={age}')
+          incident=p.get('solana_aug18_incident')
+          if not isinstance(incident,dict) or not incident.get('available'):
+              raise SystemExit('solana_aug18_incident evidence is unavailable')
+          selected={
+              'generated_epoch': generated,
+              'age_seconds': age,
+              'all_live_positions': incident.get('all_live_positions'),
+              'daily_pnl': incident.get('daily_pnl'),
+              'timeline_windows': incident.get('timeline_windows'),
+              'by_strategy_git_sha': incident.get('by_strategy_git_sha'),
+              'by_leader': incident.get('by_leader'),
+              'by_asset_mint': incident.get('by_asset_mint'),
+              'loss_exit_reason_counts': incident.get('loss_exit_reason_counts'),
+              'loss_cause_flag_counts': incident.get('loss_cause_flag_counts'),
+              'worst_losses': (incident.get('worst_losses') or [])[:30],
+              'open_positions': (incident.get('open_positions') or [])[:30],
+              'worker_latest_state': incident.get('worker_latest_state'),
+              'decision_rows_seen': incident.get('decision_rows_seen'),
+              'privacy': incident.get('privacy'),
+              'interpretation_guard': incident.get('interpretation_guard'),
+          }
+          text=json.dumps(selected,indent=2,sort_keys=True)
+          forbidden=('PRIVATE_TID','PRIVATE_WALLET','telegram_id','wallet_address','mnemonic','private_key')
+          if any(x in text for x in forbidden):
+              raise SystemExit('privacy guard rejected incident readout')
+          print('SOLANA_INCIDENT_READOUT_BEGIN')
+          print(text)
+          print('SOLANA_INCIDENT_READOUT_END')
+          PY
       - name: Cleanup
         if: always()
         shell: bash
