@@ -1,13 +1,13 @@
 {
   "action": "inspect",
   "action_return_code": 0,
-  "deepseek_analysis": "DEEPSEEK\n\nInspection result:\n- Requested action: `inspect` \u2014 deterministic return code `0`, action succeeded. No VPS mutation observed before/after.\n- Service: `learnerbot.service` is `active (running)`, enabled, main PID `745366`, uptime 3 minutes at check.\n- Resource usage: Memory ~481.8 MB, peak 757.5 MB; CPU 2m20.646s; Tasks 24 \u2014 no immediate resource exhaustion visible.\n- Git state: `main` @ `1b5e49abdd65bc1a75929bd9935186f9cb139c8c`, version `2.3.10`; no tracked working-tree changes before or after inspection.\n- Solana websocket: connected with `logsSubscribe=true`, `commitment=confirmed`, `fallback_poll=true`.\n\nConcrete warnings:\n1. Repeated SELL rejection for `tid=5923828381`: quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps, far above the 500 bps limit. The same trade id was rejected multiple times, indicating a problematic/stale/illiquid quote or repeated toxic-flow attempt.\n2. Fast-market scan cycles show zero results every run: `direct=0 merged=0 eligible=0 auto-events=0` across the logged window. This may be normal quiet-market behavior, but prolonged zero output should be investigated.\n3. Solana WS leader count changed (`leaders=2` \u2192 `leaders=1`) while `fallback_poll=true` remained active. Not fatal, but suggests possible connection/leader-set instability.\n\nConcrete follow-up (non-mutating):\n- Investigate the quote source for `tid=5923828381` to determine if the 10000 bps impact is real liquidity depth or stale/misconfigured oracle data.\n- Monitor fast-market scan metrics over a longer window; if zero-output persists during known active markets, review scanner filters and upstream data feeds.\n- Track memory trend; current usage is acceptable, but the 757.5 MB peak compared to ~482 MB current value suggests transient spikes worth watching.",
-  "deepseek_analysis_available": true,
-  "deployed_sha": "1b5e49abdd65bc1a75929bd9935186f9cb139c8c",
-  "generated_epoch": 1787435053,
+  "deepseek_analysis": "\ud83d\udd34 AGENT: DEEPSEEK\n\nDeepSeek analysis unavailable: 8dbdeb421ad8e36. Hmm important: source SHA d20db34... vs running sha ae1e7cb... Is that a concrete warning? Need be careful: The context \\\"GitHub source SHA: d20db34...\\\" likely requested action from push. VPS context shows running sha ae1e7cb. There is a mismatch. Need report as follow-up: deployed/running commit ae1e7cb does not match push-trigger SHA d20db34; requires deployment/update to align if intended. But maybe \\\"GitHub source SHA\\\" is source of this analysis, not VPS? It says \\\"GitHub source SHA: d20db34...\\\" in prompt. The VPS context branch sha ae1e7cb. So likely mismatch. Need include as warning. Also service running, active, enabled, no tracked changes. Memory 589.8M, peak 740.1M, tasks 24, CPU 10m30. Logs show fast-market-scan mostly zero eligible/auto-events after one direct=1. power-discovery added 27, pools 216, products 7696, auto-products 934, rejected=0, took 229.990",
+  "deepseek_analysis_available": false,
+  "deployed_sha": "ae1e7cb435635209ec5566ab28dbdeb421ad8e36",
+  "generated_epoch": 1787436496,
   "github_to_vps_link": true,
   "provider": "deepseek",
-  "provider_return_code": 0,
+  "provider_return_code": 200,
   "sanitised_action_tail": "Inspection only; no VPS mutation requested.\n",
   "schema_version": 2,
   "security": {
@@ -20,8 +20,8 @@
   },
   "self_hosted_runner": true,
   "service_active": true,
-  "source_commit": "5dbf50b67a467eb1c3569e9613863dc26595a707",
-  "status": "SUCCESS",
-  "target_sha": "5dbf50b67a467eb1c3569e9613863dc26595a707",
-  "workflow_run_id": 32600389871
+  "source_commit": "d20db34b044753299c6f257cfdb1c36d3ea68de5",
+  "status": "FAILED",
+  "target_sha": "d20db34b044753299c6f257cfdb1c36d3ea68de5",
+  "workflow_run_id": 32601534508
 }
