@@ -100,7 +100,7 @@ Do not merely describe these steps. When the user asks Gemini to send a message 
 
 8. Report the delivery result precisely. If GitHub authentication, permissions, branch protection, or another concrete error prevents the push, report that exact error and the unsent `message_id`; do **not** make the false general claim that Gemini is unable to message other agents.
 
-### Examples
+### Example send:
 
 Gemini to Claude:
 

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from learnerbot import solana_incident_forensics_patch as mod
+from learnerbot import solana_incident_forensics_schema_compat_patch as _compat  # noqa: F401
 
 
 def _db(path: Path):
@@ -84,6 +85,39 @@ def test_incident_report_reconstructs_closed_entry_cost_and_redacts_identity(tmp
     assert "LeaderWalletABC" not in str(report)
     assert "5923828381" not in str(report)
     assert report["timeline_windows"]["aug18_relaxed_to_aug21_quality_restore"]["pnl"]["entries"] == 1
+
+
+def test_legacy_positions_without_account_or_provenance_columns_do_not_break_report(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    db = data / "solana_sibot.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE positions(
+             position_id TEXT,mint TEXT,mode TEXT,status TEXT,token_amount_raw TEXT,
+             entry_cost_sol TEXT,entry_ts INTEGER,current_exit_sol TEXT,
+             unrealised_net_sol TEXT,unrealised_pct REAL,peak_unrealised_pct REAL,
+             realised_net_sol TEXT,exit_signature TEXT,exit_reason TEXT,closed_at INTEGER,
+             updated_at INTEGER
+           )"""
+    )
+    entry = mod._BOUNDARIES[1][1] + 60
+    conn.execute(
+        "INSERT INTO positions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("legacy", "MintLegacy", "LIVE", "CLOSED", "0", "0.10", entry, "0", "0", 0, 0,
+         "-0.01", "sig", "STOP_LOSS", entry + 60, entry + 60),
+    )
+    conn.commit()
+    conn.close()
+
+    report = mod._incident_report(SimpleNamespace(data_dir=data))
+    assert report["available"] is True
+    assert report["all_live_positions"]["closed"] == 1
+    row = report["positions"][0]
+    assert row["account_id"] == "acct-unknown"
+    assert row["leader_id"] == "leader-unknown"
+    assert row["git_sha"] == "LEGACY_UNKNOWN"
+    assert row["strategy_version"] == "LEGACY_UNKNOWN"
 
 
 def test_summary_distinguishes_open_positions():

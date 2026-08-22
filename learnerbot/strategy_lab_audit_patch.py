@@ -7,6 +7,9 @@ from pathlib import Path
 # scorecards, first-party learner/SiBot evidence, cross-chain research, and SHADOW data.
 
 from . import loss_forensics_github_export as _forensics
+# The Aug-18 Solana incident report must also read retained pre-provenance/test
+# position schemas. This compatibility layer changes only its read-only SELECT list.
+from . import solana_incident_forensics_schema_compat_patch as _solana_incident_schema_compat  # noqa: E402,F401
 from .shadow_strategy_executor import run_shadow_cycle
 from .strategy_lab import portfolio_report, seed_creative_hypotheses
 # Extend strategy_lab_research before importing its build function. The extension adds
