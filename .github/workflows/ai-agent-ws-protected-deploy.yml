@@ -1,0 +1,125 @@
+name: Deploy and Verify AI Agent WebSocket Bus
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/ai-agent-ws-protected-deploy.yml'
+      - 'scripts/ai_agent_ws_bus.py'
+      - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_agent_ws_send.py'
+      - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'learnerbot/__main__.py'
+      - 'learnerbot/ai_council.py'
+      - 'learnerbot/ai_council_http_patch.py'
+      - 'requirements.txt'
+      - 'AI_AGENT_MESSAGING.md'
+      - 'GEMINI.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: protected-ai-agent-ws-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-and-verify:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy exact current main through restricted root wrapper
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${GITHUB_SHA}"
+          [[ "$target" =~ ^[0-9a-f]{40}$ ]]
+          sudo /usr/local/sbin/deploy-boot-trading-bot "$target" 2>&1 | tee /tmp/ai-agent-ws-deploy.txt
+
+      - name: Verify learnerbot and local WebSocket broker
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/status-boot-trading-bot 2>&1 | tee /tmp/ai-agent-ws-server-status.txt
+          python3 - <<'PY'
+          import json, socket, time
+          deadline = time.monotonic() + 45
+          last = ''
+          while time.monotonic() < deadline:
+              try:
+                  with socket.create_connection(('127.0.0.1', 8765), timeout=1.0):
+                      pass
+                  status = {}
+                  try:
+                      with open('/var/tmp/boot/ai_agent_ws_status.json', encoding='utf-8') as fh:
+                          status = json.load(fh)
+                  except Exception as exc:
+                      status = {'state': 'PORT_OPEN', 'detail': f'status file unavailable: {type(exc).__name__}'}
+                  state = str(status.get('state') or '')
+                  if state in {'ACTIVE', 'EXTERNAL', 'PORT_OPEN'}:
+                      print(json.dumps(status, sort_keys=True))
+                      raise SystemExit(0)
+                  last = json.dumps(status, sort_keys=True)
+              except OSError as exc:
+                  last = f'{type(exc).__name__}: {exc}'
+              time.sleep(2)
+          raise SystemExit('WebSocket broker unavailable on 127.0.0.1:8765; last=' + last)
+          PY
+
+      - name: Record deployment and verification result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_SHA: ${{ github.sha }}
+          JOB_STATUS: ${{ job.status }}
+          DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, time, urllib.error, urllib.parse, urllib.request
+          repo=os.environ['REPO']; token=os.environ['GH_TOKEN']
+          path='.github/ai-mailbox/ws-bus-deploy-status.json'; branch='ai-mailbox'
+          api=f'https://api.github.com/repos/{repo}/contents/{path}'
+          headers={
+              'Authorization':f'Bearer {token}',
+              'Accept':'application/vnd.github+json',
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'boot-ai-agent-ws-protected-deploy',
+          }
+          existing=''
+          try:
+              req=urllib.request.Request(api+'?ref='+urllib.parse.quote(branch),headers=headers)
+              with urllib.request.urlopen(req,timeout=20) as resp: existing=str(json.load(resp).get('sha') or '')
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404: raise
+          status={
+              'schema_version':3,
+              'status':os.environ['JOB_STATUS'].upper(),
+              'deploy_outcome':os.environ.get('DEPLOY_OUTCOME',''),
+              'verify_outcome':os.environ.get('VERIFY_OUTCOME',''),
+              'source_sha':os.environ['SOURCE_SHA'],
+              'run_id':os.environ['RUN_ID'],
+              'run_attempt':os.environ['RUN_ATTEMPT'],
+              'transport':'loopback-websocket',
+              'endpoint':'ws://127.0.0.1:8765',
+              'routing_model_calls':0,
+              'privilege_model':'existing restricted deploy/status wrappers only',
+              'checked_epoch':int(time.time()),
+          }
+          content=json.dumps(status,indent=2,sort_keys=True)+'\n'
+          payload={
+              'message':f"AI WebSocket protected deploy {status['status'].lower()} {status['source_sha'][:12]}",
+              'content':base64.b64encode(content.encode()).decode(),
+              'branch':branch,
+          }
+          if existing: payload['sha']=existing
+          req=urllib.request.Request(api,data=json.dumps(payload).encode(),headers={**headers,'Content-Type':'application/json'},method='PUT')
+          with urllib.request.urlopen(req,timeout=20) as resp: json.load(resp)
+          PY
