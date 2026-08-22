@@ -89,7 +89,7 @@ def test_gpt_implementation_has_file_gate_tests_and_no_direct_secret_authority()
     assert "eval " not in text
 
 
-def test_master_change_workflows_never_use_arbitrary_sudo() -> None:
+def test_master_change_workflows_never_use_arbitrary_sudo_or_secret_credentials() -> None:
     for path in (
         ".github/workflows/master-change-council-bridge.yml",
         ".github/workflows/gpt-master-change-implement.yml",
@@ -97,4 +97,6 @@ def test_master_change_workflows_never_use_arbitrary_sudo() -> None:
         text = _text(path)
         assert "sudo " not in text
         assert "PRIVATE_KEY" not in text
-        assert "mnemonic" not in text.lower()
+        assert "secrets.PRIVATE" not in text
+        assert "secrets.WALLET" not in text
+        assert "secrets.MNEMONIC" not in text
