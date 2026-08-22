@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import time
-from collections import defaultdict
 from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
@@ -12,6 +11,8 @@ import requests
 from web3 import Web3
 
 from . import sibot as _sibot
+
+_PREV_NEXT_HISTORY_WALLET = _sibot._next_history_wallet
 
 
 def _bool(value, default=False):
@@ -28,11 +29,7 @@ def _priority(value):
 
 
 def alchemy_rpc_url(app, chain_id: int) -> str:
-    """Lowest-priority enabled full Alchemy HTTP URL from rpc_endpoints.csv.
-
-    Credentials remain only in the VPS-local CSV. ${...} placeholders are rejected,
-    so this path never depends on ALCHEMY_API_KEY from the process environment.
-    """
+    """Lowest-priority enabled full Alchemy HTTP URL from rpc_endpoints.csv."""
     path = Path(app.csv_dir) / "rpc_endpoints.csv"
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
@@ -62,15 +59,30 @@ def history_provider(app, chain) -> str:
     return "ALCHEMY" if alchemy_rpc_url(app, int(chain.chain_id)) else "MISSING"
 
 
+def _post_json(url: str, payload, timeout: int, method_label: str):
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=timeout,
+            headers={"User-Agent": "BOOT-SiBot-Alchemy-History/1.0", "Content-Type": "application/json"},
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Alchemy {method_label}: HTTP {response.status_code}")
+        return response.json()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Alchemy {method_label}: transport {type(exc).__name__}") from None
+    except ValueError:
+        raise RuntimeError(f"Alchemy {method_label}: invalid JSON response") from None
+
+
 def _rpc(url: str, method: str, params, timeout=35):
-    response = requests.post(
+    payload = _post_json(
         url,
-        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
-        timeout=timeout,
-        headers={"User-Agent": "BOOT-SiBot-Alchemy-History/1.0", "Content-Type": "application/json"},
+        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+        timeout,
+        method,
     )
-    response.raise_for_status()
-    payload = response.json()
     if not isinstance(payload, dict):
         raise RuntimeError(f"Alchemy {method}: invalid JSON-RPC response")
     if payload.get("error"):
@@ -82,18 +94,11 @@ def _rpc(url: str, method: str, params, timeout=35):
 def _batch_rpc(url: str, method: str, params_rows: list[list], timeout=45) -> list:
     if not params_rows:
         return []
-    payload = [
+    request_payload = [
         {"jsonrpc": "2.0", "id": idx + 1, "method": method, "params": params}
         for idx, params in enumerate(params_rows)
     ]
-    response = requests.post(
-        url,
-        json=payload,
-        timeout=timeout,
-        headers={"User-Agent": "BOOT-SiBot-Alchemy-History/1.0", "Content-Type": "application/json"},
-    )
-    response.raise_for_status()
-    data = response.json()
+    data = _post_json(url, request_payload, timeout, method)
     if not isinstance(data, list):
         raise RuntimeError(f"Alchemy {method}: batch response was not a list")
     by_id = {int(item.get("id") or 0): item for item in data if isinstance(item, dict)}
@@ -142,16 +147,7 @@ def _raw_transfer_value(row: dict) -> int:
         return 0
 
 
-def _asset_pages(
-    url: str,
-    wallet: str,
-    address_key: str,
-    categories: list[str],
-    cutoff_ts: int,
-    max_pages: int,
-    page_size: int,
-    delay: float,
-):
+def _asset_pages(url, wallet, address_key, categories, cutoff_ts, max_pages, page_size, delay):
     rows = []
     page_key = ""
     reached = False
@@ -184,7 +180,7 @@ def _asset_pages(
     return rows, reached
 
 
-def _dedupe(rows: list[dict]) -> list[dict]:
+def _dedupe(rows):
     out = []
     seen = set()
     for row in rows:
@@ -198,7 +194,7 @@ def _dedupe(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _normalised_transfer_rows(transfers: list[dict]):
+def _normalised_transfer_rows(transfers):
     token_rows = []
     internal_rows = []
     for row in transfers:
@@ -233,7 +229,7 @@ def _normalised_transfer_rows(transfers: list[dict]):
     return token_rows, internal_rows
 
 
-def _trace_calls_to_wallet(node, wallet: str, tx_hash: str, ts: int, out: list[dict]):
+def _trace_calls_to_wallet(node, wallet, tx_hash, ts, out):
     if isinstance(node, list):
         for item in node:
             _trace_calls_to_wallet(item, wallet, tx_hash, ts, out)
@@ -251,13 +247,13 @@ def _trace_calls_to_wallet(node, wallet: str, tx_hash: str, ts: int, out: list[d
             "timeStamp": str(ts),
             "isError": "0",
         })
-    for key in ("calls", "result", "trace"):
+    for key in ("calls", "result", "trace", "value"):
         child = node.get(key)
-        if child is not None:
+        if child is not None and child is not node:
             _trace_calls_to_wallet(child, wallet, tx_hash, ts, out)
 
 
-def _trace_internal(url: str, wallet: str, tx_hashes: list[str], ts_by_hash: dict[str, int]):
+def _trace_internal(url, wallet, tx_hashes, ts_by_hash):
     rows = []
     for tx_hash in tx_hashes:
         result = _rpc(
@@ -267,10 +263,10 @@ def _trace_internal(url: str, wallet: str, tx_hashes: list[str], ts_by_hash: dic
             timeout=45,
         )
         _trace_calls_to_wallet(result, wallet, tx_hash, ts_by_hash.get(tx_hash, 0), rows)
-    return rows
+    return _dedupe(rows)
 
 
-def _tx_context(url: str, transfers: list[dict], wallet: str):
+def _tx_context(url, transfers, wallet):
     hashes = []
     ts_by_hash = {}
     block_by_hash = {}
@@ -334,7 +330,7 @@ def _tx_context(url: str, transfers: list[dict], wallet: str):
     return normal, outgoing_hashes, ts_by_hash
 
 
-def _store(app, chain, wallet, fetched_at, normal, token, internal, complete, error=""):
+def _store_success(app, chain, wallet, fetched_at, normal, token, internal, complete):
     trades, unmatched = _sibot.reconstruct_spot_trades(
         wallet,
         _sibot._routers(app, chain),
@@ -353,7 +349,7 @@ def _store(app, chain, wallet, fetched_at, normal, token, internal, complete, er
     ]
     coverage_start = min(timestamps) if timestamps else fetched_at
     coverage_end = max(timestamps) if timestamps else fetched_at
-    complete = bool(complete and unmatched == 0 and not error)
+    complete = bool(complete and unmatched == 0)
     with _sibot._DB_LOCK, closing(_sibot.connect(app)) as conn:
         conn.execute("DELETE FROM wallet_trades WHERE chain_id=? AND wallet=?", (chain.chain_id, wallet.lower()))
         for row in trades:
@@ -365,30 +361,22 @@ def _store(app, chain, wallet, fetched_at, normal, token, internal, complete, er
         conn.execute(
             """INSERT INTO wallet_history_status(chain_id,chain_slug,wallet,fetched_at,coverage_start_ts,coverage_end_ts,history_complete,unmatched_sells,normal_rows,token_rows,internal_rows,error)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chain_id,wallet) DO UPDATE SET chain_slug=excluded.chain_slug,fetched_at=excluded.fetched_at,coverage_start_ts=excluded.coverage_start_ts,coverage_end_ts=excluded.coverage_end_ts,history_complete=excluded.history_complete,unmatched_sells=excluded.unmatched_sells,normal_rows=excluded.normal_rows,token_rows=excluded.token_rows,internal_rows=excluded.internal_rows,error=excluded.error""",
-            (
-                chain.chain_id,
-                chain.slug,
-                wallet.lower(),
-                fetched_at,
-                coverage_start,
-                coverage_end,
-                1 if complete else 0,
-                unmatched,
-                len(normal),
-                len(token),
-                len(internal),
-                error[:500],
-            ),
+            (chain.chain_id, chain.slug, wallet.lower(), fetched_at, coverage_start, coverage_end,
+             1 if complete else 0, unmatched, len(normal), len(token), len(internal), ""),
         )
         conn.commit()
-    return {
-        "wallet": wallet,
-        "trades": len(trades),
-        "complete": complete,
-        "unmatched_sells": unmatched,
-        "provider": "ALCHEMY",
-        **({"error": error} if error else {}),
-    }
+    return {"wallet": wallet, "trades": len(trades), "complete": complete, "unmatched_sells": unmatched, "provider": "ALCHEMY"}
+
+
+def _store_error(app, chain, wallet, fetched_at, error):
+    with _sibot._DB_LOCK, closing(_sibot.connect(app)) as conn:
+        conn.execute(
+            """INSERT INTO wallet_history_status(chain_id,chain_slug,wallet,fetched_at,history_complete,error)
+               VALUES(?,?,?,?,0,?) ON CONFLICT(chain_id,wallet) DO UPDATE SET fetched_at=excluded.fetched_at,history_complete=0,error=excluded.error""",
+            (chain.chain_id, chain.slug, wallet.lower(), fetched_at, str(error)[:500]),
+        )
+        conn.commit()
+    return {"wallet": wallet, "trades": 0, "complete": False, "provider": "ALCHEMY", "error": str(error)[:500]}
 
 
 def refresh_wallet_history(app, chain, wallet: str) -> dict:
@@ -396,62 +384,64 @@ def refresh_wallet_history(app, chain, wallet: str) -> dict:
     url = alchemy_rpc_url(app, int(chain.chain_id))
     fetched_at = int(time.time())
     if not url:
-        error = "Alchemy history endpoint missing from rpc_endpoints.csv"
-        return _store(app, chain, wallet, fetched_at, [], [], [], False, error)
+        return _store_error(app, chain, wallet, fetched_at, "Alchemy history endpoint missing from rpc_endpoints.csv")
 
     cfg = _sibot.platform_settings(app, chain.chain_id)
     fetch_days = max(30, min(3650, _sibot._int(cfg.get("history_fetch_days"), 365)))
     cutoff = int(time.time()) - fetch_days * 86400
     max_pages = max(1, min(40, _sibot._int(cfg.get("history_max_pages"), 3)))
-    # Alchemy Transfers API allows at most 1,000 results per page.
     page_size = max(100, min(1000, _sibot._int(cfg.get("history_page_size"), 1000)))
     delay = max(0.0, min(2.0, _sibot._float(cfg.get("history_api_delay_seconds"), 0.15)))
 
     try:
-        outbound, c_out = _asset_pages(
-            url, wallet, "fromAddress", ["external", "erc20"], cutoff, max_pages, page_size, delay
-        )
+        outbound, c_out = _asset_pages(url, wallet, "fromAddress", ["external", "erc20"], cutoff, max_pages, page_size, delay)
         time.sleep(delay)
-        inbound, c_in = _asset_pages(
-            url, wallet, "toAddress", ["external", "erc20"], cutoff, max_pages, page_size, delay
-        )
+        inbound, c_in = _asset_pages(url, wallet, "toAddress", ["external", "erc20"], cutoff, max_pages, page_size, delay)
         transfers = _dedupe(outbound + inbound)
         normal, outgoing_hashes, ts_by_hash = _tx_context(url, transfers, wallet)
         token, _ = _normalised_transfer_rows(transfers)
 
-        internal = []
-        c_internal = False
         try:
-            internal_transfers, c_internal = _asset_pages(
-                url, wallet, "toAddress", ["internal"], cutoff, max_pages, page_size, delay
-            )
+            internal_transfers, c_internal = _asset_pages(url, wallet, "toAddress", ["internal"], cutoff, max_pages, page_size, delay)
             _, internal = _normalised_transfer_rows(_dedupe(internal_transfers))
         except Exception:
-            # Some Alchemy networks expose historical transfers but not the
-            # `internal` category. Use Alchemy's own debug trace RPC instead;
-            # if that is unavailable too, fail closed rather than inventing P&L.
             internal = _trace_internal(url, wallet, outgoing_hashes, ts_by_hash)
             c_internal = True
 
-        return _store(
-            app,
-            chain,
-            wallet,
-            fetched_at,
-            normal,
-            token,
-            internal,
-            bool(c_out and c_in and c_internal),
-        )
+        return _store_success(app, chain, wallet, fetched_at, normal, token, internal, bool(c_out and c_in and c_internal))
     except Exception as exc:
         error = f"AlchemyHistoryError: {type(exc).__name__}: {str(exc)[:420]}"
-        return _store(app, chain, wallet, fetched_at, [], [], [], False, error)
+        return _store_error(app, chain, wallet, fetched_at, error)
+
+
+def _next_history_wallet(app, chain):
+    normal = _PREV_NEXT_HISTORY_WALLET(app, chain)
+    if normal or not alchemy_rpc_url(app, int(chain.chain_id)):
+        return normal
+    cfg = _sibot.platform_settings(app, chain.chain_id)
+    limit = max(20, min(500, _sibot._int(cfg.get("history_candidate_wallets"), 40)))
+    candidates = {w.lower() for w in _sibot._candidate_wallets(app, chain, limit)}
+    if not candidates:
+        return None
+    with closing(_sibot.connect(app)) as conn:
+        rows = conn.execute(
+            """SELECT wallet FROM wallet_history_status
+               WHERE chain_id=? AND error LIKE '%ETHERSCAN_API_KEY%'
+               ORDER BY fetched_at ASC""",
+            (chain.chain_id,),
+        ).fetchall()
+    for row in rows:
+        wallet = str(row["wallet"] or "").lower()
+        if wallet in candidates:
+            return wallet
+    return None
 
 
 def install():
     if getattr(_sibot, "_alchemy_history_patch_installed", False):
         return
     _sibot.refresh_wallet_history = refresh_wallet_history
+    _sibot._next_history_wallet = _next_history_wallet
     _sibot.history_provider = history_provider
     _sibot.alchemy_history_rpc_url = alchemy_rpc_url
     _sibot._alchemy_history_patch_installed = True
