@@ -134,6 +134,8 @@ from . import solana_emergency_liquidity_unwind_patch  # noqa: F401
 from . import evm_transfer_native_hotfix_patch  # noqa: F401
 # Export already-sanitised runtime forensics to a local bridge readable by the self-hosted GitHub runner.
 from . import loss_forensics_runtime_bridge_patch  # noqa: F401
+# Extend sanitised forensics with Aug-18-to-present Solana LIVE P/L, decision, leader/asset and strategy-SHA evidence only.
+from . import solana_incident_forensics_patch  # noqa: F401
 # Refuse startup if any feature or presentation layer displaced an audited trading hook.
 from . import trading_runtime_invariant_patch  # noqa: F401
 # Re-tighten Solana leader-quality thresholds and restore the leader-event circuit
