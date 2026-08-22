@@ -11,32 +11,66 @@ def _health(*states):
     }
 
 
-def test_master_dashboard_matches_requested_compact_tree():
-    engineering = _health("WORKING", "WORKING", "WORKING", "WORKING", "WORKING")
-    strategy = _health("WORKING", "WORKING", "WORKING", "WORKING", "WORKING")
-    strategy_room = _health("WORKING", "WORKING", "WORKING", "WORKING", "WAITING")
+def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
+    engineering = {
+        "agents": {
+            "gpt": {"state": "WORKING", "reason": ""},
+            "claude": {"state": "NOT_WORKING", "reason": "pipeline failed"},
+            "gemini": {"state": "WORKING", "reason": ""},
+            "deepseek": {"state": "NOT_WORKING", "reason": "unsupported model config"},
+            "copilot": {"state": "WAITING", "reason": "in progress"},
+        }
+    }
+    strategy = {
+        "agents": {
+            "gpt": {"state": "WORKING", "reason": ""},
+            "claude": {"state": "WORKING", "reason": ""},
+            "gemini": {"state": "WORKING", "reason": ""},
+            "deepseek": {"state": "NOT_WORKING", "reason": "unsupported model config"},
+            "copilot": {"state": "WAITING", "reason": "in progress"},
+        }
+    }
+    strategy_room = _health("WAITING", "WAITING", "WAITING", "WAITING", "WAITING")
 
     text = compact.warning_message(
         {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
     )
 
-    assert text == "\n".join(
+    assert text == "\n\n".join(
         [
             "<b>🤖 AI AGENT HEALTH</b>",
-            "│",
-            "├─ <b>🛠 ENGINEERING MONITOR</b>",
-            "├─ <b>🧠 STRATEGY MONITOR</b>",
-            "└─ <b>🧠 STRATEGY FACTORY</b>",
+            "\n".join(
+                [
+                    "<b>🛠 ENGINEERING MONITOR</b>",
+                    "🟢 GPT — Working",
+                    "🟠 Claude — Pipeline failure",
+                    "🟢 Gemini — Working",
+                    "🔴 DeepSeek — Model config",
+                    "🟡 Copilot — In progress",
+                ]
+            ),
+            "\n".join(
+                [
+                    "<b>🧠 STRATEGY MONITOR</b>",
+                    "🟢 GPT — Working",
+                    "🟢 Claude — Working",
+                    "🟢 Gemini — Working",
+                    "🔴 DeepSeek — Model config",
+                    "🟡 Copilot — In progress",
+                ]
+            ),
+            "\n".join(
+                [
+                    "<b>🧠 STRATEGY FACTORY</b>",
+                    "🟡 GPT — In progress",
+                    "🟡 Claude — In progress",
+                    "🟡 Gemini — In progress",
+                    "🟡 DeepSeek — In progress",
+                    "🟡 Copilot — In progress",
+                ]
+            ),
         ]
     )
-    assert "GPT —" not in text
-    assert "Claude —" not in text
-    assert "Gemini —" not in text
-    assert "DeepSeek —" not in text
-    assert "Copilot —" not in text
-    assert "🟢" not in text
-    assert "🟡" not in text
-    assert "🔴" not in text
 
 
 def test_master_dashboard_health_logic_is_still_available_for_drill_down():
