@@ -1,0 +1,134 @@
+name: Engineering VPS Disk Attribution
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/engineering-vps-disk-attribution.yml'
+  schedule:
+    - cron: '29 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: engineering-vps-disk-attribution
+  cancel-in-progress: true
+
+jobs:
+  disk:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Collect safe size-only disk attribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/engineering-vps-disk-attribution.json
+          import glob, json, os, shutil, subprocess, time
+
+          PROD='/root/multichain-learning-bot-v2.2-fast-direct-market'
+
+          def du_bytes(path, timeout=35):
+              try:
+                  if not os.path.exists(path):
+                      return None
+                  p=subprocess.run(
+                      ['du','-sb','--',path],
+                      text=True,capture_output=True,timeout=timeout,check=False,
+                  )
+                  if p.returncode==0 and p.stdout.strip():
+                      return int(p.stdout.split()[0])
+              except Exception:
+                  pass
+              return None
+
+          def aggregate(pattern, exclude=None):
+              paths=[]
+              for p in glob.glob(pattern):
+                  if exclude and os.path.realpath(p)==os.path.realpath(exclude):
+                      continue
+                  paths.append(p)
+              sizes=[]
+              for p in paths:
+                  n=du_bytes(p)
+                  if n is not None:
+                      sizes.append(n)
+              return {'count':len(paths),'measured_count':len(sizes),'bytes':sum(sizes)}
+
+          total,used,free=shutil.disk_usage('/')
+          locations={
+              'production_repo':du_bytes(PROD),
+              'production_git':du_bytes(PROD+'/.git'),
+              'production_venv':du_bytes(PROD+'/.venv'),
+              'production_data':du_bytes(PROD+'/data'),
+              'production_csvbot':du_bytes(PROD+'/CSVbot'),
+              'actions_runner':du_bytes('/opt/actions-runner'),
+              'actions_runner_workspace':du_bytes('/opt/actions-runner/_work'),
+              'root_cache':du_bytes('/root/.cache'),
+              'root_npm_cache':du_bytes('/root/.npm'),
+              'root_local':du_bytes('/root/.local'),
+              'var_log':du_bytes('/var/log'),
+              'var_cache':du_bytes('/var/cache'),
+              'var_lib':du_bytes('/var/lib'),
+              'tmp':du_bytes('/tmp'),
+              'usr_local':du_bytes('/usr/local'),
+          }
+          aggregates={
+              'other_multichain_bot_copies':aggregate('/root/multichain-learning-bot*',exclude=PROD),
+              'root_zip_archives':aggregate('/root/*.zip'),
+          }
+          print(json.dumps({
+              'schema_version':1,
+              'generated_epoch':int(time.time()),
+              'scope':'SAFE_SIZE_ONLY_DISK_ATTRIBUTION',
+              'filesystem':{
+                  'mount':'/',
+                  'total_bytes':int(total),
+                  'used_bytes':int(used),
+                  'free_bytes':int(free),
+                  'used_percent':round((used/total*100.0) if total else 0.0,2),
+              },
+              'locations':locations,
+              'aggregates':aggregates,
+              'privacy':{
+                  'file_contents_read':False,
+                  'file_names_published':False,
+                  'wallet_data_read':False,
+                  'private_keys_read':False,
+                  'api_keys_read':False,
+                  'process_environment_published':False,
+              },
+          },indent=2,sort_keys=True))
+          PY
+
+      - name: Publish attribution snapshot to ai-reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/engineering/ops/disk-attribution.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" --jq '.sha' 2>/dev/null || true)"
+          python3 - "$existing_sha" <<'PY' > /tmp/engineering-vps-disk-put.json
+          import base64,json,sys
+          raw=open('/tmp/engineering-vps-disk-attribution.json','rb').read()
+          p={
+              'message':'Update engineering VPS disk attribution',
+              'content':base64.b64encode(raw).decode(),
+              'branch':'ai-reviews',
+          }
+          if sys.argv[1]: p['sha']=sys.argv[1]
+          print(json.dumps(p))
+          PY
+          gh api -X PUT "$api" --input /tmp/engineering-vps-disk-put.json >/dev/null
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/engineering-vps-disk-attribution.json'))
+          print('disk_used_percent=',p['filesystem']['used_percent'])
+          for k,v in p['locations'].items():
+              print(k,'=',v)
+          for k,v in p['aggregates'].items():
+              print(k,'=',v)
+          PY
