@@ -72,4 +72,23 @@ The infrastructure conclusion must state `KEEP`, `BENCHMARK`, or `MOVE` and expl
 
 Do not recommend moving the server merely because another location has lower ping. A move requires a cost-adjusted trading case based on measured chain-weighted latency and execution evidence. Where several chains have materially different optimal regions, consider split infrastructure or chain-specific workers before recommending a wholesale migration.
 
+### ENGINEERING MONITOR millisecond execution timing
+
+When `ai-reviews:engineering/ops/execution-latency-latest.json` is available, every Engineering Monitor review must include the high-resolution Solana LIVE execution stages separately, with current-24h p50/p95 and the preceding-six-day same-server baseline:
+
+- event receiving/detection delay in ms, explicitly labelled **coarse** while the upstream chain event timestamp remains second-resolution;
+- strategy/preflight time in ms, from local event receipt until the durable LIVE execution attempt is claimed;
+- Jupiter order time in ms;
+- transaction construction/signing time in ms;
+- simulation time in ms;
+- execute request/result time in ms;
+- post-execution balance time in ms;
+- total local execution time and total event-to-result time in ms.
+
+Always distinguish CPU/local construction latency from external API/RPC/network latency. If transaction-construction p95 is the dominant stage, benchmark a dedicated/high-frequency CPU class. If order/simulation/execute p95 dominates, benchmark network placement and RPC/block-engine paths before buying more CPU.
+
+For Solana infrastructure benchmarking, prioritise Frankfurt, Amsterdam and London as candidate European regions when fresh provider/RPC/block-engine evidence supports them. Candidate infrastructure is **not** allowed to be called faster merely from advertised CPU frequency, ping, provider marketing, validator geography or synthetic public benchmarks. Measure the same bot workload in the candidate environment and compare stage-by-stage p50/p95, monthly cost and execution outcome evidence.
+
+Until at least five current high-resolution samples exist, the infrastructure conclusion must be `BENCHMARK`, not `MOVE`. `MOVE` requires an actual same-workload candidate benchmark showing a material cost-adjusted improvement without weakening any trading safety control. Otherwise use `KEEP` or `BENCHMARK`.
+
 All recommendations are report-only. Cost optimisation must never weaken wallet/signing, LIVE/ARMED, simulation, liquidity/sellability, capital/reserve, stop-loss/circuit-breaker, nonce or execution-reconciliation protections. Do not automatically delete wallets, databases or audit evidence.
