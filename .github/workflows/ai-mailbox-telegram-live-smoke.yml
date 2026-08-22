@@ -1,0 +1,36 @@
+name: AI Mailbox Telegram Live Smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ai-mailbox-telegram-live-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_MASTER_CHAT_ID: ${{ vars.TELEGRAM_MASTER_CHAT_ID || '5923828381' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Send four metadata-only live smoke alerts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TELEGRAM_BOT_TOKEN"
+          for spec in \
+            'claude initiation 2026-08-22T01-31-live-smoke-claude REQUEST' \
+            'gemini reply 2026-08-22T01-31-live-smoke-gemini COMPLETED' \
+            'deepseek reply 2026-08-22T01-31-live-smoke-deepseek COMPLETED' \
+            'copilot reply 2026-08-22T01-31-live-smoke-copilot COMPLETED'
+          do
+            set -- $spec
+            python3 scripts/ai_mailbox_telegram_notify.py \
+              --agent "$1" --kind "$2" --message-id "$3" --status "$4"
+          done
