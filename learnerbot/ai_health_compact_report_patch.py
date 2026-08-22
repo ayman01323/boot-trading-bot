@@ -173,17 +173,16 @@ def dashboard_text(
     strategy: dict | None = None,
     strategy_room: dict | None = None,
 ) -> str:
-    """MASTER Telegram dashboard: fixed three-monitor tree with no trailing status lights."""
-    # Health arguments remain accepted for compatibility with warning/report callers.
-    # The real health collectors and detailed drill-down pages are unchanged.
-    _ = engineering, strategy, strategy_room
-    return "\n".join(
+    """MASTER Telegram dashboard: retain original agent rows with renamed section titles."""
+    engineering = engineering if engineering is not None else _lane_health("engineering")
+    strategy = strategy if strategy is not None else _lane_health("strategy")
+    strategy_room = strategy_room if strategy_room is not None else _strategy_room_health()
+    return "\n\n".join(
         [
             _AI_HEALTH_HEADING,
-            "│",
-            f"├─ {_ENGINEERING_HEADING}",
-            f"├─ {_STRATEGY_HEADING}",
-            f"└─ {_STRATEGY_FACTORY_HEADING}",
+            _lane_text("engineering", engineering),
+            _lane_text("strategy", strategy),
+            strategy_room_text(strategy_room),
         ]
     )
 
@@ -271,8 +270,7 @@ def warning_message(snapshot: dict) -> str:
 
 
 def home_text(_app, _state: dict) -> str:
-    # Replace the legacy provider-heavy AI Reports home screen with the same
-    # compact MASTER dashboard. Buttons still provide drill-down/control pages.
+    # Keep the original provider rows on the MASTER AI Reports home screen.
     return dashboard_text()
 
 
@@ -293,7 +291,7 @@ def install() -> None:
     _ai_ops._engineering_text = engineering_text
     _ai_ops._strategy_text = strategy_text
 
-    # MASTER AI Reports home dashboard: remove the legacy expanded provider view.
+    # MASTER AI Reports home dashboard: keep the original expanded provider view.
     _menu._home_text = home_text
 
     # Automatic health warnings use Telegram HTML only for this compact report,
