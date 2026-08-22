@@ -36,7 +36,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "$VENV"
-          python3 -m venv "$VENV"
+          python3.11 -m venv "$VENV"
           "$VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
           "$VENV/bin/python" -m compileall -q learnerbot scripts tests
           "$VENV/bin/python" -m pytest -q \
@@ -54,7 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY' > /tmp/master-change-system-verify.json
+          python3.11 - <<'PY' > /tmp/master-change-system-verify.json
           import json,os,time
           print(json.dumps({
               'schema_version':1,
@@ -72,9 +72,9 @@ jobs:
           set -e
           sha=''
           if [[ $rc -eq 0 && -n "$current" ]]; then
-            sha="$(printf '%s' "$current" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"
+            sha="$(printf '%s' "$current" | python3.11 -c 'import json,sys;print(json.load(sys.stdin).get("sha") or "")')"
           fi
-          python3 - "$sha" <<'PY' > /tmp/put.json
+          python3.11 - "$sha" <<'PY' > /tmp/put.json
           import base64,json,sys
           raw=open('/tmp/master-change-system-verify.json','rb').read()
           out={'message':'Publish MASTER change system verification','content':base64.b64encode(raw).decode(),'branch':'ai-reviews'}
