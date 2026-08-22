@@ -44,7 +44,7 @@ def test_requested_compact_health_format():
     assert "🧠 STRATEGY" in text
     assert "🟢 GPT — Working" in text
     assert "🧠 STRATEGY ROOM" in text
-    assert "🟠 Copilot — Pipeline failure" in text
+    assert "🔴 Copilot — Provider/network" in text
 
     # Mobile presentation must not rely on padded columns or long diagnostics.
     assert "provider probably reachable" not in text
