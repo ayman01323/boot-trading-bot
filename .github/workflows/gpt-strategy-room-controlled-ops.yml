@@ -98,7 +98,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --name-only --diff-filter=ACMRT main...HEAD > /tmp/changed-files.txt
+          git diff --name-only --diff-filter=ACMRT > /tmp/changed-files.txt
+          git ls-files --others --exclude-standard >> /tmp/changed-files.txt
+          sort -u /tmp/changed-files.txt -o /tmp/changed-files.txt
           if [[ ! -s /tmp/changed-files.txt ]]; then
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             echo 'GPT made no repository changes. No PR will be opened.'
@@ -149,7 +151,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git diff --name-only --diff-filter=ACMRT main...HEAD > /tmp/changed-files-final.txt
+          git diff --name-only --diff-filter=ACMRT > /tmp/changed-files-final.txt
+          git ls-files --others --exclude-standard >> /tmp/changed-files-final.txt
+          sort -u /tmp/changed-files-final.txt -o /tmp/changed-files-final.txt
           python3 - <<'PY'
           from pathlib import Path
           from learnerbot.three_agent_strategy_contract import strategy_auto_path_allowed
@@ -166,7 +170,9 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- $(cat /tmp/changed-files-final.txt)
+          while IFS= read -r file; do
+            [[ -z "$file" ]] || git add -- "$file"
+          done < /tmp/changed-files-final.txt
           git commit -m "Strategy Room GPT shadow draft ${REQUEST_NONCE}"
           git push origin "$BRANCH_NAME"
 
