@@ -160,7 +160,8 @@ def report_evm(app):
     if not users: return
     tid = str(users[0].get("telegram_id") or "")
     for chain in load_chains(app, enabled_only=True):
-        if str(chain.type).lower() != "evm": continue
+        if str(chain.type).strip().lower() != "evm":
+            continue
         cfg = _sibot.user_settings(app, tid, chain.chain_id)
         lookback = max(1, _sibot._int(cfg.get("lookback_days"), 60)); cutoff = int(time.time()) - lookback*86400
         floor = max(1, _sibot._int(cfg.get("min_closed_trades"), 50)); recent = max(5, _sibot._int(cfg.get("recent_trade_window"), 20))
