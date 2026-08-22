@@ -99,3 +99,8 @@ def install() -> None:
 
 
 install()
+
+# MASTER Telegram change requests depend on this local bus. Import the final
+# command patch after the bus runtime has installed so /aichange can route to all
+# adviser workers without GitHub mailbox polling.
+from . import telegram_master_change_patch  # noqa: E402,F401
