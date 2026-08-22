@@ -4,6 +4,10 @@ from . import auto_trader as _auto
 from . import fast_market as _fast
 from . import loss_forensics_runtime_bridge_patch as _bridge
 from . import polygon_focus_patch as _polygon
+# Load only after sibot_evm_worker_reliability_patch has installed the proven
+# failed-block/receipt retry path.  WebSocket wakes that same monitor early;
+# it does not replace its HTTP RPC validation/fallback semantics.
+from . import polygon_websocket_patch as _polygon_ws  # noqa: F401
 from . import transaction_audit_worker_patch as _audit_worker
 
 
