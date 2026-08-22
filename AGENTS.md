@@ -1,5 +1,9 @@
 # Repository agent instructions
 
+## Strategy Room mailbox awareness for Copilot
+
+At the start of every persistent GitHub Copilot/coding-agent repository session, and before claiming GPT has not sent a message, fetch `origin/ai-mailbox` when available and inspect `.github/ai-mailbox/gpt-to-copilot.md`. Treat a new request as an unread Strategy Room message. GitHub can immediately invoke the stateless Copilot relay when configured, but it cannot inject a UI push into an already-open external coding-agent session; this mandatory inbox check covers the persistent-session case. Keep persistent-session authorship distinct from automated relay replies in `.github/ai-mailbox/copilot-to-gpt.md`.
+
 ## Mandatory Copilot handoff protocol
 
 When the acting agent is GitHub Copilot / Copilot coding agent, before analysis, edits, tests, commits, or PR creation:
