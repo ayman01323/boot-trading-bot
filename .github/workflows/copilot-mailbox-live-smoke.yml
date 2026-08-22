@@ -1,0 +1,62 @@
+name: Copilot Mailbox Live Smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/copilot-mailbox-live-smoke.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  copilot-smoke:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+      AI_COUNCIL_RUNTIME_ENV: /tmp/copilot-mailbox-live-smoke-no-runtime.env
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/copilot-mailbox-smoke-venv"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+      - name: Install standalone Copilot CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$RUNNER_TEMP/copilot-mailbox-smoke-cli"
+          rm -rf "$prefix"
+          curl -fsSL https://gh.io/copilot-install | PREFIX="$prefix" bash
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+          "$prefix/bin/copilot" --version
+      - name: Run bounded Copilot mailbox call
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$COPILOT_ASSIGN_TOKEN"
+          cat > /tmp/copilot-mailbox-smoke-in.md <<'EOF'
+          GPT_TO_COPILOT
+          message_id: 2026-08-22T01-34-copilot-isolated-smoke
+          source_sha: 4df51cda466c0a84b8f2d00832b8e69599cb7026
+          status: REQUEST
+
+          Communication-only smoke test. Reply with one short sentence confirming receipt. No repo edits, deploy, trading, runtime, wallet, signing, risk, capital, sudo, or secrets.
+          EOF
+          "$VENV/bin/python" scripts/ai_mailbox_provider_relay.py \
+            --provider copilot \
+            --message-id 2026-08-22T01-34-copilot-isolated-smoke \
+            --source-sha 4df51cda466c0a84b8f2d00832b8e69599cb7026 \
+            --input /tmp/copilot-mailbox-smoke-in.md \
+            --output /tmp/copilot-mailbox-smoke-out.md
+          cat /tmp/copilot-mailbox-smoke-out.md
+          grep -Fq 'in_reply_to: 2026-08-22T01-34-copilot-isolated-smoke' /tmp/copilot-mailbox-smoke-out.md
+          grep -Fq 'status: COMPLETED' /tmp/copilot-mailbox-smoke-out.md
+          grep -Fq 'provider_return_code: 0' /tmp/copilot-mailbox-smoke-out.md
