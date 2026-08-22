@@ -89,6 +89,30 @@ def test_gpt_implementation_has_file_gate_tests_and_no_direct_secret_authority()
     assert "eval " not in text
 
 
+def test_master_change_cannot_modify_its_own_governance_or_transport() -> None:
+    text = _text(".github/workflows/gpt-master-change-implement.yml")
+    protected = (
+        ".github/workflows/gpt-master-change-implement.yml",
+        ".github/workflows/master-change-council-bridge.yml",
+        "learnerbot/master_change_council.py",
+        "learnerbot/telegram_master_change_patch.py",
+        "learnerbot/ai_agent_ws_runtime_patch.py",
+        "scripts/ai_agent_ws_bus.py",
+        "scripts/ai_agent_ws_worker.py",
+        "scripts/ai_agent_ws_send.py",
+        "tests/test_master_change_council.py",
+    )
+    for path in protected:
+        assert path in text
+    assert "cannot authorise modification of its own governance/transport files" in text
+
+
+def test_low_risk_auto_merge_cannot_be_test_only() -> None:
+    text = _text(".github/workflows/gpt-master-change-implement.yml")
+    assert "non_test=[x for x in changed if not x.lower().startswith('tests/')]" in text
+    assert "and bool(non_test)" in text
+
+
 def test_master_change_workflows_never_use_arbitrary_sudo_or_secret_credentials() -> None:
     for path in (
         ".github/workflows/master-change-council-bridge.yml",
