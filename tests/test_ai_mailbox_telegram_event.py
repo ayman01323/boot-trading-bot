@@ -32,9 +32,18 @@ def test_gemini_signal_resolves_exact_message(monkeypatch) -> None:
 def test_provider_relay_resolves_all_three_reply_agents(monkeypatch) -> None:
     commits = [{"sha": "c1"}, {"sha": "c2"}, {"sha": "c3"}]
     details = {
-        "c1": {"files": [{"filename": ".github/ai-mailbox/deepseek-to-gpt.md"}]},
-        "c2": {"files": [{"filename": ".github/ai-mailbox/gemini-to-gpt.md"}]},
-        "c3": {"files": [{"filename": ".github/ai-mailbox/copilot-to-gpt.md"}]},
+        "c1": {
+            "commit": {"message": "Deepseek to GPT mailbox d1"},
+            "files": [{"filename": ".github/ai-mailbox/deepseek-to-gpt.md"}],
+        },
+        "c2": {
+            "commit": {"message": "Gemini to GPT mailbox g1"},
+            "files": [{"filename": ".github/ai-mailbox/gemini-to-gpt.md"}],
+        },
+        "c3": {
+            "commit": {"message": "Copilot to GPT mailbox c1"},
+            "files": [{"filename": ".github/ai-mailbox/copilot-to-gpt.md"}],
+        },
     }
 
     def fake_json(url: str, token: str):
@@ -63,6 +72,29 @@ def test_provider_relay_resolves_all_three_reply_agents(monkeypatch) -> None:
         ("gemini", "g1", "COMPLETED"),
         ("copilot", "c1", "BLOCKED"),
     }
+
+
+def test_provider_relay_ignores_unrelated_commit_touching_reply_path(monkeypatch) -> None:
+    monkeypatch.setattr(event, "_github_json", lambda url, token: (
+        [{"sha": "x1"}]
+        if "/commits?" in url
+        else {
+            "commit": {"message": "Unrelated mailbox maintenance"},
+            "files": [{"filename": ".github/ai-mailbox/gemini-to-gpt.md"}],
+        }
+    ))
+    monkeypatch.setattr(
+        event,
+        "_fetch_content",
+        lambda repo, path, ref, token: "GEMINI_TO_GPT\nin_reply_to: old\nstatus: COMPLETED\n\nold\n",
+    )
+    rows = event.resolve_provider_replies(
+        "owner/repo",
+        "2026-08-22T01:00:00Z",
+        "2026-08-22T01:01:00Z",
+        "token",
+    )
+    assert rows == []
 
 
 def test_provider_relay_ignores_non_workflow_run_event() -> None:
