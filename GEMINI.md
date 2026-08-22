@@ -18,156 +18,35 @@ The shared Gemini inbox is `.github/gemini-handoff.md`.
 
 ## Universal AI agent messaging
 
-Before claiming that Gemini cannot send a message to GPT, Claude, DeepSeek, Copilot, or all agents, read `AI_AGENT_MESSAGING.md` from current `main`.
+Before claiming that Gemini cannot message GPT, Claude, DeepSeek or Copilot, read `AI_AGENT_MESSAGING.md` from current `main`.
 
-Gemini **can initiate** communication with GPT, Claude, DeepSeek and Copilot through the repository's universal AI mailbox. This is the normal mechanism for a new communication-only cross-agent message.
+The **primary** transport is now the local VPS WebSocket bus, not GitHub. For a new routine message, Gemini should perform the send rather than merely describing it:
 
-For a new cross-agent communication on branch `ai-mailbox`:
-
-- Gemini may update **only** `.github/ai-mailbox/bus-from-gemini.md`;
-- use `AI_BUS`, a unique `message_id`, `from: GEMINI`, one supported `to:` agent or `to: ALL`, `mode: DIRECT`, and `max_hops: 1`;
-- valid direct targets from Gemini are `GPT`, `CLAUDE`, `DEEPSEEK`, and `COPILOT`; Gemini must not target itself;
-- read only `.github/ai-mailbox/bus-to-gemini.md` for the result and require the same `message_id`;
-- for several selected agents rather than `ALL`, send one message at a time and wait for its matching reply before overwriting the sender file.
-
-Delivery is automatic and event-driven. A valid sender-mailbox push wakes the universal relay, which automatically invokes the addressed provider; `to: ALL` invokes every other supported provider once. The recipient does **not** poll a mailbox to discover new messages. The sender reads its correlated `bus-to-gemini.md` result after the relay completes.
-
-### Exact send procedure for Gemini
-
-Do not merely describe these steps. When the user asks Gemini to send a message and repository/GitHub write access is available, Gemini should perform them.
-
-1. Read the current messaging contract:
-
-   ```bash
-   git fetch origin main ai-mailbox --quiet
-   git show origin/main:AI_AGENT_MESSAGING.md
-   ```
-
-2. Work from the latest `ai-mailbox` state without disturbing the user's current engineering branch:
-
-   ```bash
-   MAILBOX_DIR="$(mktemp -d)"
-   git worktree add --detach "$MAILBOX_DIR" origin/ai-mailbox
-   cd "$MAILBOX_DIR"
-   ```
-
-3. Create a unique message ID. It should identify Gemini, the target, and time, for example:
-
-   ```bash
-   MESSAGE_ID="gemini-to-claude-$(date -u +%Y%m%dT%H%M%SZ)"
-   ```
-
-4. Write **only** `.github/ai-mailbox/bus-from-gemini.md` using this exact envelope, replacing the target and body as requested:
-
-   ```text
-   AI_BUS
-   message_id: <unique-id>
-   from: GEMINI
-   to: <GPT|CLAUDE|DEEPSEEK|COPILOT|ALL>
-   mode: DIRECT
-   max_hops: 1
-
-   <communication-only message>
-   ```
-
-5. Before committing, prove that no other mailbox or repository file was changed:
-
-   ```bash
-   git status --short
-   test "$(git status --short | awk '{print $2}')" = ".github/ai-mailbox/bus-from-gemini.md"
-   ```
-
-   If more than that one path changed, stop and clean the worktree before sending.
-
-6. Commit and push only that mailbox update:
-
-   ```bash
-   git add -- .github/ai-mailbox/bus-from-gemini.md
-   git commit -m "ai-mailbox: Gemini message <unique-id>"
-   git push origin HEAD:ai-mailbox
-   ```
-
-   If the push is rejected because `ai-mailbox` advanced, fetch the latest branch, replay only the single Gemini mailbox change on top of it, and retry. Do not force-push.
-
-7. To retrieve the result, fetch `ai-mailbox` again and read only Gemini's reply file:
-
-   ```bash
-   git fetch origin ai-mailbox --quiet
-   git show origin/ai-mailbox:.github/ai-mailbox/bus-to-gemini.md
-   ```
-
-   Accept the reply only if it starts with `AI_BUS_REPLY` and contains the exact same `message_id:`. A stale reply with a different ID is not the answer to the new message.
-
-8. Report the delivery result precisely. If GitHub authentication, permissions, branch protection, or another concrete error prevents the push, report that exact error and the unsent `message_id`; do **not** make the false general claim that Gemini is unable to message other agents.
-
-### Example send:
-
-Gemini to Claude:
-
-```text
-AI_BUS
-message_id: gemini-to-claude-20260822-001
-from: GEMINI
-to: CLAUDE
-mode: DIRECT
-max_hops: 1
-
-Claude, please review this communication-only question.
+```bash
+python scripts/ai_agent_ws_send.py \
+  --from gemini \
+  --to gpt \
+  --message 'Your communication-only message here'
 ```
 
-Gemini to GPT:
+Valid direct targets are `gpt`, `claude`, `deepseek`, and `copilot`. Change only `--to` and the message body as required.
 
-```text
-AI_BUS
-message_id: gemini-to-gpt-20260822-001
-from: GEMINI
-to: GPT
-mode: DIRECT
-max_hops: 1
+The recipient is automatically pushed the message through its persistent WebSocket worker. Gemini does not tell the recipient to check a mailbox and does not poll GitHub. SQLite is only durable queue/audit storage.
 
-GPT, please give your independent view on this issue.
-```
+Treat delivery states precisely:
 
-Gemini to DeepSeek:
+- `QUEUED` means stored but not yet pushed to a connected recipient;
+- `DELIVERED` means pushed to the recipient socket;
+- `ACKNOWLEDGED` means the recipient worker actually received and ACKed it before inference;
+- `REPLIED` means the addressed provider returned a reply.
 
-```text
-AI_BUS
-message_id: gemini-to-deepseek-20260822-001
-from: GEMINI
-to: DEEPSEEK
-mode: DIRECT
-max_hops: 1
+Do not claim another agent received a message unless the send reaches at least `ACKNOWLEDGED`.
 
-DeepSeek, please review this reasoning and identify any weaknesses.
-```
+Routing itself uses no model. Routine recipient workers use the low-cost model policy in `AI_AGENT_MESSAGING.md`; Gemini's own routine worker defaults to `gemini-2.5-flash-lite`. Do not escalate to a more expensive model merely for acknowledgements, status checks or short coordination.
 
-Gemini to Copilot:
+The older `ai-mailbox` Git protocol is fallback-only when the local WebSocket bus is genuinely unavailable or a durable Git handoff is specifically required. Do not create Git commits for ordinary agent conversation when the local bus is available.
 
-```text
-AI_BUS
-message_id: gemini-to-copilot-20260822-001
-from: GEMINI
-to: COPILOT
-mode: DIRECT
-max_hops: 1
-
-Copilot, please review the technical point below.
-```
-
-Gemini to all other agents:
-
-```text
-AI_BUS
-message_id: gemini-to-all-20260822-001
-from: GEMINI
-to: ALL
-mode: DIRECT
-max_hops: 1
-
-Please give your independent view on this communication-only question.
-```
-
-This is a communication-only mailbox exception. It grants no authority to edit any other `ai-mailbox` path or to deploy, trade, change LIVE/ARMED or risk/capital settings, access wallets/signing material or secrets, or use root/sudo.
+This communication channel grants no authority to edit repository/runtime files, merge/deploy, trade, change LIVE/ARMED or risk/capital settings, access wallets/signing material or secrets, or use root/sudo.
 
 ## Engineering audit operational-efficiency requirement
 
