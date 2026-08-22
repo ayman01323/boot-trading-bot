@@ -1,55 +1,49 @@
 from learnerbot import ai_health_compact_report_patch as compact
 
 
-def test_requested_compact_health_format():
-    engineering = {
+def _health(*states):
+    providers = ("gpt", "claude", "gemini", "deepseek", "copilot")
+    return {
         "agents": {
-            "gpt": {"state": "NOT_WORKING", "reason": "report schema validation failed"},
-            "claude": {"state": "NOT_WORKING", "reason": "engineering pipeline report did not complete"},
-            "gemini": {"state": "WORKING", "reason": "DONE"},
-            "deepseek": {"state": "NOT_WORKING", "reason": "Claude-Code custom model configuration rejected"},
-            "copilot": {"state": "WAITING", "reason": "assignment pending"},
+            provider: {"state": state, "reason": state}
+            for provider, state in zip(providers, states)
         }
     }
-    strategy = {
-        "agents": {
-            "gpt": {"state": "WORKING", "reason": "DONE"},
-            "claude": {"state": "WORKING", "reason": "DONE"},
-            "gemini": {"state": "WORKING", "reason": "DONE"},
-            "deepseek": {"state": "NOT_WORKING", "reason": "Claude-Code custom model configuration rejected"},
-            "copilot": {"state": "WAITING", "reason": "assignment pending"},
-        }
-    }
-    strategy_room = {
-        "agents": {
-            "gpt": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
-            "claude": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
-            "gemini": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
-            "deepseek": {"state": "WORKING", "reason": "latest Strategy Room reply completed"},
-            "copilot": {"state": "FAILED", "reason": "provider timeout"},
-        }
-    }
+
+
+def test_master_dashboard_matches_requested_compact_tree():
+    engineering = _health("WORKING", "WORKING", "WORKING", "WORKING", "WORKING")
+    strategy = _health("WORKING", "WORKING", "WORKING", "WORKING", "WORKING")
+    strategy_room = _health("WORKING", "WORKING", "WORKING", "WORKING", "WAITING")
 
     text = compact.warning_message(
         {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
     )
 
-    assert text.startswith("<b>🤖 AI AGENT HEALTH</b>")
-    assert "<b>🛠 ENGINEERING MONITOR</b>" in text
-    assert "🟠 GPT — Report validation" in text
-    assert "🟠 Claude — Pipeline failure" in text
-    assert "🟢 Gemini — Working" in text
-    assert "🔴 DeepSeek — Model config" in text
-    assert "🟡 Copilot — In progress" in text
-    assert "<b>🧠 STRATEGY MONITOR</b>" in text
-    assert "🟢 GPT — Working" in text
-    assert "<b>🧠 STRATEGY FACTORY AND IMPLEMENTATION</b>" in text
-    assert "🔴 Copilot — Provider/network" in text
+    assert text == "\n".join(
+        [
+            "<b>🤖 AI AGENT HEALTH</b>",
+            "│",
+            "├─ <b>🛠 ENGINEERING MONITOR</b> 🟢",
+            "├─ <b>🧠 STRATEGY MONITOR</b> 🟢",
+            "└─ <b>🧠 STRATEGY FACTORY</b> 🟡",
+        ]
+    )
+    assert "GPT —" not in text
+    assert "Claude —" not in text
+    assert "Gemini —" not in text
+    assert "DeepSeek —" not in text
+    assert "Copilot —" not in text
 
-    # Mobile presentation must not rely on padded columns or long diagnostics.
-    assert "provider probably reachable" not in text
-    assert "CLAUDE-CODE CUSTOM MODEL CONFIGURATION" not in text
-    assert "       " not in text
+
+def test_master_dashboard_turns_red_on_hard_failure():
+    engineering = _health("WORKING", "WORKING", "WORKING", "FAILED", "WORKING")
+    assert compact._overall_icon(engineering) == "🔴"
+
+
+def test_master_dashboard_waiting_is_yellow():
+    strategy = _health("WORKING", "WORKING", "WAITING", "WORKING", "WORKING")
+    assert compact._overall_icon(strategy) == "🟡"
 
 
 def test_health_classification_uses_real_state_and_reason():
