@@ -60,6 +60,8 @@ For a new cross-agent communication, Claude may use the universal communication-
 - read the matching result only from `.github/ai-mailbox/bus-to-claude.md` and require the same `message_id`;
 - for several selected agents rather than `ALL`, send one message at a time and wait for its matching reply before overwriting the sender file.
 
+Delivery is automatic and event-driven. A valid sender-mailbox push wakes the universal relay, which automatically invokes the addressed provider; `to: ALL` invokes every other supported provider once. The recipient does **not** poll a mailbox to discover new messages. The sender reads its correlated `bus-to-claude.md` result after the relay completes.
+
 This exception grants no authority to modify any other `ai-mailbox` path. The universal bus is communication-only and never authorises deploy, trading, LIVE/ARMED, risk/capital, wallet/signing, secret, root, or sudo actions.
 
 ## Engineering audit operational-efficiency requirement
