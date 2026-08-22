@@ -11,13 +11,17 @@ on:
       - 'scripts/ai_agent_bus_pending.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
       - 'scripts/run_ai_agent_bus.py'
+      - 'scripts/claude_git_mailbox_bridge.py'
       - '.github/workflows/ai-agent-bus.yml'
+      - '.github/workflows/claude-git-mailbox-bridge.yml'
+      - '.github/workflows/claude-mailbox-signal.yml'
       - '.github/workflows/publish-ai-master-control.yml'
       - '.github/workflows/deepseek-github-controlled-ops.yml'
       - '.github/workflows/deepseek-github-readonly-selfhosted.yml'
       - '.github/workflows/deepseek-vps-controlled-ops.yml'
       - '.github/workflows/deepseek-telegram-bridge-ci.yml'
       - 'tests/test_ai_agent_bus_delivery_fallback.py'
+      - 'tests/test_claude_git_mailbox_bridge.py'
       - 'tests/test_deepseek_telegram_bridge.py'
       - 'tests/test_deepseek_controlled_access.py'
       - 'tests/test_deepseek_readonly_selfhosted_inspect.py'
@@ -57,7 +61,9 @@ jobs:
             scripts/ai_agent_bus_pending.py \
             scripts/ai_agent_bus_provider_compat.py \
             scripts/run_ai_agent_bus.py \
+            scripts/claude_git_mailbox_bridge.py \
             tests/test_ai_agent_bus_delivery_fallback.py \
+            tests/test_claude_git_mailbox_bridge.py \
             tests/test_deepseek_telegram_bridge.py \
             tests/test_deepseek_controlled_access.py \
             tests/test_deepseek_readonly_selfhosted_inspect.py \
@@ -66,6 +72,8 @@ jobs:
           import pathlib,yaml
           for name in (
               '.github/workflows/ai-agent-bus.yml',
+              '.github/workflows/claude-git-mailbox-bridge.yml',
+              '.github/workflows/claude-mailbox-signal.yml',
               '.github/workflows/publish-ai-master-control.yml',
               '.github/workflows/deepseek-github-controlled-ops.yml',
               '.github/workflows/deepseek-github-readonly-selfhosted.yml',
@@ -75,6 +83,8 @@ jobs:
               assert isinstance(value,dict) and 'jobs' in value, name
           PY
           "$venv/bin/python" -m pytest -q \
+            tests/test_ai_agent_bus_delivery_fallback.py \
+            tests/test_claude_git_mailbox_bridge.py \
             tests/test_deepseek_telegram_bridge.py \
             tests/test_deepseek_controlled_access.py \
             tests/test_deepseek_readonly_selfhosted_inspect.py \

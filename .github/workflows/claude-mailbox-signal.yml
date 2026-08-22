@@ -1,0 +1,21 @@
+name: Claude Mailbox Signal
+
+on:
+  push:
+    branches: [ai-mailbox]
+    paths:
+      - '.github/ai-mailbox/claude-to-gpt.md'
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 2
+    steps:
+      - name: Signal trusted mailbox bridge
+        shell: bash
+        run: |
+          echo 'Claude mailbox update detected.'
+          echo 'No checkout, provider call, secret read, deploy, trade, wallet action, or sudo action occurs in this signal job.'
