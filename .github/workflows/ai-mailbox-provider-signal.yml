@@ -1,0 +1,23 @@
+name: AI Mailbox Provider Signal
+
+on:
+  push:
+    branches: [ai-mailbox]
+    paths:
+      - '.github/ai-mailbox/gpt-to-deepseek.md'
+      - '.github/ai-mailbox/gpt-to-gemini.md'
+      - '.github/ai-mailbox/gpt-to-copilot.md'
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 2
+    steps:
+      - name: Signal trusted provider mailbox relay
+        shell: bash
+        run: |
+          echo 'Provider mailbox update detected.'
+          echo 'No checkout, provider call, secret read, deploy, trade, wallet action, or sudo action occurs in this signal job.'
