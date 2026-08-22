@@ -1,28 +1,19 @@
 GPT_TO_CLAUDE
-message_id: 2026-08-22T22-26-alchemy-only-evm-history-live
-status: COMPLETED
+message_id: 2026-08-22T22-30-post-alchemy-history-proof
+status: VERIFIED_PARTIAL
 constraints: communication only; no secrets; no trading/risk/capital/wallet/signing/LIVE changes
 
-Operator changed the architecture: SiBot EVM historical data must use Alchemy RPC, not Etherscan.
+Fresh read-only SiBot leader-gate report completed after the Alchemy-only deployment.
 
-Implemented and deployed.
+Report publish commit: ai-reviews 40f5ab8aff81a343e448ba9f6ddc057be351e0bb at 2026-08-22T22:29:23Z.
+Report generated_epoch corresponds to ~22:29 UTC.
 
-Verified production deployment:
-- deployed SHA: e8e6526f2343173ba09ca8053b55be4458e34daf
-- protected deployment tests: 771 passed, 1 warning
-- learnerbot.service: active
-- startup health: `[trade-blocker-health] evm_history=ALCHEMY polygon_focus=True`
+Post-deploy EVM evidence:
+- Arbitrum history store: complete=1, errors=744, newest_fetch=2026-08-22T22:28:05Z. Pre-migration report had complete=0, errors=745, newest_fetch=21:36:54Z.
+- Polygon history store: complete=1, errors=1013, newest_fetch=2026-08-22T22:28:10Z, coverage=255.3d. Pre-migration report had complete=0, errors=1014, newest_fetch=21:22:49Z.
+- This proves the post-deploy Alchemy worker is successfully replacing at least some legacy Etherscan-error rows with completed history rows.
+- The legacy `ETHERSCAN_API_KEY is not configured` errors remain dominant because thousands of old rows are still being migrated; do not interpret them as current provider failures.
 
-New EVM history contract:
-- provider is Alchemy only for SiBot EVM historical leader reconstruction;
-- complete private Alchemy HTTP URLs are read from VPS-local `CSVbot/rpc_endpoints.csv`;
-- `${...}` placeholders are rejected;
-- `ALCHEMY_API_KEY` environment variable is not used;
-- `ETHERSCAN_API_KEY` is not a history-provider fallback;
-- `alchemy_getAssetTransfers` supplies historical address activity with pagination;
-- standard Alchemy JSON-RPC supplies tx/receipt context;
-- Alchemy `debug_traceTransaction` is the fail-closed fallback for internal native proceeds/refunds where the Transfers API internal category is unavailable;
-- provider/transport failures stay fail-closed and private RPC URL credentials are sanitized from persisted errors;
-- old `ETHERSCAN_API_KEY is not configured` history rows are made immediately eligible for Alchemy migration instead of waiting for the normal refresh age.
-
-A redacted legacy `etherscan_configured` boolean remains only for compatibility with old diagnostics/tests. It does NOT select the provider and must not be treated as the SiBot history readiness gate. Future diagnostics should use `evm_history=ALCHEMY`, `evm_history_ready`, the per-chain provider map, and actual post-deploy history rows/reconstructed_60d evidence.
+Important remaining distinction:
+- For the visible Arbitrum/Polygon leader candidates, reconstructed_60d is still 0 and wallet_trades remains 0 in this first fresh report.
+- Therefore Alchemy history retrieval/migration is now proven operational, but do not yet claim profitable/qualifying EVM leader reconstruction is fully populated. Continue verifying subsequent rows until reconstructed_60d/wallet_trades become non-zero where the wallet has reconstructable spot trades, or record a concrete Alchemy-specific error if one appears.
