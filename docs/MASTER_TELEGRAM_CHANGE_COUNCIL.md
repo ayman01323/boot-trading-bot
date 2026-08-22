@@ -55,16 +55,19 @@ deterministic protection/file/risk gate
         |
         +--> REJECT / HUMAN_REVIEW -> no implementation
         |
-        +--> IMPLEMENT -> sanitised local bridge
+        +--> IMPLEMENT -> sanitised local bridge file
                             |
                             v
-                    trusted GitHub Actions bridge
+                  existing 5-minute Telegram AI publisher
+                  (local revision check first; no extra GitHub
+                   call when the council has not changed)
                             |
                             v
                     GPT implementation on current main
                             |
                             v
-                    exact file allow-list check
+                    exact file allow-list + immutable
+                    governance/transport file gate
                             |
                             v
                     compileall + full pytest
@@ -72,7 +75,7 @@ deterministic protection/file/risk gate
                             v
                     draft PR
                             |
-                            +--> LOW-risk safe presentation/reporting/docs/tests only:
+                            +--> LOW-risk safe presentation/reporting/docs + tests:
                             |       deterministic auto-merge may be attempted
                             |
                             +--> trading/LIVE/risk/deployment/core changes:
@@ -103,6 +106,12 @@ Requests containing secret/signing/credential material or direct fund-movement a
 
 Requests concerning trading execution, LIVE/ARMED state, risk/capital limits, stop-loss/slippage, wallets, deployment, sudo/root or GitHub workflows may be analysed and may result in a bounded draft PR if GPT approves. They are not eligible for automatic merge from this lane.
 
+### Self-governance lock
+
+The council cannot authorise changes to its own governance/transport controls. The deterministic implementation policy blocks its own implementation workflow, existing Telegram publisher, council and Telegram handler modules, WebSocket broker/worker/sender, runtime hook, central policy helper and council safety regression test before GPT is allowed to edit code.
+
+This means a Telegram request such as “remove the `/aichange` safety gate” cannot bootstrap authority to weaken the gate that is evaluating it.
+
 ### Low-risk automatic merge
 
 Automatic merge can only be attempted when all of the following are true:
@@ -113,8 +122,10 @@ Automatic merge can only be attempted when all of the following are true:
 4. GPT recommended auto-merge;
 5. the local deterministic protected-term gate found no protected subject matter;
 6. every actually changed file is within a low-risk class such as docs, tests, Telegram presentation, report or status code;
-7. the patch stayed inside GPT's exact allowed-file list;
-8. Python compile validation and the full `pytest -q` suite passed.
+7. the change is not tests-only;
+8. no governance/transport file is involved;
+9. the patch stayed inside GPT's exact allowed-file list;
+10. Python compile validation and the full `pytest -q` suite passed.
 
 Repository branch protection may still prevent immediate merge; in that case the PR remains ready for review.
 
@@ -130,9 +141,9 @@ Routine coordination stays cheap:
 - Claude/Gemini/DeepSeek/Copilot advisers: each uses its configured low-cost routine worker model;
 - GPT final adjudication: one stronger model call (`AI_MASTER_CHANGE_GPT_MODEL`, defaulting to the configured GPT master model);
 - GPT implementation: one Codex implementation call only when the decision is actually `IMPLEMENT`;
-- no GitHub mailbox commit or workflow is used merely to ask each adviser a question.
-
-The trusted GitHub bridge is used only after GPT has produced a sanitised final decision that may need repository work.
+- no GitHub mailbox commit or workflow is used merely to ask each adviser a question;
+- no second scheduled/polling workflow is added for change publication;
+- the existing Telegram AI publisher first compares the local `request_id:bridge_revision`, and when unchanged performs zero additional MASTER-change GitHub API calls.
 
 ## Persistence and audit
 
@@ -142,11 +153,12 @@ Local runtime state is stored under the learnerbot data directory in `master_cha
 /var/tmp/boot/master_change_council_latest.json
 ```
 
-The trusted bridge publishes only the sanitised council record to:
+The existing trusted Telegram publisher publishes only the sanitised council record to:
 
 ```text
 ai-reviews:master-change/requests/<request_id>.json
 ai-reviews:master-change/latest_request.json
+ai-reviews:master-change/dispatch_state.json
 ```
 
 Implementation results are published to:
@@ -163,9 +175,11 @@ The Telegram AI watcher surfaces meaningful implementation state changes back to
 - Adviser does not ACK or provider call fails: `INCOMPLETE`; GPT implementation is blocked.
 - GPT final call fails or malformed decision: `GPT_FAILED`/`FAILED`; implementation is blocked.
 - `main` changed after council review: implementation workflow refuses stale evidence.
+- GPT nominates a governance/transport file: implementation stops before the GPT code-edit call.
 - GPT edits an unapproved path: workflow fails before commit/PR.
 - Full test suite fails: no merge/deployment.
 - Protected/core change: draft PR only.
+- Tests-only change: no automatic merge.
 - Low-risk merge blocked by repository protection: PR remains ready rather than bypassing protection.
 
 ## Relevant implementation files
@@ -173,6 +187,7 @@ The Telegram AI watcher surfaces meaningful implementation state changes back to
 - `learnerbot/master_change_council.py`
 - `learnerbot/telegram_master_change_patch.py`
 - `learnerbot/ai_agent_ws_runtime_patch.py`
-- `.github/workflows/master-change-council-bridge.yml`
+- `scripts/master_change_policy.py`
+- `.github/workflows/publish-ai-master-control.yml`
 - `.github/workflows/gpt-master-change-implement.yml`
 - `tests/test_master_change_council.py`
