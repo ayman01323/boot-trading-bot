@@ -1,14 +1,18 @@
 name: AI Mailbox Provider Relay
-# Coordination-only wake-up marker; no trading/runtime authority change.
+# Communication-only bridge. Provider calls occur only for a new REQUEST message.
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  workflow_run:
+    workflows: [AI Mailbox Provider Signal]
+    types: [completed]
+    branches: [ai-mailbox]
   push:
     branches: [main]
     paths:
       - '.github/workflows/ai-mailbox-provider-relay.yml'
+      - '.github/workflows/ai-mailbox-provider-signal.yml'
       - 'scripts/ai_mailbox_provider_relay.py'
+      - 'scripts/provider_git_mailbox_bridge.py'
   workflow_dispatch:
     inputs:
       agent:
@@ -27,13 +31,20 @@ concurrency:
 
 jobs:
   relay:
-    runs-on: ubuntu-latest
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
         provider: [deepseek, gemini, copilot]
+    env:
+      RELAY_VENV: /tmp/ai-mailbox-provider-${{ matrix.provider }}-${{ github.run_id }}
+      PYTHONPATH: ${{ github.workspace }}
+
     steps:
       - name: Respect manual provider selection
         id: selected
@@ -51,7 +62,7 @@ jobs:
             echo 'run=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check out trusted current main
+      - name: Check out trusted current main without persisted credentials
         if: steps.selected.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
@@ -59,74 +70,32 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Read fixed mailbox files and detect pending message
+      - name: Detect new fixed mailbox request
         if: steps.selected.outputs.run == 'true'
         id: mailbox
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           PROVIDER: ${{ matrix.provider }}
         shell: bash
         run: |
           set -euo pipefail
-          in_path=".github/ai-mailbox/gpt-to-${PROVIDER}.md"
-          out_path=".github/ai-mailbox/${PROVIDER}-to-gpt.md"
+          python3 scripts/provider_git_mailbox_bridge.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --provider "$PROVIDER" \
+            --message-output /tmp/ai-mailbox-in.md \
+            > /tmp/ai-mailbox-meta.env
+          cat /tmp/ai-mailbox-meta.env >> "$GITHUB_OUTPUT"
 
-          gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/${in_path}?ref=ai-mailbox" --jq '.content' \
-            | tr -d '\n' | base64 -d > /tmp/ai-mailbox-in.md
-
-          set +e
-          gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/${out_path}?ref=ai-mailbox" --jq '.content' 2>/dev/null \
-            | tr -d '\n' | base64 -d > /tmp/ai-mailbox-out.md
-          rc=$?
-          set -e
-          if [[ $rc -ne 0 ]]; then : > /tmp/ai-mailbox-out.md; fi
-
-          python - "$PROVIDER" /tmp/ai-mailbox-in.md /tmp/ai-mailbox-out.md <<'PY' > /tmp/ai-mailbox-meta.env
-          import re,sys
-          provider=sys.argv[1].strip().lower()
-          incoming=open(sys.argv[2],encoding='utf-8',errors='replace').read()
-          outgoing=open(sys.argv[3],encoding='utf-8',errors='replace').read()
-
-          def parse(text):
-              lines=text.splitlines()
-              first=(lines[0].strip() if lines else '')
-              headers={}
-              for line in lines[1:]:
-                  if not line.strip(): break
-                  if ':' in line:
-                      k,v=line.split(':',1); headers[k.strip().lower()]=v.strip()
-              return first,headers
-
-          first,h=parse(incoming)
-          _,old=parse(outgoing)
-          expected='GPT_TO_'+provider.upper()
-          msg=h.get('message_id','')
-          status=h.get('status','').upper()
-          safe=bool(re.fullmatch(r'[A-Za-z0-9._:-]{1,120}',msg))
-          pending=(first==expected and status=='REQUEST' and safe and old.get('in_reply_to')!=msg)
-          print('PENDING='+('true' if pending else 'false'))
-          print('MESSAGE_ID='+msg)
-          print('SOURCE_SHA='+h.get('source_sha','')[:40])
-          PY
-          source /tmp/ai-mailbox-meta.env
-          echo "pending=$PENDING" >> "$GITHUB_OUTPUT"
-          echo "message_id=$MESSAGE_ID" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Set up Python for pending relay
-        if: steps.mailbox.outputs.pending == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install minimal Python dependency
+      - name: Build isolated Python environment
         if: steps.mailbox.outputs.pending == 'true'
         shell: bash
-        run: python -m pip install --disable-pip-version-check -q python-dotenv
+        run: |
+          set -euo pipefail
+          rm -rf "$RELAY_VENV"
+          python3 -m venv "$RELAY_VENV"
+          "$RELAY_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
 
-      - name: Set up Node for Copilot
+      - name: Set up Node for pending Copilot request
         if: steps.mailbox.outputs.pending == 'true' && matrix.provider == 'copilot'
         uses: actions/setup-node@v4
         with:
@@ -137,12 +106,13 @@ jobs:
         shell: bash
         run: npm install -g @github/copilot@latest
 
-      - name: Ask provider using mailbox content only
+      - name: Ask provider once using mailbox content only
         if: steps.mailbox.outputs.pending == 'true'
+        id: route
         env:
           PROVIDER: ${{ matrix.provider }}
           MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
-          SOURCE_SHA: ${{ steps.mailbox.outputs.source_sha }}
+          SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -151,44 +121,47 @@ jobs:
           AI_COUNCIL_RUNTIME_ENV: /tmp/ai-mailbox-no-runtime.env
         shell: bash
         run: |
-          set -euo pipefail
-          python scripts/ai_mailbox_provider_relay.py \
+          set +e
+          "$RELAY_VENV/bin/python" scripts/ai_mailbox_provider_relay.py \
             --provider "$PROVIDER" \
             --message-id "$MESSAGE_ID" \
             --source-sha "$SOURCE_SHA" \
             --input /tmp/ai-mailbox-in.md \
-            --output /tmp/ai-mailbox-reply.md
+            --output /tmp/ai-mailbox-reply.md \
+            2>/tmp/ai-mailbox-error.txt
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -ne 0 || ! -s /tmp/ai-mailbox-reply.md ]]; then
+            {
+              echo "${PROVIDER^^}_TO_GPT"
+              echo "in_reply_to: $MESSAGE_ID"
+              echo 'status: BLOCKED'
+              echo "provider_return_code: $rc"
+              echo
+              echo 'Provider could not complete this communication-only request.'
+            } > /tmp/ai-mailbox-reply.md
+          fi
+          exit 0
 
       - name: Publish provider reply to fixed mailbox file
         if: steps.mailbox.outputs.pending == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
           PROVIDER: ${{ matrix.provider }}
           MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
         shell: bash
         run: |
           set -euo pipefail
-          path=".github/ai-mailbox/${PROVIDER}-to-gpt.md"
-          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
-          gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-mailbox" > /tmp/ai-mailbox-existing.json
-          existing_sha="$(python - <<'PY'
-          import json
-          print(json.load(open('/tmp/ai-mailbox-existing.json')).get('sha') or '')
-          PY
-          )"
-          python - "$existing_sha" "$MESSAGE_ID" "$PROVIDER" <<'PY' > /tmp/ai-mailbox-put.json
-          import base64,json,sys
-          sha,msg,provider=sys.argv[1:4]
-          raw=open('/tmp/ai-mailbox-reply.md','rb').read()
-          body={
-              'message':f'{provider.title()} to GPT mailbox {msg}',
-              'content':base64.b64encode(raw).decode(),
-              'branch':'ai-mailbox',
-              'sha':sha,
-          }
-          print(json.dumps(body))
-          PY
-          gh api -X PUT "$api" --input /tmp/ai-mailbox-put.json >/dev/null
+          python3 scripts/provider_git_mailbox_bridge.py publish-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --provider "$PROVIDER" \
+            --request-id "$MESSAGE_ID" \
+            --reply-file /tmp/ai-mailbox-reply.md
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$RELAY_VENV"
 
       - name: Relay summary
         if: always() && steps.selected.outputs.run == 'true'
@@ -196,6 +169,7 @@ jobs:
           PROVIDER: ${{ matrix.provider }}
           PENDING: ${{ steps.mailbox.outputs.pending }}
           MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
+          ROUTER_RC: ${{ steps.route.outputs.rc }}
         shell: bash
         run: |
           {
@@ -203,8 +177,6 @@ jobs:
             echo
             echo "Pending message: **${PENDING:-false}**"
             echo "Message ID: \`${MESSAGE_ID:-none}\`"
-            if [[ -s /tmp/ai-mailbox-reply.md ]]; then
-              echo
-              sed -n '1,80p' /tmp/ai-mailbox-reply.md
-            fi
+            echo "Provider return code: **${ROUTER_RC:-not-run}**"
+            echo 'No scheduled polling is used.'
           } >> "$GITHUB_STEP_SUMMARY"
