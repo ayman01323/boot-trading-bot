@@ -1,0 +1,3 @@
+deploy current main
+source_sha=1ff9abbde2f45c5c3e04807869dda520cc669378
+purpose=strategy-factory-memory-live-verification
