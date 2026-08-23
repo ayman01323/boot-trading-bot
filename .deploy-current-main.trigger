@@ -1,2 +1,2 @@
 Purpose: retrigger the restricted exact-SHA VPS deployment for the current main commit when needed.
-Last requested for: final safe Solana stuck-liquidity 1% slice deployment after suite repairs at 2026-08-23T12:16Z.
+Last requested for: Telegram provider/review health separation fix at 2026-08-23T12:25Z.
