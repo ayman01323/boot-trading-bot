@@ -11,7 +11,7 @@ def _health(state="WORKING", reason="ok"):
     }
 
 
-def test_mobile_provider_layout_uses_short_lines(monkeypatch):
+def test_mobile_provider_layout_uses_single_compact_rows(monkeypatch):
     monkeypatch.setattr(
         mobile._truth,
         "_fresh_preflight",
@@ -36,25 +36,27 @@ def test_mobile_provider_layout_uses_short_lines(monkeypatch):
 
     text = mobile.provider_health_text(_health(), _health())
 
-    assert "6 healthy</b> | 0 verify | 0 issues" in text
-    assert " GPT — Connected" in text
-    assert "↳ <i>API OK · 20m ago</i>" in text
+    assert "6 healthy</b> · 0 verify · 0 issues" in text
+    assert " GPT — Online · API OK 20m" in text
+    assert " Claude — Online · API OK 20m" in text
+    assert " Gemini — Online" in text
+    assert "↳" not in text
+    assert "<i>" not in text
     assert "Worker connected · API last OK" not in text
-    assert "need verification" not in text
 
 
-def test_dashboard_has_spaced_short_stale_sections(monkeypatch):
+def test_dashboard_uses_one_line_monitor_statuses(monkeypatch):
     monkeypatch.setattr(mobile._truth, "_review_stale_reason", lambda lane, health: "old")
     monkeypatch.setattr(
         mobile,
         "provider_health_text",
-        lambda engineering, strategy: "<b>🤖 AI AGENT HEALTH</b>\n🟢 <b>6 healthy</b> | 0 verify | 0 issues",
+        lambda engineering, strategy: "<b>🤖 AI AGENT HEALTH</b>\n🟢 <b>6 healthy</b> · 0 verify · 0 issues",
     )
     room = _health(state="WAITING", reason="no strategy room request")
 
     text = mobile.dashboard_text(_health(), _health(), room)
 
-    assert "<b>🛠 ENGINEERING MONITOR</b>\n\n🟡 <b>Snapshot stale</b>\n↳ Refresh needed" in text
-    assert "<b>🧠 STRATEGY MONITOR</b>\n\n🟡 <b>Snapshot stale</b>\n↳ Refresh needed" in text
-    assert "<b>🧠 STRATEGY FACTORY</b>\n\n⚪ <b>Idle</b>\n↳ No active request" in text
+    assert "<b>🛠 ENGINEERING MONITOR</b>\n🟡 <b>Snapshot stale</b> · refresh needed" in text
+    assert "<b>🧠 STRATEGY MONITOR</b>\n🟡 <b>Snapshot stale</b> · refresh needed" in text
+    assert "<b>🧠 STRATEGY FACTORY</b>\n⚪ <b>Idle</b> · no active request" in text
     assert "predates current code" not in text
