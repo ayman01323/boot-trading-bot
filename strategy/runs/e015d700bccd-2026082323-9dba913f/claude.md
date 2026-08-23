@@ -1,0 +1,21 @@
+# Claude strategy review
+
+Evidence this cycle is architecture-only (evidence.json: MISSING_RUNTIME_FORENSICS, no fresh VPS snapshot); no claim of measured NET P&L, canary readiness, or LIVE readiness is made. The chain-agnostic SHADOW rules engine (cross_chain_strategy_signals.py) and canary promotion gates (strategy_canary.py) are a sound separation of research from live capital and are KEPT. Five architecture-level EXECUTION/INFRASTRUCTURE risks are flagged for money-weighted NET P&L integrity rather than strategy edge: (1) EVM nonce fetched fresh per-tx with no local tracking, a structural collision risk under concurrent sends; (2) Solana has granular per-stage latency instrumentation (execution_latency.py) but EVM has none, so Solana-vs-EVM latency economics cannot currently be compared even with fresh runtime data; (3) profit.py only nets gas out of gross P&L for trades classified PROVEN_WRAPPED_BASE, else reports net=None/gross-only, risking gross-as-net conflation in aggregate reporting; (4) Solana leader-copy position sizing is a fixed 0.05 SOL versus EVM's percentage-of-capital allocation, and the Solana leader-copy path appears (by method naming) to still be shadow/paper-only, which needs confirmation before any cross-chain P&L comparison is treated as money-weighted; (5) a large stack of overlapping profit-guard/profit-control monkey-patch modules increases order-of-application bug risk against stop-loss/exit correctness. All proposals are observability/hardening or research asks scoped to Strategy Lab/SHADOW, not live parameter or risk-control changes, consistent with lacking fresh runtime evidence to calibrate against.
+
+## KEEP — cross_chain_strategy_signals.py SHADOW rules engine + strategy_canary.py promotion gates
+A chain-agnostic, execution-isolated scoring engine feeding a quantitative promotion gate (profit-factor and confidence thresholds, multi-agent agreement) is a sound structural control against promoting overfit or thinly-evidenced signals into live capital.
+
+## IMPROVE — EVM transaction submission reliability (execution/infrastructure, not a trading strategy)
+Fetching pending nonce per-call without local tracking is a known source of nonce collisions / 'replacement transaction underpriced' failures when multiple sends race, especially for a leader-copy strategy reacting to fast-moving on-chain events across possibly-concurrent workers.
+
+## NEW_SHADOW — Cross-chain execution latency comparability (execution/infrastructure observability)
+The task objective requires comparing Solana and EVM using chain-specific economics including latency. That comparison is currently structurally impossible because only Solana has instrumentation granular enough to produce p50/p95 by stage; EVM latency claims would be unmeasured.
+
+## IMPROVE — Money-weighted NET P&L accounting integrity (cross-cutting, not a trading strategy)
+The stated objective is durable money-weighted NET P&L after fees, slippage, gas/priority fees, and exit costs — not win count. If any downstream reporting/dashboard treats a gross or unclassified figure as if it were net (e.g. when analyse_tx returns net=None), aggregate NET P&L would be systematically overstated without any code change actually happening, purely from a reporting/labeling gap.
+
+## RESEARCH_MORE — Solana leader-copy trading (solana_sibot.py) position sizing and live/shadow status
+Before any cross-chain money-weighted comparison of this specific leader-copy strategy is meaningful, it must be confirmed whether the Solana leg is currently trading real capital or is still shadow/paper-only, since the naming convention strongly suggests the latter. Sizing methodology also differs structurally (fixed vs percentage), which would distort any naive cross-chain P&L-per-trade comparison even once both are live.
+
+## RESEARCH_MORE — Stop-loss/exit correctness under monkey-patch composition (execution/infrastructure reliability)
+A large number of sequentially-applied monkey patches touching the same profit/exit logic increases the risk that patch-application order or an unpatched edge case silently degrades stop-loss/exit behavior — an EXECUTION/INFRASTRUCTURE failure mode distinct from strategy edge quality, and one that would directly corrupt realized NET P&L (e.g. holding past a stop-loss threshold) without any strategy signal being at fault.

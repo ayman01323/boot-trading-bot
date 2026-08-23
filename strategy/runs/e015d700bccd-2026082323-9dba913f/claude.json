@@ -1,0 +1,194 @@
+{
+  "cycle_id": "e015d700bccd-2026082323-9dba913f",
+  "evidence_gaps": [
+    "No sanitised runtime/VPS forensics snapshot was available this cycle (.strategy_claude/evidence.json: evidence_status=MISSING_RUNTIME_FORENSICS, fresh-within-2h=false) \u2014 no measured NET P&L, win/loss, fee, slippage, or execution-failure figures could be reviewed.",
+    "No ai-reviews:engineering/ops/latest.json snapshot was available, so trade_latency and infrastructure objects required for chain-by-chain latency/economics comparison could not be assessed.",
+    "EVM has no execution-latency instrumentation analogous to Solana's execution_latency.py, so even with fresh runtime data, Solana-vs-EVM latency could not currently be compared on equal footing.",
+    "The live-vs-shadow trading status of the specific Solana leader-copy strategy in solana_sibot.py could not be conclusively confirmed from code alone (method naming suggests shadow/paper-only, but other Solana live-execution paths exist elsewhere in the repo).",
+    "The proportion of historical trades falling outside profit.py's PROVEN_WRAPPED_BASE classification (and therefore excluded from netted P&L) is unknown without runtime/database access."
+  ],
+  "evidence_sha256": "9dba913f62309bb9bb9cbf8d03bc0d0651759cbf93f310904386a13cacd8099f",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.6,
+      "downside_risk": "None from keeping as-is; risk would arise from any future weakening of MIN_LIVE_PROFIT_FACTOR/MIN_MASTER_CONFIDENCE without matching evidence.",
+      "evidence": [
+        {
+          "detail": "Module docstring states it contains no wallet, signer, RPC submission or live-executor imports; evaluate_all() (line ~260) runs six scoring strategies against a shared MarketFeatures object with a common executable gate (_common_executable, min_net_bps, liquidity_score>=0.55, sellability_score>=0.80).",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "MIN_MASTER_CONFIDENCE=0.85 (line 21), MIN_SUPPORTING_AGENTS=2 (line 24), MIN_LIVE_PROFIT_FACTOR=1.20 (line 27); record_canary_result() (line 222) walks CANARY->PROBATION->ACTIVE with loss-containment auto-demotion.",
+          "path": "learnerbot/strategy_canary.py"
+        }
+      ],
+      "expected_effect": "No change requested; continued protection of live capital from unvetted signal promotion.",
+      "id": "keep-shadow-canary-separation",
+      "minimum_observation": "N/A",
+      "rationale": "A chain-agnostic, execution-isolated scoring engine feeding a quantitative promotion gate (profit-factor and confidence thresholds, multi-agent agreement) is a sound structural control against promoting overfit or thinly-evidenced signals into live capital.",
+      "shadow_test": "N/A (no change proposed) \u2014 periodically re-verify strategy_canary.py thresholds have not silently drifted downward across commits.",
+      "strategy": "cross_chain_strategy_signals.py SHADOW rules engine + strategy_canary.py promotion gates",
+      "suggested_files": []
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.35,
+      "downside_risk": "A poorly implemented local nonce manager can itself cause stuck transactions if it drifts from chain state after an out-of-band send (e.g. manual wallet action); must reconcile against on-chain pending nonce, not replace it blindly.",
+      "evidence": [
+        {
+          "detail": "tx[\"nonce\"] = self.w3.eth.get_transaction_count(self.address, \"pending\") is fetched fresh per _base_tx() call with no persistent local nonce manager or send queue found.",
+          "path": "learnerbot/live_executor.py:304"
+        }
+      ],
+      "expected_effect": "Fewer EVM failed-execution events (lower EXECUTION/INFRASTRUCTURE loss share), improving durable NET P&L by reducing wasted gas on reverted/dropped/duplicate-nonce transactions.",
+      "id": "evm-local-nonce-tracking",
+      "minimum_observation": "2 weeks or 200 EVM send attempts, whichever is longer",
+      "rationale": "Fetching pending nonce per-call without local tracking is a known source of nonce collisions / 'replacement transaction underpriced' failures when multiple sends race, especially for a leader-copy strategy reacting to fast-moving on-chain events across possibly-concurrent workers.",
+      "shadow_test": "Add logging/counting (no behavior change) of nonce-related RPC errors (e.g. 'nonce too low', 'replacement transaction underpriced', 'already known') on the existing EVM path for at least 2 weeks or 200 EVM trade attempts, whichever is longer, before deciding whether a local nonce manager is warranted; stop condition: if observed nonce-collision rate is <0.5% of EVM sends, do not implement further changes.",
+      "strategy": "EVM transaction submission reliability (execution/infrastructure, not a trading strategy)",
+      "suggested_files": [
+        "Strategy Lab/evm_nonce_collision_observability_SHADOW.md"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.55,
+      "downside_risk": "Added logging/DB writes on the EVM hot path could itself add latency if not implemented asynchronously; must be fire-and-forget/non-blocking relative to trade submission.",
+      "evidence": [
+        {
+          "detail": "Solana has a dedicated SQLite table (execution_latency_samples) with per-stage timings (receive_delay_ms, strategy_ms, order_ms, simulation_ms, execute_ms, etc.) and p50/p95 summary() with BENCHMARK/KEEP output.",
+          "path": "learnerbot/execution_latency.py"
+        },
+        {
+          "detail": "EVM path only has generic wait_for_transaction_receipt(..., poll_latency=2) polling; no equivalent per-stage latency ledger or percentile summary was found for EVM.",
+          "path": "learnerbot/live_executor.py:408,477"
+        }
+      ],
+      "expected_effect": "Enables a future, evidence-backed KEEP/BENCHMARK/MOVE infrastructure decision and chain-specific latency-vs-slippage tradeoff analysis; no direct P&L effect from adding instrumentation itself.",
+      "id": "evm-latency-instrumentation-parity",
+      "minimum_observation": "100 EVM trade attempts with instrumentation active",
+      "rationale": "The task objective requires comparing Solana and EVM using chain-specific economics including latency. That comparison is currently structurally impossible because only Solana has instrumentation granular enough to produce p50/p95 by stage; EVM latency claims would be unmeasured.",
+      "shadow_test": "Implement an EVM-side latency ledger mirroring execution_latency.py's schema (receive/strategy/quote/gas-fetch/broadcast/receipt stages) in SHADOW/logging-only mode for at least 100 EVM trade attempts; verify added instrumentation overhead is <5ms per stage before treating the resulting percentiles as decision-grade.",
+      "strategy": "Cross-chain execution latency comparability (execution/infrastructure observability)",
+      "suggested_files": [
+        "Strategy Lab/evm_execution_latency_SHADOW.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM",
+        "SOLANA"
+      ],
+      "confidence": 0.45,
+      "downside_risk": "If implemented carelessly, aggressively excluding 'unclassified' trades from NET P&L could bias the reported figure by dropping legitimate profitable trades that the heuristic simply failed to classify \u2014 the fix must count them as net-unknown/excluded-from-average, not as zero or as loss.",
+      "evidence": [
+        {
+          "detail": "analyse_tx() only computes net = gross - gas_native - builder_native when a 'PROVEN_WRAPPED_BASE' round-trip is detected; otherwise net is None and only gross/other classifications (e.g. WRAPPED_BASE_INFLOW_ONLY) are produced.",
+          "path": "learnerbot/profit.py:76-115"
+        },
+        {
+          "detail": "Records priority_fee_lamports, jito_tip_lamports, platform_fee_bps/amount into a SQLite ledger, but no single netted P&L field combining these with gross proceeds was confirmed in the code reviewed.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py:415-474"
+        }
+      ],
+      "expected_effect": "More trustworthy aggregate NET P&L figures; prevents silent overstatement of profitability from misclassified or unclassified round-trips.",
+      "id": "harden-net-pnl-classification",
+      "minimum_observation": "30 days or 100 EVM trades, whichever occurs first",
+      "rationale": "The stated objective is durable money-weighted NET P&L after fees, slippage, gas/priority fees, and exit costs \u2014 not win count. If any downstream reporting/dashboard treats a gross or unclassified figure as if it were net (e.g. when analyse_tx returns net=None), aggregate NET P&L would be systematically overstated without any code change actually happening, purely from a reporting/labeling gap.",
+      "shadow_test": "Audit-only pass (no live behavior change): for the next 30 days or 100 EVM trades (whichever first), log the count and gross-$ share of trades falling into each profit.py classification bucket. If >10% of trade volume by $ falls outside PROVEN_WRAPPED_BASE, treat current aggregate NET P&L reporting as unreliable until classification is hardened.",
+      "strategy": "Money-weighted NET P&L accounting integrity (cross-cutting, not a trading strategy)",
+      "suggested_files": [
+        "Strategy Lab/net_pnl_classification_audit_SHADOW.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.4,
+      "downside_risk": "None from researching; risk only arises if this ambiguity is left unresolved and shadow results are later mistaken for live results in reporting.",
+      "evidence": [
+        {
+          "detail": "Entry/exit helper methods are named _validate_shadow_entry() and _close_shadow(), and sizing uses a fixed shadow_allocation_sol (default 0.05 SOL) rather than a percentage-of-capital allocation like EVM's sibot.py (_position_size(), allocation_pct default 20%).",
+          "path": "learnerbot/solana_sibot.py"
+        },
+        {
+          "detail": "allocation_pct and shadow_allocation_sol are distinct config keys with different semantics (percentage vs fixed native-token amount), applied to EVM vs Solana leader-copy respectively.",
+          "path": "learnerbot/config.py"
+        }
+      ],
+      "expected_effect": "Clarifies whether current/any future Solana leader-copy results represent real money-weighted P&L or paper P&L, preventing a category error in cross-chain comparison.",
+      "id": "clarify-solana-leadercopy-sizing-and-status",
+      "minimum_observation": "N/A (documentation/clarification task)",
+      "rationale": "Before any cross-chain money-weighted comparison of this specific leader-copy strategy is meaningful, it must be confirmed whether the Solana leg is currently trading real capital or is still shadow/paper-only, since the naming convention strongly suggests the latter. Sizing methodology also differs structurally (fixed vs percentage), which would distort any naive cross-chain P&L-per-trade comparison even once both are live.",
+      "shadow_test": "Not applicable to a research/clarification proposal \u2014 confirm live-vs-shadow flag state and trading-mode gating for solana_sibot.py's leader-copy path against auto_trader.py's LIVE/ARMED checks, and document sizing-methodology parity requirements before treating any of its P&L as comparable to EVM's.",
+      "strategy": "Solana leader-copy trading (solana_sibot.py) position sizing and live/shadow status",
+      "suggested_files": [
+        "Strategy Lab/solana_leadercopy_status_clarification_SHADOW.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.35,
+      "downside_risk": "Writing regression tests against a monkey-patch chain is itself moderately complex and could be deprioritized; low risk if simply left as a research item.",
+      "evidence": [
+        {
+          "detail": "Multiple overlapping patch modules touch profit-guard/exit logic: solana_profit_guard_patch.py, sibot_profit_guard_patch.py, sibot_profit_guard_runtime_compat_patch.py, solana_partial_sell_profit_guard_patch.py, profit_control_amount_objective_patch.py, profit_control_audit_export_patch.py, profit_control_loop_patch.py, profit_control_master_summary_patch.py.",
+          "path": "learnerbot/"
+        },
+        {
+          "detail": "install() performs fail-closed identity checks at boot (e.g. evm_pool_rug_manual_buy) confirming specific rug-gate patches are bound, but coverage of the profit-guard/profit-control patch chain specifically was not confirmed from the code reviewed.",
+          "path": "learnerbot/final_runtime_integrity_patch.py:108-140"
+        }
+      ],
+      "expected_effect": "Reduces risk of an infrastructure-layer bug being misattributed to poor strategy edge (or vice versa) in future NET P&L attribution.",
+      "id": "profit-guard-patch-chain-regression-coverage",
+      "minimum_observation": "N/A (code-review/test-coverage task)",
+      "rationale": "A large number of sequentially-applied monkey patches touching the same profit/exit logic increases the risk that patch-application order or an unpatched edge case silently degrades stop-loss/exit behavior \u2014 an EXECUTION/INFRASTRUCTURE failure mode distinct from strategy edge quality, and one that would directly corrupt realized NET P&L (e.g. holding past a stop-loss threshold) without any strategy signal being at fault.",
+      "shadow_test": "Not a live shadow test \u2014 recommend extending the existing final_runtime_integrity_patch.py fail-closed identity-check pattern to also verify the profit-guard/profit-control patch chain's final bound behavior at boot (e.g. a known-input/known-output smoke check), analogous to the existing rug-gate identity checks.",
+      "strategy": "Stop-loss/exit correctness under monkey-patch composition (execution/infrastructure reliability)",
+      "suggested_files": [
+        "Strategy Lab/profit_guard_patch_chain_regression_SHADOW.md"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Enable Solana Jito tips by default to reduce failed/unlanded leader-copy executions.",
+      "reason": "No runtime evidence this cycle (architecture-only) of actual landed-transaction failure rates or their cost attribution to disabled tips; enabling a paid cost lever without measured landing-rate data would optimise on speculation, not durable NET P&L evidence."
+    },
+    {
+      "idea": "Immediately harmonize Solana leader-copy position sizing to a percentage-of-capital model matching EVM.",
+      "reason": "The current sizing asymmetry is a comparability/measurement issue, not a demonstrated P&L problem; changing live/shadow sizing without fresh P&L data to calibrate against would be an unsupported-confidence change, and the Solana leg's live-vs-shadow status is not yet confirmed (see clarify-solana-leadercopy-sizing-and-status)."
+    },
+    {
+      "idea": "Recommend a server/infrastructure region move based on this review.",
+      "reason": "No sanitised VPS ops snapshot (ai-reviews:engineering/ops/latest.json) or trade_latency/infrastructure object was available this cycle; a move recommendation requires cost-adjusted, chain-weighted trade-latency evidence which is entirely absent here (evidence.json: MISSING_RUNTIME_FORENSICS)."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "e015d700bccd6066c37194b25489906940ccc38e",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Evidence this cycle is architecture-only (evidence.json: MISSING_RUNTIME_FORENSICS, no fresh VPS snapshot); no claim of measured NET P&L, canary readiness, or LIVE readiness is made. The chain-agnostic SHADOW rules engine (cross_chain_strategy_signals.py) and canary promotion gates (strategy_canary.py) are a sound separation of research from live capital and are KEPT. Five architecture-level EXECUTION/INFRASTRUCTURE risks are flagged for money-weighted NET P&L integrity rather than strategy edge: (1) EVM nonce fetched fresh per-tx with no local tracking, a structural collision risk under concurrent sends; (2) Solana has granular per-stage latency instrumentation (execution_latency.py) but EVM has none, so Solana-vs-EVM latency economics cannot currently be compared even with fresh runtime data; (3) profit.py only nets gas out of gross P&L for trades classified PROVEN_WRAPPED_BASE, else reports net=None/gross-only, risking gross-as-net conflation in aggregate reporting; (4) Solana leader-copy position sizing is a fixed 0.05 SOL versus EVM's percentage-of-capital allocation, and the Solana leader-copy path appears (by method naming) to still be shadow/paper-only, which needs confirmation before any cross-chain P&L comparison is treated as money-weighted; (5) a large stack of overlapping profit-guard/profit-control monkey-patch modules increases order-of-application bug risk against stop-loss/exit correctness. All proposals are observability/hardening or research asks scoped to Strategy Lab/SHADOW, not live parameter or risk-control changes, consistent with lacking fresh runtime evidence to calibrate against."
+}
