@@ -102,6 +102,15 @@ jobs:
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit "$code"
 
+      - name: Restore prior learnerbot after rejected deploy
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Deployment was rejected; restoring the previously deployed learnerbot service.'
+          sudo /usr/local/sbin/restart-boot-trading-bot
+          sudo /usr/local/sbin/status-boot-trading-bot
+
       - name: Publish direct deployment attestation
         if: always()
         shell: bash
