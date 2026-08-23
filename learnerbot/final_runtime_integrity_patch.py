@@ -10,6 +10,7 @@ It is intentionally verification-only: it does not repair/rebind any hook.
 from . import auto_trader as _auto
 from . import evm_transfer_native_hotfix_patch as _evm_transfer
 from . import live_executor as _evm_live
+from . import polygon_websocket_patch as _evm_ws
 from . import sibot as _sibot
 from . import sibot_alchemy_context_progress_patch as _context
 from . import sibot_alchemy_retry_queue_patch as _retry
@@ -70,7 +71,10 @@ def composition_checks() -> dict[str, bool]:
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
         "evm_history_trace_to_retry": _trace._PREV_NEXT_HISTORY_WALLET is _retry._next_history_wallet,
-        "evm_leader_cursor_reliable": _sibot.poll_leader_blocks is _evm_reliability.poll_leader_blocks_reliable,
+        # WebSocket wake-up serialization is the intended outer wrapper. The
+        # retry-safe/no-skip cursor remains authoritative immediately inside it.
+        "evm_leader_cursor_ws_outer": _sibot.poll_leader_blocks is _evm_ws.poll_leader_blocks_locked,
+        "evm_leader_cursor_reliable_inner": _evm_ws._ORIGINAL_POLL is _evm_reliability.poll_leader_blocks_reliable,
         "evm_quality_hard_floor": _sibot.user_settings is _evm_quality.user_settings_with_quality_floor,
         "evm_native_transfer_destination": _evm_live.LiveTrader.transfer_native is _evm_transfer.transfer_native_with_destination,
         "evm_provenance_connect": _sibot.connect is _provenance._evm_connect_with_provenance,

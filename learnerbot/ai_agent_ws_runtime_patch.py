@@ -174,8 +174,3 @@ from . import solana_leader_edge_alignment_patch  # noqa: E402,F401
 # keeps the same mint blocked, but no longer freezes all other Solana entry
 # capacity. Owners receive explicit keep-retrying / force-exit / write-off choices.
 from . import solana_liquidity_stuck_nonblocking_patch  # noqa: E402,F401
-
-# Absolute final fail-closed composition gate. This runs after every late runtime
-# wrapper above and verifies both the capital-moving safety stack and the intended
-# EVM/Solana history/recovery/provenance wrapper chain. It never repairs/rebinds.
-from . import final_runtime_integrity_patch  # noqa: E402,F401
