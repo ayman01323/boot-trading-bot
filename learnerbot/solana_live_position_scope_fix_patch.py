@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from contextlib import closing
 
 from . import solana_sibot as _sol
@@ -84,3 +85,12 @@ def install():
 
 
 install()
+
+# Production-only one-shot owner instruction. Keeping this out of pytest avoids
+# any chance that test collection mutates the VPS's persistent trading database.
+if "pytest" not in sys.modules:
+    try:
+        from . import solana_operator_writeoff_8fip_migration as _operator_writeoff
+        _operator_writeoff.apply()
+    except Exception as exc:
+        print(f"[solana-operator-writeoff] ERROR {type(exc).__name__}: {exc}")
