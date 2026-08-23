@@ -1,30 +1,21 @@
-name: Strategy Factory Seven-Agent Live Diagnostic
+name: Strategy Factory Seven-Agent Detailed Trading Audit
 
 on:
-  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
-      - 'learnerbot/ai_agent_ws_runtime_patch.py'
-      - 'learnerbot/kimi_provider.py'
-      - 'scripts/ai_agent_ws_worker.py'
-      - 'scripts/ai_agent_ws_send.py'
-      - 'scripts/strategy_factory_transport.py'
-      - 'learnerbot/grok_provider.py'
-      - 'learnerbot/strategy_room.py'
-      - 'learnerbot/ai_health_compact_report_patch.py'
 
 permissions:
   contents: read
 
 concurrency:
-  group: strategy-factory-seven-agent-live-${{ github.event.pull_request.number || github.ref }}
+  group: strategy-factory-seven-agent-audit-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  live-diagnostic:
+  audit:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out repository without persisted credentials
         uses: actions/checkout@v4
@@ -32,116 +23,120 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify seven-agent Strategy Factory runtime
+      - name: Verify exact deployed production and all seven workers
         shell: bash
         run: |
           set -euo pipefail
-          systemctl is-active --quiet learnerbot
-          test -s /var/tmp/boot/ai_agent_ws_status.json
+          status="$(sudo /usr/local/sbin/status-boot-trading-bot)"
+          printf '%s\n' "$status" | grep -q '^sha:    cabc5bff54b4ca52649ba38dcaca7800be494d57$'
+          printf '%s\n' "$status" | grep -q 'Active: active (running)'
           python3 - <<'PY'
-          import json, time
-          p='/var/tmp/boot/ai_agent_ws_status.json'
-          d=json.load(open(p,encoding='utf-8'))
-          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d.get('state')
-          assert d.get('host') == '127.0.0.1'
-          assert int(d.get('port') or 0) == 8765
+          import json
+          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
           expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
+          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d
           assert set(d.get('workers') or []) == expected, d.get('workers')
-          age=int(time.time())-int(d.get('updated_epoch') or 0)
-          assert age < 86400, age
-          print('runtime_state='+str(d.get('state')))
-          print('workers='+','.join(d.get('workers') or []))
-          print('status_age_seconds='+str(age))
+          print('deployed_sha=cabc5bff54b4ca52649ba38dcaca7800be494d57')
+          print('strategy_factory_workers=7/7')
           PY
 
-      - name: Build isolated diagnostic environment
+      - name: Prepare minimal Strategy Factory client
         shell: bash
         run: |
           set -euo pipefail
-          venv="$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic"
-          rm -rf "$venv"
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
-          echo "VENV=$venv" >> "$GITHUB_ENV"
+          if python3 -c 'from websockets.asyncio.client import connect' >/dev/null 2>&1; then
+            echo 'AUDIT_PY=python3' >> "$GITHUB_ENV"
+          else
+            venv="$RUNNER_TEMP/sf-seven-agent-audit-${GITHUB_RUN_ID}"
+            rm -rf "$venv"
+            python3 -m venv "$venv"
+            "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+            echo "AUDIT_PY=$venv/bin/python" >> "$GITHUB_ENV"
+            echo "AUDIT_VENV=$venv" >> "$GITHUB_ENV"
+          fi
 
-      - name: Probe all seven providers strictly
+      - name: Ask GPT Claude Gemini DeepSeek Grok Kimi and Copilot
         shell: bash
         run: |
           set -euo pipefail
-          probe() {
-            sender="$1"
-            target="$2"
-            mid="sf7-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
-            set +e
-            output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-              --from "$sender" \
-              --to "$target" \
-              --message-id "$mid" \
-              --timeout 90 \
-              --message 'Strategy Factory seven-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
-            sender_rc=$?
-            set -e
-            printf '%s\n' "$output"
-            if [[ $sender_rc -ne 0 ]]; then
-              echo "${target}_provider_health=FAILED sender_rc=${sender_rc}"
-              return 1
-            fi
-            final="$(printf '%s\n' "$output" | tail -n 1)"
-            TARGET="$target" FINAL="$final" python3 - <<'PY'
-          import json, os
-          target=os.environ['TARGET']
-          value=json.loads(os.environ['FINAL'])
-          assert value.get('status') == 'REPLIED', (target,value.get('status'))
-          assert value.get('delivered') is True, (target,value)
-          assert value.get('acknowledged') is True, (target,value)
-          assert not str(value.get('error') or ''), (target,value.get('error'))
-          assert str(value.get('body') or '').strip() == 'HEALTH_OK', (target,value.get('body'))
-          print(f'{target}_provider_health=HEALTH_OK')
-          PY
-          }
-          failures=0
-          probe gemini gpt || failures=$((failures+1))
-          probe gpt claude || failures=$((failures+1))
-          probe gpt gemini || failures=$((failures+1))
-          probe gpt deepseek || failures=$((failures+1))
-          probe gpt grok || failures=$((failures+1))
-          probe gpt kimi || failures=$((failures+1))
-          probe gpt copilot || failures=$((failures+1))
-          echo "provider_failures=$failures"
-          test "$failures" -eq 0
+          "$AUDIT_PY" - <<'PY'
+          import asyncio, os
+          from scripts.strategy_factory_transport import exchange
 
-      - name: Verify Kimi bounded deterministic server task
+          TARGETS=('gpt','claude','gemini','deepseek','grok','kimi','copilot')
+          THREAD=f"post-deploy-trading-audit-{os.environ.get('GITHUB_RUN_ID','manual')}"
+          SUBJECT='Detailed post-deploy audit: why trading is still inactive'
+          packet = r'''MASTER requests a DETAILED independent production audit. This is an explicit exception to the normal short Strategy Factory reply style: do not give a short answer. Aim for roughly 500-900 words, with concrete findings, bugs/comments, confidence levels and solutions. Do not modify anything.
+
+LATEST DEPLOYMENT / EVIDENCE PACKET
+- Exact current main and deployed production SHA: cabc5bff54b4ca52649ba38dcaca7800be494d57.
+- PR #530 added learnerbot/sibot_legacy_backlog_drainer_patch.py plus final runtime-integrity checks and tests. It is intended as a low-priority EVM history recovery lane only; it must not change LIVE/ARMED, capital, wallets/signing, leader-quality thresholds, profit gates, liquidity, simulation or execution decisions.
+- Drainer behaviour: retry orphaned EVM history rows outside the normal ranked candidate window; use the existing final Alchemy history refresher; globally pace extra recovery attempts (default 45s, bounded); resume progressive reconstruction; account-wide exponential backoff on provider pressure; chain-local cooldown on non-transient failures.
+- Full protected production deployment gate passed 1,011 tests before restart. learnerbot.service is active on the exact SHA.
+- Startup health showed: [trade-blocker-health] evm_history=ALCHEMY polygon_focus=True. Scanner activity exists after restart.
+- Repeated runtime lines after deploy: [sibot-broader-qualified:<chain>] pool=0 qualified=0 selected=0 thresholds=unchanged for BSC, Base, Ethereum, Arbitrum and Polygon.
+- Read-only live-history snapshot after deploy:
+  * BNB Smart Chain: status_wallets=530; complete=7; errors=521; wallet_trades=0; wallets_with_trades=0; dominant stale/legacy error count=482 saying ETHERSCAN_API_KEY is not configured. Freshest history fetch reached 2026-08-23T19:58:05Z.
+  * Arbitrum: status_wallets=745; complete=12; errors=733; wallet_trades=0; wallets_with_trades=0; dominant stale/legacy error count=694 saying ETHERSCAN_API_KEY is not configured. Freshest history fetch reached 2026-08-23T19:59:09Z.
+  * Sample ranked candidates can have historical ranking_closed > 0 and some history_complete=True, but reconstructed_60d=0 and wallet_trades remains zero.
+- Solana runtime evidence separately showed broader_pool=46 but qualified=0 selected=0; do not assume the EVM history issue explains Solana.
+- Operator reports trading still not active. Treat this as a system-wide symptom and separate: (1) EVM SiBot leader-copy, (2) Polygon/direct AUTO market trading, and (3) Solana. Do not collapse them into one cause.
+- A later read-only GitHub diagnostic job hit runner-side disk/log space exhaustion. That did not stop learnerbot.service; treat it as an engineering/observability issue, not automatically as a trading root cause.
+
+REQUIRED REVIEW
+1. Review the latest backlog-drainer update itself. State what looks correct, what could be buggy/incomplete, and regression/operational risks. Separate confirmed findings from hypotheses.
+2. Explain path by path why trading can still be inactive despite healthy service and passing tests. Rank root causes by likelihood and cite packet evidence.
+3. EVM SiBot: analyse the contradiction of fresh Alchemy activity and some complete histories but wallet_trades=0 and leader pool=0. Is backlog drain alone sufficient, or is reconstruction/parsing/eligibility still broken? State exact next checks.
+4. Polygon/direct AUTO: identify missing evidence and exact read-only counters/logs that prove whether discovery, economic/profit gates, gas/capital, allowances/signing, LIVE/AUTO arming, simulation, routes or submission blocks it. Do NOT recommend weakening safety/profit gates merely to create trades.
+5. Solana: use broader_pool=46 / qualified=0 / selected=0 and list likely quality/data/capital/preflight/liquidity/capacity causes plus exact checks.
+6. SOLUTIONS: immediate today, short-term robust fixes, structural monitoring/engineering changes. Prioritise P0/P1/P2 and expected effect.
+7. List code smells, race/starvation/backoff risks, stale-state risks, observability gaps and test gaps suggested by this design/evidence.
+8. End with verdict: primary confirmed blockers; likely secondary blockers; evidence still required before claiming trading is fixed.
+
+Safety boundary: COMMENTS/ANALYSIS ONLY. Do not edit files, run shell/Git/GitHub commands, deploy, restart, trade, change settings, wallets, signing, LIVE/ARMED, capital or risk. Do not claim you inspected evidence not in this packet. If more data is needed, specify the exact read-only evidence.'''
+
+          async def ask(target):
+              mid=f"audit-{os.environ.get('GITHUB_RUN_ID','manual')}-{target}"
+              try:
+                  res=await exchange('master', target, packet, message_id=mid, thread_id=THREAD, subject=SUBJECT, timeout=210)
+              except Exception as exc:
+                  return target, {'status':'FAILED','body':'','error':f'{type(exc).__name__}: {exc}'}
+              body=str(res.get('body') or '').strip()
+              if res.get('status') == 'REPLIED' and not res.get('error') and len(body) < 1800:
+                  follow=(
+                      'Your prior audit is too short for the MASTER request. Expand substantially using the same packet and your prior answer. '
+                      'Target 500-900 words within the bus limit. Include update bugs/comments; EVM SiBot; Polygon/direct AUTO; Solana; P0/P1/P2 solutions; test/observability gaps; confirmed-vs-hypothesis verdict. Analysis only.'
+                  )
+                  try:
+                      res2=await exchange('master', target, follow, message_id=mid+'-expand', thread_id=THREAD, subject=SUBJECT, timeout=210)
+                      if res2.get('status') == 'REPLIED' and not res2.get('error'):
+                          res=res2
+                  except Exception:
+                      pass
+              return target,res
+
+          async def main():
+              rows=await asyncio.gather(*(ask(t) for t in TARGETS))
+              failed=0
+              for target,res in rows:
+                  status=str(res.get('status') or '')
+                  body=str(res.get('body') or '').strip()
+                  error=str(res.get('error') or '').strip()
+                  print(f'===== {target.upper()} DETAILED FEEDBACK =====')
+                  print(f'STATUS={status} DELIVERED={bool(res.get("delivered"))} ACKNOWLEDGED={bool(res.get("acknowledged"))}')
+                  print(body or '(no body)')
+                  if error:
+                      print('ERROR='+error[:1200])
+                  print(f'===== END {target.upper()} =====')
+                  if status != 'REPLIED' or error or not body:
+                      failed += 1
+              print(f'AGENTS_RETURNED={len(rows)-failed}/7')
+              raise SystemExit(1 if failed else 0)
+
+          asyncio.run(main())
+          PY
+
+      - name: Clean temporary client environment
         if: always()
         shell: bash
-        run: |
-          set -euo pipefail
-          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to kimi \
-            --message-id "sf7-kimi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --timeout 90 \
-            --task-action GIT_STATUS \
-            --task-args-json '{}' \
-            --task-instruction 'Return bounded read-only git status evidence from the production server repository. Do not modify anything.')"
-          printf '%s\n' "$output"
-          final="$(printf '%s\n' "$output" | tail -n 1)"
-          FINAL="$final" python3 - <<'PY'
-          import json,os
-          outer=json.loads(os.environ['FINAL'])
-          assert outer.get('status') == 'COMPLETED', outer
-          assert outer.get('delivered') is True, outer
-          assert outer.get('acknowledged') is True, outer
-          assert not str(outer.get('error') or ''), outer
-          result=json.loads(str(outer.get('body') or '{}'))
-          assert result.get('status') == 'COMPLETED', result
-          assert result.get('action') == 'GIT_STATUS', result
-          evidence=result.get('evidence') or {}
-          assert int(evidence.get('returncode') or 0) == 0, result
-          print('kimi_bounded_server_task=COMPLETED')
-          print('kimi_git_status_chars='+str(len(str(evidence.get('stdout') or ''))))
-          PY
-
-      - name: Remove isolated environment
-        if: always()
-        shell: bash
-        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic}"
+        run: rm -rf "${AUDIT_VENV:-$RUNNER_TEMP/sf-seven-agent-audit-${GITHUB_RUN_ID}}" 2>/dev/null || true
