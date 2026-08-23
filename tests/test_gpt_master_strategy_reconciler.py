@@ -50,7 +50,7 @@ def test_selected_master_is_never_direct_live_trading_authority():
 
 def test_selected_master_uses_exact_requested_fallback_priority():
     text = _text(RUNNER)
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")' in text
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in text
     assert 'if preferred in _base.PROVIDERS' in text
     assert 'if provider not in out' in text
     assert '"--plan"' in text
