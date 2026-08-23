@@ -15,7 +15,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: fresh-strategy-review-after-main-change
+  # Keep unrelated main/force/PR review runs from cancelling each other. Runs for
+  # the same event/ref still collapse to the newest one so rapid duplicate pushes
+  # do not multiply paid reviewer calls.
+  group: fresh-strategy-review-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
