@@ -1,2 +1,2 @@
-reason=cancel stale queues and dispatch one restricted exact-current-main deploy
-generated_utc=2026-08-23T10:55:00Z
+reason=prove production Strategy Factory memory on exact current main
+generated_utc=2026-08-23T11:02:00Z
