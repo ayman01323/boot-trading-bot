@@ -121,6 +121,11 @@ def install() -> None:
 
 install()
 
+# Presentation-only owner warning overlay. It is loaded after the trading
+# integrity check and changes only alert composition/reminder cadence; the
+# audited execution/capacity/risk hooks above remain untouched.
+from . import solana_stuck_owner_warning_v2_patch  # noqa: E402,F401
+
 # Observational MASTER-only UI extension. It is deliberately loaded only after
 # all capital-moving runtime identities above have been verified, and it has no
 # trading/LIVE/capital/wallet/signing authority.
