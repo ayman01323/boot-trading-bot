@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 
 from learnerbot import ai_council_http_patch as _http
-from learnerbot import grok_provider as _grok
+from learnerbot import grok_provider as _grok  # noqa: F401  # installs Grok on the shared provider hook
 
 
 def _call_claude_without_deprecated_temperature(prompt: str) -> tuple[int, str, str]:
@@ -40,7 +40,12 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
     provider = str(provider or "").strip().lower()
     if provider == "claude":
         return _call_claude_without_deprecated_temperature(prompt)
-    return _grok.call_provider(provider, prompt)
+    # Keep the event-driven bus on the shared public provider hook. Importing
+    # grok_provider above extends that hook to Grok, while ai_cost_provider_patch
+    # may later replace the same hook with the authoritative budget gate. Looking
+    # it up dynamically here therefore preserves Grok support without bypassing
+    # cost controls.
+    return _http.call_provider(provider, prompt)
 
 
 def install() -> None:
