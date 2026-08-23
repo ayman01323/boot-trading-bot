@@ -6,7 +6,7 @@ import re
 import time
 from pathlib import Path
 
-PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
+PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
 ACTIONS = {"NONE", "DRAFT_SHADOW_CHANGE", "HUMAN_APPROVAL_REQUIRED"}
 MAX_TASK_CHARS = 1200
 

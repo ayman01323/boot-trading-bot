@@ -55,12 +55,12 @@ def test_strategy_promoter_remains_shadow_first_and_never_toggles_live():
     assert "--admin" not in text
 
 
-def test_runtime_loads_four_agent_health_warning_and_exact_source_guard():
+def test_runtime_loads_six_agent_health_warning_and_exact_source_guard():
     control = _text("learnerbot/ai_master_control.py")
     health = _text("learnerbot/ai_four_agent_health_patch.py")
     hi = _text("learnerbot/telegram_hi_keefek_patch.py")
     assert "ai_four_agent_health_patch" in control
-    assert 'PROVIDERS = ("gpt", "claude", "gemini", "copilot")' in health
+    assert 'PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in health
     assert "AI failure never disables the trading engine" in health
     assert "ai_agent_health_warning_patch" in hi
     assert "strategy_canary_source_guard_patch" in hi

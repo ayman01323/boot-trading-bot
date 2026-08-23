@@ -63,10 +63,6 @@ def test_ai_bus_accepts_grok_and_redacts_xai_secret() -> None:
 
 
 def test_grok_is_selectable_master_without_importing_live_runtime() -> None:
-    # ai_master_control imports runtime health overlays at module tail, which in
-    # turn load wallet/live-execution dependencies. This isolated cost-router CI
-    # deliberately does not install those trading dependencies, so verify the
-    # control contract directly from its small deterministic source section.
     source = (ROOT / "learnerbot" / "ai_master_control.py").read_text(encoding="utf-8")
     assert 'PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude", "deepseek", "grok")' in source
     assert 'out[f"{lane}_master"] = master if master in PROVIDERS else "auto"' in source
@@ -124,3 +120,38 @@ def test_selected_master_collects_and_can_call_grok() -> None:
     assert '"grok", "copilot"' in runner
     assert 'provider == "grok"' in runner
     assert "max(0, 6 - len(valid_reports))" in runner
+
+
+def test_grok_is_present_in_persistent_strategy_factory_runtime() -> None:
+    runtime = (ROOT / "learnerbot" / "ai_agent_ws_runtime_patch.py").read_text(encoding="utf-8")
+    worker = (ROOT / "scripts" / "ai_agent_ws_worker.py").read_text(encoding="utf-8")
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in runtime
+    assert '"grok", "copilot"' in worker
+    assert '"grok": ("XAI_COUNCIL_MODEL", "grok-4.20-non-reasoning")' in worker
+
+
+def test_grok_is_wired_into_health_strategy_and_engineering_surfaces() -> None:
+    patch = (ROOT / "learnerbot" / "telegram_grok_council_patch.py").read_text(encoding="utf-8")
+    assert "_strategy_room.PROVIDERS = PROVIDERS" in patch
+    assert "_health.PROVIDERS = PROVIDERS" in patch
+    assert "_compact.PROVIDERS = PROVIDERS" in patch
+    assert '_compact._LABELS["grok"] = "Grok"' in patch
+    assert "engineering_status_six_agent" in patch
+    assert "strategy_status_six_agent" in patch
+
+
+def test_hourly_provider_preflight_checks_xai_grok() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ai-provider-preflight.yml").read_text(encoding="utf-8")
+    assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in workflow
+    assert "check_xai()" in workflow
+    assert "https://api.x.ai/v1/models" in workflow
+    assert "'xai':one('xai')" in workflow
+
+
+def test_six_agent_live_diagnostic_probes_grok_and_all_other_agents() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "strategy-factory-six-agent-live-diagnostic.yml").read_text(encoding="utf-8")
+    assert "{'gpt','claude','gemini','deepseek','grok','copilot'}" in workflow
+    for provider in ("gpt", "claude", "gemini", "deepseek", "grok", "copilot"):
+        assert f"probe gpt {provider}" in workflow or (provider == "gpt" and "probe gemini gpt" in workflow)
+    assert "--to grok" in workflow
+    assert "grok_bounded_task_health=COMPLETED" in workflow

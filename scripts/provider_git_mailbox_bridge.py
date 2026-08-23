@@ -15,7 +15,7 @@ from scripts.claude_git_mailbox_bridge import (
     _token_from_env,
 )
 
-ALLOWED_PROVIDERS = ("deepseek", "gemini", "copilot")
+ALLOWED_PROVIDERS = ("deepseek", "gemini", "grok", "copilot")
 
 
 def _provider(value: str) -> str:
@@ -105,7 +105,7 @@ def publish_reply(repo: str, provider: str, *, token: str, request_id: str, repl
             raise
     path = response_path(provider)
     payload: dict[str, Any] = {
-        "message": f"{provider.title()} to GPT mailbox {request_id}",
+        "message": f"{provider.title()} to GPT Strategy Factory {request_id}",
         "content": base64.b64encode(str(reply).encode("utf-8")).decode("ascii"),
         "branch": MAILBOX_BRANCH,
     }
@@ -115,39 +115,34 @@ def publish_reply(repo: str, provider: str, *, token: str, request_id: str, repl
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Manage event-driven GPT/provider git mailbox state.")
+    parser = argparse.ArgumentParser(description="Manage event-driven GPT/provider Strategy Factory fallback state.")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    select = sub.add_parser("select-live")
-    select.add_argument("--repo", required=True)
-    select.add_argument("--provider", required=True, choices=ALLOWED_PROVIDERS)
-    select.add_argument("--message-output", required=True)
+    p = sub.add_parser("select-live")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--provider", required=True, choices=ALLOWED_PROVIDERS)
+    p.add_argument("--message-output", required=True)
 
-    publish = sub.add_parser("publish-live")
-    publish.add_argument("--repo", required=True)
-    publish.add_argument("--provider", required=True, choices=ALLOWED_PROVIDERS)
-    publish.add_argument("--request-id", required=True)
-    publish.add_argument("--reply-file", required=True)
+    p = sub.add_parser("publish-live")
+    p.add_argument("--repo", required=True)
+    p.add_argument("--provider", required=True, choices=ALLOWED_PROVIDERS)
+    p.add_argument("--request-id", required=True)
+    p.add_argument("--reply-file", required=True)
 
     args = parser.parse_args()
     token = _token_from_env()
-
     if args.command == "select-live":
         pending, message_id, incoming = select_pending(args.repo, args.provider, token=token)
         if pending:
             Path(args.message_output).write_text(incoming, encoding="utf-8")
-        print(f"pending={'true' if pending else 'false'}")
-        print(f"message_id={message_id}")
+        print("pending=" + ("true" if pending else "false"))
+        print("message_id=" + message_id)
         return 0
-
-    publish_reply(
-        args.repo,
-        args.provider,
-        token=token,
-        request_id=args.request_id,
-        reply=Path(args.reply_file).read_text(encoding="utf-8", errors="replace"),
-    )
-    return 0
+    if args.command == "publish-live":
+        reply = Path(args.reply_file).read_text(encoding="utf-8", errors="replace")
+        publish_reply(args.repo, args.provider, token=token, request_id=args.request_id, reply=reply)
+        return 0
+    return 2
 
 
 if __name__ == "__main__":

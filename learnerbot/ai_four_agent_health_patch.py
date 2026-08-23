@@ -8,7 +8,7 @@ from . import ai_agent_health_warning_patch as _health
 from . import ai_agent_health_master_reconcile_patch as _legacy_reconcile  # noqa: F401
 from . import telegram_ai_ops_patch as _ai
 
-PROVIDERS = ("gpt", "claude", "gemini", "copilot")
+PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
 
 
 def _repo_root() -> Path:
@@ -118,6 +118,7 @@ def _icon(state: str) -> str:
 
 def warning_message(snapshot: dict) -> str:
     lines = ["🚨 AI AGENT HEALTH WARNING"]
+    total = len(PROVIDERS)
     for lane, label in (("engineering", "ENGINEERING"), ("strategy", "STRATEGY")):
         part = (snapshot or {}).get(lane) or {}
         if not part.get("available"):
@@ -135,14 +136,14 @@ def warning_message(snapshot: dict) -> str:
         preferred = str(selected.get("preferred") or "auto").upper()
         actual = str(selected.get("actual") or "").upper()
         if actual:
-            lines.append(f"MASTER: ✅ {actual} (preferred {preferred}); cycle continued with {n}/4 valid report(s).")
+            lines.append(f"MASTER: ✅ {actual} (preferred {preferred}); cycle continued with {n}/{total} valid report(s).")
         elif n:
-            lines.append(f"MASTER: fallback reconciliation continues with {n}/4 valid report(s).")
+            lines.append(f"MASTER: fallback reconciliation continues with {n}/{total} valid report(s).")
         else:
             lines.append("MASTER: no valid report yet; review lane retries, but LIVE trading is not stopped by AI health.")
     lines += [
         "",
-        "Fallback order: selected MASTER → GPT → Claude → Gemini → other available agent.",
+        "Fallback order: selected MASTER → GPT → Claude → Gemini → DeepSeek → Grok → Copilot/other available agent.",
         "AI failure never disables the trading engine. Existing wallet/signing/simulation/liquidity/capital/LIVE safety gates remain authoritative.",
         "This warning repeats every 30 minutes while any agent remains unhealthy.",
     ]
@@ -167,7 +168,7 @@ def _ops_text(lane: str, state: dict) -> str:
         "",
         f"Preferred MASTER: <b>{html.escape(str(selected.get('preferred') or 'auto').upper())}</b>",
         f"Actual MASTER: <b>{html.escape(str(selected.get('actual') or 'WAITING').upper())}</b>",
-        f"Valid reports: <b>{int(health.get('valid_count') or 0)}/4</b>",
+        f"Valid reports: <b>{int(health.get('valid_count') or 0)}/{len(PROVIDERS)}</b>",
         "",
         "<i>One valid report is sufficient for the review cycle to continue. AI health does not turn LIVE trading off.</i>",
     ]

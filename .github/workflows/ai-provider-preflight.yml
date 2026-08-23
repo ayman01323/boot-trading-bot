@@ -26,6 +26,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         shell: bash
         run: |
           set -euo pipefail
@@ -69,9 +70,22 @@ jobs:
             printf '%s\n%s\n' "${code:-0}" "$rc" > "$tmp/deepseek.result"
           }
 
+          check_xai() {
+            if [[ -z "${XAI_API_KEY:-}" ]]; then printf '0\nMISSING_SECRET\n' > "$tmp/xai.result"; return; fi
+            set +e
+            code="$(curl -sS -o "$tmp/xai.body" -w '%{http_code}' \
+              https://api.x.ai/v1/models \
+              -H "Authorization: Bearer ${XAI_API_KEY}" \
+              -H 'Accept: application/json')"
+            rc=$?
+            set -e
+            printf '%s\n%s\n' "${code:-0}" "$rc" > "$tmp/xai.result"
+          }
+
           check_openai
           check_anthropic
           check_deepseek
+          check_xai
 
           python3 - "$tmp" <<'PY' > "$tmp/status.json"
           import json,re,sys,time,pathlib
@@ -104,7 +118,13 @@ jobs:
               elif code>=500: state='PROVIDER_ERROR'
               else: state='FAILED'
               return {'state':state,'http_status':code,'detail':detail,'models':models}
-          print(json.dumps({'checked_epoch':int(time.time()),'openai':one('openai'),'anthropic':one('anthropic'),'deepseek':one('deepseek')},indent=2,sort_keys=True))
+          print(json.dumps({
+              'checked_epoch':int(time.time()),
+              'openai':one('openai'),
+              'anthropic':one('anthropic'),
+              'deepseek':one('deepseek'),
+              'xai':one('xai'),
+          },indent=2,sort_keys=True))
           PY
 
           path='health/provider_api_preflight.json'

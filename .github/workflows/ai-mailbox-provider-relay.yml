@@ -1,9 +1,9 @@
-name: AI Mailbox Provider Relay
+name: Strategy Factory Provider Relay
 # Communication-only event bridge. Provider calls occur only for a new REQUEST message; no schedule or polling.
 
 on:
   workflow_run:
-    workflows: [AI Mailbox Provider Signal]
+    workflows: [Strategy Factory Provider Signal]
     types: [completed]
     branches: [ai-mailbox]
   push:
@@ -20,13 +20,13 @@ on:
         required: false
         default: all
         type: choice
-        options: [all, deepseek, gemini, copilot]
+        options: [all, deepseek, gemini, grok, copilot]
 
 permissions:
   contents: write
 
 concurrency:
-  group: ai-mailbox-provider-relay-v2
+  group: strategy-factory-provider-relay-v3
   cancel-in-progress: false
 
 jobs:
@@ -40,9 +40,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        provider: [deepseek, gemini, copilot]
+        provider: [deepseek, gemini, grok, copilot]
     env:
-      RELAY_VENV: /tmp/ai-mailbox-provider-${{ matrix.provider }}-${{ github.run_id }}
+      RELAY_VENV: /tmp/strategy-factory-provider-${{ matrix.provider }}-${{ github.run_id }}
       PYTHONPATH: ${{ github.workspace }}
 
     steps:
@@ -70,7 +70,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Detect new fixed mailbox request
+      - name: Detect new fixed Strategy Factory fallback request
         if: steps.selected.outputs.run == 'true'
         id: mailbox
         env:
@@ -82,9 +82,9 @@ jobs:
           python3 scripts/provider_git_mailbox_bridge.py select-live \
             --repo "$GITHUB_REPOSITORY" \
             --provider "$PROVIDER" \
-            --message-output /tmp/ai-mailbox-in.md \
-            > /tmp/ai-mailbox-meta.env
-          cat /tmp/ai-mailbox-meta.env >> "$GITHUB_OUTPUT"
+            --message-output /tmp/strategy-factory-in.md \
+            > /tmp/strategy-factory-meta.env
+          cat /tmp/strategy-factory-meta.env >> "$GITHUB_OUTPUT"
 
       - name: Build isolated Python environment
         if: steps.mailbox.outputs.pending == 'true'
@@ -106,7 +106,7 @@ jobs:
           echo "$prefix/bin" >> "$GITHUB_PATH"
           "$prefix/bin/copilot" --version
 
-      - name: Ask provider once using mailbox content only
+      - name: Ask provider once using fallback request content only
         if: steps.mailbox.outputs.pending == 'true'
         id: route
         env:
@@ -117,8 +117,11 @@ jobs:
           DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.7-flash' }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          XAI_COUNCIL_MODEL: ${{ vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
-          AI_COUNCIL_RUNTIME_ENV: /tmp/ai-mailbox-no-runtime.env
+          AI_COUNCIL_RUNTIME_ENV: /tmp/strategy-factory-no-runtime.env
         shell: bash
         run: |
           set +e
@@ -126,12 +129,12 @@ jobs:
             --provider "$PROVIDER" \
             --message-id "$MESSAGE_ID" \
             --source-sha "$SOURCE_SHA" \
-            --input /tmp/ai-mailbox-in.md \
-            --output /tmp/ai-mailbox-reply.md \
-            2>/tmp/ai-mailbox-error.txt
+            --input /tmp/strategy-factory-in.md \
+            --output /tmp/strategy-factory-reply.md \
+            2>/tmp/strategy-factory-error.txt
           rc=$?
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          if [[ $rc -ne 0 || ! -s /tmp/ai-mailbox-reply.md ]]; then
+          if [[ $rc -ne 0 || ! -s /tmp/strategy-factory-reply.md ]]; then
             {
               echo "${PROVIDER^^}_TO_GPT"
               echo "in_reply_to: $MESSAGE_ID"
@@ -139,11 +142,11 @@ jobs:
               echo "provider_return_code: $rc"
               echo
               echo 'Provider could not complete this communication-only request.'
-            } > /tmp/ai-mailbox-reply.md
+            } > /tmp/strategy-factory-reply.md
           fi
           exit 0
 
-      - name: Publish provider reply to fixed mailbox file
+      - name: Publish provider reply to fixed fallback file
         if: steps.mailbox.outputs.pending == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -156,7 +159,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --provider "$PROVIDER" \
             --request-id "$MESSAGE_ID" \
-            --reply-file /tmp/ai-mailbox-reply.md
+            --reply-file /tmp/strategy-factory-reply.md
 
       - name: Remove isolated environment
         if: always()
@@ -173,7 +176,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## ${PROVIDER} mailbox relay"
+            echo "## ${PROVIDER} Strategy Factory fallback relay"
             echo
             echo "Pending message: **${PENDING:-false}**"
             echo "Message ID: \`${MESSAGE_ID:-none}\`"
