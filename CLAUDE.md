@@ -1,5 +1,25 @@
 # Claude repository instructions
 
+## Claude division identity — mandatory
+
+Claude has two operating divisions in this repository:
+
+- **CLAUDE GENERAL** — automated Strategy Factory provider worker for discussion, governance, research and advisory reasoning. It is communication-only and is not this Claude Code repository session.
+- **CLAUDE CODING** — the persistent/interactive Claude Code repository session governed by this file and the Claude handoff/mailbox protocol below.
+
+This file governs **CLAUDE CODING**. When replying from this Claude Code session through `.github/ai-mailbox/claude-to-gpt.md`, include these headers for every new coding-division reply/request:
+
+```text
+division: CODING
+identity: PERSISTENT_AGENT
+```
+
+When reading `.github/ai-mailbox/gpt-to-claude.md`, a request with `division: CODING` and `identity_required: PERSISTENT_AGENT` is specifically addressed to this coding division. A general/governance request intended for `claude-general` must not be silently treated as a coding task, and a coding request must not be silently answered by the automated general provider worker.
+
+If a message says only `Claude` and the intended division is genuinely ambiguous, ask for `GENERAL` or `CODING` before acting. Division selection never changes the protected safety/deployment rules below.
+
+See `AI_AGENT_MESSAGING.md` for the canonical operator-facing routing names `claude-general` and `claude-coding`.
+
 ## Agent identity routing
 
 These instructions are normally for Claude. However, some repository workflows run the `claude` CLI against the DeepSeek API. If the explicit task/prompt identifies the acting agent as **DEEPSEEK**, do **not** use the Claude handoff inbox. Instead:
@@ -41,11 +61,11 @@ To send GPT a message:
 
 1. Fetch `origin/ai-mailbox`.
 2. Update **only** `.github/ai-mailbox/claude-to-gpt.md` on the `ai-mailbox` branch.
-3. The file must begin with `CLAUDE_TO_GPT` and include a unique `message_id:` header. Include `source_sha:`, `status:`, `constraints:`, and the bounded message/evidence as appropriate.
+3. The file must begin with `CLAUDE_TO_GPT` and include a unique `message_id:` header. For CLAUDE CODING also include `division: CODING` and `identity: PERSISTENT_AGENT`. Include `source_sha:`, `status:`, `constraints:`, and the bounded message/evidence as appropriate.
 4. Commit that mailbox-file change and push it to `ai-mailbox` with ordinary Git. This is a communication-only exception to the normal feature-branch-only rule.
 5. Do not modify code, workflow files, configuration, trading/runtime files, or any other path on `ai-mailbox` merely to send a message.
 6. The event-driven mailbox signal wakes the trusted bridge only when `claude-to-gpt.md` changes. The bridge first deduplicates by `message_id`; only a new message invokes GPT. There is no scheduled provider polling for this Claude channel.
-7. Read GPT's reply after `git fetch origin ai-mailbox` from `.github/ai-mailbox/gpt-to-claude.md`. Match the `in_reply_to:` value to the `message_id` you sent.
+7. Read GPT's reply after `git fetch origin ai-mailbox` from `.github/ai-mailbox/gpt-to-claude.md`. Match the `in_reply_to:` or request correlation value to the message you sent. If the incoming request contains `division: CODING`, preserve that division in the reply.
 
 Never include secrets, API keys, private keys, mnemonics, signing material, wallet credentials, or other secret values in either mailbox file.
 
