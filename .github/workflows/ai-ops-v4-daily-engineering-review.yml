@@ -1,0 +1,91 @@
+name: AI Ops V4 Daily Engineering Review
+
+on:
+  schedule:
+    - cron: "35 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-ops-v4-daily-engineering-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Rotating Engineering review
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 35
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      AI_AGENT_BUS_URL: ws://127.0.0.1:8765
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_MASTER_CHAT_ID: ${{ vars.TELEGRAM_MASTER_CHAT_ID || '5923828381' }}
+    steps:
+      - name: Check out exact current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 40
+          persist-credentials: false
+
+      - name: Select production Python environment
+        id: python
+        shell: bash
+        run: |
+          set -euo pipefail
+          prod_python=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          if [[ ! -x "$prod_python" ]]; then
+            echo "Production Python unavailable: $prod_python" >&2
+            exit 2
+          fi
+          echo "bin=$prod_python" >> "$GITHUB_OUTPUT"
+          "$prod_python" - <<'PY'
+          import websockets
+          print('websockets=' + str(getattr(websockets, '__version__', 'installed')))
+          PY
+
+      - name: Verify local Strategy Factory bus is reachable
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin='${{ steps.python.outputs.bin }}'
+          "$python_bin" - <<'PY'
+          import socket
+          with socket.create_connection(('127.0.0.1', 8765), timeout=3):
+              print('strategy_factory_bus=reachable')
+          PY
+
+      - name: Run cost-effective rotating review
+        env:
+          PYTHON_BIN: ${{ steps.python.outputs.bin }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" scripts/ai_ops_v4_daily_engineering_review.py \
+            --root "$GITHUB_WORKSPACE" \
+            --output /var/tmp/boot/ai_ops_v4_daily/latest.json \
+            | tee /tmp/ai-ops-v4-daily-review.txt
+          cat /tmp/ai-ops-v4-daily-review.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-ops-v4-daily-engineering-${{ github.run_id }}
+          path: /var/tmp/boot/ai_ops_v4_daily/latest.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Safety and cost summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo 'Daily: one rotating AI reviewer over deterministic scan + bounded recent diff.'
+            echo 'Sunday: all six reviewers; the script records every reply independently.'
+            echo 'The audit is report/research only. It cannot modify LIVE/ARMED, risk/capital, wallets/signing, stop-losses or circuit-breakers.'
+            echo 'No repository write permission is granted to this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
