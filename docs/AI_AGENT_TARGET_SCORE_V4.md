@@ -2,6 +2,8 @@
 
 Status: operational scoring specification and ledger. This score evaluates AI contribution to Engineering Monitor, Strategy Monitor and Strategy Factory targets. It is not a trading or agent-removal authority.
 
+CI validation lane: `agent/ai-agent-score-telegram` so the repository's self-hosted BOOT Python Tests validate the exact scoring/menu implementation before merge.
+
 ## Identities
 
 The score roster is deliberately broader than the provider transport roster so Claude General and Claude Coding can be evaluated separately when provenance identifies the division:
