@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import html
+import time
 from contextlib import closing
 from decimal import Decimal
 
+from . import solana_emergency_liquidity_unwind_patch as _emergency
 from . import solana_live_patch as _live
 from . import solana_position_wallet_binding_patch as _binding
 from . import solana_positive_edge_entry_gate_patch as _edge
@@ -46,6 +48,29 @@ def _wallet_truth(app, tid: str, cfg: dict) -> dict:
     return result
 
 
+def _liquidity_state(app, position_id: str) -> dict:
+    """Observational state only; the DB row deliberately remains OPEN.
+
+    Keeping the real position OPEN means every existing recovery, capacity,
+    exposure and reconciliation query continues to count/block it exactly as
+    before. LIQUIDITY_STUCK is a reporting label derived from durable emergency
+    backoff evidence, not a way to remove deployed capital from risk accounting.
+    """
+    try:
+        state = _emergency._load_backoff(app, str(position_id)) or {}
+    except Exception:
+        state = {}
+    attempts = max(0, _sol._int(state.get("attempts"), 0))
+    next_retry = max(0, _sol._int(state.get("next_retry"), 0) - int(time.time()))
+    first_blocked = max(0, _sol._int(state.get("first_blocked_epoch"), 0))
+    return {
+        "label": "LIQUIDITY_STUCK" if attempts > 0 else "OPEN",
+        "attempts": attempts,
+        "retry_after_seconds": next_retry,
+        "first_blocked_epoch": first_blocked,
+    }
+
+
 def _open_live_truth(app, tid: str) -> list[dict]:
     """Read-only proof of the LIVE rows that can block recovery exclusivity."""
     try:
@@ -74,6 +99,13 @@ def _open_live_truth(app, tid: str) -> list[dict]:
     except Exception:
         addresses = []
 
+    cfg = _sol.settings(app)
+    slice_pcts = [
+        str((fraction * Decimal(100)).normalize())
+        for fraction in list(getattr(_emergency, "_SLICE_FRACTIONS", ()))
+    ]
+    emergency_limit = _emergency._emergency_limit(cfg)
+
     out = []
     for row in rows:
         mint = str(row.get("mint") or "").strip()
@@ -88,6 +120,7 @@ def _open_live_truth(app, tid: str) -> list[dict]:
                 except Exception:
                     verified = False
                     break
+        liquidity = _liquidity_state(app, str(row.get("position_id") or ""))
         out.append({
             "position_id": str(row.get("position_id") or ""),
             "mint": mint,
@@ -98,6 +131,12 @@ def _open_live_truth(app, tid: str) -> list[dict]:
             "entry_ts": int(row.get("entry_ts") or 0),
             "updated_at": int(row.get("updated_at") or 0),
             "exit_reason": str(row.get("exit_reason") or ""),
+            "liquidity_state": liquidity["label"],
+            "liquidity_attempts": liquidity["attempts"],
+            "liquidity_retry_after_seconds": liquidity["retry_after_seconds"],
+            "liquidity_first_blocked_epoch": liquidity["first_blocked_epoch"],
+            "safe_slice_percentages": slice_pcts,
+            "emergency_limit_bps": str(emergency_limit),
         })
     return out
 
@@ -191,14 +230,31 @@ def build_report_with_gate_truth(app, tid) -> str:
         pid = html.escape(position.get("position_id") or "")
         mint = html.escape(position.get("mint") or "")
         recorded = html.escape(position.get("recorded_raw") or "0")
+        liquidity_state = str(position.get("liquidity_state") or "OPEN")
         if position.get("verified"):
             verified = html.escape(position.get("verified_balance_raw") or "0")
             balance_text = f"verified wallet raw <b>{verified}</b> across {int(position.get('wallets_checked') or 0)} wallet(s)"
         else:
             balance_text = "verified wallet raw <b>UNKNOWN</b> (RPC/wallet proof incomplete)"
-        lines.append(f"🔴 Open LIVE position: <code>{pid}</code>")
+        if liquidity_state == "LIQUIDITY_STUCK":
+            lines.append(f"🔴 LIVE position — <b>LIQUIDITY_STUCK</b>: <code>{pid}</code>")
+        else:
+            lines.append(f"🔴 Open LIVE position: <code>{pid}</code>")
         lines.append(f"   Mint: <code>{mint}</code>")
         lines.append(f"   Recorded raw <b>{recorded}</b> • {balance_text}")
+        if liquidity_state == "LIQUIDITY_STUCK":
+            slices = "/".join(position.get("safe_slice_percentages") or []) or "100/75/50/25"
+            limit_pct = Decimal(str(position.get("emergency_limit_bps") or "500")) / Decimal(100)
+            attempts = int(position.get("liquidity_attempts") or 0)
+            retry = int(position.get("liquidity_retry_after_seconds") or 0)
+            lines.append(
+                f"   Liquidity: <b>LIQUIDITY_STUCK</b> • attempts <b>{attempts}</b> • "
+                f"safe slices <b>{html.escape(slices)}%</b> • hard ceiling <b>{limit_pct:.2f}%</b>"
+            )
+            lines.append(
+                f"   Remains <b>OPEN</b> for recovery/risk/exposure accounting"
+                + (f" • next automatic retry in <b>{retry}s</b>" if retry > 0 else "")
+            )
 
     leaders = truth.get("leaders") or []
     if not leaders:
