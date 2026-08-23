@@ -150,3 +150,7 @@ from . import trade_blocker_secret_redaction_patch  # noqa: E402,F401
 # Add read-only Solana wallet funding, platform amount-profit and selected-leader
 # edge truth, including gates that reject before the older decision logger runs.
 from . import solana_trade_gate_truth_patch  # noqa: E402,F401
+
+# Final Solana LIVE correction: SHADOW rows must never block a LIVE same-mint
+# entry, and the global status counter must report real LIVE capacity usage only.
+from . import solana_live_position_scope_fix_patch  # noqa: E402,F401
