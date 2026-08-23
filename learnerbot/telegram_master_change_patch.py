@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import html
 
+from . import ai_cost_router as _cost
 from . import ai_ops_status as _status
 from . import master_change_council as _change
+from . import master_change_cost_router_patch as _cost_patch  # noqa: F401
 from . import telegram_ai_ops_patch as _tgops
 from . import telegram_ui as _ui
 
@@ -46,6 +48,19 @@ def _local_status(app) -> str:
     return "<b>🧠 MASTER AI CHANGE COUNCIL</b>\n\n" + _safe(body, 3500).replace("\n", "\n")
 
 
+def _cost_status() -> str:
+    body = _cost.format_snapshot()
+    policy = (
+        "\n\n<b>Routing policy</b>\n"
+        "L0 mechanical → deterministic executor, 0 AI calls\n"
+        "L1 routine → DeepSeek + GPT final for repo changes\n"
+        "L2 normal engineering → DeepSeek + Gemini + GPT\n"
+        "L3 important architecture → Gemini + Claude + GPT\n"
+        "L4 trading/security/deployment → full council + GPT"
+    )
+    return "<b>💰 AI COST ROUTER</b>\n\n" + _safe(body, 2500) + policy
+
+
 def snapshot_with_master_change(repo_root):
     state = dict(_PREV_SNAPSHOT(repo_root) or {})
     state["master_change"] = _status.read_json(repo_root, "master-change/latest_result.json") or {}
@@ -82,6 +97,16 @@ def handle_update(app, update):
         parts = text.split(maxsplit=1)
         cmd = parts[0].split("@", 1)[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if cmd == "/aicost":
+            try:
+                _ui._require_master(app, tid)
+            except Exception as exc:
+                _ui._send(app, tid, f"⚠️ {_safe(exc,250)}")
+                return
+            _ui._send(app, tid, _cost_status())
+            return
+
         if cmd == "/aichange":
             try:
                 _ui._require_master(app, tid)
@@ -98,8 +123,9 @@ def handle_update(app, update):
                 if remote:
                     body += _remote_result_text(remote)
                 body += (
-                    "\n\n<b>Flow</b>: MASTER request → Claude + Gemini + DeepSeek + Copilot independent advice "
-                    "→ GPT final decision → deterministic policy gate → GPT implementation/tests."
+                    "\n\n<b>Flow</b>: deterministic Cost Router selects only the required advisers "
+                    "→ GPT final decision → deterministic policy gate → GPT implementation/tests. "
+                    "Critical trading/security/deployment requests still use the full council."
                 )
                 _ui._send(app, tid, body)
                 return
@@ -112,7 +138,7 @@ def handle_update(app, update):
                 except Exception as exc:
                     _ui._send(app, tid, f"⚠️ {_safe(exc,500)}")
                     return
-                _ui._send(app, tid, f"🔄 Retry queued: <code>{_safe(state.get('request_id'),120)}</code>")
+                _ui._send(app, tid, f"🔄 Retry queued: <code>{_safe(state.get('request_id'),120)}</code>\nSuccessful adviser replies will be reused, not repurchased.")
                 return
 
             try:
@@ -122,6 +148,8 @@ def handle_update(app, update):
                 return
             protected = bool(state.get("protected_reasons"))
             hard = bool(state.get("hard_protected_reasons"))
+            route = state.get("cost_route") or {}
+            advisers = ", ".join(route.get("advisers") or []) or "none"
             note = ""
             if hard:
                 note = "\n⚠️ This request contains hard-protected subject matter; the council may advise, but implementation is fail-closed."
@@ -132,7 +160,9 @@ def handle_update(app, update):
                 tid,
                 "🧠 <b>AI CHANGE REQUEST ACCEPTED</b>\n"
                 f"ID: <code>{_safe(state.get('request_id'),120)}</code>\n"
-                "All four adviser agents will review independently. GPT then makes the final decision."
+                f"Cost route: <b>L{_safe(route.get('level'),10)}</b> — {_safe(route.get('reason'),500)}\n"
+                f"Advisers: {_safe(advisers,300)} → GPT final\n"
+                f"Planned model calls: {_safe(route.get('model_calls_before_implementation'),20)}"
                 + note,
             )
             return
@@ -144,7 +174,11 @@ def install() -> None:
         return
     if not any(cmd == "aichange" for cmd, _ in _tgops.AI_MASTER_COMMANDS):
         _tgops.AI_MASTER_COMMANDS = tuple(_tgops.AI_MASTER_COMMANDS) + (
-            ("aichange", "MASTER request five-agent review and GPT change"),
+            ("aichange", "MASTER cost-routed AI change review and GPT implementation"),
+        )
+    if not any(cmd == "aicost" for cmd, _ in _tgops.AI_MASTER_COMMANDS):
+        _tgops.AI_MASTER_COMMANDS = tuple(_tgops.AI_MASTER_COMMANDS) + (
+            ("aicost", "MASTER AI spend, budgets and routing status"),
         )
     _tgops.snapshot_for_display = snapshot_with_master_change
     _tgops.transition_messages = transitions_with_master_change
