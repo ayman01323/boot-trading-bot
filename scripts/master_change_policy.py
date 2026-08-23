@@ -9,6 +9,7 @@ from pathlib import Path
 from learnerbot.ai_cost_router import ALL_ADVISERS, master_change_route
 
 GOVERNANCE_FILES = frozenset({
+    ".github/workflows/ai-cost-router-ci.yml",
     ".github/workflows/gpt-master-change-implement.yml",
     ".github/workflows/publish-ai-master-control.yml",
     ".github/workflows/master-change-council-protected-deploy.yml",
