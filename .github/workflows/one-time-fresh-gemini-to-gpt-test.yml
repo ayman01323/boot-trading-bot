@@ -1,0 +1,70 @@
+name: One-Time Fresh Gemini to GPT Test
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-fresh-gemini-to-gpt-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  gemini-to-gpt:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: 'true'
+    steps:
+      - name: Check out test snapshot without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify Gemini and GPT workers are live
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet learnerbot
+          test -s /var/tmp/boot/ai_agent_ws_status.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json', encoding='utf-8'))
+          workers=set(d.get('workers') or [])
+          assert {'gemini','gpt'} <= workers, workers
+          print('gemini_gpt_workers=READY')
+          PY
+
+      - name: Build isolated sender environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/fresh-gemini-to-gpt-test"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "TEST_VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Gemini sends fresh message to GPT
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          runner_user="$(id -un)"
+          runner_home="$(getent passwd "$runner_user" | cut -d: -f6)"
+          test -f "$runner_home/.gemini/policies/strategy-factory-messaging.toml"
+          export HOME="$runner_home"
+          export PATH="$TEST_VENV/bin:/usr/local/lib/node-v24/bin:$PATH"
+          test -x /usr/local/lib/node-v24/bin/gemini
+          marker="GEMINI_TO_GPT_FRESH_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_OK"
+          prompt="Read GEMINI.md and AI_AGENT_MESSAGING.md. Use run_shell_command to execute the Strategy Factory sender command from Gemini to GPT asking GPT to reply exactly: ${marker}. Use only python scripts/ai_agent_ws_send.py for the messaging command. Wait for the correlated reply. Do not edit files, deploy, restart services, trade, change LIVE/ARMED, risk/capital, access wallets/signing, or reveal secrets. Your final response must contain exactly two lines: GPT_REPLY=${marker} and TEST_RESULT=PASS, and only if the actual correlated GPT reply equals ${marker}."
+          output="$(/usr/local/lib/node-v24/bin/gemini --approval-mode=default -p "$prompt")"
+          printf '%s\n' "$output"
+          grep -F "GPT_REPLY=${marker}" <<<"$output"
+          grep -F 'TEST_RESULT=PASS' <<<"$output"
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "${TEST_VENV:-$RUNNER_TEMP/fresh-gemini-to-gpt-test}"
