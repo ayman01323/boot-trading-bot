@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import os
 import re
+from decimal import Decimal
 
 from . import solana_emergency_liquidity_unwind_patch as _unwind
 from . import telegram_ui as _ui
@@ -23,6 +24,50 @@ def _human_retry(seconds: int) -> str:
     return f"{seconds}s"
 
 
+def _safe_slice_ladder() -> str:
+    """Render the currently installed emergency slice ladder; never hard-code it."""
+    fractions = tuple(getattr(_unwind, "_SLICE_FRACTIONS", ()) or ())
+    if not fractions:
+        fractions = (Decimal("1"), Decimal("0.75"), Decimal("0.50"), Decimal("0.25"))
+    labels: list[str] = []
+    for fraction in fractions:
+        try:
+            pct = Decimal(str(fraction)) * Decimal(100)
+            if pct == pct.to_integral_value():
+                label = str(int(pct))
+            else:
+                label = format(pct.normalize(), "f").rstrip("0").rstrip(".")
+            labels.append(f"{label}%")
+        except Exception:
+            continue
+    return " → ".join(labels) or "100% → 75% → 50% → 25%"
+
+
+def _classify_guard(guard_text: str) -> tuple[str, str]:
+    """Keep owner-facing wording aligned with the actual pre-broadcast failure."""
+    lower = str(guard_text or "").lower()
+    if "jupiter quote http 400" in lower and "failed to get quotes" in lower:
+        return (
+            "Quote unavailable",
+            "Jupiter returned no executable quote for the attempted safe slices. "
+            "This can indicate exhausted pool liquidity, an unavailable route, or unsupported/token-specific mechanics.",
+        )
+    if "net proceeds after fees" in lower:
+        return (
+            "Economically unsafe",
+            "A route was found, but conservative net proceeds after fees fell below the emergency minimum.",
+        )
+    if "quoted price impact" in lower or "exceeds" in lower:
+        return (
+            "Liquidity unsafe",
+            "Jupiter returned an executable route, but the emergency economic/liquidity guard rejected it above the configured ceiling.",
+        )
+    return (
+        "Liquidity unsafe",
+        "No attempted safe slice cleared the emergency economic/liquidity guard.",
+    )
+
+
 def _format_emergency_liquidity_notice(text: str) -> str:
     raw = str(text or "")
     if not raw.startswith(_EMERGENCY_PREFIX):
@@ -31,26 +76,28 @@ def _format_emergency_liquidity_notice(text: str) -> str:
     reason = re.search(r"Reason: <code>(.*?)</code>", raw)
     position = re.search(r"Position: <code>(.*?)</code>", raw)
     ceiling = re.search(r"Hard impact\+slippage ceiling: <b>(.*?)</b>", raw)
-    guard = re.search(r"Last guard: <code>(.*?)</code>", raw)
+    guard = re.search(r"Last guard: <code>(.*?)</code>", raw, flags=re.DOTALL)
     retry = re.search(r"Automatic retry: <b>(\d+)s</b> \(liquidity attempt (\d+)\)\.", raw)
     if not all((reason, position, ceiling, guard, retry)):
         return raw
 
     retry_seconds = int(retry.group(1))
     attempt = retry.group(2)
+    guard_text = guard.group(1)
+    status, result_text = _classify_guard(guard_text)
     return (
         "🧯 <b>SOLANA EMERGENCY EXIT DEFERRED</b>\n"
-        "⚠️ <b>Status:</b> Liquidity unsafe\n\n"
+        f"⚠️ <b>Status:</b> {status}\n\n"
         "<b>Position</b>\n"
         f"• ID: <code>{position.group(1)}</code>\n"
         f"• Trigger: <code>{reason.group(1)}</code>\n\n"
         "<b>Safety checks</b>\n"
         f"• Maximum impact + slippage: <b>{ceiling.group(1)}</b>\n"
-        "• Exit sizes tested: <b>100% → 75% → 50% → 25%</b>\n"
+        f"• Exit sizes attempted: <b>{_safe_slice_ladder()}</b>\n"
         "• Transaction broadcast: <b>NO</b>\n\n"
         "<b>Liquidity result</b>\n"
-        "Jupiter priced every tested slice above the emergency ceiling.\n"
-        f"<code>{guard.group(1)}</code>\n\n"
+        f"{result_text}\n"
+        f"<code>{guard_text}</code>\n\n"
         "<b>Next action</b>\n"
         f"• Automatic retry: <b>{_human_retry(retry_seconds)}</b>\n"
         f"• Liquidity attempt: <b>{attempt}</b>\n\n"
