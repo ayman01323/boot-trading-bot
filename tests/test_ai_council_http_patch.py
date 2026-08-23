@@ -149,8 +149,12 @@ def test_runtime_secret_workflow_never_prints_credential_file() -> None:
     isolated = (ROOT / ".github" / "workflows" / "deploy-current-main-pr-isolated.yml").read_text(encoding="utf-8")
     for body in (workflow, isolated):
         assert "/var/tmp/ai_council_runtime.env" in body
-        assert "/var/tmp/boot/ai_council_runtime.env" not in body
         assert "chmod 600" in body
+    # Current main intentionally mirrors the root-readable bridge into the
+    # Strategy Factory compatibility path. Safety means both files stay mode 600
+    # and their contents are never printed, not that the compatibility path is absent.
+    assert "/var/tmp/boot/ai_council_runtime.env" in workflow
     assert 'cat "$target"' not in workflow
+    assert 'cat "$compat"' not in workflow
     assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in workflow
     assert "GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}" in workflow
