@@ -12,6 +12,12 @@ on:
     - cron: '11 6 * * *'
     # All seven agents jointly challenge the monitor/factory design each week.
     - cron: '41 7 * * 1'
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/monitor_factory_pipeline.py'
+      - 'scripts/monitor_factory_operations.py'
+      - '.github/workflows/monitor-factory-operations.yml'
   workflow_dispatch:
     inputs:
       mode:
@@ -62,6 +68,10 @@ jobs:
           if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
             mode="$INPUT_MODE"
             limit="${INPUT_LIMIT:-3}"
+          elif [[ "$EVENT_NAME" == 'push' ]]; then
+            # Deployment smoke: deterministic Engineering observation only.
+            mode='observe-engineering'
+            limit='1'
           else
             case "$EVENT_SCHEDULE" in
               '*/15 * * * *') mode='observe-engineering' ;;
