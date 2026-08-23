@@ -33,9 +33,12 @@ _RETIRED_MODEL_ALIASES = {
         "models/gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
     },
 }
-# Production embeds all seven workers in one Python process. A single global
-# provider lock made one slow agent block every other agent, including Kimi.
-# Serialize only per provider so unrelated workers can answer independently.
+# Backward-compatible global lock used by MASTER council final adjudication.
+# Recipient workers do not use this lock; otherwise one slow provider would
+# head-of-line block all seven embedded workers.
+_PROVIDER_CALL_LOCK = threading.Lock()
+# Production embeds all seven workers in one Python process. Serialize only
+# within each provider so unrelated workers can answer independently.
 _PROVIDER_CALL_LOCKS = {agent: threading.Lock() for agent in AGENTS}
 _MISSING = object()
 MAX_REPLY_CHARS = 7600
