@@ -6,6 +6,11 @@ from collections import defaultdict
 from contextlib import closing
 from decimal import Decimal
 
+# Install exact historical inventory-cycle tagging before this module reads the
+# reconstructed Solana trades table. Existing history remains on the legacy unit
+# until the normal history worker refreshes it; the schema patch marks those rows
+# stale so leaders/candidates are refreshed first without changing RPC cadence.
+from . import solana_position_history_patch as _position_history  # noqa: F401
 from . import solana_sibot as _sol
 
 _HARD_COPIED_PROFIT_FACTOR = Decimal("1.50")
@@ -45,68 +50,6 @@ def _pf(profit, loss):
     return Decimal("99") if p > 0 else Decimal(0)
 
 
-def _event_key(ts, signature):
-    """Match solana_sibot's deterministic same-second event ordering."""
-    return (_i(ts, 0), str(signature or ""))
-
-
-def _aggregate_position(rows):
-    cost = sum((_d(r.get("cost_sol"), 0) for r in rows), Decimal(0))
-    net = sum((_d(r.get("net_sol"), 0) for r in rows), Decimal(0))
-    buy_key = min((_event_key(r.get("buy_ts"), r.get("buy_signature")) for r in rows), default=(0, ""))
-    close_key = max((_event_key(r.get("sell_ts"), r.get("sell_signature")) for r in rows), default=(0, ""))
-    return {
-        "wallet": str(rows[0].get("wallet") or "") if rows else "",
-        "mint": str(rows[0].get("mint") or "") if rows else "",
-        "cost_sol": cost,
-        "net_sol": net,
-        "buy_key": buy_key,
-        "close_key": close_key,
-        "buy_ts": buy_key[0],
-        "sell_ts": close_key[0],
-        "fragments": len(rows),
-    }
-
-
-def _bucket_positions(trades):
-    """Collapse matched FIFO fragments into completed wallet/mint inventory positions.
-
-    A position remains open while a later buy overlaps any still-matched sell horizon
-    for that mint. A new position starts only after the prior inventory is fully
-    exited. Timestamp ties use signature ordering because solana_sibot._match_events
-    uses the same deterministic `(event_ts, signature)` ordering.
-    """
-    grouped = defaultdict(list)
-    for row in trades:
-        grouped[(str(row.get("wallet") or ""), str(row.get("mint") or ""))].append(row)
-
-    positions = []
-    for rows in grouped.values():
-        rows.sort(
-            key=lambda r: (
-                _event_key(r.get("buy_ts"), r.get("buy_signature")),
-                _event_key(r.get("sell_ts"), r.get("sell_signature")),
-            )
-        )
-        bucket = []
-        bucket_close_key = None
-        for row in rows:
-            buy_key = _event_key(row.get("buy_ts"), row.get("buy_signature"))
-            if bucket and bucket_close_key is not None and buy_key > bucket_close_key:
-                positions.append(_aggregate_position(bucket))
-                bucket = []
-                bucket_close_key = None
-            bucket.append(row)
-            sell_key = _event_key(row.get("sell_ts"), row.get("sell_signature"))
-            if bucket_close_key is None or sell_key > bucket_close_key:
-                bucket_close_key = sell_key
-        if bucket:
-            positions.append(_aggregate_position(bucket))
-
-    positions.sort(key=lambda p: (p["close_key"], p["buy_key"], p["mint"]))
-    return positions
-
-
 def _drawdown(rows):
     equity = Decimal(1); peak = Decimal(1); worst = Decimal(0)
     for r in rows:
@@ -139,45 +82,81 @@ def _stats(values):
     }
 
 
+def _exact_positions(fragments):
+    grouped = defaultdict(list)
+    for row in fragments:
+        pid = str(row.get("position_id") or "")
+        if pid and int(row.get("position_closed") or 0) == 1:
+            grouped[pid].append(row)
+    positions = []
+    for pid, rows in grouped.items():
+        positions.append({
+            "position_id": pid,
+            "cost_sol": sum((_d(r.get("cost_sol"), 0) for r in rows), Decimal(0)),
+            "net_sol": sum((_d(r.get("net_sol"), 0) for r in rows), Decimal(0)),
+            "sell_ts": max((int(r.get("sell_ts") or 0) for r in rows), default=0),
+            "close_signature": max(
+                (str(r.get("sell_signature") or "") for r in rows if int(r.get("sell_ts") or 0) == max(int(x.get("sell_ts") or 0) for x in rows)),
+                default="",
+            ),
+            "fragments": len(rows),
+        })
+    positions.sort(key=lambda p: (int(p["sell_ts"]), str(p["close_signature"]), str(p["position_id"])))
+    return positions
+
+
 def quality_metrics(app, wallet, cfg):
     lookback = max(1, min(365, _i(cfg.get("lookback_days"), 60)))
     cutoff = int(time.time()) - lookback * 86400
     recent_n = max(5, min(100, _i(cfg.get("recent_trade_window"), 20)))
     with closing(_sol.connect(app)) as conn:
-        # Read the complete reconstructed wallet history first. Filtering fragments
-        # by sell_ts before bucketing can cut a scaled position in half at the
-        # lookback boundary and manufacture a false win/loss.
         fragments_all = [dict(r) for r in conn.execute(
-            """SELECT wallet,mint,buy_signature,sell_signature,buy_ts,sell_ts,cost_sol,net_sol
-               FROM trades WHERE wallet=?
-               ORDER BY buy_ts,buy_signature,sell_ts,sell_signature""",
+            """SELECT wallet,mint,buy_signature,sell_signature,buy_ts,sell_ts,cost_sol,net_sol,
+                      position_id,position_closed
+               FROM trades WHERE wallet=? ORDER BY sell_ts,sell_signature""",
             (str(wallet),),
         ).fetchall()]
-        hs = conn.execute("SELECT truncated,error FROM history_status WHERE wallet=?", (str(wallet),)).fetchone()
+        hs = conn.execute(
+            "SELECT truncated,error,position_metrics_version FROM history_status WHERE wallet=?",
+            (str(wallet),),
+        ).fetchone()
         candidate = conn.execute("SELECT last_seen FROM candidates WHERE wallet=?", (str(wallet),)).fetchone()
 
-    positions_all = _bucket_positions(fragments_all)
-    positions = [p for p in positions_all if int(p.get("sell_ts") or 0) >= cutoff]
     fragments = [r for r in fragments_all if int(r.get("sell_ts") or 0) >= cutoff]
-
-    all_s = _stats(positions)
-    recent = _stats(positions[-recent_n:])
     fragment_s = _stats(fragments)
-    trade_last = max((int(p.get("sell_ts") or 0) for p in positions_all), default=0)
+    exact = bool(hs and int(hs["position_metrics_version"] or 0) >= 1)
+
+    if exact:
+        positions_all = _exact_positions(fragments_all)
+        values = [p for p in positions_all if int(p.get("sell_ts") or 0) >= cutoff]
+        recent_values = values[-recent_n:]
+        measurement_unit = "closed_inventory_positions"
+    else:
+        # Backwards-compatible bridge only for pre-upgrade history rows. The schema
+        # patch makes these wallets immediately stale, so the normal history worker
+        # replaces this legacy measurement with exact closure metadata. We do not
+        # guess closure from timestamps because a partial sell can leave inventory.
+        values = fragments
+        recent_values = values[-recent_n:]
+        measurement_unit = "legacy_fragments_pending_refresh"
+
+    all_s = _stats(values)
+    recent = _stats(recent_values)
+    trade_last = max((int(r.get("sell_ts") or 0) for r in fragments_all), default=0)
     candidate_last = int(candidate["last_seen"] or 0) if candidate else 0
     all_s.update({
-        "drawdown_pct": _drawdown(positions),
+        "drawdown_pct": _drawdown(values),
         "recent_closed": recent["closed"],
         "recent_win_rate": recent["win_rate"],
         "recent_profit_factor": recent["profit_factor"],
         "history_complete": bool(hs and not int(hs["truncated"] or 0) and not str(hs["error"] or "").strip()),
         "last_activity_ts": max(trade_last, candidate_last),
-        # Diagnostics make the measurement change auditable without allowing the
-        # old fragment unit to drive any eligibility gate.
-        "position_closed": all_s["closed"],
+        "position_closed": all_s["closed"] if exact else 0,
         "fragment_closed": fragment_s["closed"],
         "fragment_win_rate": fragment_s["win_rate"],
         "fragment_profit_factor": fragment_s["profit_factor"],
+        "position_metrics_exact": exact,
+        "measurement_unit": measurement_unit,
     })
     return all_s
 
@@ -185,8 +164,6 @@ def quality_metrics(app, wallet, cfg):
 def _historical_ok(m, cfg):
     if _sol._bool(cfg.get("require_complete_history"), True) and not m.get("history_complete"):
         return False
-    # `closed` is deliberately position-level. Fragment count must never satisfy
-    # the minimum evidence requirement for a leader.
     if int(m.get("closed") or 0) < max(1, _i(cfg.get("min_closed_trades"), 10)):
         return False
     if _d(m.get("win_rate")) < _d(cfg.get("min_win_rate_pct"), 65):
@@ -255,9 +232,6 @@ def _copied_ok(app, tid, wallet, cfg):
         min_pf = max(_HARD_COPIED_PROFIT_FACTOR, _d(cfg.get("min_copied_profit_factor"), "1.50"))
         if m["win_rate"] < min_win:
             return False
-        # Amount is primary: copied gross profit must exceed copied gross loss by
-        # the configured safety factor. This permits fewer but larger winners while
-        # rejecting a strategy whose win count looks acceptable but loses more SOL.
         if m["gross_profit_sol"] <= m["gross_loss_sol"] * min_pf:
             return False
         if m["net_sol"] <= 0 or m["profit_factor"] < min_pf:
@@ -266,8 +240,6 @@ def _copied_ok(app, tid, wallet, cfg):
 
 
 def refresh_rankings(app, telegram_id=None):
-    # Let the original function preserve the broad positive-net Top-20 research,
-    # then replace only each user's automatic leader set with stricter evidence.
     top = _PREV_REFRESH(app, telegram_id)
     cfg = _sol.settings(app)
     users = [u for u in _sol.all_users(app.csv_dir, enabled_only=True) if str(u.get("status") or "").upper()=="ACTIVE"]
@@ -280,10 +252,6 @@ def refresh_rankings(app, telegram_id=None):
         if _historical_ok(m, cfg):
             qualified.append((a, m))
 
-    # Profitability remains mandatory. Within that qualified pool, prefer wallets
-    # observed trading recently so leader slots are less likely to be occupied by
-    # excellent but currently inactive wallets. If there are not enough recently
-    # active wallets, older qualified leaders still fill the remaining slots.
     now = int(time.time())
     activity_hours = max(1, min(168, _i(cfg.get("leader_recent_activity_hours"), 6)))
     activity_cutoff = now - activity_hours * 3600
