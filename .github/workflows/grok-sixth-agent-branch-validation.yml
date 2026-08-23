@@ -1,0 +1,72 @@
+name: Grok Sixth Agent Branch Validation
+
+on:
+  push:
+    branches:
+      - gpt/add-grok-sixth-agent-v2
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/grok-sixth-agent-branch-validation.yml'
+      - '.github/workflows/ai-cost-router-ci.yml'
+      - 'learnerbot/grok_provider.py'
+      - 'learnerbot/ai_cost_grok_patch.py'
+      - 'learnerbot/ai_cost_provider_patch.py'
+      - 'learnerbot/telegram_grok_council_patch.py'
+      - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'scripts/ai_agent_ws_bus_grok.py'
+      - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_mailbox_provider_relay.py'
+      - 'scripts/master_change_policy.py'
+      - 'tests/test_grok_sixth_agent.py'
+      - 'tests/test_grok_cost_router_integration.py'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-grok-sixth-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q \
+            pytest pyyaml python-dotenv 'websockets>=15,<16' requests
+
+      - name: Compile Grok integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            learnerbot/grok_provider.py \
+            learnerbot/ai_cost_grok_patch.py \
+            learnerbot/ai_cost_provider_patch.py \
+            learnerbot/telegram_grok_council_patch.py \
+            learnerbot/ai_agent_ws_runtime_patch.py \
+            scripts/ai_agent_ws_bus_grok.py \
+            scripts/ai_agent_ws_worker.py \
+            scripts/ai_mailbox_provider_relay.py \
+            scripts/master_change_policy.py \
+            scripts/resilient_selected_master_v2.py \
+            tests/test_grok_sixth_agent.py \
+            tests/test_grok_cost_router_integration.py
+
+      - name: Run Grok and provider regressions
+        env:
+          AI_COST_TELEGRAM_ALERTS: '0'
+          AI_COST_BUDGET_ENFORCE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            tests/test_grok_sixth_agent.py \
+            tests/test_grok_cost_router_integration.py \
+            tests/test_ai_council_http_patch.py \
+            tests/test_ai_cost_router.py \
+            tests/test_master_change_council.py
