@@ -1,6 +1,6 @@
 # Strategy Factory messaging
 
-Strategy Factory uses **one primary messaging transport** for all agent communication: the local VPS WebSocket bus at `ws://127.0.0.1:8765`.
+Strategy Factory uses **one primary messaging transport** for normal agent communication: the local VPS WebSocket bus at `ws://127.0.0.1:8765`.
 
 Supported agents are:
 
@@ -11,11 +11,69 @@ Supported agents are:
 - Grok
 - Copilot
 
-The old GitHub `ai-mailbox` path is retained only as an audit/fallback handoff when the local bus is genuinely unavailable or a durable Git handoff is specifically required.
+## Claude has two explicit divisions
+
+Claude is one agent with **two distinct operating divisions**. Operator-facing requests must identify the division; bare `claude` is ambiguous and must not be used in `/aichat` or `scripts/strategy_factory_chat.py`.
+
+### CLAUDE GENERAL
+
+Use `claude-general` for:
+
+- general discussion;
+- governance and organisational design;
+- strategy/engineering critique that does not require repository mutation;
+- research, reasoning and advisory work;
+- ordinary Strategy Factory conversation.
+
+Claude General uses the persistent Strategy Factory WebSocket recipient and its bounded SQLite conversation memory. It is still an automated provider invocation for each new message and must not claim that it is the interactive Claude Code terminal session. Messages are tagged `CLAUDE_DIVISION: GENERAL` and `CLAUDE_IDENTITY: AUTOMATED_GENERAL`.
+
+### CLAUDE CODING
+
+Use `claude-coding` for:
+
+- repository/code investigation requiring Claude Code context;
+- implementation, tests, branches and PR-oriented work;
+- repository-aware coding review where the persistent Claude Code handoff/session is the intended recipient.
+
+Claude Coding is routed to the existing Claude Code git mailbox/handoff path rather than to the general provider worker. A coding request written to `.github/ai-mailbox/gpt-to-claude.md` must include:
+
+```text
+division: CODING
+identity_required: PERSISTENT_AGENT
+```
+
+The persistent Claude Code reply must identify itself with:
+
+```text
+division: CODING
+identity: PERSISTENT_AGENT
+```
+
+A mailbox commit proves that the coding request was queued, not that Claude Coding has read it. Receipt/reply evidence must remain correlated by `message_id`/`in_reply_to`.
+
+### Operator examples
+
+Telegram:
+
+```text
+/aichat claude-general review this governance proposal
+/aichat claude-coding inspect and fix this repository bug
+```
+
+VPS CLI:
+
+```bash
+python scripts/strategy_factory_chat.py claude-general 'review this governance proposal'
+python scripts/strategy_factory_chat.py claude-coding 'inspect and fix this repository bug'
+```
+
+The two divisions must never be silently substituted for one another. If the wrong division is requested or unavailable, fail clearly rather than answering through the other division without disclosure.
+
+The old GitHub `ai-mailbox` path remains fallback/audit for ordinary providers, but it is also the deliberate durable handoff path for **Claude Coding** because that division is repository/session oriented rather than the general provider worker.
 
 ## One transport, two routing modes
 
-There are not two messaging systems.
+For ordinary/general Strategy Factory communication there are not two competing messaging systems.
 
 ### DIRECT mode
 
@@ -23,9 +81,9 @@ DIRECT is one-to-one communication over the shared WebSocket transport:
 
 ```text
 GPT -> Gemini
-Claude -> GPT
+Claude General -> GPT
 Gemini -> Grok
-DeepSeek -> Claude
+DeepSeek -> Claude General
 ```
 
 Example:
@@ -53,6 +111,8 @@ MASTER request
 
 The Council is a governance/orchestration layer, not a second transport. `learnerbot/strategy_factory_council_transport_patch.py` adapts Council adviser requests to the shared Strategy Factory client.
 
+Unless a council task explicitly requires the coding division, the Claude adviser in normal architecture/governance discussion is **Claude General**. Repository implementation remains under the normal coding/handoff/change-control path.
+
 The Cost Router still decides which advisers are required. Critical trading, security and deployment changes still use the full Council. GPT remains final adjudicator for repository changes. Existing protected policy/deployment gates remain unchanged.
 
 ## Canonical user-to-agent chat identity
@@ -63,7 +123,8 @@ Use Telegram:
 
 ```text
 /aichat gemini what did GPT ask you?
-/aichat claude review this idea
+/aichat claude-general review this idea
+/aichat claude-coding inspect this code defect
 /aichat grok summarise the latest Strategy Factory context you have
 ```
 
@@ -73,9 +134,9 @@ or the VPS CLI:
 python scripts/strategy_factory_chat.py gemini 'what did GPT ask you?'
 ```
 
-Both paths send `MASTER -> agent` through the same persistent Strategy Factory worker and store the turn in the same durable conversation history used by agent-to-agent messages. This means a later GPT -> Gemini message and a later MASTER -> Gemini message can both be recalled by that same Gemini worker subject to the bounded memory limits.
+General-agent paths send `MASTER -> agent` through the same persistent Strategy Factory worker and store the turn in the same durable conversation history used by agent-to-agent messages. Claude Coding instead uses the durable Claude Code handoff/mailbox because it is a different operating division.
 
-A separate vendor browser conversation such as Gemini Web, Claude Web, Grok Web or another third-party chat is an **external/unlinked session** unless it is explicitly bridged into Strategy Factory. Do not describe an external browser tab as the Strategy Factory agent and do not expect it to know Strategy Factory messages automatically. The canonical interactive agent is the persistent Strategy Factory worker reached through `/aichat` or `scripts/strategy_factory_chat.py`.
+A separate vendor browser conversation such as Gemini Web, Claude Web, Grok Web or another third-party chat is an **external/unlinked session** unless it is explicitly bridged into Strategy Factory. Do not describe an external browser tab as either Claude division unless it has been explicitly connected to the relevant routing path.
 
 ## Delivery evidence
 
@@ -91,11 +152,19 @@ For deterministic bounded tasks, use:
 DELIVERED -> ACKNOWLEDGED -> ACCEPTED -> EXECUTING -> COMPLETED
 ```
 
-Do not claim an agent received a message unless it reached at least `ACKNOWLEDGED`. Do not claim a deterministic task completed unless it reached `COMPLETED` with execution evidence.
+For Claude Coding mailbox routing, use:
+
+```text
+QUEUED -> PERSISTENT_AGENT_REPLIED
+```
+
+and require the coding division/identity headers. Do not claim an agent received a message merely because a Git mailbox commit exists.
 
 ## Automatic recipient awareness and persistence
 
-Persistent workers stay connected to the loopback bus. A recipient **must not poll GitHub**, SQLite, or a mailbox; messages are pushed automatically to the connected worker, and queued messages are delivered when that worker reconnects. The user does not need to tell an agent to check its messages.
+Persistent WebSocket workers stay connected to the loopback bus. A normal recipient **must not poll GitHub**, SQLite, or a mailbox; messages are pushed automatically to the connected worker, and queued messages are delivered when that worker reconnects.
+
+Claude Coding is the deliberate exception because it is the persistent repository/Claude Code handoff division. Its git mailbox is a durable task handoff, not the general WebSocket provider notification path.
 
 SQLite at `/var/tmp/boot/ai_agent_bus.sqlite3` is the durable queue, audit record and bounded Strategy Factory conversation-memory source. It is not the notification transport.
 
@@ -125,14 +194,16 @@ The executor does not accept arbitrary shell commands. Repository mutation, depl
 
 ## GitHub mailbox fallback
 
-The GitHub mailbox is not a second normal messaging system. It is fallback/audit only.
+For normal agents the GitHub mailbox is not a second normal messaging system; it is fallback/audit only. For Claude Coding it is also the deliberate repository-session handoff channel described above.
 
-Do not claim a Git mailbox commit itself proves recipient receipt. A mailbox commit proves only that a handoff was written to Git; correlated delivery evidence is still required before reporting receipt.
+Do not claim a Git mailbox commit itself proves recipient receipt. A mailbox commit proves only that a handoff was written to Git; correlated delivery/reply evidence is still required.
 
 ## Runtime and protected deployment
 
-Production normally runs the embedded Strategy Factory bus inside `learnerbot.service` with six persistent workers. The optional `scripts/install_ai_agent_ws_bus.sh` installer remains available for a deliberately separate standalone/systemd deployment and installs the same shared transport client used by DIRECT mode.
+Production normally runs the embedded Strategy Factory bus inside `learnerbot.service` with six persistent general workers. Claude Coding remains a separate coding division rather than a seventh council member.
 
-Production deployment remains outside the messaging transport. It uses the restricted wrapper `/usr/local/sbin/deploy-boot-trading-bot`, which runs the repository test gate and restarts the service only after that gate passes. DIRECT or COUNCIL messaging does not itself grant deployment authority.
+The optional `scripts/install_ai_agent_ws_bus.sh` installer remains available for a deliberately separate standalone/systemd deployment and installs the same shared transport client used by DIRECT mode.
+
+Production deployment remains outside the messaging transport. It uses the restricted wrapper `/usr/local/sbin/deploy-boot-trading-bot`, which runs the repository test gate and restarts the service only after that gate passes. DIRECT, COUNCIL or Claude-division routing does not itself grant deployment authority.
 
 Protocol: `ws-bus-v2`.
