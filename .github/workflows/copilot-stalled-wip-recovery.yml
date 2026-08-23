@@ -60,12 +60,12 @@ jobs:
           }
 
           find_empty_stale_pr() {
-            local needle="$1"
+            local issue="$1"
             local now
             now="$(date +%s)"
             gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
-              | python3 -c 'import json,sys; n=sys.argv[1]; rows=json.load(sys.stdin); [print(x.get("number")) for x in rows if str((x.get("user") or {}).get("login") or "").lower() in {"copilot","copilot-swe-agent[bot]"} and bool(x.get("draft")) and n in str(x.get("title") or "")]' "$needle" \
+              | python3 -c 'import json,sys; issue=sys.argv[1]; rows=json.load(sys.stdin); ref="#"+issue; [print(x.get("number")) for x in rows if str((x.get("user") or {}).get("login") or "").lower() in {"copilot","copilot-swe-agent[bot]"} and bool(x.get("draft")) and ref in str(x.get("body") or "")]' "$issue" \
             | while read -r pr; do
                 [[ "$pr" =~ ^[0-9]+$ ]] || continue
                 details="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/pulls/${pr}")"
@@ -127,7 +127,7 @@ jobs:
           }
 
           recover_task() {
-            local lane="$1" issue_title="$2" needle="$3" report_path="$4" instructions="$5"
+            local lane="$1" issue_title="$2" report_path="$3" instructions="$4"
             local issue pr
             if report_exists "$report_path"; then
               echo "${lane}: report already exists; no recovery."
@@ -142,7 +142,7 @@ jobs:
               echo "${lane}: Copilot is not currently assigned; existing reconciler will handle assignment."
               return 0
             fi
-            pr="$(find_empty_stale_pr "$needle" | head -n1)"
+            pr="$(find_empty_stale_pr "$issue" | head -n1)"
             if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
               echo "${lane}: no stale empty Copilot draft PR; leave active work untouched."
               return 0
@@ -167,7 +167,6 @@ jobs:
             recover_task \
               ENGINEERING \
               "Weekly Copilot full-bot bug audit ${short}" \
-              "weekly Copilot audit reports for ${short}" \
               ".ai/weekly/copilot/${engineering_source}.json" \
               "Complete the existing report-only engineering audit. Produce exactly the two .ai/weekly/copilot report files requested by the issue. Do not change functional code, deploy, trade, alter LIVE/risk/capital, or touch wallets/signing/secrets."
           fi
@@ -177,7 +176,6 @@ jobs:
             recover_task \
               STRATEGY \
               "Copilot hourly strategy review ${strategy_cycle}" \
-              "Review hourly strategy lab for cycle ${strategy_cycle}" \
               ".ai/strategy/copilot/${strategy_cycle}.json" \
               "Complete the existing report-only Strategy Lab review. Produce exactly the two .ai/strategy/copilot report files requested by the issue. Do not implement code, deploy, trade, alter LIVE/risk/capital, or touch wallets/signing/secrets."
           fi
