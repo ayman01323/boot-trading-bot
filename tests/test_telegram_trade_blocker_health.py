@@ -120,7 +120,7 @@ def test_report_explains_each_major_no_trade_layer(monkeypatch):
     assert "BSC: history <b>1007/1007</b>" in text
     assert "Polygon AUTO" in text and "economically eligible" in text
     assert "Solana: discovered" in text and "quality-qualified" in text
-    assert "Leader-source research" in text
+    assert "Strategy Factory leader-source research trigger" in text
     assert "Existing profit, quality, liquidity, simulation" in text
 
 
