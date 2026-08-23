@@ -1,50 +1,62 @@
 {
   "cycle_id": "e015d700bccd-2026082323-9dba913f",
   "evidence_gaps": [
-    "Fresh runtime forensics within two hours.",
-    "Per-trade money-weighted realised net P&L after fees, slippage, price impact, gas or priority fees and execution failures.",
-    "Complete attempted-trade ledger including abstentions, rejected quotes, simulations, reverts, dropped transactions and paid failure costs.",
-    "Independent post-signal outcomes that are not calculated from the eligibility edge estimate.",
-    "Solana follower-size entry and exit quotes, sellability, price impact, priority/base fees, rent reconciliation and signal-to-fill deterioration.",
-    "EVM realised gas, reverted-transaction gas, builder payments, nonce/replacement outcomes, route fill amounts and atomic execution results.",
-    "Explicit STRATEGY_MARKET_LOSS versus EXECUTION_INFRA_FAILURE classification with reconciled evidence.",
-    "Out-of-sample results by chain, strategy, route, notional, liquidity, volatility and latency bucket.",
-    "Capital exposure duration and money-weighted returns needed to compare strategies with different holding periods.",
-    "Forecast calibration, uncertainty coverage and leakage checks.",
-    "Sufficient failed-execution samples to estimate chain-specific failure-cost reserves.",
-    "Evidence required before promotion: positive money-weighted holdout net P&L after every cost, positive conservative confidence bound, adequate outcome coverage, stable results across regimes, calibrated executable-edge predictions, reconciled execution failures, and successful existing human/safety promotion gates."
+    "Fresh (within 2 hours) runtime forensics are missing. Stale evidence cannot confirm present system performance.",
+    "Contemporaneous follower-side Solana quote data (including slippage, priority fee, and copy-delay latency) is absent.",
+    "Realized net P&L distributions (inclusive of actual gas/priority fees, slippage, and price impact) per strategy family on EVM chains.",
+    "Chronological out-of-sample (holdout) performance records for all proposed Strategy Lab families under frozen parameters.",
+    "Granular execution-stage failure logs necessary to distinguish between strategy signal errors and network/RPC issues."
   ],
   "evidence_sha256": "9dba913f62309bb9bb9cbf8d03bc0d0651759cbf93f310904386a13cacd8099f",
   "no_live_changes": true,
   "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "Slightly increased Solana RPC network overhead and rate-limit risks on high-frequency nodes.",
+      "evidence": [
+        {
+          "detail": "Solana market features (gross_edge_bps, fees, slippage, price impact, latency reserve, liquidity, and sellability) are default-set to zero, resulting in SIGNAL_ONLY_MISSING_CURRENT_EXECUTABLE_EDGE outcomes.",
+          "path": "learnerbot/market_feature_adapter.py:269-338"
+        }
+      ],
+      "expected_effect": "Facilitate realistic shadow-testing of Solana signal quality under follower economics and actual transaction latencies.",
+      "id": "gemini-solana-contemporaneous-quotes-v1",
+      "minimum_observation": "150 simulated follower-sized quote opportunities across at least 14 consecutive days, categorized by asset liquidity tiers.",
+      "rationale": "Historical leader events do not contain follower-executable contemporaneous prices or market depth. Evaluating signal viability on Solana requires capturing real-time follower-sized entry and reverse-exit quotes immediately following a leader block confirmation.",
+      "shadow_test": "During shadow execution, for each otherwise valid Solana leader BUY signal, immediately fetch a contemporaneous follower-sized mock BUY quote and a corresponding instant mock SELL quote (reversing the trade) via Jupiter RPC, factoring in priority fee requirements and the exact copy latency. Filter out opportunities whose net simulated return is non-positive.",
+      "strategy": "Solana leader-copy and Strategy Lab families",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
     {
       "action": "REWORK",
       "chain_scope": [
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.96,
-      "downside_risk": "Fewer routes will be classified as eligible, potentially resulting in lower overall trading frequency/dormancy during quiet periods.",
+      "confidence": 0.92,
+      "downside_risk": "Longer evaluation times before any strategy can be considered for live promotion.",
       "evidence": [
         {
-          "detail": "avg_net is calculated as sum(float(r['net_base']) for r in positive) / len(positive) if positive else None where positive filters out all zero and losing proven transactions.",
-          "path": "learnerbot/strategy.py"
-        },
-        {
-          "detail": "_learned_route_stats filters with WHERE COALESCE(avg_net_base,0) > 0, completely ignoring and hiding historically negative-edge/money-losing routes.",
-          "path": "learnerbot/market_feature_adapter.py"
+          "detail": "Minimum evaluation windows (3) and trades (8) are extremely small, making strategies prone to premature promotion based on localized market conditions.",
+          "path": "learnerbot/strategy_lab.py:MIN_EVALUATION_WINDOWS"
         }
       ],
-      "expected_effect": "Unbiased, money-weighted estimation of historical route performance, resulting in accurate route rankings and increased abstention from historically unprofitable or high-revert routes.",
-      "id": "unbiased-route-net-expected-value",
-      "minimum_observation": "At least 120 independent holdout opportunities, 35 executed/simulated transactions, and 20 completed round trips per route class across multiple market volatility levels.",
-      "rationale": "The existing pattern learning algorithm exhibits severe selection bias. It averages only positive-profit proven transactions and suppresses any route or pattern with a non-positive historical net average. This results in highly over-optimistic expected edge estimates and prevents the bot from learning to avoid routes that consistently lose money after execution fees and slippage.",
-      "shadow_test": "Re-evaluate all route patterns on a subsequent out-of-sample dataset by including all proven transactions (wins, losses, and zero-profit attempts with revert costs). The reworked model must show higher money-weighted net returns than the biased baseline on the holdout set; stop if any data leakage occurs or if net P&L degrades.",
-      "strategy": "Learned Route Replication",
+      "expected_effect": "Block unprofitable or overfitted strategies from moving to PROMOTION_CANDIDATE status, conserving trading capital.",
+      "id": "gemini-oos-chronological-holdout-promotion-v1",
+      "minimum_observation": "At least 14 days and 35 total shadow-tested trades per strategy under locked parameters.",
+      "rationale": "Small sample sizes are vulnerable to overfitting, where a single large winner or favorable regime masks a structurally unprofitable signal. Enforcing a mandatory chronological train/validation/holdout partition with frozen parameters is necessary for safe promotion.",
+      "shadow_test": "Require each registered strategy to complete an in-sample training phase (minimum 7 days, 20 trades) followed by a separate, sequential out-of-sample holdout phase (minimum 7 days, 15 trades) with frozen parameters. Require positive net profit and a profit factor >= 1.10 across the entire holdout phase.",
+      "strategy": "Strategy Lab lifecycle promotion governance",
       "suggested_files": [
-        "learnerbot/strategy.py",
-        "learnerbot/market_feature_adapter.py",
-        "learnerbot/cross_chain_strategy_signals.py"
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py"
       ]
     },
     {
@@ -53,105 +65,66 @@
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.98,
-      "downside_risk": "Requires additional storage and memory to track post-decision market prices and introduces complexity in establishing fair simulation fill rules.",
-      "evidence": [
-        {
-          "detail": "quote_simulated_net_base is computed by multiplying env.notional_base by the signal's expected_net_edge_bps, leading to circular evaluation that merely sums up the strategy's own predictions rather than measuring out-of-sample outcomes.",
-          "path": "learnerbot/shadow_strategy_executor.py"
-        },
-        {
-          "detail": "The shadow_strategy_events schema records basic parameters like gross_profit_base, fee_base, and slippage_base but does not support recording independent post-decision price observations or separate strategy vs execution failure classifications.",
-          "path": "learnerbot/shadow_strategy_executor.py"
-        }
-      ],
-      "expected_effect": "Provides a falsifiable, non-circular measurement of strategy profitability, separating the strategy's predictive edge from real execution performance.",
-      "id": "independent-shadow-scorecard-outcomes",
-      "minimum_observation": "At least 30 days of continuous shadow tracking, with a minimum of 250 eligible opportunities and 60 resolved round-trips per chain.",
-      "rationale": "Without independent, post-decision price and market data inputs, the shadow scorecard cannot validate the predictive accuracy of the strategy's expected edge. Measuring performance by multiplying notional size by expected edge bps assumes perfect forecast calibration and hides any slippage, price impact, delay degradation, or execution errors.",
-      "shadow_test": "Store a snapshot of the asset's post-signal price at fixed intervals (e.g., 1 min, 5 min, 15 min, 1 hour, and on leader exit) without look-ahead, and calculate independent realised net returns. Compare this against predicted edge; the shadow test fails if forecast calibration (Brier score or R-squared) does not meet target thresholds or if price logs are non-monotonic.",
-      "strategy": "Cross-chain SHADOW strategy scorecard",
-      "suggested_files": [
-        "learnerbot/shadow_strategy_executor.py",
-        "learnerbot/market_feature_adapter.py"
-      ]
-    },
-    {
-      "action": "NEW_SHADOW",
-      "chain_scope": [
-        "SOLANA"
-      ],
       "confidence": 0.94,
-      "downside_risk": "Increased RPC and API polling overhead on Solana node endpoints, requiring careful rate-limiting in SHADOW mode.",
+      "downside_risk": "Requires more detailed metadata logging and extra classification logic in Strategy Lab database records.",
       "evidence": [
         {
-          "detail": "load_solana_market_features sets gross_edge_bps, liquidity_score, and sellability_score to zero and flags needs_quote_feature_adapter=True because leader event logs do not contain contemporaneous executable quotes.",
-          "path": "learnerbot/market_feature_adapter.py"
+          "detail": "Windows record generic execution_failures alongside net profit but lack granular stage categorization and counterfactual analysis.",
+          "path": "learnerbot/strategy_lab.py:record_window"
         },
         {
-          "detail": "The leader return edge is computed from historical leader performance rather than contemporaneous follower entry/exit pricing.",
-          "path": "learnerbot/solana_positive_edge_entry_gate_patch.py"
+          "detail": "Negative net result or profit factor <= 1.0 triggers REPLACE_OR_REWORK without separating infrastructure/revert failures from poor market/signal decisions.",
+          "path": "learnerbot/strategy_lab.py:evaluate_strategy"
         }
       ],
-      "expected_effect": "Enables live quote fetching and simulated transaction execution on Solana, allowing the Strategy Lab to accurately measure follower slippage and priority fees.",
-      "id": "solana-contemporaneous-quote-capture",
-      "minimum_observation": "At least 500 leader events, 100 fully quoted follower simulations, and 30 resolved round trips over 21 days.",
-      "rationale": "Solana leader copying currently has no way to evaluate real-time executable edge because leader-event logs do not capture contemporaneous follower-size quotes. A leader might buy in a highly liquid market, but a follower executing seconds later on a delayed block may face severe slippage, high priority fees, or frontrunning, which are completely hidden under the current architecture.",
-      "shadow_test": "On every leader BUY event, immediately fetch a live entry route quote from Jupiter API for the configured follower size, simulate transaction fees (including priority fees), and sample a simulated exit quote after a fixed duration or upon leader SELL. The test fails if the resulting follower net P&L is non-positive or if Jupiter RPC queries fail frequently.",
-      "strategy": "Solana Leader Copy Executable Edge",
+      "expected_effect": "Enable highly precise diagnostic separation between STRATEGY/MARKET loss and EXECUTION/INFRASTRUCTURE failures, ensuring we only replace/rework the correct layer.",
+      "id": "gemini-failure-stage-attribution-v1",
+      "minimum_observation": "At least 50 eligible signals per strategy with full terminal-state classification before replacement or promotion decisions.",
+      "rationale": "A strategy signal that is structurally profitable but suffers from transient RPC errors, transaction revert on-chain, or quote expiration should be optimized via infrastructure adjustments. Conversely, a signal that successfully executes but repeatedly loses money represents a core strategy defect.",
+      "shadow_test": "Record a precise terminal state for every eligible signal: (1) Successful-Profit, (2) Successful-Loss, (3) Block-Inclusion-Revert, (4) RPC-Timeout, (5) Quote-Expired, or (6) Price-Impact-Abstain. Evaluate signal edge using only successfully executed (or executable simulation) outcomes, while tracking execution reliability as a separate operational SLA.",
+      "strategy": "Strategy Lab decision and replacement engine",
       "suggested_files": [
-        "learnerbot/market_feature_adapter.py",
-        "learnerbot/shadow_strategy_executor.py",
-        "learnerbot/cross_chain_strategy_signals.py"
+        "learnerbot/strategy_lab.py",
+        "learnerbot/monitor_factory_pipeline.py"
       ]
     },
     {
-      "action": "SHADOW_MORE",
+      "action": "KEEP",
       "chain_scope": [
-        "SOLANA",
         "EVM"
       ],
-      "confidence": 0.91,
-      "downside_risk": "Over-conservative thresholds may suppress low-risk, profitable trading opportunities in stable conditions.",
+      "confidence": 0.96,
+      "downside_risk": "May skip profitable low-margin opportunities under highly volatile gas regimes, representing a safe opportunity cost.",
       "evidence": [
         {
-          "detail": "_common_executable applies rigid fixed limits such as min_net_bps=Decimal('3') and max_quote_age_ms=2500 across all chains.",
-          "path": "learnerbot/cross_chain_strategy_signals.py"
-        },
-        {
-          "detail": "adapt_evm_opportunity incorporates estimated gas and builder fees, while Solana opportunities are adapted with zero-cost placeholders, meaning their risk profiles and failure economics are evaluated incompatibly.",
-          "path": "learnerbot/market_feature_adapter.py"
+          "detail": "EVM opportunities fail closed if exact quote, simulation, liquidity, sellability, or route approvals are missing, followed by gas-multiple profit verification.",
+          "path": "learnerbot/auto_trader.py:execute_best_live_opportunity"
         }
       ],
-      "expected_effect": "Saves capital by dynamically increasing the minimum required net edge during periods of high network congestion, high RPC latency, or extreme asset volatility.",
-      "id": "dynamic-latency-volatility-risk-reserves",
-      "minimum_observation": "At least 200 opportunities per chain, with at least 40 observations during periods of elevated latency or volatility.",
-      "rationale": "A static nominal threshold cannot represent chain-specific dynamics. EVM transactions face high revert costs and builder-fee overhead, whereas Solana experiences extremely high block congestion, transaction dropped-rate risks, and rapid price decay. Applying a uniform 3-to-5 bps threshold fails to protect capital when recent network latency or asset volatility exceeds the fixed margin.",
-      "shadow_test": "Maintain a rolling 1-hour window of measured RPC roundtrip time and asset price volatility (standard deviation of returns), and scale the min_net_bps threshold proportionally. Compare the performance of this adaptive threshold against the fixed baseline over a 14-day holdout period. It passes if the adaptive strategy avoids net-negative latency-decayed trades and retains a higher net profit factor.",
-      "strategy": "Adaptive Cross-Chain Risk Reserve",
+      "expected_effect": "Ensure zero toxic trades are sent to on-chain EVM contracts, maintaining an effective shield against high gas erosion.",
+      "id": "gemini-evm-atomic-safety-keep-v1",
+      "minimum_observation": "100 logged opportunities and 30 receipt-confirmed transactions.",
+      "rationale": "The existing EVM execution path correctly ensures that expected returns are positive after accounting for actual simulated gas costs, priority/builder fees, and slippage. Maintaining this fail-closed posture is essential for capital preservation.",
+      "shadow_test": "Regularly log contemporaneous EVM exact quotes, simulated gas, and final receipt gas. Re-simulate the exact route parameters offline and compare predicted vs. realized net returns. Stop if the deviation between simulated and actual net profit exceeds 15%.",
+      "strategy": "EVM atomic cycle execution",
       "suggested_files": [
-        "learnerbot/cross_chain_strategy_signals.py",
-        "learnerbot/market_feature_adapter.py"
+        "learnerbot/shadow_strategy_executor.py"
       ]
     }
   ],
   "provider": "gemini",
   "rejected_ideas": [
     {
-      "idea": "Promote any current strategy (e.g. Learned Route Replication) to CANARY or LIVE based on code correctness.",
-      "reason": "Fresh runtime forensics and out-of-sample realised net outcomes are completely absent; shadow scoring is circular and does not represent real-world profitability."
+      "idea": "Lowering liquidity, sellability, or gas-multiple limits to increase trade frequency.",
+      "reason": "Our primary goal is durable money-weighted net profitability, not trade frequency. Loosening safety gates to force trades without executable edge leads directly to capital erosion."
     },
     {
-      "idea": "Optimise route learning or leader selection for win rate.",
-      "reason": "Win count ignores fee overhead, transaction reverts, slippage, and loss severity; durable net money-weighted P&L after all actual costs remains the mandatory objective."
+      "idea": "Promoting any Strategy Lab family to canary/live status based on the present code.",
+      "reason": "No fresh runtime forensics exist, and current simulated quote metrics are non-promotional. Live promotion must always require positive, cost-complete realized results on-chain."
     },
     {
-      "idea": "Force trades to quickly increase the Strategy Lab observation count.",
-      "reason": "Trading without positive executable edge is a guaranteed loss-generating activity; rejected opportunities can be recorded as valuable SHADOW observations without risk."
-    },
-    {
-      "idea": "Attribute historical losses to execution/infrastructure failure from this evidence.",
-      "reason": "Without fresh per-attempt runtime latency, RPC log data, or transaction-reconciliation details, execution/infrastructure failures cannot be empirically isolated from strategy/market selection errors."
+      "idea": "Pooling Solana and EVM performance metrics into a single review scorecard.",
+      "reason": "Solana and EVM have fundamentally different fee structures, transaction behaviors, execution latency, and data-completeness characteristics. They must be evaluated and governed as separate cohorts."
     }
   ],
   "review_only": true,
@@ -159,5 +132,5 @@
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "e015d700bccd6066c37194b25489906940ccc38e",
   "status": "CHANGES_PROPOSED",
-  "summary": "Architecture-only review completed. Due to the absence of fresh runtime forensics (evidence.json is flagged as MISSING_RUNTIME_FORENSICS), no strategy is shown to be profitable, canary-ready, or live-ready. Our analysis reveals two major architectural limitations in strategy evaluation: (1) severe selection bias in Learned Route Replication where historical route averages ignore negative outcomes, and (2) circular scoring in the shadow strategy executor where simulated performance is derived directly from decision-time expected edge rather than independent future price outcomes. Additionally, Solana leader copying lacks contemporaneous follower-size quotes, failing closed at zero edge. We propose four structured reworks to establish unbiased, falsifiable, and chain-specific net-P&L metrics."
+  "summary": "Architecture-only strategy review completed. The repository correctly models transaction verification, gas-sensitive profit multiples, and fee-adjusted net P&L. However, due to MISSING_RUNTIME_FORENSICS in evidence.json, no strategies can be claimed as profitable, CANARY-ready, or LIVE-ready. Crucially, the Solana market feature adapter deliberately defaults to zero edge and zero cost features (SIGNAL_ONLY_MISSING_CURRENT_EXECUTABLE_EDGE), making Solana signal-edge testing impossible without contemporaneous quote tracking. The Strategy Lab promotion logic also needs rework to implement strict chronological out-of-sample holdout testing and separate signal-level losses from execution-stage failures."
 }
