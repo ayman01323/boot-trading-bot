@@ -1,0 +1,97 @@
+name: MASTER Gemini Canonical Chat Live Proof
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: Prove MASTER and Gemini share persistent Strategy Factory identity
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Build isolated WebSocket client
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/master-gemini-proof"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "PY=$venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Prove two canonical MASTER to Gemini turns share memory
+        shell: bash
+        env:
+          BUS_URL: ws://127.0.0.1:8765
+        run: |
+          set -euo pipefail
+          "$PY" - <<'PY'
+          import asyncio
+          import json
+          import os
+          import re
+          from websockets.asyncio.client import connect
+
+          url = os.environ.get("BUS_URL", "ws://127.0.0.1:8765")
+          token = os.environ.get("AI_AGENT_BUS_TOKEN", "")
+          code = f"MASTER-GEMINI-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+
+          async def exchange(mid, body):
+              async with connect(url, ping_interval=20, ping_timeout=20, max_size=32768) as ws:
+                  await ws.send(json.dumps({"type":"register","agent":"master","token":token}, separators=(",",":")))
+                  reg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                  print("REGISTER=" + json.dumps(reg, ensure_ascii=False), flush=True)
+                  assert reg == {"type":"registered","agent":"master"}, reg
+                  await ws.send(json.dumps({"type":"send","message_id":mid,"from":"master","to":"gemini","body":body}, separators=(",",":"), ensure_ascii=False))
+                  delivered = False
+                  acknowledged = False
+                  deadline = asyncio.get_running_loop().time() + 120
+                  while True:
+                      remaining = deadline - asyncio.get_running_loop().time()
+                      assert remaining > 0, f"timeout waiting for {mid}"
+                      data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                      if data.get("message_id") != mid:
+                          continue
+                      print("EVENT=" + json.dumps(data, ensure_ascii=False), flush=True)
+                      status = str(data.get("status") or "").upper()
+                      if data.get("type") == "accepted" or status in {"DELIVERED","ACKNOWLEDGED","REPLIED"}:
+                          delivered = True
+                      if status in {"ACKNOWLEDGED","REPLIED"}:
+                          acknowledged = True
+                      if data.get("type") == "reply":
+                          assert delivered, data
+                          assert acknowledged, data
+                          assert status == "REPLIED", data
+                          assert not str(data.get("error") or ""), data
+                          return str(data.get("body") or "")
+
+          async def main():
+              seed_id = "master-to-gemini-seed-" + re.sub(r"[^A-Za-z0-9._:-]", "-", code.lower())
+              seed = await exchange(
+                  seed_id,
+                  f"CANONICAL MASTER CHAT TEST. Remember this exact code: {code}. Reply exactly: SEEN {code}"
+              )
+              print("SEED_REPLY=" + seed, flush=True)
+              assert seed.strip() == f"SEEN {code}", seed
+
+              recall_id = seed_id + "-recall"
+              recall = await exchange(
+                  recall_id,
+                  "From your own recent Strategy Factory conversation memory, quote the exact code from the immediately previous MASTER message. Do not inspect GitHub, a mailbox, or SQLite. Reply with only: REMEMBERED <the-code>"
+              )
+              print("RECALL_REPLY=" + recall, flush=True)
+              assert recall.strip() == f"REMEMBERED {code}", recall
+              print(f"MASTER_GEMINI_IDENTITY_PROVED={code}", flush=True)
+
+          asyncio.run(main())
+          PY
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/master-gemini-proof"
