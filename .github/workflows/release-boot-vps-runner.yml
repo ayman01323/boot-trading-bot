@@ -1,0 +1,29 @@
+name: Release BOOT VPS Runner
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/release-boot-vps-runner.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Intentionally share the exact concurrency group used by the long-running
+# self-hosted AI recovery workflow. Starting this tiny GitHub-hosted job with
+# cancel-in-progress=true cancels stale recovery occupancy without requiring
+# access to the VPS or changing any trading/runtime state.
+concurrency:
+  group: selfhosted-five-agent-recovery
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Release trading VPS runner from AI recovery work
+        run: |
+          echo 'BOOT VPS runner release requested.'
+          echo 'No bot, trading, wallet, signing, LIVE, capital, or risk setting is changed.'
