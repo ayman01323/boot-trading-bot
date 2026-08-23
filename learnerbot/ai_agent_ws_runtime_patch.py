@@ -179,7 +179,3 @@ from . import solana_liquidity_stuck_nonblocking_patch  # noqa: E402,F401
 # wrapper above and verifies both the capital-moving safety stack and the intended
 # EVM/Solana history/recovery/provenance wrapper chain. It never repairs/rebinds.
 from . import final_runtime_integrity_patch  # noqa: E402,F401
-
-# V4 AI operations is observational/governance-only and installs after the final
-# trading integrity gate. It cannot repair/rebind or authorise protected actions.
-from . import telegram_ai_ops_v4_patch  # noqa: E402,F401
