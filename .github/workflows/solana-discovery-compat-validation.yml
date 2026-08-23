@@ -21,42 +21,55 @@ jobs:
     env:
       CI_VENV: /tmp/solana-discovery-compat-${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout tested ref
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
       - name: Prepare isolated Python environment
         id: prepare
+        if: always()
         shell: bash
         run: |
           set +e
+          checkout_outcome='${{ steps.checkout.outcome }}'
           {
+            echo "checkout_outcome=$checkout_outcome"
+            echo "pwd=$(pwd)"
+            echo "repo_present=$([[ -f requirements.txt ]] && echo yes || echo no)"
             echo "python=$(command -v python3 || true)"
             python3 --version
-            rm -rf "$CI_VENV"
-            python3 -m venv "$CI_VENV"
-            rc_venv=$?
-            echo "venv_rc=$rc_venv"
-            if [[ $rc_venv -eq 0 ]]; then
-              "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
-              rc_pip=$?
-              echo "pip_upgrade_rc=$rc_pip"
-              if [[ $rc_pip -eq 0 ]]; then
-                "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
-                rc_deps=$?
+            if [[ "$checkout_outcome" != success || ! -f requirements.txt ]]; then
+              echo "checkout/repository preparation failed"
+              rc=1
+            else
+              rm -rf "$CI_VENV"
+              python3 -m venv "$CI_VENV"
+              rc_venv=$?
+              echo "venv_rc=$rc_venv"
+              if [[ $rc_venv -eq 0 ]]; then
+                "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+                rc_pip=$?
+                echo "pip_upgrade_rc=$rc_pip"
+                if [[ $rc_pip -eq 0 ]]; then
+                  "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+                  rc_deps=$?
+                else
+                  rc_deps=98
+                fi
+                echo "deps_rc=$rc_deps"
               else
+                rc_pip=98
                 rc_deps=98
               fi
-              echo "deps_rc=$rc_deps"
-            else
-              rc_pip=98
-              rc_deps=98
+              rc=0
+              [[ ${rc_venv:-98} -eq 0 && ${rc_pip:-98} -eq 0 && ${rc_deps:-98} -eq 0 ]] || rc=1
             fi
           } 2>&1 | tee /tmp/solana-compat-prepare.log
-          rc=0
-          [[ ${rc_venv:-98} -eq 0 && ${rc_pip:-98} -eq 0 && ${rc_deps:-98} -eq 0 ]] || rc=1
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "rc=${rc:-1}" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Compile changed runtime modules
@@ -128,22 +141,25 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
           PREPARE_RC: ${{ steps.prepare.outputs.rc }}
           COMPILE_RC: ${{ steps.compile.outputs.rc }}
           COMPAT_RC: ${{ steps.compat.outputs.rc }}
           SAFETY_RC: ${{ steps.safety.outputs.rc }}
         run: |
           set -euo pipefail
+          checkout_outcome="${CHECKOUT_OUTCOME:-unknown}"
           prepare_rc="${PREPARE_RC:-99}"
           compile_rc="${COMPILE_RC:-99}"
           compat_rc="${COMPAT_RC:-99}"
           safety_rc="${SAFETY_RC:-99}"
           overall=PASS
-          if [[ "$prepare_rc" != 0 || "$compile_rc" != 0 || "$compat_rc" != 0 || "$safety_rc" != 0 ]]; then overall=FAIL; fi
+          if [[ "$checkout_outcome" != success || "$prepare_rc" != 0 || "$compile_rc" != 0 || "$compat_rc" != 0 || "$safety_rc" != 0 ]]; then overall=FAIL; fi
           {
             echo "## Solana discovery compatibility validation — ${overall}"
             echo
             echo "Validated commit: \`${GITHUB_SHA}\`"
+            echo "- checkout: ${checkout_outcome}"
             echo "- environment preparation: rc=${prepare_rc}"
             echo "- compile: rc=${compile_rc}"
             echo "- compatibility/import + SHADOW trade smoke: rc=${compat_rc}"
@@ -155,10 +171,10 @@ jobs:
               echo '<details><summary>Failure tail</summary>'
               echo
               echo '```text'
-              tail -n 55 /tmp/solana-compat-prepare.log 2>/dev/null || true
+              tail -n 70 /tmp/solana-compat-prepare.log 2>/dev/null || true
               tail -n 35 /tmp/solana-compat-compile.log 2>/dev/null || true
-              tail -n 70 /tmp/solana-compat-tests.log 2>/dev/null || true
-              tail -n 70 /tmp/solana-safety-tests.log 2>/dev/null || true
+              tail -n 80 /tmp/solana-compat-tests.log 2>/dev/null || true
+              tail -n 80 /tmp/solana-safety-tests.log 2>/dev/null || true
               echo '```'
               echo '</details>'
             fi
