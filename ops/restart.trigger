@@ -1,1 +1,1 @@
-2026-08-22T22:44:00Z deploy Telegram auto-update category toggle fix
+2026-08-23T00:08:00Z deploy BNB SiBot LIVE RPC failover
