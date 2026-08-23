@@ -7,6 +7,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/ai-agent-bus.yml'
+      - 'learnerbot/grok_provider.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_pending.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
@@ -16,6 +17,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/ai-agent-bus.yml'
+      - 'learnerbot/grok_provider.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_pending.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
@@ -115,6 +117,8 @@ jobs:
           GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.7-flash' }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          XAI_COUNCIL_MODEL: ${{ vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           AI_COUNCIL_RUNTIME_ENV: /tmp/ai-bus-no-runtime.env
         shell: bash
@@ -180,18 +184,18 @@ jobs:
                   headers[key.strip().lower()] = value.strip()
 
           providers = []
-          for match in re.finditer(r'(?m)^###\s+(GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT)\s+·', body):
+          for match in re.finditer(r'(?m)^###\s+(GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK)\s+·', body):
               name = match.group(1).upper()
               if name not in providers:
                   providers.append(name)
 
           chunks = []
-          for part in re.split(r'(?m)^###\s+(?:GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT)\s+·[^\n]*\n', body)[1:]:
+          for part in re.split(r'(?m)^###\s+(?:GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK)\s+·[^\n]*\n', body)[1:]:
               text = part.strip()
               if text:
                   chunks.append(text)
           preview = ' | '.join(chunks)
-          preview = re.sub(r'\b(?:sk|sess)-[A-Za-z0-9_-]{8,}\b', '<redacted>', preview)
+          preview = re.sub(r'\b(?:sk|sess|xai)-[A-Za-z0-9_-]{8,}\b', '<redacted>', preview)
           preview = re.sub(r'\bAIza[A-Za-z0-9_-]{20,}\b', '<redacted>', preview)
           preview = re.sub(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]{12,}', 'Bearer <redacted>', preview)
           preview = re.sub(r'\s+', ' ', preview).strip()[:700]
