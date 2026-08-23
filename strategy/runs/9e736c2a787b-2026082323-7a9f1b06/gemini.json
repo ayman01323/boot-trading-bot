@@ -1,0 +1,157 @@
+{
+  "cycle_id": "9e736c2a787b-2026082323-7a9f1b06",
+  "evidence_gaps": [
+    "Stale or missing runtime forensics: .strategy_cycle/evidence.json reports MISSING_RUNTIME_FORENSICS.",
+    "Lack of forward out-of-sample realised net P&L linked to shadow signal evaluations in the Strategy Lab.",
+    "No decision-to-outcome tracking linking initial features, executable quotes, simulation results, transaction receipts, and final exits.",
+    "No failure taxonomy or database audit logging that separates model/strategy losses from execution/infrastructure faults.",
+    "No contemporaneous executable future-edge feature adapter for Solana leader events (currently fail-closed at 0).",
+    "No calibrated distribution of quote-to-fill slippage, priority fees, and gas costs by chain, venue, and notional.",
+    "No capital-time weighted performance metrics or normalized drawdown statistics in scorecards.",
+    "No statistically significant sample size or market regime coverage (e.g. at least 30 closed forward outcomes) for active strategies."
+  ],
+  "evidence_sha256": "7a9f1b06f0a5ac5433dff87e68745ea1d37b5506be0a3a5c958ac97d8137988a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.96,
+      "downside_risk": "Flawed correlation IDs or timestamp offsets could misattribute trade outcomes. Ambiguous cases must default to UNKNOWN to avoid corrupting performance indicators.",
+      "evidence": [
+        {
+          "detail": "scorecard() reads shadow events but lacks any connection to actual out-of-sample forward outcomes, meaning simulated nets are treated as proof without matching actual executions/receipts.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        },
+        {
+          "detail": "EVM execution records expected and receipt-confirmed realized net, but rejected and failed attempts are not joined to Strategy Lab signals for opportunity-cost and failure attribution.",
+          "path": "learnerbot/auto_trader.py"
+        }
+      ],
+      "expected_effect": "Produces a cost-complete, failure-adjusted forward ledger of net P&L with clear failure taxonomy, protecting against biased promotion decisions.",
+      "id": "gemini-outcome-attribution-v1",
+      "minimum_observation": "At least 100 eligible forward signals and 30 closed out-of-sample outcomes per strategy and chain across multiple regimes; report net profit, profit factor, drawdown, and failure-adjusted expectancy.",
+      "rationale": "Quote simulations are not realized P&L. To avoid selection bias, we must build a forward-only outcome ledger that records all decisions (including abstentions and failures) and maps them to actual on-chain results. Crucially, we must distinguish market/strategy losses (adverse movement post-successful fill) from execution/infrastructure failures (inclusion failure, simulation revert, RPC timeouts, gas exhaustion).",
+      "shadow_test": "Record decision-time features, quotes, and execution logs under a unique correlation ID. Validate on-chain transaction receipts and balance changes. The test fails if any post-decision info leaks into features, or if notional balances cannot be reconciled. Audit failure rates and classify every economic drain.",
+      "strategy": "Strategy Lab outcome attribution",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/market_feature_adapter.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.91,
+      "downside_risk": "Removing price impact subtraction without validating quote source semantics could lead to overestimating edge if some adapters return zero-impact reference rates; we must assert that input quotes are size-matched.",
+      "evidence": [
+        {
+          "detail": "net_edge_bps property subtracts price_impact_bps from gross_edge_bps which is derived from raw quote outputs (which already reflect static price impact).",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "adapt_evm_opportunity() extracts expected_gross_profit_base and slippage_reserve_base from EVM rows, which are fed along with price_impact_bps into MarketFeatures.",
+          "path": "learnerbot/market_feature_adapter.py"
+        }
+      ],
+      "expected_effect": "Eliminates double-counting of swap price impact, preventing the false rejection of profitable opportunities while preserving a safe slippage cushion.",
+      "id": "gemini-price-impact-rework-v1",
+      "minimum_observation": "At least 100 quote replays across various notionals and venues on both Solana and EVM, with 30 subsequent forward closed outcomes.",
+      "rationale": "A DEX quote for a given notional size inherently reflects the static price impact of that swap size on the pool. Deducting price_impact_bps again in net_edge_bps represents a double-subtraction. This overly conservative math suppresses genuine executable edge. Price impact should be tracked as a diagnostic filter (e.g. pool risk), while slippage reserve is kept as a dynamic buffer for quote-to-fill deviation.",
+      "shadow_test": "Replay size-matched quote fixtures against both calculations. Verify that net edge correctly deducts explicit fees and slippage reserves once, without duplicating the quote-embedded static impact. Fail if median absolute cost error increases.",
+      "strategy": "Common executable-edge calculation",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/route_scanner.py"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.94,
+      "downside_risk": "Frequent Jupiter API polling could trigger rate-limiting or delay event processing; must enforce strict throttling and asynchronous lookups.",
+      "evidence": [
+        {
+          "detail": "load_solana_market_features() explicitly sets gross_edge_bps, liquidity, and sellability to 0, which permanently disables Solana leader-copy signals in cross_chain_strategy_signals.py.",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "The module contains jupiter_quote() and _validate_shadow_entry() which fetch active WSOL and token swap quotes, showing that real-time quote lookups are locally supported.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Enables the Strategy Lab to perform realistic shadow evaluations of Solana leader-copy strategies under the common signal evaluators.",
+      "id": "gemini-solana-jupiter-quote-adapter-v1",
+      "minimum_observation": "At least 200 raw leader events, yielding at least 100 shadow-evaluated records and 30 closed forward outcomes spanning a minimum of 14 days.",
+      "rationale": "The Strategy Lab cannot evaluate Solana leader-copy strategies because the features are fail-closed at zero. However, solana_sibot.py already implements jupiter_quote() for its internal copy engine. We can build a shadow adapter that queries Jupiter buy and sell quotes in real-time upon leader-event detection, populating gross_edge_bps, liquidity, and sellability without executing real trades.",
+      "shadow_test": "Upon receipt of a Solana leader BUY, asynchronously fetch Jupiter swap and reverse swap quotes. Compute executable gross edge and deterioration. If quote latency exceeds 2.5 seconds or API errors occur, fail-closed to zero. Assert that shadow results are recorded correctly.",
+      "strategy": "Solana leader-copy executable-edge adapter",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Money-weighted return (IRR-like) metrics can become highly unstable or division-by-zero prone for short-duration or tiny trades; must enforce strict minimum thresholds on exposure and notional.",
+      "evidence": [
+        {
+          "detail": "EVM leaders are ranked by absolute net profit, and copy_engine.py evaluates total net and profit per hour, but lacks money-weighted returns (MWR/IRR) or capital-time drawdown metrics.",
+          "path": "learnerbot/sibot.py"
+        },
+        {
+          "detail": "Solana leaders are sorted primarily by absolute SOL net profit, with win rate as a secondary tie-breaker.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Identifies leaders and strategies that maximize net value created per unit of capital and time, reducing tail-risk and maximizing portfolio efficiency.",
+      "id": "gemini-money-weighted-ranking-v1",
+      "minimum_observation": "At least 14 days of historical tracking and 30 closed trades per strategy/leader to ensure statistical significance.",
+      "rationale": "Absolute native profit rankings favor larger capital pools and ignore capital-time exposure. High absolute profit with low capital-time efficiency or large drawdowns is highly risky. Ranks should be normalized using money-weighted returns and capital-at-risk, enabling optimal cross-chain capital allocation.",
+      "shadow_test": "Compute forward money-weighted net returns, capital-time exposure, and drawdowns on all active shadow positions. Compare ranking selection efficiency against the current absolute net profit sort. Verify that modified ranking improves portfolio failure-adjusted expectancy without altering live execution.",
+      "strategy": "Leader and strategy capital-efficiency ranking",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any Strategy Lab or SIBOT strategy to CANARY or LIVE based on simulated shadow nets or leader win rates alone.",
+      "reason": "Stale or missing runtime forensics prevents empirical verification of live execution costs or latencies. Quote simulations are not out-of-sample realised net P&L and do not reflect execution-failure or priority-fee distributions."
+    },
+    {
+      "idea": "Aggressively lower liquidity, sellability, or edge thresholds to artificially boost trade counts.",
+      "reason": "Trade frequency is not a success metric. Forcing trades under weak executable edge or poor liquidity guarantees negative expected returns due to slippage, gas, and execution failures."
+    },
+    {
+      "idea": "Use a unified fixed gas/fee cost representation across Solana and EVM chains.",
+      "reason": "Solana and EVM have vastly different cost structures (Solana uses micro-lamports for priority fees, ATA rent, and Jup fees, whereas EVM uses native gas, builder fees, and ERC20 approval costs). A shared model would severely distort edge calculations."
+    },
+    {
+      "idea": "Treat pre-execution failures (e.g., simulation reverts, timeouts, submission delays) as strategy/market losses.",
+      "reason": "Pre-execution and transaction-lifecycle failures are purely execution/infrastructure issues. Collapsing them into strategy/market losses prevents accurate diagnostic isolation of model performance versus connectivity."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "9e736c2a787bac23bab590d1343cf40be8af10e9",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed architecture-only strategy review. The codebase is structurally sound and fails closed on absent edge, but lacks realized out-of-sample forward outcome tracking, suffers from a price-impact double-subtraction defect in the net edge calculation, and permanently disqualifies Solana leader-copy signals due to a missing live quote feature adapter. No claims regarding strategy profitability, canary-readiness, or live-readiness can be made due to missing runtime evidence. We propose specific improvements, rework, and research plans to address these gaps."
+}
