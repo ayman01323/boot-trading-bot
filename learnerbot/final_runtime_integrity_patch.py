@@ -97,3 +97,8 @@ def install() -> None:
 
 
 install()
+
+# Observational MASTER-only UI extension. It is deliberately loaded only after
+# all capital-moving runtime identities above have been verified, and it has no
+# trading/LIVE/capital/wallet/signing authority.
+from . import telegram_ai_target_score_patch  # noqa: E402,F401
