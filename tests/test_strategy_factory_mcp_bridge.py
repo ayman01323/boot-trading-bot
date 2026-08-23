@@ -68,8 +68,9 @@ def test_send_to_gpt_uses_single_strategy_factory_transport(monkeypatch) -> None
     }
 
 
-def test_bridge_refuses_direct_public_bind() -> None:
+def test_bridge_refuses_direct_public_bind_and_has_no_execution_primitives() -> None:
     text = _text("scripts/strategy_factory_mcp_bridge.py")
+    low = text.lower()
     assert 'STRATEGY_MCP_HOST", "127.0.0.1"' in text
     assert "Refusing non-loopback bind" in text
     assert 'transport="streamable-http"' in text
@@ -77,7 +78,9 @@ def test_bridge_refuses_direct_public_bind() -> None:
     assert "json_response=True" in text
     assert "@mcp.tool()" in text
     assert "async def send_to_gpt" in text
-    assert "shell" not in text.lower().split("async def send_to_gpt", 1)[1]
+    assert "subprocess" not in low
+    assert "os.system" not in low
+    assert "run_shell_command" not in low
 
 
 def test_mcp_dependencies_are_isolated_from_trading_runtime() -> None:
