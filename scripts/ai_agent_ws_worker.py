@@ -16,7 +16,7 @@ from learnerbot.ai_cost_provider_patch import call_provider
 from scripts.ai_agent_task_executor import TaskError, execute_task, parse_task_envelope
 from scripts.ai_agent_ws_memory import recent_context
 
-AGENTS = {"gpt", "claude", "gemini", "deepseek", "grok", "copilot"}
+AGENTS = {"gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"}
 DEFAULT_URL = "ws://127.0.0.1:8765"
 COPILOT_BUS_BIN_DIR = "/var/tmp/boot-copilot-cli/bin"
 CHEAP_MODELS = {
@@ -25,6 +25,7 @@ CHEAP_MODELS = {
     "claude": ("ANTHROPIC_COUNCIL_MODEL", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_COUNCIL_MODEL", "deepseek-v4-flash"),
     "grok": ("XAI_COUNCIL_MODEL", "grok-4.20-non-reasoning"),
+    "kimi": ("KIMI_COUNCIL_MODEL", "kimi-k2.6"),
 }
 _RETIRED_MODEL_ALIASES = {
     "gemini": {

@@ -78,6 +78,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
         run: |
@@ -89,7 +91,8 @@ jobs:
           import json, os, pathlib
           keys = (
               'OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY',
-              'DEEPSEEK_API_KEY', 'XAI_API_KEY', 'COPILOT_GITHUB_TOKEN', 'COPILOT_ASSIGN_TOKEN',
+              'DEEPSEEK_API_KEY', 'XAI_API_KEY', 'KIMI_API_KEY', 'MOONSHOT_API_KEY',
+              'COPILOT_GITHUB_TOKEN', 'COPILOT_ASSIGN_TOKEN',
           )
           lines=[]
           for key in keys:
@@ -111,6 +114,7 @@ jobs:
               'Claude=' + ('present' if 'ANTHROPIC_API_KEY' in names else 'missing'),
               'DeepSeek=' + ('present' if 'DEEPSEEK_API_KEY' in names else 'missing'),
               'Grok=' + ('present' if 'XAI_API_KEY' in names else 'missing'),
+              'Kimi=' + ('present' if {'KIMI_API_KEY','MOONSHOT_API_KEY'} & names else 'missing'),
               'Copilot=' + ('present' if {'COPILOT_GITHUB_TOKEN','COPILOT_ASSIGN_TOKEN'} & names else 'missing'),
           ]))
           print('runtime_file_mode=' + oct(stat.S_IMODE(p.stat().st_mode)))
@@ -164,7 +168,7 @@ jobs:
 
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-isolated-deploy.txt"
           current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
-          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.read().strip() if False else sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
           encoded="$(base64 -w0 /tmp/boot-isolated-deploy.txt)"
           python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/boot-isolated-put.json
           import json,sys

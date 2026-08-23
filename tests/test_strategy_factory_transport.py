@@ -15,8 +15,8 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_strategy_factory_has_one_six_agent_transport() -> None:
-    assert set(transport.AGENTS) == {"gpt", "claude", "gemini", "deepseek", "grok", "copilot"}
+def test_strategy_factory_has_one_seven_agent_transport() -> None:
+    assert set(transport.AGENTS) == {"gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"}
     assert direct_sender.AGENTS is transport.AGENTS
     assert transport.DEFAULT_URL == "ws://127.0.0.1:8765"
 
@@ -107,4 +107,4 @@ def test_documentation_defines_one_transport_two_modes_and_fallback_only() -> No
     assert "DIRECT mode" in text
     assert "COUNCIL mode" in text
     assert "not a second normal messaging system" in text
-    assert "Grok" in text
+    assert "Kimi" in text

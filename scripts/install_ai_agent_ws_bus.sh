@@ -24,8 +24,10 @@ install -m 0644 "$SOURCE_DIR/learnerbot/__init__.py" "$DEST_DIR/learnerbot/__ini
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_council.py" "$DEST_DIR/learnerbot/ai_council.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_council_http_patch.py" "$DEST_DIR/learnerbot/ai_council_http_patch.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/grok_provider.py" "$DEST_DIR/learnerbot/grok_provider.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/kimi_provider.py" "$DEST_DIR/learnerbot/kimi_provider.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_router.py" "$DEST_DIR/learnerbot/ai_cost_router.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_grok_patch.py" "$DEST_DIR/learnerbot/ai_cost_grok_patch.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_kimi_patch.py" "$DEST_DIR/learnerbot/ai_cost_kimi_patch.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_provider_patch.py" "$DEST_DIR/learnerbot/ai_cost_provider_patch.py"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
@@ -86,14 +88,14 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now boot-ai-agent-bus.service
-for agent in gpt claude gemini deepseek grok copilot; do
+for agent in gpt claude gemini deepseek grok kimi copilot; do
   systemctl enable --now "boot-ai-agent-worker@${agent}.service"
 done
 
 sleep 1
 systemctl is-active --quiet boot-ai-agent-bus.service
-for agent in gpt claude gemini deepseek grok copilot; do
+for agent in gpt claude gemini deepseek grok kimi copilot; do
   systemctl is-active --quiet "boot-ai-agent-worker@${agent}.service"
 done
 
-echo "AI agent WebSocket bus installed and active on 127.0.0.1:8765 with six workers"
+echo "AI agent WebSocket bus installed and active on 127.0.0.1:8765 with seven workers"

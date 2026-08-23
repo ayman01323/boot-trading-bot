@@ -12,7 +12,7 @@ from typing import Any
 
 from websockets.asyncio.client import connect
 
-AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
+AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")
 SENDERS = AGENTS + ("master",)
 DEFAULT_URL = "ws://127.0.0.1:8765"
 MAX_MESSAGE_BYTES = 32_768
