@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude", "deepseek")
+PROVIDERS = ("auto", "gpt", "gemini", "copilot", "claude", "deepseek", "grok")
 LANES = ("strategy", "engineering")
 CYCLES = ("scheduled", "manual")
 VPS_ACTIONS = ("none", "inspect", "test", "deploy")
