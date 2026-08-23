@@ -150,6 +150,10 @@ def _snapshot(app, tid):
             load_kv_scoped(Path(app.csv_dir) / "auto_trading_settings.csv", 0).get("auto_trading_enabled"),
             False,
         ),
+        "platform_live": _bool(
+            load_kv_scoped(Path(app.csv_dir) / "live_trading_settings.csv", 0).get("trading_enabled"),
+            False,
+        ),
         "evm": evm,
         "fast_market": fast,
         "solana": sol,
@@ -179,6 +183,10 @@ def build_report(app, tid) -> str:
     f = s["fast_market"]
     lines += ["", "<b>DIRECT AUTO</b>"]
     focus = "Polygon only" if s["polygon_focus"] else "all enabled chains"
+    lines.append(
+        f"{'🟢' if s.get('platform_live', True) else '🔴'} Platform LIVE (signing): "
+        f"<b>{'ON' if s.get('platform_live', True) else 'OFF'}</b>"
+    )
     lines.append(
         f"{'🟢' if s['platform_auto'] else '🔴'} Platform AUTO: "
         f"<b>{'ON' if s['platform_auto'] else 'OFF'}</b> • scope <b>{focus}</b>"
@@ -251,6 +259,7 @@ def _publish_startup_health(app):
         "etherscan_configured": snapshot.get("etherscan_configured"),
         "polygon_focus": snapshot.get("polygon_focus"),
         "platform_auto": snapshot.get("platform_auto"),
+        "platform_live": snapshot.get("platform_live"),
         "evm": snapshot.get("evm", {}),
         "fast_market": snapshot.get("fast_market", {}),
     }
@@ -278,6 +287,51 @@ def _publish_startup_health(app):
                 except Exception:
                     pass
             marker.write_text(str(int(time.time())) + "\n", encoding="utf-8")
+
+    _maybe_alert_platform_gate_off(app, masters, safe)
+
+
+def _maybe_alert_platform_gate_off(app, masters, safe):
+    """Proactively warn masters when the platform-wide LIVE/AUTO gate is OFF.
+
+    Shared by both the base health publisher and trade_blocker_alchemy_history_patch's
+    override, so the alert fires no matter which one is the active runtime entry point.
+    Both platform_auto and platform_live default to a missing-key False (fail closed),
+    so a genuinely unknown value is treated the same as ON here -- this must only fire
+    on a confirmed OFF, never on a snapshot that could not be computed (e.g. no master
+    registered yet).
+    """
+    platform_auto_off = safe.get("platform_auto") is False
+    platform_live_off = safe.get("platform_live") is False
+    if not ((platform_auto_off or platform_live_off) and masters and app.telegram_bot_token):
+        return
+    marker = Path(app.data_dir) / ".platform_gate_off_warning_epoch"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    last = _epoch(marker.read_text(encoding="utf-8").strip()) if marker.exists() else 0
+    if int(time.time()) - last < 12 * 3600:
+        return
+    off_gates = []
+    if platform_live_off:
+        off_gates.append("LIVE (signing)")
+    if platform_auto_off:
+        off_gates.append("AUTO (execution)")
+    for master_tid in masters:
+        try:
+            send_message(
+                app.telegram_bot_token,
+                master_tid,
+                "🔴 <b>Platform trading gate is OFF</b>\n"
+                f"Currently disabled: <code>{html.escape(', '.join(off_gates))}</code>\n"
+                "No live trade can execute on any chain while this is off. "
+                "If this was not a deliberate pause, re-enable with "
+                "<code>/platformlive on CONFIRM</code> and/or <code>/platformauto on CONFIRM</code>. "
+                "Use <code>/whynotrade</code> for the full funnel.",
+                parse_mode="HTML",
+                protect_content=True,
+            )
+        except Exception:
+            pass
+    marker.write_text(str(int(time.time())) + "\n", encoding="utf-8")
 
 
 def _app_with_trade_blocker_health():

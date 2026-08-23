@@ -9,6 +9,7 @@ def _sample_snapshot():
         "etherscan_configured": False,
         "polygon_focus": True,
         "platform_auto": True,
+        "platform_live": True,
         "evm": {
             "polygon": {
                 "leaders": 0,
@@ -50,6 +51,15 @@ def test_report_explains_each_major_no_trade_layer(monkeypatch):
     assert "routes 25" in text and "eligible 0" in text
     assert "no fresh selected-leader swap" in text
     assert "does not weaken profit, liquidity, simulation" in text
+    assert "🟢 Platform LIVE (signing): <b>ON</b>" in text
+
+
+def test_report_shows_platform_live_off(monkeypatch):
+    snap = _sample_snapshot()
+    snap["platform_live"] = False
+    monkeypatch.setattr(patch, "_snapshot", lambda app, tid: snap)
+    text = patch.build_report(SimpleNamespace(), "master")
+    assert "🔴 Platform LIVE (signing): <b>OFF</b>" in text
 
 
 def test_top_reason_returns_most_common_reason():
@@ -75,3 +85,58 @@ def test_startup_health_never_writes_secret_value(tmp_path, monkeypatch):
     raw = (app.data_dir / "trade_blocker_health.json").read_text(encoding="utf-8")
     assert "do-not-write-this-secret" not in raw
     assert '"etherscan_configured": true' in raw
+
+
+def _gate_app(tmp_path, *, telegram_bot_token="test-token"):
+    app = SimpleNamespace(data_dir=tmp_path / "data", telegram_bot_token=telegram_bot_token)
+    return app
+
+
+def test_alert_platform_gate_off_warns_master_for_auto_only(tmp_path, monkeypatch):
+    app = _gate_app(tmp_path)
+    sent = []
+    monkeypatch.setattr(patch, "send_message", lambda token, tid, text, **kw: sent.append((tid, text)))
+    patch._maybe_alert_platform_gate_off(app, ["555"], {"platform_auto": False, "platform_live": True})
+    assert len(sent) == 1
+    assert sent[0][0] == "555"
+    assert "AUTO (execution)" in sent[0][1]
+    assert "LIVE (signing)" not in sent[0][1]
+    assert (app.data_dir / ".platform_gate_off_warning_epoch").exists()
+
+
+def test_alert_platform_gate_off_is_throttled(tmp_path, monkeypatch):
+    app = _gate_app(tmp_path)
+    sent = []
+    monkeypatch.setattr(patch, "send_message", lambda token, tid, text, **kw: sent.append((tid, text)))
+    safe = {"platform_auto": False, "platform_live": False}
+    patch._maybe_alert_platform_gate_off(app, ["555"], safe)
+    patch._maybe_alert_platform_gate_off(app, ["555"], safe)
+    assert len(sent) == 1
+    assert "LIVE (signing)" in sent[0][1] and "AUTO (execution)" in sent[0][1]
+
+
+def test_alert_platform_gate_off_skipped_when_gates_on(tmp_path, monkeypatch):
+    app = _gate_app(tmp_path)
+    sent = []
+    monkeypatch.setattr(patch, "send_message", lambda token, tid, text, **kw: sent.append((tid, text)))
+    patch._maybe_alert_platform_gate_off(app, ["555"], {"platform_auto": True, "platform_live": True})
+    assert sent == []
+    assert not (app.data_dir / ".platform_gate_off_warning_epoch").exists()
+
+
+def test_alert_platform_gate_off_skipped_without_telegram_token(tmp_path, monkeypatch):
+    app = _gate_app(tmp_path, telegram_bot_token="")
+    sent = []
+    monkeypatch.setattr(patch, "send_message", lambda token, tid, text, **kw: sent.append((tid, text)))
+    patch._maybe_alert_platform_gate_off(app, ["555"], {"platform_auto": False, "platform_live": False})
+    assert sent == []
+
+
+def test_alert_platform_gate_off_skipped_when_snapshot_unknown(tmp_path, monkeypatch):
+    # A snapshot that could not be computed (e.g. no master registered yet) must
+    # not be mistaken for a confirmed OFF gate.
+    app = _gate_app(tmp_path)
+    sent = []
+    monkeypatch.setattr(patch, "send_message", lambda token, tid, text, **kw: sent.append((tid, text)))
+    patch._maybe_alert_platform_gate_off(app, ["555"], {})
+    assert sent == []
