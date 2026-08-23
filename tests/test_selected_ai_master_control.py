@@ -21,15 +21,16 @@ def _runner():
 
 def test_selected_master_fallback_order_is_exact_and_no_provider_repeats() -> None:
     r = _runner()
-    assert r._provider_order("copilot") == ["copilot", "gpt", "claude", "gemini", "deepseek"]
-    assert r._provider_order("deepseek") == ["deepseek", "gpt", "claude", "gemini", "copilot"]
-    assert r._provider_order("gemini") == ["gemini", "gpt", "claude", "deepseek", "copilot"]
-    assert r._provider_order("claude") == ["claude", "gpt", "gemini", "deepseek", "copilot"]
-    assert r._provider_order("gpt") == ["gpt", "claude", "gemini", "deepseek", "copilot"]
-    assert r._provider_order("auto") == ["gpt", "claude", "gemini", "deepseek", "copilot"]
-    for preferred in ("gpt", "claude", "gemini", "deepseek", "copilot", "auto"):
+    assert r._provider_order("copilot") == ["copilot", "gpt", "claude", "gemini", "deepseek", "grok"]
+    assert r._provider_order("grok") == ["grok", "gpt", "claude", "gemini", "deepseek", "copilot"]
+    assert r._provider_order("deepseek") == ["deepseek", "gpt", "claude", "gemini", "grok", "copilot"]
+    assert r._provider_order("gemini") == ["gemini", "gpt", "claude", "deepseek", "grok", "copilot"]
+    assert r._provider_order("claude") == ["claude", "gpt", "gemini", "deepseek", "grok", "copilot"]
+    assert r._provider_order("gpt") == ["gpt", "claude", "gemini", "deepseek", "grok", "copilot"]
+    assert r._provider_order("auto") == ["gpt", "claude", "gemini", "deepseek", "grok", "copilot"]
+    for preferred in ("gpt", "claude", "gemini", "deepseek", "grok", "copilot", "auto"):
         order = r._provider_order(preferred)
-        assert len(order) == len(set(order)) == 5
+        assert len(order) == len(set(order)) == 6
 
 
 def test_master_runner_allows_one_valid_report_but_keeps_stricter_single_agent_policy() -> None:
@@ -56,8 +57,11 @@ def test_telegram_master_menu_controls_both_lanes_and_run_now() -> None:
         assert f'mbtn("strategy", "{provider}")' in text
         assert f'mbtn("engineering", "{provider}")' in text
     fifth = (ROOT / "learnerbot/telegram_five_agent_patch.py").read_text(encoding="utf-8")
+    sixth = (ROOT / "learnerbot/telegram_grok_council_patch.py").read_text(encoding="utf-8")
     assert 'aicfg:master:{lane}:deepseek' in fifth
     assert '_PROVIDER_LABELS["deepseek"] = "DeepSeek"' in fifth
+    assert 'aicfg:master:{lane}:grok' in sixth
+    assert '"grok": "Grok"' in sixth
     assert 'aicfg:run:strategy' in text
     assert 'aicfg:run:engineering' in text
     assert 'aicfg:run:both' in text
@@ -70,17 +74,21 @@ def test_control_bridge_is_sanitised_and_contains_no_credentials() -> None:
     assert 'strategy_master' in text and 'engineering_master' in text
     assert 'strategy_run_nonce' in text and 'engineering_run_nonce' in text
     assert '"deepseek"' in text
+    assert '"grok"' in text
     assert 'API_KEY' not in text
     assert 'PRIVATE_KEY' not in text
 
 
-def test_five_agent_health_overlay_keeps_trading_independent() -> None:
+def test_six_agent_health_overlay_keeps_trading_independent() -> None:
     legacy = (ROOT / "learnerbot/ai_four_agent_health_patch.py").read_text(encoding="utf-8")
     fifth = (ROOT / "learnerbot/telegram_five_agent_patch.py").read_text(encoding="utf-8")
+    sixth = (ROOT / "learnerbot/telegram_grok_council_patch.py").read_text(encoding="utf-8")
     assert 'AI failure never disables the trading engine' in legacy
     assert 'PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")' in fifth
     assert 'selected MASTER → GPT → Claude → Gemini → DeepSeek → other available agent.' in fifth
     assert 'five_agent_reports_complete' in fifth
+    assert 'PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in sixth
+    assert 'six_agent_reports_complete' in sixth
 
 
 def test_documented_contract_matches_runtime_resilience_and_safety() -> None:
