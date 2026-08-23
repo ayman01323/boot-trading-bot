@@ -1,12 +1,45 @@
 from learnerbot import telegram_ai_health_truth_patch as truth
 
 
-def test_lane_text_separates_provider_health_from_review_state(monkeypatch):
+def _health(states):
+    return {
+        "agents": {
+            provider: {"state": state, "reason": reason}
+            for provider, (state, reason) in states.items()
+        }
+    }
+
+
+def test_lane_drilldown_contains_pipeline_state_only():
+    health = _health(
+        {
+            "gpt": ("WORKING", "HEALTHY"),
+            "claude": ("WAITING", "report refresh in progress"),
+            "gemini": ("WORKING", "HEALTHY"),
+            "deepseek": ("NOT_WORKING", "unsupported model config"),
+            "grok": ("NOT_WORKING", "pipeline failed"),
+            "copilot": ("WAITING", "waiting for Copilot report"),
+        }
+    )
+
+    text = truth.lane_text("engineering", health)
+
+    assert "First status =" not in text
+    assert "API working" not in text
+    assert "API check stale" not in text
+    assert "🟢 GPT — Working" in text
+    assert "🟡 Claude — In progress" in text
+    assert "🔴 DeepSeek — Model config" in text
+    assert "🟠 Grok — Pipeline failure" in text
+
+
+def test_provider_health_is_shown_once_and_independent_of_review_failure(monkeypatch):
     monkeypatch.setattr(
         truth,
         "_fresh_preflight",
         lambda: {
             "_truth_stale": False,
+            "_truth_age_seconds": 30,
             "openai": {"state": "WORKING"},
             "anthropic": {"state": "WORKING"},
             "deepseek": {"state": "WORKING"},
@@ -15,76 +48,127 @@ def test_lane_text_separates_provider_health_from_review_state(monkeypatch):
     )
     monkeypatch.setattr(truth, "_copilot_assignment_state", lambda lane, health: "ASSIGNED")
 
-    refreshing = {
-        "state": "WAITING",
-        "reason": "Provider API is healthy; replacement report is being refreshed",
-        "provider_preflight": "WORKING",
-    }
-    health = {
-        "source_commit": "a" * 40,
-        "agents": {
-            "gpt": {"state": "WORKING", "reason": "HEALTHY"},
-            "claude": dict(refreshing),
-            "gemini": {"state": "WORKING", "reason": "HEALTHY"},
-            "deepseek": dict(refreshing),
-            "grok": dict(refreshing),
-            "copilot": {"state": "WAITING", "reason": "waiting for Copilot report"},
-        },
-    }
-
-    text = truth.lane_text("engineering", health)
-
-    assert "First status = agent/provider" in text
-    assert "🟢 GPT — API working • 🟢 Engineering review working" in text
-    assert "🟢 Claude — API working • 🟡 Engineering review refreshing" in text
-    assert "🟢 Gemini — Agent working • 🟢 Engineering review working" in text
-    assert "🟢 DeepSeek — API working • 🟡 Engineering review refreshing" in text
-    assert "🟢 Grok — API working • 🟡 Engineering review refreshing" in text
-    assert "🟢 Copilot — Assigned • 🟡 Engineering review in progress" in text
-
-
-def test_provider_problem_is_not_hidden_by_review_status(monkeypatch):
-    monkeypatch.setattr(
-        truth,
-        "_fresh_preflight",
-        lambda: {"_truth_stale": False, "xai": {"state": "FAILED"}},
-    )
-    health = {
-        "agents": {
-            "grok": {"state": "WORKING", "reason": "HEALTHY"},
+    engineering = _health(
+        {
+            "gpt": ("WORKING", "HEALTHY"),
+            "claude": ("WAITING", "refreshing"),
+            "gemini": ("WORKING", "HEALTHY"),
+            "deepseek": ("WAITING", "refreshing"),
+            "grok": ("WAITING", "refreshing"),
+            "copilot": ("WAITING", "waiting"),
         }
-    }
+    )
+    strategy = _health(
+        {
+            "gpt": ("WORKING", "HEALTHY"),
+            "claude": ("WORKING", "HEALTHY"),
+            "gemini": ("WORKING", "HEALTHY"),
+            "deepseek": ("NOT_WORKING", "unsupported model config"),
+            "grok": ("NOT_WORKING", "pipeline failed"),
+            "copilot": ("WAITING", "waiting"),
+        }
+    )
 
-    text = truth.lane_text("strategy", health)
+    providers = truth.provider_health_text(engineering, strategy)
+    strategy_summary = truth.lane_summary_text("strategy", strategy)
 
-    assert "🔴 Grok — API/provider problem • 🟢 Strategy review working" in text
+    assert "🟢 GPT — API working" in providers
+    assert "🟢 Claude — API working" in providers
+    assert "🟢 Grok — API working" in providers
+    assert "🔴 Grok — API/provider problem" not in providers
+    assert "🔴 DeepSeek — Model config" in strategy_summary
+    assert "🟠 Grok — Pipeline failure" in strategy_summary
 
 
-def test_stale_provider_check_never_copies_review_failure_into_provider_status(monkeypatch):
+def test_stale_api_evidence_shows_age_and_escalates_when_too_old(monkeypatch):
+    engineering = _health({"gemini": ("WORKING", "HEALTHY"), "copilot": ("WAITING", "waiting")})
+    strategy = _health({"gemini": ("WORKING", "HEALTHY"), "copilot": ("WAITING", "waiting")})
+    monkeypatch.setattr(truth, "_copilot_assignment_state", lambda lane, health: "ASSIGNED")
+
     monkeypatch.setattr(
         truth,
         "_fresh_preflight",
         lambda: {
             "_truth_stale": True,
             "_truth_age_seconds": 1500,
+            "openai": {"state": "WORKING"},
             "anthropic": {"state": "WORKING"},
             "deepseek": {"state": "WORKING"},
             "xai": {"state": "WORKING"},
         },
     )
-    health = {
-        "agents": {
-            "claude": {"state": "NOT_WORKING", "reason": "pipeline failed"},
-            "deepseek": {"state": "NOT_WORKING", "reason": "unsupported model config"},
-            "grok": {"state": "NOT_WORKING", "reason": "pipeline failed"},
+    text = truth.provider_health_text(engineering, strategy)
+    assert "🟡 GPT — API not checked for 25m · last OK" in text
+
+    monkeypatch.setattr(
+        truth,
+        "_fresh_preflight",
+        lambda: {
+            "_truth_stale": True,
+            "_truth_age_seconds": 4 * 60 * 60,
+            "openai": {"state": "WORKING"},
+            "anthropic": {"state": "WORKING"},
+            "deepseek": {"state": "WORKING"},
+            "xai": {"state": "WORKING"},
+        },
+    )
+    text = truth.provider_health_text(engineering, strategy)
+    assert "🔴 GPT — API unverified for 4h · last OK" in text
+
+
+def test_master_operational_sections_are_compact_and_only_expand_issues(monkeypatch):
+    monkeypatch.setattr(
+        truth,
+        "_fresh_preflight",
+        lambda: {
+            "_truth_stale": False,
+            "_truth_age_seconds": 10,
+            "openai": {"state": "WORKING"},
+            "anthropic": {"state": "WORKING"},
+            "deepseek": {"state": "WORKING"},
+            "xai": {"state": "WORKING"},
+        },
+    )
+    monkeypatch.setattr(truth, "_copilot_assignment_state", lambda lane, health: "ASSIGNED")
+
+    engineering = _health(
+        {
+            provider: ("WAITING", "review in progress")
+            for provider in truth._compact.PROVIDERS
         }
-    }
+    )
+    strategy = _health(
+        {
+            "gpt": ("WORKING", "HEALTHY"),
+            "claude": ("WORKING", "HEALTHY"),
+            "gemini": ("WORKING", "HEALTHY"),
+            "deepseek": ("NOT_WORKING", "unsupported model config"),
+            "grok": ("NOT_WORKING", "pipeline failed"),
+            "copilot": ("WAITING", "review in progress"),
+        }
+    )
+    factory = _health(
+        {
+            provider: ("WAITING", "factory in progress")
+            for provider in truth._compact.PROVIDERS
+        }
+    )
 
-    text = truth.lane_text("engineering", health)
+    engineering_summary = truth.lane_summary_text("engineering", engineering)
+    strategy_summary = truth.lane_summary_text("strategy", strategy)
+    factory_summary = truth.factory_summary_text(factory)
+    dashboard = truth.dashboard_text(engineering, strategy, factory)
 
-    assert "🟡 Claude — API check stale (last working) • 🟠 Engineering review pipeline failure" in text
-    assert "🟡 DeepSeek — API check stale (last working) • 🔴 Engineering review model config" in text
-    assert "🟡 Grok — API check stale (last working) • 🟠 Engineering review pipeline failure" in text
-    assert "Claude — Agent pipeline failure" not in text
-    assert "DeepSeek — Agent model config" not in text
-    assert "Grok — Agent pipeline failure" not in text
+    assert "🟡 <b>0 working · 6 in progress · 0 issues</b>" in engineering_summary
+    assert engineering_summary.count(" — ") == 0
+
+    assert "🔴 <b>3 working · 1 in progress · 2 issues</b>" in strategy_summary
+    assert "🔴 DeepSeek — Model config" in strategy_summary
+    assert "🟠 Grok — Pipeline failure" in strategy_summary
+    assert strategy_summary.count(" — ") == 2
+
+    assert "🟡 <b>0 working · 6 in progress · 0 issues</b>" in factory_summary
+    assert factory_summary.count(" — ") == 0
+
+    assert "First status = agent/provider" not in dashboard
+    assert "Factory status is work state" not in dashboard
