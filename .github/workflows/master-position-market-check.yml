@@ -1,0 +1,150 @@
+name: MASTER Position Market Check
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  market:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/master-position-lookup'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    env:
+      JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+    steps:
+      - name: Resolve mint pools and quote safe exit slices
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request, urllib.error
+          from pathlib import Path
+
+          MINT='8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV'
+          BUY_SIG='4ZSHzzHUSSsgLBwoT5MM9uXHoTJkhG68HyPSdw9XRFZKr5XRg9yyemFEGYwfJdCYTyXHsY3anhBGB7JvSyMJYADX'
+          WSOL='So11111111111111111111111111111111111111112'
+          BOUGHT_UI=798.624913
+
+          def get_json(url, headers=None, timeout=30):
+              req=urllib.request.Request(url, headers=headers or {'User-Agent':'BOOT-readonly-position-check/1.0'})
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return r.status, json.loads(r.read().decode('utf-8','replace'))
+
+          def rpc(method, params):
+              body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+              req=urllib.request.Request('https://api.mainnet-beta.solana.com', data=body, headers={'Content-Type':'application/json','User-Agent':'BOOT-readonly-position-check/1.0'}, method='POST')
+              with urllib.request.urlopen(req, timeout=35) as r:
+                  data=json.loads(r.read().decode())
+              return data.get('result'), data.get('error')
+
+          out=[]
+          out.append('## Public-chain position and exitability check')
+          out.append('')
+          out.append(f'- Mint: `{MINT}`')
+          out.append(f'- Historical BUY signature: `{BUY_SIG}`')
+          out.append(f'- Historical amount received: **{BOUGHT_UI:.6f} tokens**')
+
+          # Token decimals from public Solana RPC.
+          decimals=None
+          try:
+              supply, err=rpc('getTokenSupply',[MINT,{'commitment':'confirmed'}])
+              if not err and supply:
+                  decimals=int((supply.get('value') or {}).get('decimals'))
+                  out.append(f'- Token decimals: **{decimals}**')
+              else:
+                  out.append(f'- Token decimals RPC: `{str(err)[:300]}`')
+          except Exception as e:
+              out.append(f'- Token decimals RPC error: `{type(e).__name__}: {str(e)[:240]}`')
+
+          # DEX Screener current pools.
+          pairs=[]
+          try:
+              _, data=get_json('https://api.dexscreener.com/token-pairs/v1/solana/'+MINT)
+              pairs=data if isinstance(data,list) else []
+          except Exception as e:
+              out.append(f'- DEX Screener error: `{type(e).__name__}: {str(e)[:240]}`')
+          pairs.sort(key=lambda p: float(((p.get('liquidity') or {}).get('usd') or 0)), reverse=True)
+          out.append('')
+          out.append('### Current DEX pools')
+          if not pairs:
+              out.append('**No DEX Screener pool currently returned for this mint.**')
+          for p in pairs[:8]:
+              liq=(p.get('liquidity') or {}).get('usd')
+              vol=(p.get('volume') or {}).get('h24')
+              h24=(p.get('txns') or {}).get('h24') or {}
+              out.append(
+                  f"- `{p.get('pairAddress')}` — **{p.get('dexId')}** "
+                  f"{(p.get('baseToken') or {}).get('symbol')}/{(p.get('quoteToken') or {}).get('symbol')} "
+                  f"price=${p.get('priceUsd')} • liquidity=${liq} • 24h volume=${vol} • "
+                  f"24h buys/sells={h24.get('buys')}/{h24.get('sells')}"
+              )
+              if p.get('url'):
+                  out.append(f"  - {p.get('url')}")
+
+          # Fetch original buy transaction programmes/accounts (public data only).
+          try:
+              tx, err=rpc('getTransaction',[BUY_SIG,{'encoding':'jsonParsed','maxSupportedTransactionVersion':0,'commitment':'confirmed'}])
+              if err:
+                  out.append(f'- BUY transaction RPC error: `{str(err)[:300]}`')
+              elif tx:
+                  keys=[]
+                  for x in (((tx.get('transaction') or {}).get('message') or {}).get('accountKeys') or []):
+                      keys.append(str(x.get('pubkey')) if isinstance(x,dict) else str(x))
+                  logs=((tx.get('meta') or {}).get('logMessages') or [])
+                  programmes=[]
+                  for line in logs:
+                      if 'Program ' in str(line):
+                          programmes.append(str(line)[:220])
+                  out.append('')
+                  out.append('### Original BUY route evidence')
+                  out.append(f'- Account keys in transaction: **{len(keys)}**')
+                  for line in programmes[:20]:
+                      out.append(f'  - `{line}`')
+          except Exception as e:
+              out.append(f'- BUY transaction lookup error: `{type(e).__name__}: {str(e)[:240]}`')
+
+          # Use exactly the bot's quote-only Jupiter Swap V2 endpoint and safe slices.
+          out.append('')
+          out.append('### Current Jupiter exit quotes')
+          api_key=os.getenv('JUPITER_API_KEY','').strip()
+          headers={'User-Agent':'BOOT-readonly-position-check/1.0'}
+          if api_key:
+              headers['x-api-key']=api_key
+          if decimals is None:
+              out.append('Cannot calculate raw position amount because token decimals are unavailable.')
+          else:
+              full_raw=max(1,int(round(BOUGHT_UI*(10**decimals))))
+              out.append(f'- Tested historical bought amount raw: **{full_raw}**')
+              for pct in (100,75,50,25,10,5,2,1):
+                  amount=max(1, full_raw*pct//100)
+                  q=urllib.parse.urlencode({'inputMint':MINT,'outputMint':WSOL,'amount':str(amount)})
+                  url='https://api.jup.ag/swap/v2/order?'+q
+                  try:
+                      status,data=get_json(url,headers=headers,timeout=30)
+                      oa=data.get('outAmount') or data.get('outputAmount')
+                      pi=data.get('priceImpact') if data.get('priceImpact') is not None else data.get('priceImpactPct')
+                      router=data.get('router') or ''
+                      err=data.get('error') or data.get('errorMessage') or data.get('errorCode')
+                      out.append(f'- **{pct}%** raw `{amount}` → HTTP {status}, out=`{oa}`, impact=`{pi}`, router=`{router}`, error=`{str(err)[:180] if err else ""}`')
+                  except urllib.error.HTTPError as e:
+                      body=e.read().decode('utf-8','replace')[:500]
+                      out.append(f'- **{pct}%** raw `{amount}` → HTTP {e.code}: `{body}`')
+                  except Exception as e:
+                      out.append(f'- **{pct}%** raw `{amount}` → `{type(e).__name__}: {str(e)[:240]}`')
+
+          out.append('')
+          out.append('_Read-only: public RPC/DEX/Jupiter quote calls only. No transaction was built, signed or broadcast._')
+          Path('/tmp/master-position-market.md').write_text('\n'.join(out),encoding='utf-8')
+          PY
+
+      - name: Publish market result
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "$GITHUB_REPOSITORY" --body-file /tmp/master-position-market.md
