@@ -119,3 +119,7 @@ def install() -> None:
 
 
 install()
+
+# Final presentation only: show provider/agent health separately from the review
+# pipeline state so Telegram matches the operator-facing explanation.
+from . import telegram_ai_health_truth_patch as _truth_view  # noqa: E402,F401
