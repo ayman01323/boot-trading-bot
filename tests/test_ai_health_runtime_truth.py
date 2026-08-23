@@ -1,3 +1,6 @@
+import json
+import os
+
 from learnerbot import telegram_ai_health_truth_patch as truth
 
 
@@ -73,6 +76,36 @@ def test_fresh_provider_failure_still_beats_connected_worker(monkeypatch):
     icon, status = truth._provider_status("gpt", {}, {}, truth._fresh_preflight(), truth._runtime_connections())
     assert icon == "🔴"
     assert status == "Worker connected · API/provider problem"
+
+
+def test_runtime_connection_file_is_ignored_outside_production_run(tmp_path, monkeypatch):
+    status = tmp_path / "connections.json"
+    status.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "connected_agents": list(truth._compact.PROVIDERS),
+                "updated_epoch": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(truth, "_CONNECTION_STATUS_PATH", status)
+    monkeypatch.setattr(truth.sys, "argv", ["pytest", "tests/test_ai_health_runtime_truth.py"])
+
+    assert truth._runtime_connections() == {}
+
+
+def test_explicit_strategy_snapshot_does_not_borrow_persisted_source_commit(monkeypatch):
+    health = _health({"gpt": ("WORKING", "HEALTHY")})
+    monkeypatch.setattr(truth, "_current_checkout_sha", lambda: "new-head")
+    monkeypatch.setattr(
+        truth._warning,
+        "read_json",
+        lambda root, path: {"source_commit": "old-head"} if path == "strategy/latest_status.json" else {},
+    )
+
+    assert truth._review_stale_reason("strategy", health) == ""
 
 
 def test_stale_review_snapshot_is_not_presented_as_current_failure(monkeypatch):
