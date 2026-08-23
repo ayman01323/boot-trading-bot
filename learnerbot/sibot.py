@@ -1252,6 +1252,38 @@ def performance(app, telegram_id) -> dict:
     return {"by_chain": {cid: {**v, "chain_slug": chains[cid].slug if cid in chains else str(cid), "native_symbol": chains[cid].native_symbol if cid in chains else "NATIVE"} for cid, v in by_chain.items()}}
 
 
+_STALE_ETHERSCAN_ERROR_RETRY_SECONDS = 3600
+
+
+def _next_stale_etherscan_error_wallet(app, chain) -> str | None:
+    """Fall back to one legacy pre-Alchemy-migration error row per chain per pass.
+
+    _next_history_wallet only ever considers the top history_candidate_wallets
+    (default 40) ranked candidates. A wallet whose rank has fallen out of that
+    window is never reconsidered by that mechanism again, no matter how long
+    ago it was fetched or that it still carries a pre-migration
+    "ETHERSCAN_API_KEY is not configured" error -- with tens of thousands of
+    tracked wallets per chain and a handful of ranked slots, this leaves
+    hundreds of already-errored rows permanently unretried under the current
+    Alchemy provider. This is a narrow, unranked fallback: it only runs when
+    the primary candidate mechanism found nothing to do this pass, so it never
+    competes with or reorders the real ranking/priority logic.
+    """
+    now = int(time.time())
+    with closing(connect(app)) as conn:
+        row = conn.execute(
+            """SELECT wallet, fetched_at FROM wallet_history_status
+               WHERE chain_id=? AND error LIKE '%ETHERSCAN_API_KEY%'
+               ORDER BY fetched_at ASC LIMIT 1""",
+            (chain.chain_id,),
+        ).fetchone()
+    if not row:
+        return None
+    if now - int(row["fetched_at"] or 0) < _STALE_ETHERSCAN_ERROR_RETRY_SECONDS:
+        return None
+    return str(row["wallet"])
+
+
 def _history_worker(app):
     while True:
         try:
@@ -1263,6 +1295,8 @@ def _history_worker(app):
                     # iteration order for the rest of this pass.
                     try:
                         wallet = _next_history_wallet(app, c)
+                        if not wallet:
+                            wallet = _next_stale_etherscan_error_wallet(app, c)
                         if wallet:
                             refresh_wallet_history(app, c, wallet)
                     except Exception as exc:
