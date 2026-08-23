@@ -1,4 +1,4 @@
 DeepSeek GitHub-to-VPS full-link inspection trigger
-requested: 2026-08-23T22:43Z
+requested: 2026-08-23T22:55Z
 mode: inspect-only
-focus: verify current deployed SHA and learnerbot health after Solana liquidity-stuck safe-slice/nonblocking changes; identify any service/resource warning exposed by the restricted status wrapper; no wallet access, no risk-gate bypass, no mutation
+focus: verify learnerbot.service is active after restricted recovery restart; report deployed SHA and latest Solana SELL/selector status; no wallet access, no risk-gate bypass, no mutation
