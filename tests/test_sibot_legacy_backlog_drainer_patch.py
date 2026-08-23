@@ -100,6 +100,7 @@ def test_provider_429_sets_account_wide_exponential_backoff(tmp_path, monkeypatc
     assert first["status"] == "RATE_LIMIT"
     assert first["backoff_seconds"] == 60
     assert first["next_epoch"] == 1_060
+    assert patch._read_state_int(app, patch._GLOBAL_PRESSURE_KEY, 0) == 1
 
     blocked = patch._drain_once(app, now_epoch=1_030, chains=[chain])
     assert blocked == {"status": "BACKOFF", "next_epoch": 1_060}
@@ -108,6 +109,26 @@ def test_provider_429_sets_account_wide_exponential_backoff(tmp_path, monkeypatc
     assert second["status"] == "RATE_LIMIT"
     assert second["backoff_seconds"] == 120
     assert second["next_epoch"] == 1_181
+    assert patch._read_state_int(app, patch._GLOBAL_PRESSURE_KEY, 0) == 2
+
+
+def test_success_resets_account_wide_provider_pressure(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    chain = _chain("base", 8453)
+    _insert(app, chain, "0xorphan", 100, "RuntimeError: Etherscan txlist: NOTOK Invalid API Key")
+    patch._write_state(app, {patch._GLOBAL_PRESSURE_KEY: 4})
+
+    monkeypatch.setattr(patch, "_ranked_wallets", lambda app, chain: set())
+    monkeypatch.setattr(patch._alchemy, "alchemy_rpc_url", lambda app, chain_id: "https://alchemy.invalid/redacted")
+    monkeypatch.setattr(
+        patch._sibot,
+        "refresh_wallet_history",
+        lambda app, chain, wallet: {"wallet": wallet, "complete": True, "trades": 2},
+    )
+
+    result = patch._drain_once(app, now_epoch=10_000, chains=[chain])
+    assert result["status"] == "SUCCESS"
+    assert patch._read_state_int(app, patch._GLOBAL_PRESSURE_KEY, -1) == 0
 
 
 def test_transient_alchemy_orphan_is_recovered_after_retry_age(tmp_path, monkeypatch):
@@ -149,22 +170,14 @@ def test_nontransient_failure_backs_off_only_that_chain(tmp_path, monkeypatch):
     first = patch._drain_once(app, now_epoch=1_000, chains=[bsc, base])
     assert first["status"] == "FAILED"
     assert first["chain_id"] == 56
-    # Normal global pacing expires after 45s, but BSC's hard failure remains in a
-    # five-minute chain-specific cooldown, allowing another chain to recover.
+    # Global pacing ends after 45s, while BSC remains in its five-minute local
+    # cooldown, so Base can use the next bounded recovery slot.
     second = patch._drain_once(app, now_epoch=1_046, chains=[bsc, base])
     assert second["status"] == "SUCCESS"
     assert second["chain_id"] == 8453
 
 
-def test_start_wrapper_launches_one_daemon_only_for_runtime_run(monkeypatch):
-    calls = []
-    started = []
-
-    monkeypatch.setattr(patch, "_PREV_START_WORKERS", lambda app: calls.append(app) or "BASE")
-    monkeypatch.setattr(patch, "_is_runtime_run_command", lambda: True)
-    monkeypatch.setattr(patch, "_DRAINER_STARTED", False)
-    monkeypatch.setattr(patch, "_interval_seconds", lambda app: 45)
-
+def _fake_thread_recorder(started):
     class FakeThread:
         def __init__(self, *, target, args, daemon, name):
             self.target = target
@@ -175,7 +188,18 @@ def test_start_wrapper_launches_one_daemon_only_for_runtime_run(monkeypatch):
         def start(self):
             started.append((self.name, self.daemon))
 
-    monkeypatch.setattr(patch.threading, "Thread", FakeThread)
+    return FakeThread
+
+
+def test_dynamic_start_workers_path_launches_one_drainer(monkeypatch):
+    calls = []
+    started = []
+
+    monkeypatch.setattr(patch, "_PREV_START_WORKERS", lambda app: calls.append(app) or "BASE")
+    monkeypatch.setattr(patch, "_is_runtime_run_command", lambda: True)
+    monkeypatch.setattr(patch, "_DRAINER_STARTED", False)
+    monkeypatch.setattr(patch, "_interval_seconds", lambda app: 45)
+    monkeypatch.setattr(patch.threading, "Thread", _fake_thread_recorder(started))
     app = SimpleNamespace()
 
     assert patch.start_workers_with_legacy_backlog_drainer(app) == "BASE"
@@ -184,7 +208,34 @@ def test_start_wrapper_launches_one_daemon_only_for_runtime_run(monkeypatch):
     assert started == [("sibot-legacy-backlog-drainer", True)]
 
 
+def test_real_telegram_startup_path_launches_drainer_even_with_early_worker_capture(monkeypatch):
+    calls = []
+    started = []
+
+    monkeypatch.setattr(patch, "_PREV_START_MENU_THREAD", lambda app: calls.append(app) or "MENU")
+    monkeypatch.setattr(patch, "_is_runtime_run_command", lambda: True)
+    monkeypatch.setattr(patch, "_DRAINER_STARTED", False)
+    monkeypatch.setattr(patch, "_interval_seconds", lambda app: 45)
+    monkeypatch.setattr(patch.threading, "Thread", _fake_thread_recorder(started))
+    app = SimpleNamespace()
+
+    assert patch.start_menu_thread_with_legacy_backlog_drainer(app) == "MENU"
+    assert patch.start_menu_thread_with_legacy_backlog_drainer(app) == "MENU"
+    assert calls == [app, app]
+    assert started == [("sibot-legacy-backlog-drainer", True)]
+
+
+def test_non_runtime_commands_do_not_launch_background_thread(monkeypatch):
+    started = []
+    monkeypatch.setattr(patch, "_is_runtime_run_command", lambda: False)
+    monkeypatch.setattr(patch, "_DRAINER_STARTED", False)
+    monkeypatch.setattr(patch.threading, "Thread", _fake_thread_recorder(started))
+
+    assert patch._ensure_drainer_started(SimpleNamespace()) is False
+    assert started == []
+
+
 def test_import_preserves_legacy_selector_identity():
-    # The drainer is additive scheduling only. It must not replace the existing
+    # The drainer changes scheduling only. It must not replace the existing
     # checked-first legacy selector or any trade/quality decision function.
     assert sibot._next_history_wallet is legacy._next_history_wallet
