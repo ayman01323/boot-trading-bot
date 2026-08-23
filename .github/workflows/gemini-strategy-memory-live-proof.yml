@@ -65,6 +65,35 @@ jobs:
           assert expected.issubset(workers), (workers, expected)
           PY
 
+      - name: Refresh Gemini runtime credential without logging value
+        shell: bash
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          umask 077
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          key=str(os.environ.get('GEMINI_API_KEY') or '').strip()
+          assert key
+          for raw_path in ('/var/tmp/boot/ai_council_runtime.env','/var/tmp/ai_council_runtime.env'):
+              path=Path(raw_path)
+              lines=[]
+              if path.exists():
+                  for line in path.read_text(encoding='utf-8',errors='replace').splitlines():
+                      if not line.startswith('GEMINI_API_KEY='):
+                          lines.append(line)
+              lines.append('GEMINI_API_KEY=' + json.dumps(key))
+              tmp=path.with_name(path.name + '.gemini-proof.tmp')
+              tmp.parent.mkdir(parents=True,exist_ok=True)
+              tmp.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+              os.chmod(tmp,0o600)
+              os.replace(tmp,path)
+          print('gemini_runtime_credential=present')
+          PY
+
       - name: Build isolated sender environment
         shell: bash
         run: |
