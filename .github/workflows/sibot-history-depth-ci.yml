@@ -1,4 +1,4 @@
-name: SiBot Final Read-Only Trading Blocker Check
+name: Selector Failure Reason Read-Only Check
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
 jobs:
   confirm:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 8
+    timeout-minutes: 4
     steps:
       - name: Verify exact deployed SHA and active service
         shell: bash
@@ -21,22 +21,21 @@ jobs:
           status="$(sudo /usr/local/sbin/status-boot-trading-bot)"
           printf '%s\n' "$status" | grep -q '^sha:    cabc5bff54b4ca52649ba38dcaca7800be494d57$'
           printf '%s\n' "$status" | grep -q 'Active: active (running)'
-          printf '%s\n' "$status" | grep -E '^sha:|Active:|\[trade-blocker-health\]|\[sibot-broader-qualified:|\[solana-leader-edge-alignment\]|\[fast-market-scan\]' | tail -n 40 || true
 
-      - name: Run restricted low-memory read-only leader/history report
+      - name: Read sanitised EVM and Solana leader selector bridges
         shell: bash
         run: |
           set -euo pipefail
-          sudo /usr/local/sbin/run-sibot-leader-gate-report > /tmp/final-trading-blocker-report.txt
-          awk '
-            /^deployed_sha:/ || /^report_mode:/ || /^read_only:/ || /^provider_calls:/ {print; next}
-            /^\[BNB Smart Chain/ || /^\[Arbitrum One/ || /^=== Solana/ {section=1; print; next}
-            /^\[/ && $0 !~ /^\[BNB Smart Chain/ && $0 !~ /^\[Arbitrum One/ {if (section && $0 !~ /Solana/) section=0}
-            section && /eligible_candidates=|history_store:|dominant_history_error:|candidate #|BOUNDED_PROOF_RESULT=|history worker marker:/ {print}
-            /^Threshold decision:/ {print}
-          ' /tmp/final-trading-blocker-report.txt
-
-      - name: Cleanup
-        if: always()
-        shell: bash
-        run: rm -f /tmp/final-trading-blocker-report.txt
+          python3 - <<'PY'
+          import json, pathlib, time
+          for name in ('evm_leader_selector.json','solana_leader_selector.json'):
+              p=pathlib.Path('/var/tmp/boot')/name
+              print('===== '+name+' =====')
+              if not p.is_file():
+                  print('MISSING')
+                  continue
+              d=json.loads(p.read_text(encoding='utf-8'))
+              print(json.dumps(d, indent=2, sort_keys=True))
+              generated=int(d.get('generated_epoch') or 0)
+              print('age_seconds='+str(max(0,int(time.time())-generated)) if generated else 'age_seconds=unknown')
+          PY
