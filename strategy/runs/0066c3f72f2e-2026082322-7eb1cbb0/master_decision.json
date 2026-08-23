@@ -1,0 +1,232 @@
+{
+  "actual_master": "gpt",
+  "cycle_id": "0066c3f72f2e-2026082322-7eb1cbb0",
+  "decisions": [
+    {
+      "action": "REWORK",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_lab_audit_patch.py",
+        "tests/test_strategy_lab.py"
+      ],
+      "confidence": 0.97,
+      "disposition": "ACCEPT",
+      "finding_id": "net-accounting-chain-numeraire-v1",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "risk too high for available-agent count",
+        "file is outside Strategy Lab SHADOW allow-list"
+      ],
+      "reason": "Mixed native denominations and gross profit factor can produce false promotion signals. Partition results by chain, mode, and strategy version; use fully costed outcomes in a documented common numeraire.",
+      "required_tests": [
+        "Reject monetary rows with unknown denomination, stale conversion provenance, mixed modes, or unreconciled costs.",
+        "Verify net profit factor uses fully costed per-trade gains and losses.",
+        "Require three non-overlapping windows and 30 reconciled SHADOW outcomes per strategy-chain-version."
+      ],
+      "risk_class": "HIGH",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:net-accounting-chain-numeraire-v1"
+      ],
+      "strategy": "Strategy Lab portfolio evaluation",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "allowed_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ],
+      "confidence": 0.96,
+      "disposition": "ACCEPT",
+      "finding_id": "solana-executable-shadow-outcomes-v1",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "risk too high for available-agent count"
+      ],
+      "reason": "Current Solana signals lack contemporaneous executable economics. A non-signing adapter can collect falsifiable entry, exit, sellability, liquidity, failure, and cost evidence without authorizing trades.",
+      "required_tests": [
+        "Freeze decision-time quotes and evaluate only predetermined exits using contemporaneous executable sell quotes.",
+        "Fail closed when sellability evidence is missing or quote coverage is below 90%.",
+        "Report fully costed results for at least 30 closed observations across seven days and at least 10 distinct mints."
+      ],
+      "risk_class": "HIGH",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:solana-executable-shadow-outcomes-v1"
+      ],
+      "strategy": "Solana executable-edge observation",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab_audit_patch.py",
+        "tests/test_strategy_lab.py"
+      ],
+      "confidence": 0.92,
+      "disposition": "ACCEPT",
+      "finding_id": "loss-causality-cost-ledger-v1",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "risk too high for available-agent count",
+        "file is outside Strategy Lab SHADOW allow-list"
+      ],
+      "reason": "Execution failures need deterministic causal and monetary records, while ambiguous events must remain UNKNOWN and every realized cost must remain charged to portfolio net P&L.",
+      "required_tests": [
+        "Reproduce causal classifications deterministically from signal, quote, simulation, submission, receipt, inclusion, balance, and exit evidence.",
+        "Retain UNKNOWN classifications and their costs.",
+        "Fail the evidence window when reconciliation coverage is below 95%."
+      ],
+      "risk_class": "HIGH",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:loss-causality-cost-ledger-v1"
+      ],
+      "strategy": "Cross-chain loss attribution",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "allowed_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ],
+      "confidence": 0.84,
+      "disposition": "ACCEPT",
+      "finding_id": "evm-cost-semantic-audit-v1",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "action is not an auto-code SHADOW action",
+        "confidence below 0.85 for 2-agent evidence"
+      ],
+      "reason": "Price impact may be embedded in executable quotes and also deducted separately. No gate or cost adjustment is justified until route-level component semantics are proven.",
+      "required_tests": [
+        "Reconcile at least 30 fresh wallet-specific simulations per materially used EVM chain and route type.",
+        "Itemize embedded price impact, LP fees, gas, builder fees, slippage reserve, and latency reserve.",
+        "Require reconciliation error below one basis point or an explicit explanation."
+      ],
+      "risk_class": "MEDIUM",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gpt:evm-cost-semantic-audit-v1"
+      ],
+      "strategy": "EVM executable route evaluation",
+      "supporting_agents": [
+        "gpt"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "allowed_files": [
+        "learnerbot/sibot.py",
+        "learnerbot/solana_sibot.py"
+      ],
+      "confidence": 0.9,
+      "disposition": "ACCEPT",
+      "finding_id": "leader-discovery-efficiency-v1",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "risk too high for available-agent count",
+        "file is outside Strategy Lab SHADOW allow-list"
+      ],
+      "reason": "Targeted subscriptions or address-signature discovery could reduce RPC traffic and detection delay, but completeness, pagination, rate limits, reconnect behavior, and fallback polling must be proven before replacement.",
+      "required_tests": [
+        "Run old and proposed discovery paths side by side without affecting execution.",
+        "Demonstrate 100% recovery of verified leader transactions.",
+        "Verify reconnect within 15 seconds and graceful fallback after subscription failure.",
+        "Measure RPC calls, bytes transferred, CPU, memory, and detection latency for at least 24 hours on EVM and seven days on Solana."
+      ],
+      "risk_class": "HIGH",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gemini:evm-leader-polling-optimize",
+        "gemini:solana-block-discovery-refactor"
+      ],
+      "strategy": "EVM and Solana leader discovery",
+      "supporting_agents": [
+        "gemini"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "allowed_files": [
+        "learnerbot/strategy_lab.py"
+      ],
+      "confidence": 1.0,
+      "disposition": "ACCEPT",
+      "finding_id": "strategy-lab-seed-shadow-v1",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "action is not an auto-code SHADOW action",
+        "risk too high for available-agent count"
+      ],
+      "reason": "With runtime forensics and reconciled performance absent, seeded families must remain SHADOW-only. Configured thresholds or architectural plausibility are not promotion evidence.",
+      "required_tests": [
+        "Assert seeded strategies cannot enter CANARY or LIVE modes through Strategy Lab changes.",
+        "Collect at least 30 fully reconciled natural SHADOW outcomes across three independent windows.",
+        "Require positive money-weighted net P&L and net profit factor of at least 1.10 after all costs before any separate human promotion review."
+      ],
+      "risk_class": "CRITICAL",
+      "shadow_only": true,
+      "source_proposal_ids": [
+        "gemini:strategy-lab-seed-shadow"
+      ],
+      "strategy": "Strategy Lab non-leader families",
+      "supporting_agents": [
+        "gemini",
+        "gpt"
+      ]
+    }
+  ],
+  "draft_pr_only": true,
+  "evidence_sha256": "7eb1cbb000b7909f3d50c0f874cfa431937c9c339af1aa10502082dc940ef008",
+  "failed_agent_count": 4,
+  "implementation_allowed": false,
+  "live_auto_deploy": false,
+  "master_attempts": [
+    {
+      "provider": "gpt",
+      "reason": "master decision validated",
+      "return_code": 0,
+      "success": true
+    }
+  ],
+  "policy": {
+    "auto_deploy": false,
+    "auto_merge": false,
+    "live_trading_depends_on_ai_health": false,
+    "minimum_valid_reports_to_continue": 1,
+    "single_agent_engineering_requires_deterministic_evidence": true,
+    "single_agent_strategy_confidence": 0.95,
+    "single_agent_strategy_risk": "LOW_ONLY"
+  },
+  "policy_accepted_count": 0,
+  "preferred_master": "auto",
+  "resilient_cycle_continued": true,
+  "schema_version": 1,
+  "source_commit": "0066c3f72f2e071a8e5d8d4956e8598d59c6b352",
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "summary": "Draft SHADOW-only accounting, evidence-collection, and polling improvements are justified, but no strategy promotion is supported. Runtime forensics and reconciled net P&L are missing, and the observed deployed SHA differs from the reviewed source commit. Preserve all safety controls and require human review before implementation.",
+  "unavailable_agents": [
+    "copilot",
+    "claude",
+    "deepseek",
+    "grok"
+  ],
+  "valid_agent_count": 2,
+  "valid_agents": [
+    "gemini",
+    "gpt"
+  ]
+}
