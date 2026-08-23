@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import py_compile
 import re
 import subprocess
 import sys
@@ -181,7 +180,7 @@ def _list_files(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     for path in sorted(start.rglob("*")):
         if len(rows) >= MAX_LIST_RESULTS:
             break
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
         rel = path.relative_to(root)
         if _is_sensitive_relative(rel):
@@ -212,7 +211,7 @@ def _search_code(root: Path, args: dict[str, Any]) -> dict[str, Any]:
     for path in sorted(start.rglob("*")):
         if len(matches) >= MAX_SEARCH_RESULTS:
             break
-        if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
+        if path.is_symlink() or not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:
             continue
         rel = path.relative_to(root)
         if _is_sensitive_relative(rel):
@@ -254,7 +253,7 @@ def _run_tests(root: Path, args: dict[str, Any]) -> dict[str, Any]:
         raise TaskError("RUN_TESTS requires 1-12 test targets")
     targets = [_test_target(root, item) for item in raw_targets]
     timeout = max(10, min(int(args.get("timeout_seconds") or 180), 300))
-    cmd = [sys.executable, "-m", "pytest", "-q", *targets]
+    cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *targets]
     try:
         proc = subprocess.run(
             cmd,
@@ -263,7 +262,11 @@ def _run_tests(root: Path, args: dict[str, Any]) -> dict[str, Any]:
             capture_output=True,
             timeout=timeout,
             check=False,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            env={
+                **os.environ,
+                "PYTHONUNBUFFERED": "1",
+                "PYTHONDONTWRITEBYTECODE": "1",
+            },
         )
     except subprocess.TimeoutExpired as exc:
         return {
@@ -289,7 +292,8 @@ def _py_compile(root: Path, args: dict[str, Any]) -> dict[str, Any]:
         path, rel = _safe_path(root, raw)
         if not path.is_file() or path.suffix != ".py":
             raise TaskError("PY_COMPILE accepts Python files only")
-        py_compile.compile(str(path), doraise=True)
+        source = path.read_text(encoding="utf-8", errors="strict")
+        compile(source, rel.as_posix(), "exec")
         compiled.append(rel.as_posix())
     return {"compiled": compiled}
 
@@ -364,7 +368,7 @@ def execute_task(task: dict[str, Any], *, root: Path | None = None) -> dict[str,
         else:  # pragma: no cover - SAFE_ACTIONS is exhaustive
             return _result("REJECTED", action, "Unsupported task action.", error="unsupported action")
         return _result("COMPLETED", action, f"{action} completed.", evidence=evidence)
-    except (TaskError, OSError, ValueError, py_compile.PyCompileError) as exc:
+    except (TaskError, OSError, UnicodeError, ValueError, SyntaxError) as exc:
         return _result("FAILED", action, f"{action} failed.", error=f"{type(exc).__name__}: {exc}")
     except subprocess.TimeoutExpired as exc:
         return _result("FAILED", action, f"{action} timed out.", error=f"TimeoutExpired: {exc}")
