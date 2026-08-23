@@ -12,8 +12,13 @@ on:
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
       - 'scripts/run_ai_agent_bus.py'
+      - 'scripts/ai_agent_ws_bus.py'
+      - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_agent_ws_send.py'
+      - 'scripts/ai_agent_task_executor.py'
       - 'tests/test_universal_agent_git_mailbox_bridge.py'
       - 'tests/test_ai_agent_bus.py'
+      - 'tests/test_ai_agent_task_executor.py'
       - '.github/workflows/universal-ai-bus-mailbox-signal.yml'
       - '.github/workflows/universal-ai-bus-mailbox-relay.yml'
       - '.github/workflows/universal-ai-agent-messaging-ci.yml'
@@ -38,9 +43,9 @@ jobs:
           venv="$RUNNER_TEMP/universal-ai-agent-messaging-ci"
           rm -rf "$venv"
           python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
-      - name: Compile messaging bridge
+      - name: Compile messaging bridge and WebSocket v2 task layer
         shell: bash
         run: |
           set -euo pipefail
@@ -48,14 +53,20 @@ jobs:
             scripts/universal_agent_git_mailbox_bridge.py \
             scripts/ai_agent_bus.py \
             scripts/run_ai_agent_bus.py \
-            tests/test_universal_agent_git_mailbox_bridge.py
+            scripts/ai_agent_ws_bus.py \
+            scripts/ai_agent_ws_worker.py \
+            scripts/ai_agent_ws_send.py \
+            scripts/ai_agent_task_executor.py \
+            tests/test_universal_agent_git_mailbox_bridge.py \
+            tests/test_ai_agent_task_executor.py
       - name: Run focused universal messaging tests
         shell: bash
         run: |
           set -euo pipefail
           "$VENV/bin/python" -m pytest -q \
             tests/test_universal_agent_git_mailbox_bridge.py \
-            tests/test_ai_agent_bus.py
+            tests/test_ai_agent_bus.py \
+            tests/test_ai_agent_task_executor.py
       - name: Remove isolated environment
         if: always()
         shell: bash
