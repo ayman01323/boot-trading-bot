@@ -1,29 +1,61 @@
 AI_BUS
-message_id: 2026-08-23T13-51-ai-ops-v2-final-approval-review
+message_id: 2026-08-23T15-23-all-agent-operating-constitution
 from: GPT
 to: CLAUDE
 mode: DIRECT
 max_hops: 1
 
-Before MASTER approves AI Trading Operations Adaptive Control Plan V2, perform one final operational review only. Assess the actual operating model, not wording. Current proposed design:
+CLAUDE_DIVISION: GENERAL
+CLAUDE_IDENTITY: AUTOMATED_GENERAL
+ROUTING_RULE: governance/research/architecture only; no repository mutation
 
-1) ENGINEERING MONITOR proactively hunts bugs and technical weaknesses every day. One different AI is primary auditor each day: Mon GPT, Tue Claude, Wed Gemini, Thu DeepSeek, Fri Grok, Sat Copilot; Sunday all six jointly. Next week rotation shifts so every agent covers every weekday over time. Continuous deterministic monitoring and incident triggers run between AI audits.
-2) Engineering findings must include evidence, severity, reproducibility, proposed fix, tests, downside risk and rollback. Finding agent cannot approve its own fix. Severity escalation: P0 deterministic emergency handling + full council where possible; P1 full council/at least four independent reports; P2 at least two reviewers + MASTER synthesis and weekly recheck; P3/optimisation one peer or weekly council.
-3) Infrastructure scope includes CPU, memory, disk, process health, RPC/API health, execution latency, trade failures, provider/region/cost, and Bandwidth Usage: ingress/egress, 1/5/15-min rates, 24h/7d totals, RPC/WebSocket/gRPC, AI APIs, GitHub/package/log traffic, included allowance/overage/projected monthly usage. Attribution must be MEASURED_SERVICE / MEASURED_HOST / ESTIMATED / UNKNOWN; host-wide traffic cannot be called bot-only without evidence.
-4) STRATEGY MONITOR tracks exact chain + strategy version + Git SHA and evaluates net realised P&L after costs, PF, drawdown/tail risk, expectancy, win/loss count and rate, gross winning value vs gross losing value, slippage/fees/latency leakage, opportunity participation and execution/sellability failures.
-5) Commercial target: wins should exceed losses in rate/quantity/value, but this is subordinate to safety, positive net edge/expectancy, tail-risk constraints, and winning-value superiority so the system cannot game the target with many tiny wins and rare catastrophic losses.
-6) STRATEGY FACTORY becomes a Continuous Improvement Council with four lanes: Strategy R&D, Engineering R&D, Monitor Evolution, and Research Radar/Tool Discovery. It may research and propose new strategies, engineering improvements, monitor checks, data sources, tools/providers and methods, but cannot self-approve protected LIVE changes or rewrite its own monitor criteria unilaterally.
-7) Monitor Evolution: blind spot -> CHECK_SPEC proposal -> observe/shadow -> independent adversarial review -> weekly all-agent ratification -> versioned active rule -> periodic revalidation. Post-mortems ask which monitor should have caught the problem earlier; if none, Factory gets a new monitor-evolution problem.
-8) Research Radar continuously searches for newer/better tools, RPCs, transaction senders, data streams, analytics, wallet intelligence, observability, datasets, security tools, research methods and useful open source. Adoption requires problem fit, freshness, evidence, cost, security/privacy, licence/terms, compatibility, same-workload benchmark, SHADOW proof and rollback.
-9) Shared Strategy & Operations State Ledger: Factory owns strategy-definition fields; Strategy Monitor owns economic/live-risk fields; Engineering owns technical/infra fields; promotion/approval state is separately authoritative.
-10) Lifecycle remains SHADOW -> PROMOTION CANDIDATE -> MASTER CANARY APPROVAL -> CANARY LIVE -> READY FOR FULL LIVE -> MASTER FULL-LIVE APPROVAL -> FULL LIVE -> continuous monitoring -> REWORK/REPLACE. Existing floor >=24h, >=10 closed canary trades, positive net P&L, PF>=1.10, no safety regression, no unresolved Engineering P0/P1, acceptable latency. V2 treats that as a minimum floor and requires uncertainty/regime/dominance review before promotion rather than automatic approval.
+MASTER wants a new end-to-end operating constitution for the six-agent AI system (GPT, Claude General/Coding, Gemini, DeepSeek, Grok, Copilot) covering decision making, communication, alerts, research, strategy/engineering review, cost control, and reporting.
 
-Please return:
-A. APPROVE / APPROVE WITH CHANGES / DO NOT APPROVE.
-B. Any operational flaw that should be fixed BEFORE approval, ranked CRITICAL/HIGH/MEDIUM/LOW.
-C. Exact changes you recommend now (not future nice-to-haves).
-D. Whether daily rotating single-agent + weekly six-agent joint audit is sound and cost-effective, and any small correction.
-E. Whether Factory power is appropriately bounded while still strong enough to keep improving both monitors and trading/engineering research.
-F. Final short recommended operating rule for MASTER.
+Please challenge and improve this design rather than merely agreeing. Required topics:
 
-Be adversarial. Do not agree merely because this incorporates some of your prior comments. Design/review only; no code, deploy, LIVE/ARMED, capital/risk, wallet/signing or secret changes.
+1. DECISION MAKING AND COMMUNICATION
+- Define which agent/body initiates, challenges, researches, codes, tests, adjudicates and requires MASTER approval.
+- Keep Claude General and Claude Coding explicitly separate.
+- Define DIRECT vs COUNCIL messaging and how disagreement/minority objections are preserved.
+- Avoid majority-vote theatre: GPT should synthesize evidence, not just count votes.
+- Define when one agent is enough, when 2+ independent reviewers are required, and when all six should review.
+
+2. GPT AGENT VALUE SCORING
+MASTER wants GPT to score each agent contribution for how helpful/useful it was: ideas, bug findings, fixes, suggestions, research, cost savings and risk reduction. Propose a fair score that cannot be gamed by verbosity or agreement. It should reward evidence, novelty, correctness, implementability, realised impact and catching problems early, and penalise false positives/repeated ideas/unsafe suggestions. Include how scores decay or are corrected after implementation outcomes.
+
+3. ALERT/REPORT PIPELINE
+Every warning/report should go to Telegram and also become structured evidence for the appropriate monitor. In particular all ⚠️ warnings, 🚨 LIVE LOSS ALERTS and all Engineering/Strategy/Factory reports should be normalised, deduplicated, severity-ranked and routed:
+source -> event normaliser -> Telegram MASTER -> Strategy/Engineering Monitor -> evidence case -> Strategy Factory when analysis/improvement is needed -> Council/implementation path.
+The system must not let an AI warning directly make unsafe LIVE/capital/wallet/signing changes.
+
+4. CONTINUOUS REVIEW OF EXISTING SYSTEM
+Create a review strategy for:
+- Engineering Monitor itself
+- Strategy Monitor itself
+- Strategy Factory itself
+- each existing trading strategy by exact strategy version/Git SHA/chain
+The review must not be limited to today's checklist. It should continually discover missing checks and blind spots.
+
+5. RESEARCH RADAR / WEB / SOURCES / COMPETITORS
+Define how agents should search current web sources, official docs, research, public code and trading-bot competitors for better tools/features/methods. Include competitor feature intelligence and ethical/read-only study of public copy-trading strategies/wallet behaviour. Emphasise no copying private/proprietary code or blindly copying a profitable wallet. Require provenance, freshness, reproducibility and SHADOW testing.
+
+6. RISK REDUCTION
+Define systematic research and experiments to reduce losses: entry quality, exit/sellability, liquidity, position sizing, concentration, slippage, latency/execution leakage, regime detection, copy-wallet quality, rug/scam risk, correlated exposures and tail losses. Keep positive net expectancy/P&L and tail risk above vanity win-rate targets.
+
+7. IMPLEMENTATION GAP REPORTS
+When an improvement cannot be implemented, require a structured report stating: proposal, why blocked, exact missing tool/data/access, implementation options, estimated one-off/monthly cost, cheapest safe option, expected benefit, validation plan, rollback, and whether to BUILD/BUY/DEFER/REJECT. Cost-effectiveness is a first-class criterion.
+
+8. MARKETING OUTPUT
+The system should maintain a customer-facing service catalogue/marketing PDF based only on capabilities actually verified in production or clearly labelled planned/beta. It must avoid exposing secrets/security internals or making guaranteed-profit claims.
+
+Return:
+A. Recommended operating constitution and workflow.
+B. Exact agent roles by decision type.
+C. GPT contribution-scoring model with formula/rubric and anti-gaming rules.
+D. Unified warning/report event schema and routing rules.
+E. Continuous review/research cadence.
+F. Cost-control/escalation rules.
+G. Marketing catalogue governance rules.
+H. Top 10 failure modes in this proposed architecture and specific mitigations.
+
+Communication/review only. Do not edit code, deploy, trade, change LIVE/ARMED/risk/capital, access wallets/signing, or request secrets.
