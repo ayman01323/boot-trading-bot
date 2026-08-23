@@ -67,6 +67,15 @@ def test_telegram_subject_syntax_is_optional_and_bounded() -> None:
     )
 
 
+def test_same_subject_reuses_same_thread_and_other_subject_is_isolated() -> None:
+    hood_one = transport.thread_id_for_subject("HOOD fraud")
+    hood_two = transport.thread_id_for_subject("  HOOD   fraud ")
+    latency = transport.thread_id_for_subject("Server latency")
+    assert hood_one == hood_two
+    assert hood_one != latency
+    assert transport.resolve_thread(subject="HOOD fraud") == (hood_one, "HOOD fraud")
+
+
 def test_docs_make_browser_sessions_explicitly_external() -> None:
     text = _text("AI_AGENT_MESSAGING.md")
     assert "Canonical user-to-agent chat identity" in text
