@@ -23,14 +23,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Cancel non-deploy AI recovery occupancy and queued stale deploys
+      - name: Best-effort stale queue cleanup
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set +e
           # AI report recovery must never monopolise the trading VPS while a
-          # protected deployment is requested.
+          # protected deployment is requested. Cleanup is best-effort only;
+          # the restricted VPS wrapper and test suite remain the safety gate.
           for state in in_progress queued; do
             gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
@@ -54,11 +56,13 @@ jobs:
                   "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
               done
           done
+          exit 0
 
   deploy:
     name: Test and deploy exact PR base on VPS
     needs: prepare
     if: >-
+      always() &&
       github.head_ref == 'agent/deploy-current-main' &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, boot-vps]
