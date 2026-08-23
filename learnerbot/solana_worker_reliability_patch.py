@@ -12,6 +12,7 @@ _sol.DEFAULTS.update({
     "rpc_retry_attempts": ("3", "Bounded retries for transient Solana RPC failures"),
     "rpc_retry_backoff_seconds": ("0.75", "Base retry delay for transient Solana RPC failures"),
     "history_worker_seconds": ("2", "Pause between independent Solana history-backfill jobs"),
+    "leader_ws_healthy_fallback_seconds": ("10", "Leader HTTP safety poll while filtered WSS is healthy"),
 })
 
 
@@ -157,6 +158,18 @@ def _history_worker(app):
         time.sleep(delay)
 
 
+def _leader_sleep_seconds(cfg: dict) -> int:
+    normal = max(3, _sol._int(cfg.get("leader_poll_seconds"), 5))
+    healthy_until = float(getattr(_sol, "_leader_ws_healthy_until", 0.0) or 0.0)
+    if time.monotonic() < healthy_until:
+        healthy_fallback = max(
+            normal,
+            min(30, _sol._int(cfg.get("leader_ws_healthy_fallback_seconds"), 10)),
+        )
+        return healthy_fallback
+    return normal
+
+
 def _leader_worker(app):
     last_position = 0
     last_rent_retry = 0
@@ -190,7 +203,7 @@ def _leader_worker(app):
                         print("[sibot-solana-rent-retry]", type(exc).__name__, exc)
                 last_rent_retry = now
             _mark(app, "leader", ok=ok, error=" | ".join(errors))
-        time.sleep(max(3, _sol._int(cfg.get("leader_poll_seconds"), 5)))
+        time.sleep(_leader_sleep_seconds(cfg))
 
 
 def start_workers_reliable(app):
@@ -220,7 +233,7 @@ def install():
     _sol.start_workers = start_workers_reliable
     print(
         "[solana-worker-reliability] rpc_retries=true no_slot_skip=true "
-        "history_independent=true leader_heartbeat=true"
+        "history_independent=true leader_heartbeat=true ws_healthy_fallback=10s"
     )
 
 

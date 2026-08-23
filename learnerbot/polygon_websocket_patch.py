@@ -12,7 +12,7 @@ from . import sibot as _sibot
 
 # Keep the historical module name for compatibility with the existing Polygon
 # runtime invariant, but this patch now provides the same WebSocket fast lane to
-# all requested high-priority EVM chains.  Provider credentials live only in the
+# all requested high-priority EVM chains. Provider credentials live only in the
 # VPS runtime CSV, never in environment variables or this repository.
 EVM_WS_CHAINS = {
     137: {"slug": "polygon", "label": "Polygon"},
@@ -20,6 +20,12 @@ EVM_WS_CHAINS = {
     56: {"slug": "bnb", "label": "BNB Chain"},
     8453: {"slug": "base", "label": "Base"},
 }
+
+# Alchemy currently supports alchemy_minedTransactions on Polygon and Arbitrum
+# among the chains used here. BNB and Base retain newHeads plus the same proven
+# HTTP cursor/receipt path rather than assuming unsupported provider features.
+_FILTERED_MINED_CHAINS = {137, 42161}
+_MAX_FILTER_ADDRESSES = 1000
 
 _START_LOCK = threading.Lock()
 _LOCKS_GUARD = threading.Lock()
@@ -50,8 +56,6 @@ def _csv_ws_value(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    # Environment placeholders are deliberately unsupported: the Alchemy key is
-    # owned by rpc_endpoints.csv only, as requested by the operator.
     if "$" in text:
         return ""
     return text if text.startswith(("wss://", "ws://")) else ""
@@ -80,10 +84,7 @@ def _csv_ws_url(app, chain_id: int) -> str:
                     continue
                 if cid != int(chain_id):
                     continue
-                raw_url = (
-                    str(row.get("ws_url") or "").strip()
-                    or str(row.get("websocket_url") or "").strip()
-                )
+                raw_url = str(row.get("ws_url") or "").strip() or str(row.get("websocket_url") or "").strip()
                 url = _csv_ws_value(raw_url)
                 if not url:
                     continue
@@ -112,8 +113,16 @@ def _chain(app, chain_id: int):
     return None
 
 
+def _leader_addresses(app, chain_id: int) -> list[str]:
+    try:
+        leaders = _sibot._leader_set(app, int(chain_id))
+    except Exception:
+        return []
+    return sorted({str(value or "").lower() for value in leaders if str(value or "").strip()})[:_MAX_FILTER_ADDRESSES]
+
+
 def poll_leader_blocks_locked(app, chain) -> list[dict]:
-    # HTTP polling remains the fail-safe and receipt-validation path.  The
+    # HTTP polling remains the fail-safe and receipt-validation path. The
     # per-chain lock prevents a periodic poll and WSS event from concurrently
     # processing the same chain while allowing different chains to run in
     # parallel.
@@ -121,16 +130,30 @@ def poll_leader_blocks_locked(app, chain) -> list[dict]:
         return _ORIGINAL_POLL(app, chain)
 
 
-def _subscribe_new_heads(ws, chain_id: int) -> None:
+def _subscription_request(chain_id: int, url: str, leaders: list[str]) -> tuple[list, str]:
+    filtered = (
+        int(chain_id) in _FILTERED_MINED_CHAINS
+        and "alchemy.com" in str(url or "").lower()
+        and bool(leaders)
+    )
+    if filtered:
+        return [
+            "alchemy_minedTransactions",
+            {
+                "addresses": [{"from": address} for address in leaders],
+                "includeRemoved": False,
+                "hashesOnly": True,
+            },
+        ], "leader_mined_transactions"
+    return ["newHeads"], "new_heads"
+
+
+def _subscribe(ws, chain_id: int, url: str, leaders: list[str]) -> str:
     request_id = int(chain_id)
+    params, mode = _subscription_request(chain_id, url, leaders)
     ws.send(
         json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": "eth_subscribe",
-                "params": ["newHeads"],
-            },
+            {"jsonrpc": "2.0", "id": request_id, "method": "eth_subscribe", "params": params},
             separators=(",", ":"),
         )
     )
@@ -144,8 +167,20 @@ def _subscribe_new_heads(ws, chain_id: int) -> None:
             raise RuntimeError(f"EVM WebSocket subscription failed for chain {chain_id}: {message['error']}")
         if not message.get("result"):
             raise RuntimeError(f"EVM WebSocket subscription returned no id for chain {chain_id}")
-        return
+        return mode
     raise TimeoutError(f"EVM WebSocket subscription acknowledgement timed out for chain {chain_id}")
+
+
+def _notification_should_wake(message: dict, mode: str) -> bool:
+    if message.get("method") != "eth_subscription":
+        return False
+    result = (message.get("params") or {}).get("result") or {}
+    if mode == "leader_mined_transactions":
+        if bool(result.get("removed")):
+            return False
+        tx = result.get("transaction") or {}
+        return bool(str(tx.get("hash") or "").strip())
+    return bool(result.get("number"))
 
 
 def _chain_ws_worker(app, chain_id: int) -> None:
@@ -157,6 +192,7 @@ def _chain_ws_worker(app, chain_id: int) -> None:
         if chain is None or not url:
             time.sleep(15)
             continue
+        leaders = _leader_addresses(app, chain_id)
         try:
             with connect(
                 url,
@@ -166,39 +202,36 @@ def _chain_ws_worker(app, chain_id: int) -> None:
                 ping_timeout=20,
                 max_size=2 * 1024 * 1024,
             ) as ws:
-                _subscribe_new_heads(ws, chain_id)
+                mode = _subscribe(ws, chain_id, url, leaders)
                 print(
-                    f"[evm-ws:{spec['slug']}] connected chain={chain_id} "
-                    "newHeads=true source=rpc_endpoints_csv fallback_poll=true"
+                    f"[evm-ws:{spec['slug']}] connected chain={chain_id} mode={mode} "
+                    "source=rpc_endpoints_csv fallback_poll=true"
                 )
                 backoff = 1.0
-                for raw in ws:
-                    # rpc_endpoints.csv is part of the bot config fingerprint. If
-                    # its selected WebSocket changes, reconnect on the next block
-                    # instead of requiring a service restart.
+                while True:
                     if _chain_ws_url(chain_id, app) != url:
                         print(f"[evm-ws:{spec['slug']}] endpoint_changed reconnect=true")
                         break
+                    if mode == "leader_mined_transactions" and _leader_addresses(app, chain_id) != leaders:
+                        print(f"[evm-ws:{spec['slug']}] leaders_changed reconnect=true")
+                        break
+                    try:
+                        raw = ws.recv(timeout=10.0)
+                    except TimeoutError:
+                        continue
                     try:
                         message = json.loads(raw)
                     except Exception:
                         continue
-                    if message.get("method") != "eth_subscription":
+                    if not _notification_should_wake(message, mode):
                         continue
-                    result = (message.get("params") or {}).get("result") or {}
-                    if not result.get("number"):
-                        continue
-                    # WSS is deliberately only the low-latency wake-up signal.
-                    # Existing HTTP RPC + confirmed receipt processing remains the
-                    # authoritative trading path and retains every safety gate.
+                    # WSS is only the low-latency wake-up signal. Existing HTTP
+                    # RPC + confirmed receipt processing remains authoritative and
+                    # retains every execution, reliability and safety gate.
                     try:
                         poll_leader_blocks_locked(app, chain)
                     except Exception as exc:
-                        print(
-                            f"[evm-ws:{spec['slug']}:poll]",
-                            type(exc).__name__,
-                            str(exc)[:180],
-                        )
+                        print(f"[evm-ws:{spec['slug']}:poll]", type(exc).__name__, str(exc)[:180])
         except Exception as exc:
             # Do not print url: provider URLs embed the private API key in CSV.
             print(f"[evm-ws:{spec['slug']}]", type(exc).__name__, str(exc)[:180])
@@ -216,7 +249,7 @@ def _start_evm_ws(app) -> None:
             threading.Thread(
                 target=_chain_ws_worker,
                 args=(app, chain_id),
-                name=f"{spec['slug']}-newheads-ws",
+                name=f"{spec['slug']}-evm-ws",
                 daemon=True,
             ).start()
 
@@ -242,8 +275,8 @@ def install() -> None:
     _sibot.start_workers = start_workers_with_evm_ws
     chains = ",".join(str(cid) for cid in EVM_WS_CHAINS)
     print(
-        f"[evm-ws] installed chains={chains} subscription=newHeads "
-        "source=rpc_endpoints_csv_only fallback_poll=true"
+        f"[evm-ws] installed chains={chains} polygon_arbitrum=leader_mined_transactions "
+        "bnb_base=newHeads source=rpc_endpoints_csv_only fallback_poll=true"
     )
 
 
