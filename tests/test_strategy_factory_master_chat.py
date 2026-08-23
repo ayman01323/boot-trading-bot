@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from learnerbot import telegram_master_change_patch as telegram_patch
 from scripts import ai_agent_ws_bus as base_bus
 from scripts import ai_agent_ws_bus_grok as broker_bridge
 from scripts import strategy_factory_transport as transport
@@ -49,9 +50,21 @@ def test_master_chat_frontends_delegate_to_shared_transport() -> None:
     cli = _text("scripts/strategy_factory_chat.py")
     telegram = _text("learnerbot/telegram_master_change_patch.py")
     assert 'exchange(\n        "master",' in cli
-    assert '_sf.exchange("master", agent, body' in telegram
+    assert '_sf.exchange("master", agent, body, subject=subject' in telegram
     assert "websockets.asyncio" not in cli
     assert 'if cmd == "/aichat"' in telegram
+
+
+def test_telegram_subject_syntax_is_optional_and_bounded() -> None:
+    assert telegram_patch._parse_chat_body("plain question") == ("", "plain question")
+    assert telegram_patch._parse_chat_body("[HOOD fraud] review the latest finding") == (
+        "HOOD fraud",
+        "review the latest finding",
+    )
+    assert telegram_patch._parse_chat_body("[Server latency] compare p95") == (
+        "Server latency",
+        "compare p95",
+    )
 
 
 def test_docs_make_browser_sessions_explicitly_external() -> None:
