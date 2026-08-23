@@ -1,0 +1,132 @@
+{
+  "cycle_id": "0066c3f72f2e-2026082322-7eb1cbb0",
+  "evidence_gaps": [
+    "No runtime forensics, trade logs, P&L records, or telemetry snapshot were supplied (evidence_status=MISSING_RUNTIME_FORENSICS); every finding above is derived from static code reading only and none can be verified against actual realized net P&L, win rate, or execution outcomes.",
+    "scripts/rpc_health_audit.py is not wired into any runtime/scheduled path, so no continuous per-chain RPC latency or error-rate data exists to evaluate against this repository's own infrastructure-economics audit requirements.",
+    "EVM has no per-stage execution latency instrumentation at all (unlike Solana's execution_latency.py), so EVM trade latency cannot be assessed even if a future runtime snapshot is provided, until instrumentation is added.",
+    "No per-trade failure_category or pnl_attribution field was found in the trade audit exports inspected (e.g., live_trade_audit.csv fields in live_executor.py), so infrastructure/execution failure cannot currently be separated from strategy/market loss in any existing data export \u2014 the only place this separation is documented as intended is at the AI strategy-factory review metadata layer (learnerbot/monitor_factory_pipeline.py KPI schema), not on individual trade records.",
+    "The codebase's true live control flow is the composite of a base module plus dozens of monkeypatches applied in import order from learnerbot/__main__.py; static review of any individual file (including the files cited in this review) may not fully reflect exact production behavior without confirming the active patch chain, which was outside the scope of a read-only architecture pass.",
+    "No standalone incident write-up exists in docs/ for the recent Solana stuck-position / liquidity-unwind episode referenced in recent commit messages; its 'resolution' is inferred from the permanent quarantine guard in solana_liquidity_stuck_nonblocking_patch.py rather than from an incident record, so the actual capital/time impact of that episode cannot be quantified from architecture alone."
+  ],
+  "evidence_sha256": "7eb1cbb000b7909f3d50c0f874cfa431937c9c339af1aa10502082dc940ef008",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "Compute a fee-inclusive net_pct (subtracting the expected platform profit-share fee, not just gas/cost) and use it \u2014 alongside the existing gas-inclusive net_pct \u2014 as an additional input to stop-loss/take-profit/trailing-stop/break-even exit decisions in the SiBot/SiMo monitor loops.",
+      "chain_scope": "EVM_AND_SOLANA",
+      "confidence": "medium",
+      "downside_risk": "If added as a hard gate rather than a logged comparison, it could delay exits chasing a fee-inclusive threshold, increasing market/time exposure on volatile pairs; also adds a second numeric to reconcile with the existing net_pct, increasing state to audit inside an already patch-heavy exit path.",
+      "evidence": "learnerbot/sibot.py evaluate_position/close_position computes net = proceeds - exit_gas - cost, with the platform fee (profit_share_amount) applied only after realization (sibot.py:1103-1177); learnerbot/solana_sibot.py monitor_positions (solana_sibot.py:967-982) compares TP/SL/trailing thresholds against ev['net_pct'], which is likewise gas-inclusive but not fee-inclusive.",
+      "expected_effect": "More accurate alignment between exit-trigger timing and the actual net-to-user P&L the review objective targets; may shift some exits later (to actually clear fee-inclusive thresholds) or earlier (to avoid holding through a move that nets negative after fee).",
+      "id": "P1-fee-inclusive-exit-thresholds",
+      "minimum_observation": "At least 200 closed positions per chain, or 14 calendar days of live monitor-loop activity, whichever is longer, to get a meaningful sample of threshold-boundary divergence.",
+      "rationale": "The objective is durable money-weighted NET P&L after fees. If exit timing decisions are made on a P&L figure that excludes the platform's own profit-share fee, a position can look like it has cleared take-profit or is above break-even pre-fee while being marginal or negative once the fee is actually deducted, distorting exit timing versus true user-net economics.",
+      "shadow_test": "Log a parallel fee-inclusive net_pct alongside the existing net_pct on every position evaluation in both sibot.py and solana_sibot.py monitor loops, without changing any exit trigger, and diff the two on every actual exit event.",
+      "strategy": "SiBot/SiMo leader copy-trading (EVM and Solana)",
+      "suggested_files": [
+        "learnerbot/sibot.py",
+        "learnerbot/solana_sibot.py",
+        "learnerbot/fee_engine.py"
+      ]
+    },
+    {
+      "action": "Run the SHADOW-only chain-agnostic net_edge_bps calculation (which nets fees, slippage, price impact, and a latency_reserve_bps term) in parallel, non-gating, mode against live EVM route-scanner and SiBot leader-copy candidates, and log its correlation with actual realized P&L outcomes.",
+      "chain_scope": "EVM_AND_SOLANA",
+      "confidence": "medium",
+      "downside_risk": "If not validated first, promoting an untested formula straight to a live gate could reject profitable trades (false negative, opportunity cost) or admit trades the current caps would have blocked (false positive, real capital risk) \u2014 hence proposing shadow-parallel logging first, not live wiring.",
+      "evidence": "learnerbot/cross_chain_strategy_signals.py MarketFeatures.net_edge_bps = gross - fees - slippage - price_impact - latency_reserve_bps is implemented but only invoked by learnerbot/shadow_strategy_executor.py, which never signs or trades; the live path (learnerbot/route_scanner.py:341-458, learnerbot/market_scanner.py:283-328) instead uses a 2x-size re-quote for price impact and a flat slippage_bps reserve with no latency or MEV cost term.",
+      "expected_effect": "If net_edge_bps correlates with realized post-fee P&L better than the current live edge calculation, it becomes a candidate to replace or supplement the live gating formula, improving trade selection precision.",
+      "id": "P2-shadow-net-edge-parallel-signal",
+      "minimum_observation": "At least 300 evaluated candidates (accepted and rejected) or 21 days, whichever is longer, since arbitrage opportunity frequency is bursty and needs enough samples across differing market regimes.",
+      "rationale": "The live decision path's edge calculation is missing a cost term (latency/execution-timing risk) that the team's own more complete model already accounts for; before wiring it into a live gate, its predictive value against real outcomes should be validated out-of-band.",
+      "shadow_test": "Compute net_edge_bps for every candidate that reaches live evaluation in route_scanner.py/market_scanner.py and sibot.py, log it without using it for any accept/reject decision, and compare against the trade's eventual realized net P&L.",
+      "strategy": "EVM cyclic arbitrage (route_scanner.py/market_scanner.py) and SiBot/SiMo leader copy",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "learnerbot/route_scanner.py",
+        "learnerbot/market_scanner.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "Add a standing, automatic Solana portfolio-level daily-loss / drawdown circuit breaker (mirroring EVM's daily_loss_limit_pct / portfolio_drawdown_limit_pct), first as a SHADOW-only 'would-halt' logger before any live gating.",
+      "chain_scope": "SOLANA",
+      "confidence": "medium",
+      "downside_risk": "Solana pairs are typically higher-variance than the EVM pairs the existing thresholds were tuned for; a naively-copied threshold could trigger false-positive halts during normal Solana volatility, pausing otherwise-profitable trading \u2014 calibration must be done from Solana-specific data, not copied verbatim from EVM.",
+      "evidence": "learnerbot/sibot_profit_guard_patch.py:34,61,385-389 implements daily_loss_limit_pct and portfolio_drawdown_limit_pct for EVM. The only Solana portfolio-level halt found is learnerbot/solana_emergency_loss_halt_migration.py, a one-shot historical migration that force-disabled Solana LIVE for all users after an observed loss/exit-retry pattern \u2014 it is not a standing, reusable automatic control. Solana's standing controls are per-position (stop-loss/take-profit/trailing in solana_sibot.py:967-982) and fault-count based (solana_live_patch.py live_no_output_disable_after, solana_exit_circuit_breaker_patch.py).",
+      "expected_effect": "Caps aggregate Solana drawdown per day/period the same way EVM is already capped, reducing tail-risk of an extended losing streak going uninterrupted until manual intervention (as happened once already per the migration script).",
+      "id": "P3-solana-portfolio-loss-circuit-breaker",
+      "minimum_observation": "At least 30 calendar days of Solana live trading activity spanning multiple volatility regimes before considering live gating.",
+      "rationale": "Per-position stops limit loss on a single trade but do not bound aggregate portfolio drawdown across many small Solana positions the way EVM's daily-loss/drawdown breaker does; the asymmetry means Solana currently has a structurally weaker last line of defense against a correlated string of losing trades than EVM does.",
+      "shadow_test": "Implement the breaker as a log-only 'would have halted trading at <timestamp> given <daily_loss_pct>' signal for a burn-in period, with no actual gating effect, then compare how often it would have fired against actual subsequent P&L trajectory (would a halt have prevented further loss or cut off a recovery?).",
+      "strategy": "SiBot/SiMo leader copy-trading and Solana LIVE execution controls",
+      "suggested_files": [
+        "learnerbot/sibot_profit_guard_patch.py",
+        "learnerbot/solana_sibot.py",
+        "learnerbot/solana_live_patch.py"
+      ]
+    },
+    {
+      "action": "Extend the existing per-stage execution latency instrumentation pattern (receive_delay_ms, order_ms, transaction_construction_ms, simulation_ms, execute_ms, etc.) from Solana to the EVM live_executor.py trade path.",
+      "chain_scope": "EVM",
+      "confidence": "high",
+      "downside_risk": "Additional SQLite writes per trade add minor overhead to the EVM hot path; must be implemented as fire-and-forget/non-blocking logging so it cannot itself introduce execution latency or a new failure mode.",
+      "evidence": "learnerbot/execution_latency.py provides a SQLite-backed per-stage latency pipeline with p50/p95/max rollups, wired live via learnerbot/solana_execution_latency_patch.py (installed through ai_agent_ws_runtime_patch.py and imported by __main__.py:176). No equivalent exists for EVM; learnerbot/live_executor.py only has generic wait_for_transaction_receipt(timeout=120, poll_latency=2) polling with no stage-level timing capture.",
+      "expected_effect": "Enables future reviews to actually assess EVM trade latency against a measured baseline and attribute EVM execution outcomes to infrastructure vs strategy causes, closing an evidence gap rather than changing trading behavior.",
+      "id": "P4-evm-per-stage-latency-instrumentation",
+      "minimum_observation": "N/A (instrumentation change, not a trading behavior change) \u2014 recommend at least 100 EVM live trades logged before relying on the resulting p50/p95 figures.",
+      "rationale": "The review objective requires separating strategy/market loss from execution/infrastructure failure, and requires chain-by-chain latency evidence (p50/p95 vs a measured baseline) per this repository's own audit requirements. That evidence currently cannot exist for EVM at all, regardless of what runtime forensics snapshot is supplied in the future.",
+      "shadow_test": "Not applicable to trading behavior \u2014 this is an observability-only addition. Validate by confirming latency records are written for N consecutive EVM live trades without adding measurable overhead to execute_ms of the trade itself.",
+      "strategy": "Cross-cutting execution infrastructure (affects all EVM strategies: SiBot EVM leader-copy and route-scanner arbitrage)",
+      "suggested_files": [
+        "learnerbot/live_executor.py",
+        "learnerbot/execution_latency.py"
+      ]
+    },
+    {
+      "action": "Add a local, serialized (locked) nonce manager per EVM wallet address instead of re-querying eth_getTransactionCount('pending') independently for every transaction.",
+      "chain_scope": "EVM",
+      "confidence": "medium",
+      "downside_risk": "A local nonce cache must correctly resync after any externally-sent transaction or restart, or it risks the opposite failure mode (stuck/skipped nonces); needs careful handling of the 'pending' vs 'latest' nonce semantics on reconnect.",
+      "evidence": "learnerbot/live_executor.py:299-308 (_base_tx) fetches nonce fresh via w3.eth.get_transaction_count(address, 'pending') per transaction with no local nonce cache or lock found in the module.",
+      "expected_effect": "Reduces failed/dropped/replaced EVM transactions caused by nonce collisions, which would otherwise be misread as strategy underperformance (missed exits, delayed entries) when the root cause is execution-layer.",
+      "id": "P5-evm-nonce-serialization",
+      "minimum_observation": "At least 2 weeks of EVM live trading activity, ideally spanning periods of overlapping/concurrent trade submissions on the same wallet, to observe whether nonce-collision failures actually occur at a measurable rate.",
+      "rationale": "This is an execution/infrastructure reliability issue, not a strategy issue \u2014 it is called out explicitly because the review objective requires separating strategy loss from execution failure, and an unserialized 'pending' nonce read is a known source of nonce collisions (dropped/replaced/stuck transactions) whenever more than one transaction for the same wallet could be in flight close together (e.g., a leader-copy exit and a new auto-arbitrage entry near-simultaneously).",
+      "shadow_test": "Add logging of nonce-related transaction failures (e.g., 'nonce too low', 'replacement transaction underpriced') for the current unserialized approach over an observation window before and after introducing a local nonce manager, to confirm the fix actually reduces the failure count.",
+      "strategy": "Cross-cutting EVM execution reliability (affects all EVM strategies)",
+      "suggested_files": [
+        "learnerbot/live_executor.py"
+      ]
+    },
+    {
+      "action": "Either schedule scripts/rpc_health_audit.py to run on a recurring basis (e.g., a lightweight periodic job) and persist its output where the infrastructure-economics review process can read it, or explicitly document in-repo that it is a manual/on-demand diagnostic only.",
+      "chain_scope": "EVM_AND_SOLANA",
+      "confidence": "high",
+      "downside_risk": "Running it on a recurring schedule adds a small amount of additional RPC request volume/bandwidth per run; frequency should be chosen deliberately (e.g., hourly, not per-minute) to avoid contributing to the very RPC load/cost the broader audit process is meant to minimize.",
+      "evidence": "scripts/rpc_health_audit.py implements per-endpoint latency_ms measurement and error classification (TIMEOUT/TLS/DNS/RATE_LIMIT/AUTH) with secret redaction, but its only callers repo-wide are its own tests (tests/test_rpc_health_audit.py, tests/test_runtime_rpc_health_probe.py) \u2014 it is not invoked by any systemd unit, GitHub workflow, or runtime import.",
+      "expected_effect": "Future strategy/infrastructure reviews gain access to real, continuously-refreshed per-chain RPC latency and error-rate evidence rather than a one-off manually-triggered report.",
+      "id": "P6-wire-up-rpc-health-audit",
+      "minimum_observation": "N/A",
+      "rationale": "This repository's own engineering-audit requirements call for chain-by-chain trade-latency and RPC round-trip evidence against a measured baseline; a tool built for exactly that purpose currently produces no continuous data, which will otherwise be silently misread by future reviews as 'no RPC latency problem' rather than 'no RPC latency data.'",
+      "shadow_test": "Not applicable \u2014 this is a pure observability wiring change with no effect on trading decisions or capital at risk.",
+      "strategy": "N/A \u2014 infrastructure observability, not a trading strategy",
+      "suggested_files": [
+        "scripts/rpc_health_audit.py"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    "Did not propose loosening, disabling, or raising the ceiling on any existing slippage/price-impact cap, gas-multiple floor, exposure limit, stop-loss/take-profit threshold, or circuit breaker to increase trade frequency or size \u2014 that would weaken existing safety controls, which is explicitly out of scope for this review regardless of any apparent conservatism in current settings.",
+    "Did not recommend any server/region/provider infrastructure migration \u2014 no trade_latency or infrastructure snapshot evidence was supplied (evidence_status=MISSING_RUNTIME_FORENSICS), so no cost-adjusted, chain-weighted trading case can be built; the only defensible call absent that data is to leave the KEEP/BENCHMARK/MOVE infrastructure question unanswered pending real evidence, not to guess.",
+    "Did not recommend refactoring or consolidating the ~150-200+ monkeypatch (*_patch.py) modules, despite the auditability concern it raises \u2014 that is a code-maintainability/process risk, not a P&L-affecting strategy change, and a repository-wide refactor of this scale is out of scope for a strategy review; noted only as an evidence-gap caveat on how confidently any single file's logic can be assumed to represent live production behavior.",
+    "Did not treat the disconnected SHADOW net-edge framework (cross_chain_strategy_signals.py) as ready to gate live trades directly \u2014 proposed only a non-gating parallel-logging validation step (P2), since promoting an unvalidated formula straight into a live accept/reject gate risks real capital on an unproven signal."
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "0066c3f72f2e071a8e5d8d4956e8598d59c6b352",
+  "status": "CHANGES_PROPOSED",
+  "summary": "No runtime forensics were supplied (evidence_status=MISSING_RUNTIME_FORENSICS), so this is a static architecture review only; no claim is made about current live profitability, canary readiness, or realized P&L. The bot runs two independently-matured stacks (EVM and Solana) built around leader/copy-trading (SiBot/SiMo) plus EVM cyclic-arbitrage route scanning, layered under ~150-200+ runtime monkeypatch modules chained from learnerbot/__main__.py. Explicit gross-vs-net P&L accounting exists (profit.py, fee_engine.py, sibot.py evaluate_position/close_position), and pre-trade slippage/price-impact caps and gas-multiple floors are enforced before execution. The strongest gap for money-weighted NET P&L accuracy is that exit-decision thresholds (stop-loss/take-profit/trailing) compare against P&L net of gas but not net of the platform profit-share fee, which is only deducted after realization \u2014 this can misstate the true net-to-user economics that drive exit timing. A second material gap is that the most rigorous net-edge model (cross_chain_strategy_signals.py, which nets fees, slippage, price impact, AND a latency_reserve_bps term) is SHADOW-only and disconnected from the live execution path; live trading instead relies on older, less complete per-module ad hoc slippage/impact checks with no latency or MEV cost term. Risk controls are asymmetric across chains: EVM has standing portfolio-level daily-loss and drawdown circuit breakers (sibot_profit_guard_patch.py); Solana's only portfolio-level halt precedent was a one-off manual migration script, not a standing automatic control, leaving Solana to rely solely on per-position stops and fault-count circuit breakers. Observability is likewise asymmetric: per-stage execution latency instrumentation (execution_latency.py) is wired in for Solana only; EVM has no equivalent, and a purpose-built RPC health/latency diagnostic (scripts/rpc_health_audit.py) exists but is not called by any runtime path, systemd unit, or workflow, so it produces no continuous data. A likely EVM execution-reliability issue (not a strategy issue) was also found: nonce is re-fetched as 'pending' per transaction with no local serialized nonce manager, which is a known pattern for nonce collisions under any concurrent submission path. All findings below are derived from static code reading against an architecture-only evidence packet; none are confirmed against live traces, and none should be read as claims about current realized performance."
+}
