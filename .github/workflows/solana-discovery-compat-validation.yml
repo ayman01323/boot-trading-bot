@@ -11,34 +11,33 @@ permissions:
 jobs:
   validate:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/solana-discovery-compat-ci'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
+    env:
+      CI_VENV: /tmp/solana-discovery-compat-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Install test dependencies
+      - name: Prepare isolated Python environment
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -q --upgrade pip
-          python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+          rm -rf "$CI_VENV"
+          python3 -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
 
       - name: Compile changed runtime modules
-        run: python -m compileall -q learnerbot tests
+        run: "$CI_VENV/bin/python" -m compileall -q learnerbot tests
 
       - name: Import order and compatibility regressions
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest -q \
+          "$CI_VENV/bin/python" -m pytest -q \
             tests/test_imports.py \
             tests/test_main_import_order.py \
             tests/test_telegram_trade_blocker_health.py \
@@ -48,7 +47,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest -q \
+          "$CI_VENV/bin/python" -m pytest -q \
             tests/test_solana_profit_guard.py \
             tests/test_solana_live_canary.py \
             tests/test_solana_execution_safety.py \
@@ -58,3 +57,8 @@ jobs:
             tests/test_solana_positive_edge_entry_gate.py \
             tests/test_solana_liquidity_fail_closed.py \
             tests/test_solana_profit_first_live_correction.py
+
+      - name: Clean isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$CI_VENV"
