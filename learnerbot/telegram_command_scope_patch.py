@@ -140,7 +140,10 @@ from . import telegram_five_agent_patch  # noqa: E402,F401
 # Add Grok as a sixth independent AI Council member after the existing five-agent
 # presentation has installed. Grok remains advisory and inherits the same safety gates.
 from . import telegram_grok_council_patch  # noqa: E402,F401
-# Recovery health state is loaded after the five-agent patch so verified
+# Add Kimi as the seventh independent strategy reviewer after the Grok layer.
+# Kimi remains advisory and does not change deterministic LIVE/risk/capital gates.
+from . import telegram_kimi_seventh_review_patch  # noqa: E402,F401
+# Recovery health state is loaded after the review presentation so verified
 # in-progress Copilot work is shown as WAITING rather than falsely broken.
 from . import ai_recovery_health_patch  # noqa: E402,F401
 # MASTER Telegram can dispatch the already-bounded DeepSeek GitHub/VPS workflows.
