@@ -1,0 +1,109 @@
+name: Gemini Automatic Awareness Live Test
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  awareness:
+    name: Prove Gemini receives without polling
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    env:
+      PROD_REPO: /root/multichain-learning-bot-v2.2-fast-direct-market
+      BUS_URL: ws://127.0.0.1:8765
+    steps:
+      - name: Send first message and disconnect after recipient ACK
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY="$PROD_REPO/.venv/bin/python"
+          CODE="GEMINI-AWARE-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "CODE=$CODE" >> "$GITHUB_ENV"
+          export CODE
+          cd "$PROD_REPO"
+          "$PY" - <<'PY'
+          import asyncio, json, os, re
+          from websockets.asyncio.client import connect
+
+          code = os.environ["CODE"]
+          url = os.environ.get("BUS_URL", "ws://127.0.0.1:8765")
+          token = os.environ.get("AI_AGENT_BUS_TOKEN", "")
+          mid = "gpt-to-gemini-awareness-" + re.sub(r"[^A-Za-z0-9._:-]", "-", code.lower())
+          body = (
+              "AUTOMATIC AWARENESS TEST. You received this through Strategy Factory without being told to check GitHub, "
+              f"a mailbox, or SQLite. Remember this exact code: {code}. Reply exactly: SEEN {code}"
+          )
+
+          async def main():
+              async with connect(url, ping_interval=20, ping_timeout=20, max_size=32768) as ws:
+                  await ws.send(json.dumps({"type":"register","agent":"gpt","token":token}, separators=(",",":")))
+                  reg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                  assert reg.get("type") == "registered", reg
+                  await ws.send(json.dumps({"type":"send","message_id":mid,"from":"gpt","to":"gemini","body":body}, separators=(",",":")))
+                  acknowledged = False
+                  while True:
+                      data = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+                      if data.get("message_id") != mid:
+                          continue
+                      print(json.dumps(data, ensure_ascii=False), flush=True)
+                      if str(data.get("status") or "").upper() == "ACKNOWLEDGED":
+                          acknowledged = True
+                          break
+                  assert acknowledged
+              print(f"FIRST_SENDER_DISCONNECTED_AFTER_ACK message_id={mid}", flush=True)
+
+          asyncio.run(main())
+          PY
+
+      - name: Confirm Gemini completed first message after sender disconnected
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY="$PROD_REPO/.venv/bin/python"
+          export CODE
+          "$PY" - <<'PY'
+          import os, re, sqlite3, time
+          code = os.environ["CODE"]
+          mid = "gpt-to-gemini-awareness-" + re.sub(r"[^A-Za-z0-9._:-]", "-", code.lower())
+          db = "/var/tmp/boot/ai_agent_bus.sqlite3"
+          deadline = time.time() + 90
+          row = None
+          while time.time() < deadline:
+              con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
+              try:
+                  row = con.execute("SELECT status, reply, error, acknowledged_at, replied_at FROM messages WHERE message_id=?", (mid,)).fetchone()
+              finally:
+                  con.close()
+              if row and row[0] == "REPLIED" and row[1]:
+                  break
+              time.sleep(1)
+          assert row, "first message missing from durable bus"
+          print(f"FIRST_STATUS={row[0]}")
+          print(f"FIRST_ACK_AT={row[3]} FIRST_REPLIED_AT={row[4]}")
+          print("FIRST_REPLY=" + str(row[1])[:1000])
+          assert row[0] == "REPLIED", row
+          assert not (row[2] or ""), row
+          assert f"SEEN {code}" in row[1], row[1]
+          PY
+
+      - name: Ask Gemini to recall the previous automatically delivered message
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY="$PROD_REPO/.venv/bin/python"
+          cd "$PROD_REPO"
+          OUT="$($PY scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message "Do not inspect GitHub, a mailbox, or SQLite. From your own recent Strategy Factory conversation memory, give the exact code from the immediately previous automatic-awareness test message. Reply exactly: REMEMBERED ${CODE}" \
+            --timeout 120)"
+          printf '%s\n' "$OUT"
+          grep -F '"status": "ACKNOWLEDGED"' <<<"$OUT" >/dev/null
+          grep -F '"status": "REPLIED"' <<<"$OUT" >/dev/null
+          grep -F "REMEMBERED ${CODE}" <<<"$OUT" >/dev/null
+          echo "AUTOMATIC_AWARENESS_PROVED=${CODE}"
