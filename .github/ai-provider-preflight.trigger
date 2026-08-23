@@ -1,2 +1,2 @@
-2026-08-21T21:36:00Z
-Control test: verify the self-hosted boot-vps runner can execute GitHub Actions and reach DeepSeek/OpenAI/Anthropic with redacted output.
+2026-08-23T11:21:00Z
+Refresh provider API health after Grok and DeepSeek six-agent health recovery. Read-only redacted preflight for OpenAI Anthropic DeepSeek and xAI.
