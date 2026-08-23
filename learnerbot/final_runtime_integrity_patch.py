@@ -12,6 +12,7 @@ It is intentionally verification-only: it does not repair/rebind any hook.
 from . import kimi_ai_health_roster_patch as _kimi_health  # noqa: F401
 
 from . import auto_trader as _auto
+from . import evm_pool_rug_gate as _evm_rug
 from . import evm_transfer_native_hotfix_patch as _evm_transfer
 from . import live_executor as _evm_live
 from . import polygon_websocket_patch as _evm_ws
@@ -104,6 +105,9 @@ def composition_checks() -> dict[str, bool]:
         "evm_leader_cursor_reliable_inner": _evm_ws._ORIGINAL_POLL is _evm_reliability.poll_leader_blocks_reliable,
         "evm_quality_hard_floor": _sibot.user_settings is _evm_quality.user_settings_with_quality_floor,
         "evm_native_transfer_destination": _evm_live.LiveTrader.transfer_native is _evm_transfer.transfer_native_with_destination,
+        "evm_pool_rug_manual_buy": _evm_live.LiveTrader.buy is _evm_rug.buy_with_pool_rug_gate,
+        "evm_pool_rug_v2_prebroadcast": _evm_live.LiveTrader._prebroadcast_cycle is _evm_rug.prebroadcast_cycle_with_pool_rug_gate,
+        "evm_pool_rug_v3_prebroadcast": _evm_live.LiveTrader._prebroadcast_v3_cycle is _evm_rug.prebroadcast_v3_cycle_with_pool_rug_gate,
         "evm_provenance_connect": _sibot.connect is _provenance._evm_connect_with_provenance,
         "solana_provenance_connect": _sol.connect is _provenance._sol_connect_with_provenance,
         "auto_provenance_append": _auto._append is _provenance._auto_append_with_provenance,

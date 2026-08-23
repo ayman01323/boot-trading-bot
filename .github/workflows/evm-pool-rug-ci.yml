@@ -1,0 +1,54 @@
+name: EVM Pool Rug Safety CI
+
+on:
+  pull_request:
+    paths:
+      - 'learnerbot/evm_pool_rug_gate.py'
+      - 'learnerbot/evm_transfer_native_hotfix_patch.py'
+      - 'tests/test_evm_pool_rug_gate.py'
+      - '.github/workflows/evm-pool-rug-ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'learnerbot/evm_pool_rug_gate.py'
+      - 'learnerbot/evm_transfer_native_hotfix_patch.py'
+      - 'tests/test_evm_pool_rug_gate.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evm-pool-rug-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  safety:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    env:
+      CI_VENV: /tmp/evm-pool-rug-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$CI_VENV"
+          python3 -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+
+      - name: Compile pool-rug safety code
+        run: "$CI_VENV/bin/python" -m py_compile learnerbot/evm_pool_rug_gate.py tests/test_evm_pool_rug_gate.py
+
+      - name: Run all-chain pool-rug regression tests
+        run: "$CI_VENV/bin/python" -m pytest -x -vv tests/test_evm_pool_rug_gate.py"
+
+      - name: Clean isolated Python environment
+        if: always()
+        run: rm -rf "$CI_VENV"

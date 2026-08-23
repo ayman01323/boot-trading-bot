@@ -44,4 +44,20 @@ def test_python_m_learnerbot_real_startup_stack_reaches_cli_help():
     assert result.returncode == 0, combined
     assert "Audited trading runtime invariant failed" not in combined
     assert "Final runtime integrity failed" not in combined
+    assert "[evm-pool-rug] installed=true" in combined
     assert "[final-runtime-integrity] OK" in combined
+
+
+# Deliberately run the focused EVM pool-rug regressions from this existing,
+# always-on PR gate as well as from the dedicated workflow.
+def test_evm_pool_rug_focused_regressions_pass_in_mandatory_pr_gate():
+    """Keep the all-chain rug gate inside the existing always-on PR CI path."""
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "tests/test_evm_pool_rug_gate.py"],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    assert result.returncode == 0, combined
