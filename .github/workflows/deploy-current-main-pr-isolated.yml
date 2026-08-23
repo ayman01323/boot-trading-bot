@@ -31,6 +31,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
         run: |
@@ -42,7 +43,7 @@ jobs:
           import json, os, pathlib
           keys = (
               'OPENAI_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_API_KEY',
-              'DEEPSEEK_API_KEY', 'COPILOT_GITHUB_TOKEN', 'COPILOT_ASSIGN_TOKEN',
+              'DEEPSEEK_API_KEY', 'XAI_API_KEY', 'COPILOT_GITHUB_TOKEN', 'COPILOT_ASSIGN_TOKEN',
           )
           lines=[]
           for key in keys:
@@ -63,6 +64,7 @@ jobs:
               'Gemini=' + ('present' if 'GEMINI_API_KEY' in names else 'missing'),
               'Claude=' + ('present' if 'ANTHROPIC_API_KEY' in names else 'missing'),
               'DeepSeek=' + ('present' if 'DEEPSEEK_API_KEY' in names else 'missing'),
+              'Grok=' + ('present' if 'XAI_API_KEY' in names else 'missing'),
               'Copilot=' + ('present' if {'COPILOT_GITHUB_TOKEN','COPILOT_ASSIGN_TOKEN'} & names else 'missing'),
           ]))
           print('runtime_file_mode=' + oct(stat.S_IMODE(p.stat().st_mode)))

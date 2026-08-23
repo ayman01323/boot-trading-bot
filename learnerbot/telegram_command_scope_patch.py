@@ -137,6 +137,9 @@ install()
 # expands the presentation and health status to five independent reviewers.
 from . import telegram_four_agent_strategy_patch  # noqa: E402,F401
 from . import telegram_five_agent_patch  # noqa: E402,F401
+# Add Grok as a sixth independent AI Council member after the existing five-agent
+# presentation has installed. Grok remains advisory and inherits the same safety gates.
+from . import telegram_grok_council_patch  # noqa: E402,F401
 # Recovery health state is loaded after the five-agent patch so verified
 # in-progress Copilot work is shown as WAITING rather than falsely broken.
 from . import ai_recovery_health_patch  # noqa: E402,F401
