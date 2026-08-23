@@ -63,3 +63,33 @@ def test_quality_metrics_carries_live_edge_evidence(monkeypatch):
     assert out["median_return_pct"] == Decimal("5.5")
     assert out["recent_edge_closed"] == 10
     assert out["recent_median_return_pct"] == Decimal("4.4")
+
+
+def test_broader_selector_evaluates_candidates_beyond_display_top20(monkeypatch):
+    candidates = [{"wallet": f"wallet-{i}"} for i in range(25)]
+    seen = []
+
+    def fake_metrics(app, wallet, cfg):
+        seen.append(wallet)
+        return {
+            "wallet": wallet,
+            "profit_factor": Decimal("2"),
+            "net": Decimal("1"),
+            "win_rate": Decimal("70"),
+            "drawdown_pct": Decimal("5"),
+            "last_activity_ts": 1,
+            "median_return_pct": Decimal("6"),
+            "recent_median_return_pct": Decimal("5"),
+        }
+
+    monkeypatch.setattr(patch, "quality_metrics", fake_metrics)
+    monkeypatch.setattr(patch, "historical_ok", lambda metrics, cfg: metrics["wallet"] == "wallet-24")
+
+    qualified = patch._qualified_candidates(object(), {}, candidates)
+
+    assert seen == [f"wallet-{i}" for i in range(25)]
+    assert [item[0]["wallet"] for item in qualified] == ["wallet-24"]
+
+
+def test_runtime_refresh_hook_is_broader_selector():
+    assert patch._sol.refresh_rankings is patch.refresh_rankings
