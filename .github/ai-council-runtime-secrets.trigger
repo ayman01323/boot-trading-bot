@@ -1,3 +1,3 @@
 AI Council runtime credential bridge
-sync=2026-08-23T10:51Z
-reason=refresh XAI/Grok credentials after BOOT VPS runner release
+sync=2026-08-23T11:08Z
+reason=refresh Gemini credential for production Strategy Factory memory proof
