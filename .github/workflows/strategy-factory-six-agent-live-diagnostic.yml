@@ -34,22 +34,22 @@ jobs:
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Extract sanitized endpoint fields from latest report
+      - name: Classify sanitized endpoint errors
         shell: bash
         run: |
           set -euo pipefail
           i=0
-          for q in '"chain":' '"endpoint_index":' '"kind":' '"provider":' '"priority":' '"status":' '"error":' '"latency_ms":' '"reported_chain_id":'; do
+          for q in 'AUTH' 'HTTP_' 'RPC_ERROR_' 'WRONG_CHAIN' 'BAD_CHAIN_ID' 'TIMEOUT' 'DNS' 'TLS' 'CONNECTION_REFUSED' 'SUBSCRIBE_FAILED' 'CHAIN_ID_FAILED'; do
             i=$((i+1))
             args="$(python3 -c 'import json,sys; print(json.dumps({"path":"data","query":sys.argv[1]}))' "$q")"
             output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
               --from gpt \
               --to kimi \
-              --message-id "rpc-fields-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${i}" \
+              --message-id "rpc-errors-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${i}" \
               --timeout 90 \
               --task-action SEARCH_CODE \
               --task-args-json "$args" \
-              --task-instruction 'Search sanitized RPC health telemetry only. Do not expose endpoint URLs, API keys, wallets or secrets.')"
+              --task-instruction 'Search only sanitized RPC health telemetry for failure classes. Do not expose endpoint URLs, API keys, wallets or secrets.')"
             final="$(printf '%s\n' "$output" | tail -n 1)"
             FIELD="$q" FINAL="$final" python3 - <<'PY'
           import json,os
@@ -58,7 +58,7 @@ jobs:
           matches=(result.get('evidence') or {}).get('matches') or []
           for m in matches:
               if m.get('path') == 'data/rpc_health_latest.json':
-                  print('FIELD', os.environ['FIELD'], m.get('line'), m.get('text'))
+                  print('ERROR_FIELD', os.environ['FIELD'], m.get('line'), m.get('text'))
           PY
           done
 
