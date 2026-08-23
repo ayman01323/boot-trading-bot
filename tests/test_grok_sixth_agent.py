@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from learnerbot import ai_council as council
+from learnerbot import ai_master_control
 from learnerbot import grok_provider
 from scripts import ai_agent_bus
 from scripts import ai_agent_bus_provider_compat
@@ -58,17 +59,31 @@ def test_ai_bus_accepts_grok_and_redacts_xai_secret() -> None:
     assert envelope.target == "grok"
 
 
+def test_grok_is_selectable_master() -> None:
+    assert "grok" in ai_master_control.PROVIDERS
+    value = ai_master_control.sanitise({"strategy_master": "grok", "engineering_master": "grok"})
+    assert value["strategy_master"] == "grok"
+    assert value["engineering_master"] == "grok"
+
+
 def test_telegram_installs_grok_after_five_agent_layer() -> None:
     source = (ROOT / "learnerbot" / "telegram_command_scope_patch.py").read_text(encoding="utf-8")
+    patch = (ROOT / "learnerbot" / "telegram_grok_council_patch.py").read_text(encoding="utf-8")
     assert "telegram_five_agent_patch" in source
     assert "telegram_grok_council_patch" in source
     assert source.index("telegram_five_agent_patch") < source.index("telegram_grok_council_patch")
+    assert '"grok": "Grok"' in patch
+    assert "six_agent_reports_complete" in patch
+    assert "aicfg:master:{lane}:grok" in patch
+    assert "SIX STRATEGY AGENTS COMPLETE" in patch
 
 
 def test_runtime_secret_sync_includes_xai_without_printing_values() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ai-council-runtime-secrets.yml").read_text(encoding="utf-8")
-    assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in workflow
-    assert "'XAI_API_KEY'" in workflow
+    deploy = (ROOT / ".github" / "workflows" / "deploy-current-main-pr-isolated.yml").read_text(encoding="utf-8")
+    for body in (workflow, deploy):
+        assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in body
+        assert "XAI_API_KEY" in body
     assert "'grok': 'XAI_API_KEY' in present" in workflow
     assert 'cat "$target"' not in workflow
 
@@ -78,3 +93,28 @@ def test_ai_bus_workflow_passes_xai_secret_and_reports_grok() -> None:
     assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in workflow
     assert "XAI_COUNCIL_MODEL" in workflow
     assert "GROK" in workflow
+
+
+def test_grok_scheduled_reviewers_are_read_only_and_sandboxed() -> None:
+    for name in ("grok-sixth-strategy-agent.yml", "grok-sixth-engineering-agent.yml"):
+        body = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "@xai-official/grok@latest" in body
+        assert "--permission-mode dontAsk" in body
+        assert "--allow 'Read' --allow 'Grep'" in body
+        assert "--deny 'Edit' --deny 'Bash(*)'" in body
+        assert "--sandbox strict" in body
+        assert "--disable-web-search" in body
+        assert "no_live_changes" in body
+        assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in body
+
+
+def test_selected_master_collects_and_can_call_grok() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "selected-ai-master.yml").read_text(encoding="utf-8")
+    runner = (ROOT / "scripts" / "resilient_selected_master_v2.py").read_text(encoding="utf-8")
+    assert '"Grok Sixth Strategy Agent"' in workflow
+    assert '"Grok Sixth Engineering Agent"' in workflow
+    assert "for provider in gpt gemini claude deepseek grok" in workflow
+    assert "XAI_MASTER_MODEL" in workflow
+    assert '"grok", "copilot"' in runner
+    assert 'provider == "grok"' in runner
+    assert "max(0, 6 - len(valid_reports))" in runner
