@@ -1,38 +1,46 @@
-name: AI Agent Recovery
+name: Seven-Agent Recovery Watch
 
 on:
   push:
     paths:
       - '.github/ai-agent-recovery.trigger'
+  # Non-urgent AI report recovery is a slow watchdog, not a trading-safety loop.
+  # Scheduled passes are read-only; explicit repair=true is required to spend on retries.
   schedule:
-    - cron: '5,15,25,35,45,55 * * * *'
+    - cron: '23 */6 * * *'
   workflow_dispatch:
+    inputs:
+      repair:
+        description: 'Dispatch bounded retries for missing/incomplete agent reports'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: write
   contents: read
 
 concurrency:
-  group: ai-agent-recovery
-  cancel-in-progress: false
+  group: seven-agent-recovery-watch
+  cancel-in-progress: true
 
 jobs:
-  recover:
+  watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 10
+    env:
+      REPAIR: ${{ inputs.repair || false }}
     steps:
-      - name: Recover missing five-agent review lanes
+      - name: Inspect complete seven-agent review health and optionally repair
         env:
           GH_TOKEN: ${{ github.token }}
-          IMMEDIATE: ${{ github.event_name != 'schedule' }}
         shell: bash
         run: |
           set -euo pipefail
 
           read_text() {
-            local path="$1"
             gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" --jq '.content' 2>/dev/null \
               | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n' || true
           }
 
@@ -45,21 +53,22 @@ jobs:
               | tr -d '\n' | base64 -d > "$tmp" 2>/dev/null
             rc=$?
             set -e
-            if [[ $rc -ne 0 || ! -s "$tmp" ]]; then
-              rm -f "$tmp"; echo MISSING; return 0
-            fi
-            python - "$tmp" <<'PY'
+            if [[ $rc -ne 0 || ! -s "$tmp" ]]; then rm -f "$tmp"; echo MISSING; return 0; fi
+            python3 - "$tmp" <<'PY'
           import json,sys
-          try:
-              p=json.load(open(sys.argv[1])); print(str(p.get('status') or 'MISSING').upper())
-          except Exception:
-              print('MISSING')
+          try: print(str((json.load(open(sys.argv[1])) or {}).get('status') or 'MISSING').upper())
+          except Exception: print('MISSING')
           PY
             rm -f "$tmp"
           }
 
+          bad() {
+            case "$1" in MISSING|INCOMPLETE|FAILED|ERROR|BLOCKED|BLOCKED_AUTH) return 0;; *) return 1;; esac
+          }
+
           busy() {
-            local wf="$1" n
+            local wf="$1"
+            local n
             n="$(gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/${wf}/runs?per_page=20" \
               --jq '[.workflow_runs[] | select(.status=="queued" or .status=="in_progress")] | length' 2>/dev/null || echo 0)"
@@ -68,53 +77,62 @@ jobs:
 
           dispatch() {
             local wf="$1" key="$2" value="$3" label="$4"
-            if busy "$wf"; then
-              echo "${label}: existing run queued/in progress; not duplicating."
-              return 0
-            fi
-            echo "Dispatching ${label} for ${value}"
-            set +e
+            if busy "$wf"; then echo "${label}: run already queued/in progress; not duplicating."; return 0; fi
+            echo "Dispatching ${label}"
             gh workflow run "$wf" --ref main -f "${key}=${value}"
-            rc=$?
-            set -e
-            if [[ $rc -ne 0 ]]; then
-              echo "${label}: dispatch failed; a later recovery pass will retry." >&2
-            fi
           }
 
-          source_sha="$(read_text weekly/latest_source_commit.txt)"
-          cycle_id="$(read_text strategy/latest_cycle_id.txt)"
+          providers=(gpt claude gemini deepseek grok kimi copilot)
+          source="$(read_text weekly/latest_source_commit.txt)"
+          cycle="$(read_text strategy/latest_cycle_id.txt)"
+          repair="$(printf '%s' "${REPAIR:-false}" | tr '[:upper:]' '[:lower:]')"
+          [[ "$repair" == true ]] || repair=false
 
-          if [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]; then
-            gpt="$(report_status "weekly/runs/${source_sha}/gpt.json")"
-            claude="$(report_status "weekly/runs/${source_sha}/claude.json")"
-            deepseek="$(report_status "weekly/runs/${source_sha}/deepseek.json")"
-            copilot="$(report_status "weekly/runs/${source_sha}/copilot.json")"
-            echo "Engineering ${source_sha:0:12}: GPT=${gpt} Claude=${claude} DeepSeek=${deepseek} Copilot=${copilot}"
+          echo '### Seven-Agent Recovery Watch' >> "$GITHUB_STEP_SUMMARY"
+          echo "- repair requested: ${repair}" >> "$GITHUB_STEP_SUMMARY"
 
-            if [[ "$IMMEDIATE" == 'true' && ( "$gpt" == 'MISSING' || "$gpt" == 'INCOMPLETE' || "$gpt" == 'FAILED' ) ]]; then
-              dispatch engineering-agent-retry.yml source_commit "$source_sha" 'GPT engineering retry'
-            fi
-            [[ "$claude" != 'MISSING' ]] || dispatch claude-fourth-engineering-agent.yml source_commit "$source_sha" 'Claude engineering'
-            [[ "$deepseek" != 'MISSING' ]] || dispatch deepseek-fifth-engineering-agent.yml source_commit "$source_sha" 'DeepSeek engineering'
-            if [[ "$IMMEDIATE" == 'true' && "$copilot" == 'MISSING' ]]; then
-              dispatch engineering-copilot-assignment-reconciler.yml source_commit "$source_sha" 'Copilot engineering assignment reconciliation'
-            fi
-          else
-            echo 'No valid engineering source is currently published.'
-          fi
-
-          if [[ "$cycle_id" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
-            claude="$(report_status "strategy/runs/${cycle_id}/claude.json")"
-            deepseek="$(report_status "strategy/runs/${cycle_id}/deepseek.json")"
-            copilot="$(report_status "strategy/runs/${cycle_id}/copilot.json")"
-            echo "Strategy ${cycle_id}: Claude=${claude} DeepSeek=${deepseek} Copilot=${copilot}"
-
-            [[ "$claude" != 'MISSING' ]] || dispatch claude-exact-strategy-retry.yml cycle_id "$cycle_id" 'Claude exact-cycle strategy'
-            [[ "$deepseek" != 'MISSING' ]] || dispatch deepseek-fifth-strategy-agent.yml cycle_id "$cycle_id" 'DeepSeek exact-cycle strategy'
-            if [[ "$IMMEDIATE" == 'true' && "$copilot" == 'MISSING' ]]; then
-              dispatch strategy-copilot-assignment-reconciler.yml cycle_id "$cycle_id" 'Copilot strategy assignment reconciliation'
+          if [[ "$source" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Engineering ${source:0:12}:"
+            declare -A eng
+            for p in "${providers[@]}"; do
+              eng[$p]="$(report_status "weekly/runs/${source}/${p}.json")"
+              echo "  ${p}=${eng[$p]}"
+              echo "- engineering/${p}: ${eng[$p]}" >> "$GITHUB_STEP_SUMMARY"
+            done
+            if [[ "$repair" == true ]]; then
+              if bad "${eng[gpt]}" || bad "${eng[gemini]}"; then dispatch engineering-agent-retry.yml source_commit "$source" 'GPT/Gemini engineering retry'; fi
+              bad "${eng[claude]}" && dispatch claude-fourth-engineering-agent.yml source_commit "$source" 'Claude engineering retry' || true
+              bad "${eng[deepseek]}" && dispatch deepseek-fifth-engineering-agent.yml source_commit "$source" 'DeepSeek engineering retry' || true
+              bad "${eng[grok]}" && dispatch grok-sixth-engineering-agent.yml source_commit "$source" 'Grok engineering retry' || true
+              bad "${eng[kimi]}" && dispatch kimi-seventh-engineering-agent.yml source_commit "$source" 'Kimi engineering retry' || true
+              bad "${eng[copilot]}" && dispatch engineering-copilot-assignment-reconciler.yml source_commit "$source" 'Copilot engineering assignment repair' || true
             fi
           else
-            echo 'No valid strategy cycle is currently published.'
+            echo '- engineering: no valid published source' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+          if [[ "$cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
+            echo "Strategy ${cycle}:"
+            declare -A strat
+            for p in "${providers[@]}"; do
+              strat[$p]="$(report_status "strategy/runs/${cycle}/${p}.json")"
+              echo "  ${p}=${strat[$p]}"
+              echo "- strategy/${p}: ${strat[$p]}" >> "$GITHUB_STEP_SUMMARY"
+            done
+            if [[ "$repair" == true ]]; then
+              # GPT/Gemini are produced by the base cost-gated cycle. Do not rerun
+              # the whole paid base cycle merely to fill a non-urgent missing report.
+              bad "${strat[claude]}" && dispatch claude-exact-strategy-retry.yml cycle_id "$cycle" 'Claude exact strategy retry' || true
+              bad "${strat[deepseek]}" && dispatch deepseek-fifth-strategy-agent.yml cycle_id "$cycle" 'DeepSeek strategy retry' || true
+              bad "${strat[grok]}" && dispatch grok-sixth-strategy-agent.yml cycle_id "$cycle" 'Grok strategy retry' || true
+              bad "${strat[kimi]}" && dispatch kimi-seventh-strategy-agent.yml cycle_id "$cycle" 'Kimi strategy retry' || true
+              bad "${strat[copilot]}" && dispatch strategy-copilot-assignment-reconciler.yml cycle_id "$cycle" 'Copilot strategy assignment repair' || true
+            fi
+          else
+            echo '- strategy: no valid published cycle' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [[ "$repair" != true ]]; then
+            echo 'Scheduled pass is read-only. Use workflow_dispatch repair=true for bounded paid retries.'
+          fi
+          echo 'Trading/LIVE/capital/wallet/signing authority: none.'
