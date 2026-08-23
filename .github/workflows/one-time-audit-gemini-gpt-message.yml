@@ -1,0 +1,55 @@
+name: One-Time Audit Gemini GPT Message
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-audit-gemini-gpt-message.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit-message:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Copy live bus database read-only and verify prior Gemini message
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=/var/tmp/boot/ai_agent_bus.sqlite3
+          dst="$RUNNER_TEMP/ai_agent_bus_audit.sqlite3"
+          test -r "$src"
+          cp "$src" "$dst"
+          if [[ -r "${src}-wal" ]]; then cp "${src}-wal" "${dst}-wal"; fi
+          if [[ -r "${src}-shm" ]]; then cp "${src}-shm" "${dst}-shm"; fi
+          chmod u+rw "$dst" "${dst}-wal" "${dst}-shm" 2>/dev/null || true
+          DB="$dst" python3 - <<'PY'
+          import os, sqlite3
+          marker='GEMINI_TO_GPT_FRESH_32641773281_1_OK'
+          conn=sqlite3.connect(os.environ['DB'])
+          conn.row_factory=sqlite3.Row
+          rows=conn.execute(
+              """SELECT message_id,sender,target,body,status,reply,created_at,delivered_at,acknowledged_at,replied_at,reply_delivered_at
+                   FROM messages
+                   WHERE sender='gemini' AND target='gpt' AND body LIKE ?
+                   ORDER BY created_at DESC LIMIT 5""",
+              (f'%{marker}%',),
+          ).fetchall()
+          assert rows, f'NO_DURABLE_MESSAGE marker={marker}'
+          row=rows[0]
+          print('MESSAGE_ID='+row['message_id'])
+          print('SENDER='+row['sender'])
+          print('TARGET='+row['target'])
+          print('STATUS='+row['status'])
+          print('REPLY='+row['reply'].strip())
+          print('DELIVERED_AT='+str(row['delivered_at']))
+          print('ACKNOWLEDGED_AT='+str(row['acknowledged_at']))
+          print('REPLIED_AT='+str(row['replied_at']))
+          assert row['status']=='REPLIED', dict(row)
+          assert row['reply'].strip()==marker, dict(row)
+          assert row['delivered_at'] is not None, dict(row)
+          assert row['acknowledged_at'] is not None, dict(row)
+          assert row['replied_at'] is not None, dict(row)
+          print('BUS_EVIDENCE=PASS')
+          PY
