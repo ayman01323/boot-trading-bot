@@ -6,6 +6,7 @@ from . import ai_cost_router as _cost
 from . import ai_ops_status as _status
 from . import master_change_council as _change
 from . import master_change_cost_router_patch as _cost_patch  # noqa: F401
+from . import strategy_factory_council_transport_patch as _transport_patch  # noqa: F401
 from . import telegram_ai_ops_patch as _tgops
 from . import telegram_ui as _ui
 
@@ -123,8 +124,8 @@ def handle_update(app, update):
                 if remote:
                     body += _remote_result_text(remote)
                 body += (
-                    "\n\n<b>Flow</b>: deterministic Cost Router selects only the required advisers "
-                    "→ GPT final decision → deterministic policy gate → GPT implementation/tests. "
+                    "\n\n<b>Flow</b>: one Strategy Factory WebSocket transport; DIRECT handles one-to-one messages, "
+                    "COUNCIL uses the same transport for cost-routed advisers → GPT final decision → deterministic policy gate → GPT implementation/tests. "
                     "Critical trading/security/deployment requests still use the full council."
                 )
                 _ui._send(app, tid, body)
@@ -160,6 +161,7 @@ def handle_update(app, update):
                 tid,
                 "🧠 <b>AI CHANGE REQUEST ACCEPTED</b>\n"
                 f"ID: <code>{_safe(state.get('request_id'),120)}</code>\n"
+                f"Transport: <b>Strategy Factory WebSocket</b> / COUNCIL mode\n"
                 f"Cost route: <b>L{_safe(route.get('level'),10)}</b> — {_safe(route.get('reason'),500)}\n"
                 f"Advisers: {_safe(advisers,300)} → GPT final\n"
                 f"Planned model calls: {_safe(route.get('model_calls_before_implementation'),20)}"
