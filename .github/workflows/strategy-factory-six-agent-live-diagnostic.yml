@@ -105,6 +105,31 @@ jobs:
           echo "provider_failures=$failures"
           test "$failures" -eq 0
 
+      - name: Gemini asks GPT current London time
+        shell: bash
+        run: |
+          set -euo pipefail
+          utc_now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+            --from gemini \
+            --to gpt \
+            --message-id "gemini-london-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --timeout 90 \
+            --message "The VPS current UTC timestamp is ${utc_now}. What is the current time in London right now? Reply with the exact time and timezone only. Communication only; do not modify files, services, trading, wallets, risk, capital, or secrets.")"
+          printf '%s\n' "$output"
+          final="$(printf '%s\n' "$output" | tail -n 1)"
+          FINAL="$final" python3 - <<'PY'
+          import json, os
+          value=json.loads(os.environ['FINAL'])
+          assert value.get('type') == 'reply', value
+          assert value.get('status') == 'REPLIED', value
+          assert value.get('from') == 'gpt', value
+          assert value.get('to') == 'gemini', value
+          body=str(value.get('body') or '').strip()
+          assert body, value
+          print('gemini_to_gpt_london_reply='+body)
+          PY
+
       - name: Verify Grok bounded deterministic task executor
         if: always()
         shell: bash
