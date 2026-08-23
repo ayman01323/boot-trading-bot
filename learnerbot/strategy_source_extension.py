@@ -93,14 +93,16 @@ def _build_with_source_governance(app) -> dict:
             "wallet_signing_authority": False,
             "external_content_instruction_authority": False,
             "findings": [],
+            "source_snapshots": [],
             "errors": [{"error_type": type(exc).__name__, "error": str(exc)[:500]}],
             "challenge_status": "NOT_RUN",
         }
         cache_hit = False
         ingestion = {"stored": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    # Keep the legacy key shape sufficiently stable for existing report consumers while
-    # exposing the stronger worker contract separately.
+    # Preserve the pre-existing external_source_research shape for current consumers.
+    # New adjudication/dashboard logic should use online_research_worker.findings.
+    snapshots = list(worker.get("source_snapshots") or [])
     external = {
         "schema_version": int(worker.get("schema_version") or 1),
         "generated_epoch": worker.get("generated_epoch"),
@@ -108,8 +110,8 @@ def _build_with_source_governance(app) -> dict:
         "research_only": True,
         "live_execution_authorised": False,
         "external_content_instruction_authority": False,
-        "source_ids": [str(row.get("source_id") or "") for row in worker.get("findings") or []],
-        "sources": list(worker.get("findings") or []),
+        "source_ids": [str(row.get("source_id") or "") for row in snapshots if isinstance(row, dict)],
+        "sources": snapshots,
         "errors": list(worker.get("errors") or []),
         "evidence_sha256": worker.get("raw_evidence_sha256") or worker.get("payload_sha256"),
     }
