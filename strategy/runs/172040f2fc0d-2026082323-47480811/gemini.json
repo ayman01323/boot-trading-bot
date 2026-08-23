@@ -1,0 +1,102 @@
+{
+  "cycle_id": "172040f2fc0d-2026082323-47480811",
+  "evidence_gaps": [
+    "No current sanitized runtime forensics branch was available (evidence_status is MISSING_RUNTIME_FORENSICS).",
+    "Lack of actual performance metrics (e.g. realised net P&L, trade frequency, win/loss ratio, gross profits, fees, slippage, and execution failures) for the registered strategy families under SHADOW simulation.",
+    "Lack of Etherscan V2 backfill results or history data for candidates in data/sibot.sqlite3 and rankings in CSVbot/auto/.",
+    "Lack of live or simulated trace metrics for Solana and EVM chains to evaluate execution latency and transaction fee economics (gas/priority fees) under current market conditions.",
+    "Absence of detailed latency reports comparing current p50/p95 times against historical baselines."
+  ],
+  "evidence_sha256": "47480811199c7390459fcf7c5444e9e78b786e777d6756cf0d17becaa1aaf108",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.85,
+      "downside_risk": "Potential overfitting on historical public routes if market conditions or DEX router policies shift suddenly.",
+      "evidence": [
+        {
+          "detail": "Lines 11-82: learn_patterns maps profit evidence to strategy patterns and calculates confidence and replicability metrics; status initialized to SHADOW_CANDIDATE.",
+          "path": "learnerbot/strategy.py"
+        }
+      ],
+      "expected_effect": "Validates that the pattern learning engine filters out single-wallet anomalies and accurately estimates net edge bps across multi-wallet participants.",
+      "id": "learned-route-replication-evaluation",
+      "minimum_observation": "72 hours and minimum 50 simulated trades",
+      "rationale": "We must test the learned pattern replication strategy extensively under shadow simulation to verify if the confidence and replicability calculations prevent toxic/unreproducible flows before proposing CANARY status.",
+      "shadow_test": "Run shadow simulation for 72 hours across at least 100 historical route instances; pause/fail if net simulated P&L is negative or confidence/replicability scores drop below 40.0.",
+      "strategy": "Learned Route Replication",
+      "suggested_files": [
+        "learnerbot/strategy.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.75,
+      "downside_risk": "May reduce execution speed and drop competitive opportunities if block space congestion is high.",
+      "evidence": [
+        {
+          "detail": "Lines 101-168: validate_ai_strategy_proposal ensures declarative hypotheses are parsed, containing entry/exit logic, cost estimations, and falsification conditions.",
+          "path": "learnerbot/strategy_ai_proposals.py"
+        }
+      ],
+      "expected_effect": "Reduces slippage cost and eliminates front-running by searchers, improving money-weighted net P&L.",
+      "id": "mev-resistant-aggregator-shadow",
+      "minimum_observation": "96 hours and minimum 30 simulated trades",
+      "rationale": "Existing copy-trading (SiBot) triggers trades based on leader buys. However, high-latency environments result in front-running or transaction sandwiching, leading to negative realized P&L after gas/priority fees. Proposing a new shadow strategy that routes copy-trades exclusively through MEV-protected RPCs or private mempools (e.g., MEV-Share, Jito) and applies strict price deterioration constraints.",
+      "shadow_test": "Examine 100 simulated copy opportunities on EVM and Solana; compare execution prices against baseline SiBot copy-trades; fail if average slippage exceeds 0.5% or entry deterioration exceeds 1.0%.",
+      "strategy": "MEV-Resistant DEX Aggregator Copier",
+      "suggested_files": [
+        "learnerbot/strategy_ai_proposals.py",
+        "learnerbot/sibot.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Misses genuine early-stage hyper-momentum tokens if the safety filters are overly restrictive.",
+      "evidence": [
+        {
+          "detail": "Lines 256-261: Seeded hypothesis lists New Liquidity Quality with params requires_sellability and requires_liquidity.",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Prevents simulated entries into honeypot contracts and low-dispersion tokens, protecting capital under extreme regimes.",
+      "id": "new-liquidity-quality-filters",
+      "minimum_observation": "168 hours and minimum 20 simulated trades",
+      "rationale": "New liquidity pools are extremely prone to exit-liquidity drains (rug pulls) and token-sellability locks (honeypots). We must tighten the shadow filters by checking holder dispersion and verified contract criteria before simulating any momentum-based entry.",
+      "shadow_test": "Examine simulated performance over 168 hours; stop/fail if any simulated trade incurs a 100% loss due to sellability lock or liquidity removal.",
+      "strategy": "New Liquidity Quality",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote SiBot (SiMo) copy-trading directly to Canary Live",
+      "reason": "No current runtime forensics, Etherscan wallet history backfills, or simulated P&L stats exist. Under the Promotion Policy, promotion to CANARY requires positive money-weighted net shadow performance, which cannot be verified with missing forensics."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "172040f2fc0d948468167d4b941788ae1f9de35f",
+  "status": "HEALTHY",
+  "summary": "This architecture-only review confirms that the underlying Strategy Laboratory, Shadow Execution, and Promotion Candidate/Canary infrastructure are logically robust, modular, and highly unit-tested. Due to the absence of active runtime forensics (the current status is MISSING_RUNTIME_FORENSICS), we cannot evaluate real-time profitability or recommend any CANARY or LIVE promotions. However, the system is structurally healthy, and its safety mechanisms\u2014such as refusing to force trades without positive edge and strictly isolating shadow simulations from live execution\u2014are thoroughly integrated and validated."
+}
