@@ -1,0 +1,225 @@
+{
+  "actual_master": "gpt",
+  "decisions": [
+    {
+      "allowed_files": [
+        "learnerbot/sibot.py",
+        "learnerbot/sibot_intelligence_patch.py",
+        "learnerbot/live_executor.py"
+      ],
+      "confidence": 0.98,
+      "deterministic_evidence": true,
+      "disposition": "ACCEPT",
+      "finding_id": "master-evm-exit-claim-001",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "HIGH/CRITICAL engineering change requires human review",
+        "protected or missing file scope"
+      ],
+      "reason": "The exit remains OPEN through broadcast, permitting concurrent callers to submit duplicate sells. Nonce allocation is also not serialized per chain and wallet.",
+      "required_tests": [
+        "Race two close_position callers and assert exactly one broadcast.",
+        "Crash after broadcast but before position update and verify restart reconciliation.",
+        "Run concurrent operations for one EVM wallet and verify unique monotonic nonces."
+      ],
+      "risk_class": "CRITICAL",
+      "severity": "P1",
+      "source_finding_ids": [
+        "gpt:GPT-FULL-001"
+      ],
+      "supporting_agents": [
+        "gpt"
+      ],
+      "title": "EVM position exits can be submitted more than once"
+    },
+    {
+      "allowed_files": [
+        "learnerbot/auto_trader.py",
+        "learnerbot/sibot.py"
+      ],
+      "confidence": 0.99,
+      "deterministic_evidence": true,
+      "disposition": "ACCEPT",
+      "finding_id": "master-evm-reconciliation-002",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "HIGH/CRITICAL engineering change requires human review",
+        "protected or missing file scope"
+      ],
+      "reason": "A successful broadcast followed by receipt timeout loses the transaction hash and records a retry-eligible state, creating duplicate-execution and accounting risk.",
+      "required_tests": [
+        "Simulate send success followed by receipt timeout and assert durable RECONCILING state with the hash.",
+        "Restart and reconcile both successful and reverted transactions.",
+        "Assert no second execution occurs while an attempt is unresolved."
+      ],
+      "risk_class": "CRITICAL",
+      "severity": "P1",
+      "source_finding_ids": [
+        "gpt:GPT-FULL-002"
+      ],
+      "supporting_agents": [
+        "gpt"
+      ],
+      "title": "Ambiguous EVM broadcasts are recorded as rejected and may be retried"
+    },
+    {
+      "allowed_files": [
+        "learnerbot/user_registry.py",
+        "learnerbot/telegram_ui.py"
+      ],
+      "confidence": 0.97,
+      "deterministic_evidence": true,
+      "disposition": "ACCEPT",
+      "finding_id": "master-activation-atomicity-003",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "HIGH/CRITICAL engineering change requires human review"
+      ],
+      "reason": "Unlocked CSV read-modify-replace operations allow concurrent redemptions to exceed use limits and permit lost user-setting updates.",
+      "required_tests": [
+        "Synchronize two concurrent redemptions of a one-use code and assert exactly one succeeds.",
+        "Exercise concurrent creation and settings updates without lost rows.",
+        "Add a multi-process locking test, not only a thread test."
+      ],
+      "risk_class": "HIGH",
+      "severity": "P1",
+      "source_finding_ids": [
+        "gpt:GPT-FULL-003"
+      ],
+      "supporting_agents": [
+        "gpt"
+      ],
+      "title": "Activation-code use limits are not atomic"
+    },
+    {
+      "allowed_files": [
+        "learnerbot/sibot.py",
+        "learnerbot/auto_trader.py",
+        "learnerbot/fee_engine.py"
+      ],
+      "confidence": 0.96,
+      "deterministic_evidence": true,
+      "disposition": "ACCEPT",
+      "finding_id": "master-fee-reconciliation-004",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "HIGH/CRITICAL engineering change requires human review",
+        "protected or missing file scope"
+      ],
+      "reason": "Fee submission is treated as settlement without receipt confirmation or a durable reconciliation lifecycle, allowing reported P&L and on-chain balances to diverge.",
+      "required_tests": [
+        "Cover confirmed, reverted, dropped, timed-out, and failed-before-send fee transfers.",
+        "Verify gross P&L, user-net P&L, accrued fees, and paid fees reconcile independently.",
+        "Verify restart recovery cannot charge a fee twice."
+      ],
+      "risk_class": "HIGH",
+      "severity": "P2",
+      "source_finding_ids": [
+        "gpt:GPT-FULL-004"
+      ],
+      "supporting_agents": [
+        "gpt"
+      ],
+      "title": "Profit-share liabilities are booked as paid without confirmation or recovery"
+    },
+    {
+      "allowed_files": [
+        "learnerbot/telegram_strategy_lab_report_patch.py",
+        "learnerbot/strategy_lab.py",
+        "learnerbot/strategy_lab_live_recording_patch.py"
+      ],
+      "confidence": 0.99,
+      "deterministic_evidence": true,
+      "disposition": "ACCEPT",
+      "finding_id": "master-strategy-lab-purity-005",
+      "policy_eligible": true,
+      "policy_reasons": [
+        "resilient master policy requirements satisfied"
+      ],
+      "reason": "Report rendering performs lifecycle updates and inserts, while cache-cold lookup can increment versions and reset established statuses.",
+      "required_tests": [
+        "Assert repeated report rendering produces no database writes.",
+        "Assert restart or cache loss does not change version or status.",
+        "Assert a new version is created only when the canonical strategy specification changes.",
+        "Add bounded retention or deduplication for decision history."
+      ],
+      "risk_class": "MEDIUM",
+      "severity": "P2",
+      "source_finding_ids": [
+        "gpt:GPT-FULL-005"
+      ],
+      "supporting_agents": [
+        "gpt"
+      ],
+      "title": "Read-only Strategy Lab reports mutate lifecycle state and grow the database"
+    },
+    {
+      "allowed_files": [
+        ".github/workflows/selected-ai-master.yml"
+      ],
+      "confidence": 0.99,
+      "deterministic_evidence": true,
+      "disposition": "ACCEPT",
+      "finding_id": "master-workflow-efficiency-006",
+      "policy_eligible": false,
+      "policy_reasons": [
+        "protected or missing file scope"
+      ],
+      "reason": "Five-minute matrix jobs perform full checkout and unpinned dependency installation before cheap lane and material-change gates. Disk is already 84.54% used; network measurements are host-wide and cannot be attributed solely to the bot. Infrastructure remains BENCHMARK because trade samples, provider costs, region, and same-workload candidate results are insufficient or unknown.",
+      "required_tests": [
+        "Workflow test proving unchanged reports skip checkout and all package installs.",
+        "Workflow test proving disabled lanes create no matrix worker.",
+        "Measure per-run downloaded bytes, cache growth, and retained worktrees.",
+        "Verify optimization preserves all trading and safety controls."
+      ],
+      "risk_class": "MEDIUM",
+      "severity": "P2",
+      "source_finding_ids": [
+        "gpt:GPT-FULL-006"
+      ],
+      "supporting_agents": [
+        "gpt"
+      ],
+      "title": "High-frequency adjudication installs provider CLIs before determining whether work is needed"
+    }
+  ],
+  "draft_pr_only": true,
+  "failed_agent_count": 5,
+  "implementation_allowed": false,
+  "live_auto_deploy": false,
+  "master_attempts": [
+    {
+      "provider": "gpt",
+      "reason": "master decision validated",
+      "return_code": 0,
+      "success": true
+    }
+  ],
+  "policy": {
+    "auto_deploy": false,
+    "auto_merge": false,
+    "live_trading_depends_on_ai_health": false,
+    "minimum_valid_reports_to_continue": 1,
+    "single_agent_engineering_requires_deterministic_evidence": true,
+    "single_agent_strategy_confidence": 0.95,
+    "single_agent_strategy_risk": "LOW_ONLY"
+  },
+  "policy_accepted_count": 1,
+  "preferred_master": "auto",
+  "resilient_cycle_continued": true,
+  "schema_version": 1,
+  "source_commit": "79fda32c32c6c8d782745831a296b9b98e8dca14",
+  "status": "HUMAN_REVIEW_REQUIRED",
+  "summary": "Accept six independently evidenced findings. Highest risk is duplicate or ambiguously reconciled EVM execution. Any fixes require human review, deterministic tests, protected-path gates, and draft-PR-only handling. Infrastructure conclusion is BENCHMARK because trade and candidate-host evidence is insufficient.",
+  "unavailable_agents": [
+    "gemini",
+    "copilot",
+    "claude",
+    "deepseek",
+    "grok"
+  ],
+  "valid_agent_count": 1,
+  "valid_agents": [
+    "gpt"
+  ]
+}
