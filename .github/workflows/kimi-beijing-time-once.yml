@@ -1,0 +1,61 @@
+name: Kimi One-Time Beijing Time Roundtrip
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/kimi-beijing-time-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ask-kimi:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build isolated sender environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/kimi-beijing-time-once"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Ask Kimi for current Beijing time and require reply
+        shell: bash
+        run: |
+          set -euo pipefail
+          utc_now="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          message="Production server UTC timestamp is ${utc_now}. What is the current local time in Beijing, China (Asia/Shanghai, UTC+8)? Reply exactly in this format: BEIJING_TIME: YYYY-MM-DD HH:MM:SS CST"
+          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to kimi \
+            --message-id "kimi-beijing-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --timeout 90 \
+            --message "$message")"
+          printf '%s\n' "$output"
+          final="$(printf '%s\n' "$output" | tail -n 1)"
+          FINAL="$final" python3 - <<'PY'
+          import json, os
+          value=json.loads(os.environ['FINAL'])
+          assert value.get('status') == 'REPLIED', value
+          assert value.get('delivered') is True, value
+          assert value.get('acknowledged') is True, value
+          assert not str(value.get('error') or ''), value
+          body=str(value.get('body') or '').strip()
+          assert body.startswith('BEIJING_TIME:'), body
+          print('KIMI_REPLY=' + body)
+          PY
+
+      - name: Remove isolated sender environment
+        if: always()
+        shell: bash
+        run: rm -rf "${VENV:-$RUNNER_TEMP/kimi-beijing-time-once}"
