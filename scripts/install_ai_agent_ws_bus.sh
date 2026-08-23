@@ -16,6 +16,7 @@ install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_bus.py" "$DEST_DIR/scripts/ai_a
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_bus_grok.py" "$DEST_DIR/scripts/ai_agent_ws_bus_grok.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_worker.py" "$DEST_DIR/scripts/ai_agent_ws_worker.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_memory.py" "$DEST_DIR/scripts/ai_agent_ws_memory.py"
+install -m 0644 "$SOURCE_DIR/scripts/strategy_factory_transport.py" "$DEST_DIR/scripts/strategy_factory_transport.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_send.py" "$DEST_DIR/scripts/ai_agent_ws_send.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_task_executor.py" "$DEST_DIR/scripts/ai_agent_task_executor.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/__init__.py" "$DEST_DIR/learnerbot/__init__.py"
