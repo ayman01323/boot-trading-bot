@@ -22,6 +22,10 @@ from . import sibot_alchemy_trace_progress_patch as _trace
 from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import sibot_leader_quality_hard_floor_patch as _evm_quality
 from . import sibot_legacy_error_sweep_patch as _legacy
+# Low-priority orphaned-history recovery. Importing this late preserves every
+# existing history selector/refresher identity and only wraps worker startup to
+# launch a bounded background drainer.
+from . import sibot_legacy_backlog_drainer_patch as _legacy_drainer
 from . import solana_atomic_close_fallback_patch as _atomic
 from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_efficiency_patch as _efficiency
@@ -75,6 +79,9 @@ def composition_checks() -> dict[str, bool]:
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
         "evm_history_trace_to_retry": _trace._PREV_NEXT_HISTORY_WALLET is _retry._next_history_wallet,
+        "evm_history_background_drainer": (
+            _sibot.start_workers is _legacy_drainer.start_workers_with_legacy_backlog_drainer
+        ),
         # WebSocket wake-up serialization is the intended outer wrapper. The
         # retry-safe/no-skip cursor remains authoritative immediately inside it.
         "evm_leader_cursor_ws_outer": _sibot.poll_leader_blocks is _evm_ws.poll_leader_blocks_locked,
