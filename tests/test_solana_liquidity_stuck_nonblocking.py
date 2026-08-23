@@ -65,6 +65,7 @@ patch._truth_for_tid = lambda app, tid, cfg: ([], False)
 assert patch.open_live_count_without_verified_stuck(object(), "7") == 1
 
 # Only recovery exclusivity is relaxed. PF cooldown remains authoritative.
+real_owner_notify = patch._notify_owner_resolution
 patch._PREV_PLATFORM_GATE = lambda app, cfg: (
     False, patch._RECOVERY_OPEN_BLOCK, {"profit_factor": Decimal("0.8")}, False
 )
@@ -78,17 +79,20 @@ cooldown = (False, "platform realised profit amount is below required target; re
 patch._PREV_PLATFORM_GATE = lambda app, cfg: cooldown
 assert patch.platform_amount_gate_without_stuck_freeze(object(), cfg) == cooldown
 
-# A normal active position still blocks; four stuck positions trip systemic breaker.
+# A normal active position still blocks; four stuck positions trip systemic breaker
+# even if the underlying platform PF gate would otherwise pass.
 active = stuck(position_id="pos-2", liquidity_state="OPEN", liquidity_attempts=0)
 original = (False, patch._RECOVERY_OPEN_BLOCK, {}, False)
 patch._PREV_PLATFORM_GATE = lambda app, cfg: original
 patch._global_snapshot = lambda app, cfg: ([('7', row)], [('7', active)], True)
 assert patch.platform_amount_gate_without_stuck_freeze(object(), cfg) == original
+patch._PREV_PLATFORM_GATE = lambda app, cfg: (True, "healthy platform PF", {}, False)
 patch._global_snapshot = lambda app, cfg: ([(str(i), stuck(position_id=f"pos-{i}")) for i in range(4)], [], True)
 ok, reason, metrics, recovery = patch.platform_amount_gate_without_stuck_freeze(object(), cfg)
 assert ok is False and recovery is False and "systemic liquidity safety breaker" in reason
 
 # Detailed owner message must explain both human-only resolution paths.
+patch._notify_owner_resolution = real_owner_notify
 row = stuck(position_id="07d9f95e7dbb77288b2d4abca53e3949")
 row["mint"] = "8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV"
 captured = []
