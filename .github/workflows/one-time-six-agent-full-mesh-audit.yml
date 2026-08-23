@@ -1,0 +1,73 @@
+name: One-time Six-Agent Full Mesh Durable Audit
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-six-agent-full-mesh-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-time-six-agent-full-mesh-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  durable-audit:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Audit completed run 32650210360 attempt 1 from forensic copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB='/var/tmp/boot/ai_agent_bus.sqlite3'
+          SNAP="$RUNNER_TEMP/sfmesh-32650210360-1.sqlite3"
+          test -s "$DB"
+          cp "$DB" "$SNAP"
+          if [[ -r "${DB}-wal" ]]; then cp "${DB}-wal" "${SNAP}-wal"; fi
+          if [[ -r "${DB}-shm" ]]; then cp "${DB}-shm" "${SNAP}-shm"; fi
+          SNAP="$SNAP" python3 - <<'PY'
+          import os, sqlite3
+          snap=os.environ['SNAP']
+          run='32650210360'
+          attempt='1'
+          conn=sqlite3.connect(f'file:{snap}?mode=ro', uri=True, timeout=5)
+          conn.row_factory=sqlite3.Row
+          rows=list(conn.execute(
+              "SELECT message_id,sender,target,status,reply,delivered_at,acknowledged_at,replied_at FROM messages WHERE message_id LIKE ? ORDER BY message_id",
+              (f'sfmesh-{run}-{attempt}-%',),
+          ))
+          conn.close()
+          failures=[]
+          seen=set()
+          for row in rows:
+              pair=(row['sender'],row['target'])
+              seen.add(pair)
+              marker=f"MESH_OK_{row['sender'].upper()}_TO_{row['target'].upper()}_{run}_{attempt}"
+              ok=(
+                  row['status']=='REPLIED'
+                  and str(row['reply'] or '').strip()==marker
+                  and row['delivered_at'] is not None
+                  and row['acknowledged_at'] is not None
+                  and row['replied_at'] is not None
+              )
+              print(f"AUDIT {row['sender']}->{row['target']} {'PASS' if ok else 'FAIL'} {row['message_id']}")
+              if not ok:
+                  failures.append(row['message_id'])
+          expected_agents={'gpt','claude','gemini','deepseek','grok','copilot'}
+          expected={(a,b) for a in expected_agents for b in expected_agents if a != b}
+          print(f'DURABLE_ROWS={len(rows)}')
+          print(f'DURABLE_PAIRS={len(seen)}')
+          print(f'DURABLE_FAILURES={len(failures)}')
+          print(f'MISSING_PAIRS={sorted(expected-seen)}')
+          assert len(rows) == 30, len(rows)
+          assert seen == expected, (expected-seen, seen-expected)
+          assert not failures, failures
+          print('FULL_MESH_DURABLE_EVIDENCE=PASS')
+          PY
+
+      - name: Remove forensic copy
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/sfmesh-32650210360-1.sqlite3" "$RUNNER_TEMP/sfmesh-32650210360-1.sqlite3-wal" "$RUNNER_TEMP/sfmesh-32650210360-1.sqlite3-shm"
