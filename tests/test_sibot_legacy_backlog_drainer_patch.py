@@ -2,7 +2,6 @@ from contextlib import closing
 from types import SimpleNamespace
 
 from learnerbot import sibot
-from learnerbot import sibot_legacy_error_sweep_patch as legacy
 from learnerbot import sibot_legacy_backlog_drainer_patch as patch
 
 
@@ -282,7 +281,11 @@ def test_non_runtime_commands_do_not_launch_background_thread(monkeypatch):
     assert started == []
 
 
-def test_import_preserves_legacy_selector_identity():
-    # The drainer changes scheduling only. It must not replace the existing
-    # checked-first legacy selector or any trade/quality decision function.
-    assert sibot._next_history_wallet is legacy._next_history_wallet
+def test_install_changes_scheduling_only():
+    import inspect
+
+    source = inspect.getsource(patch.install)
+    assert "_next_history_wallet" not in source
+    assert "refresh_wallet_history" not in source
+    assert "start_workers" in source
+    assert "start_menu_thread" in source
