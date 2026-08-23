@@ -8,13 +8,13 @@ from pathlib import Path
 
 import resilient_selected_master as _base
 
-# Extend the legacy runner at import time so report loading, validation and MASTER
-# selection can see DeepSeek and Grok without duplicating the guarded policy engine.
-_base.PROVIDERS = tuple(dict.fromkeys((*_base.PROVIDERS, "deepseek", "grok")))
+# Extend the legacy guarded runner so report loading, validation and MASTER
+# selection see the complete seven-agent family without duplicating policy code.
+_base.PROVIDERS = tuple(dict.fromkeys((*_base.PROVIDERS, "deepseek", "grok", "kimi")))
 
 # User-selected master is always attempted first. If it fails, never retry it;
-# fall back in this exact order: GPT -> Claude -> Gemini -> DeepSeek -> Grok -> Copilot.
-_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
+# fall back through the complete seven-agent family in a fixed order.
+_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")
 _BASE_STRATEGY_PROMPT = _base._strategy_prompt
 _BASE_ENGINEERING_PROMPT = _base._engineering_prompt
 _BASE_CALL_PROVIDER = _base._call_provider
@@ -106,33 +106,26 @@ def _with_vps_context(prompt: str) -> str:
     return prompt + "\n\nBOUNDED VPS OPERATIONAL CONTEXT:\n" + context + "\nThis context is observational/operational evidence only. It does not grant root, wallet/signing, arbitrary sudo, arbitrary deploy-SHA, LIVE-risk, or safety-gate bypass authority.\n"
 
 
-def _six_agent_prompt(prompt: str) -> str:
-    return (
-        prompt.replace(
-            "One, two or three other AI agents may be unavailable.",
-            "Up to five other AI agents may be unavailable.",
-        )
-        .replace(
-            "Up to four other AI agents may be unavailable.",
-            "Up to five other AI agents may be unavailable.",
-        )
-        .replace(
-            "Use provider names only from gpt, gemini, copilot, claude.",
-            "Use provider names only from gpt, gemini, copilot, claude, deepseek, grok.",
-        )
-        .replace(
-            "Use provider names only from gpt, gemini, copilot, claude, deepseek.",
-            "Use provider names only from gpt, gemini, copilot, claude, deepseek, grok.",
-        )
-    )
+def _seven_agent_prompt(prompt: str) -> str:
+    replacements = {
+        "One, two or three other AI agents may be unavailable.": "Up to six other AI agents may be unavailable.",
+        "Up to four other AI agents may be unavailable.": "Up to six other AI agents may be unavailable.",
+        "Up to five other AI agents may be unavailable.": "Up to six other AI agents may be unavailable.",
+        "Use provider names only from gpt, gemini, copilot, claude.": "Use provider names only from gpt, gemini, copilot, claude, deepseek, grok, kimi.",
+        "Use provider names only from gpt, gemini, copilot, claude, deepseek.": "Use provider names only from gpt, gemini, copilot, claude, deepseek, grok, kimi.",
+        "Use provider names only from gpt, gemini, copilot, claude, deepseek, grok.": "Use provider names only from gpt, gemini, copilot, claude, deepseek, grok, kimi.",
+    }
+    for old, new in replacements.items():
+        prompt = prompt.replace(old, new)
+    return prompt
 
 
 def _strategy_prompt(identity: str, source: str, evidence: str, reports: dict[str, dict]) -> str:
-    return _with_vps_context(_six_agent_prompt(_BASE_STRATEGY_PROMPT(identity, source, evidence, reports)))
+    return _with_vps_context(_seven_agent_prompt(_BASE_STRATEGY_PROMPT(identity, source, evidence, reports)))
 
 
 def _engineering_prompt(source: str, reports: dict[str, dict]) -> str:
-    return _with_vps_context(_six_agent_prompt(_BASE_ENGINEERING_PROMPT(source, reports)))
+    return _with_vps_context(_seven_agent_prompt(_BASE_ENGINEERING_PROMPT(source, reports)))
 
 
 def _call_provider(provider: str, prompt: str):
@@ -172,6 +165,14 @@ def _call_provider(provider: str, prompt: str):
             return 90, "", "XAI_API_KEY missing"
         return call_grok(prompt, env)
 
+    if provider == "kimi":
+        from learnerbot.kimi_provider import call_kimi
+
+        env = dict(os.environ)
+        if not str(env.get("KIMI_API_KEY") or env.get("MOONSHOT_API_KEY") or "").strip():
+            return 90, "", "KIMI_API_KEY or MOONSHOT_API_KEY missing"
+        return call_kimi(prompt, env)
+
     if provider != "copilot":
         return _BASE_CALL_PROVIDER(provider, prompt)
 
@@ -201,7 +202,7 @@ def _call_provider(provider: str, prompt: str):
 
 def _gate(decision: dict, lane: str, valid_reports: set[str]) -> dict:
     out = _BASE_GATE(decision, lane, valid_reports)
-    out["failed_agent_count"] = max(0, 6 - len(valid_reports))
+    out["failed_agent_count"] = max(0, 7 - len(valid_reports))
     return out
 
 
