@@ -8,7 +8,8 @@ from . import ai_agent_health_warning_patch as _health
 from . import ai_agent_health_master_reconcile_patch as _legacy_reconcile  # noqa: F401
 from . import telegram_ai_ops_patch as _ai
 
-PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
+# One canonical roster everywhere: GPT, Claude, Gemini, DeepSeek, Grok, Kimi, Copilot.
+PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")
 
 
 def _repo_root() -> Path:
@@ -143,9 +144,9 @@ def warning_message(snapshot: dict) -> str:
             lines.append("MASTER: no valid report yet; review lane retries, but LIVE trading is not stopped by AI health.")
     lines += [
         "",
-        "Fallback order: selected MASTER → GPT → Claude → Gemini → DeepSeek → Grok → Copilot/other available agent.",
+        "Fallback order: selected MASTER → GPT → Claude → Gemini → DeepSeek → Grok → Kimi → Copilot.",
         "AI failure never disables the trading engine. Existing wallet/signing/simulation/liquidity/capital/LIVE safety gates remain authoritative.",
-        "This warning repeats every 30 minutes while any agent remains unhealthy.",
+        "Non-urgent AI recovery is intentionally rate-limited; urgent deterministic trading safety remains independent of AI availability.",
     ]
     return "\n".join(lines)
 
