@@ -23,18 +23,30 @@ def test_deepseek_claude_code_uses_recognised_alias_mapped_to_v4_flash() -> None
         assert 'export ANTHROPIC_MODEL="$DEEPSEEK_STRATEGY_MODEL"' not in body
 
 
-def test_health_retry_dispatches_only_failed_or_missing_six_agent_reviewers() -> None:
-    body = _text(".github/workflows/six-agent-health-retry.yml")
-    assert "MISSING|INCOMPLETE|FAILED|ERROR|BLOCKED|BLOCKED_AUTH" in body
+def test_legacy_six_agent_retry_delegates_to_authoritative_seven_agent_watch() -> None:
+    legacy = _text(".github/workflows/six-agent-health-retry.yml")
+    watch = _text(".github/workflows/ai-agent-recovery.yml")
+
+    assert "schedule:" not in legacy
+    assert "ai-agent-recovery.yml" in legacy
+    assert "repair=true" in legacy
+    assert "seven-agent recovery watch is authoritative" in legacy
+
+    assert "MISSING|INCOMPLETE|FAILED|ERROR|BLOCKED|BLOCKED_AUTH" in watch
+    assert "providers=(gpt claude gemini deepseek grok kimi copilot)" in watch
     for workflow in (
+        "engineering-agent-retry.yml",
         "claude-fourth-engineering-agent.yml",
         "deepseek-fifth-engineering-agent.yml",
         "grok-sixth-engineering-agent.yml",
-        "claude-fourth-strategy-agent.yml",
+        "kimi-seventh-engineering-agent.yml",
+        "engineering-copilot-assignment-reconciler.yml",
+        "claude-exact-strategy-retry.yml",
         "deepseek-fifth-strategy-agent.yml",
         "grok-sixth-strategy-agent.yml",
+        "kimi-seventh-strategy-agent.yml",
+        "strategy-copilot-assignment-reconciler.yml",
     ):
-        assert workflow in body
-    assert "-f source_commit=\"$source\"" in body
-    assert "-f cycle_id=\"$cycle\"" in body
-    assert "trade, deploy, restart, change LIVE/ARMED" in body
+        assert workflow in watch
+    assert "Scheduled pass is read-only" in watch
+    assert "Trading/LIVE/capital/wallet/signing authority: none." in watch
