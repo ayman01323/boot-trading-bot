@@ -73,9 +73,9 @@ Do not claim an agent received a message unless it reached at least `ACKNOWLEDGE
 
 ## Automatic recipient awareness and persistence
 
-Persistent workers stay connected to the loopback bus. A recipient does not need to poll GitHub or SQLite and the user does not need to tell an agent to check its messages.
+Persistent workers stay connected to the loopback bus. A recipient **must not poll GitHub**, SQLite, or a mailbox; messages are pushed automatically to the connected worker, and queued messages are delivered when that worker reconnects. The user does not need to tell an agent to check its messages.
 
-SQLite at `/var/tmp/boot/ai_agent_bus.sqlite3` is the durable queue, audit record and bounded Strategy Factory conversation-memory source. It is not the notification transport. Offline messages remain queued and are pushed when the recipient reconnects.
+SQLite at `/var/tmp/boot/ai_agent_bus.sqlite3` is the durable queue, audit record and bounded Strategy Factory conversation-memory source. It is not the notification transport.
 
 The runtime status file is `/var/tmp/boot/ai_agent_ws_status.json`.
 
