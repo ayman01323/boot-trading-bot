@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
+import threading
 import time
+from collections import Counter
 from contextlib import closing
 from decimal import Decimal
+from pathlib import Path
 
 from . import solana_positive_edge_entry_gate_patch as _edge
 from . import solana_profit_guard_patch as _guard
@@ -12,6 +17,8 @@ from . import solana_sibot as _sol
 _PREV_QUALITY_METRICS = _guard.quality_metrics
 _PREV_HISTORICAL_OK = _guard._historical_ok
 _PREV_REFRESH = _sol.refresh_rankings
+_BRIDGE = Path("/var/tmp/boot/solana_leader_selector.json")
+_BRIDGE_LOCK = threading.Lock()
 
 
 def quality_metrics(app, wallet, cfg):
@@ -43,12 +50,40 @@ def historical_ok(metrics, cfg):
     return historical >= historical_floor and recent >= recent_floor
 
 
+def _quality_failure_reason(metrics: dict, cfg: dict) -> str:
+    """First failing gate, in the same order as the active selector."""
+    if _sol._bool(cfg.get("require_complete_history"), True) and not metrics.get("history_complete"):
+        return "history incomplete"
+    if int(metrics.get("closed") or 0) < max(1, _sol._int(cfg.get("min_closed_trades"), 10)):
+        return "not enough closed trades"
+    if _sol._dec(metrics.get("win_rate"), 0) < _sol._dec(cfg.get("min_win_rate_pct"), 65):
+        return "historical win rate below minimum"
+    if _sol._dec(metrics.get("profit_factor"), 0) < _sol._dec(cfg.get("min_profit_factor"), "1.75"):
+        return "historical profit factor below minimum"
+    if _sol._dec(metrics.get("drawdown_pct"), 0) > _sol._dec(cfg.get("max_leader_drawdown_pct"), 20):
+        return "historical drawdown above maximum"
+    if _sol._dec(metrics.get("recent_win_rate"), 0) < _sol._dec(cfg.get("min_recent_win_rate_pct"), 65):
+        return "recent win rate below minimum"
+    if _sol._dec(metrics.get("recent_profit_factor"), 0) < _sol._dec(cfg.get("min_recent_profit_factor"), "1.50"):
+        return "recent profit factor below minimum"
+    if _sol._dec(metrics.get("net"), 0) <= 0:
+        return "historical net profit is not positive"
+
+    historical_floor = max(Decimal(0), _sol._dec(cfg.get("live_min_leader_median_return_pct"), "5"))
+    recent_floor = max(Decimal(0), _sol._dec(cfg.get("live_min_leader_recent_median_return_pct"), "4"))
+    if _sol._dec(metrics.get("median_return_pct"), 0) < historical_floor:
+        return "median return below LIVE edge floor"
+    if _sol._dec(metrics.get("recent_median_return_pct"), 0) < recent_floor:
+        return "recent median return below LIVE edge floor"
+    return "quality gate failed"
+
+
 def _broad_positive_candidates(app, cfg):
     """Return a bounded pool of profitable reconstructed wallets, not only Top-20.
 
     The public/research Top-20 remains produced by the original ranking function.
     This pool exists only so strict LIVE gates are applied *before* the final leader
-    slots are chosen.  Quality thresholds are unchanged and are still evaluated by
+    slots are chosen. Quality thresholds are unchanged and are still evaluated by
     quality_metrics()/historical_ok() below.
     """
     lookback = max(1, min(365, _sol._int(cfg.get("lookback_days"), 60)))
@@ -78,17 +113,60 @@ def _broad_positive_candidates(app, cfg):
     ]
 
 
-def _qualified_candidates(app, cfg, candidates):
-    """Apply the exact existing LIVE-aligned quality gates to every candidate."""
+def _evaluate_candidates(app, cfg, candidates):
     qualified = []
+    failures: Counter = Counter()
     for candidate in candidates:
         wallet = str(candidate.get("wallet") or "")
         if not wallet:
             continue
-        metrics = quality_metrics(app, wallet, cfg)
+        try:
+            metrics = quality_metrics(app, wallet, cfg)
+        except Exception as exc:
+            failures[f"metrics unavailable: {type(exc).__name__}"] += 1
+            continue
         if historical_ok(metrics, cfg):
             qualified.append((candidate, metrics))
-    return qualified
+        else:
+            failures[_quality_failure_reason(metrics, cfg)] += 1
+    return qualified, failures
+
+
+def _qualified_candidates(app, cfg, candidates):
+    """Compatibility helper used by tests/diagnostics."""
+    return _evaluate_candidates(app, cfg, candidates)[0]
+
+
+def _write_bridge(pool: int, qualified: int, selected: int, failures: Counter, cfg: dict) -> None:
+    try:
+        payload = {
+            "schema_version": 1,
+            "generated_epoch": int(time.time()),
+            "pool": int(pool),
+            "qualified": int(qualified),
+            "selected": int(selected),
+            "first_failure_counts": dict(sorted((str(k), int(v)) for k, v in failures.items())),
+            "thresholds": {
+                "min_closed_trades": max(1, _sol._int(cfg.get("min_closed_trades"), 10)),
+                "min_win_rate_pct": str(_sol._dec(cfg.get("min_win_rate_pct"), 65)),
+                "min_profit_factor": str(_sol._dec(cfg.get("min_profit_factor"), "1.75")),
+                "max_drawdown_pct": str(_sol._dec(cfg.get("max_leader_drawdown_pct"), 20)),
+                "min_recent_win_rate_pct": str(_sol._dec(cfg.get("min_recent_win_rate_pct"), 65)),
+                "min_recent_profit_factor": str(_sol._dec(cfg.get("min_recent_profit_factor"), "1.50")),
+                "min_median_return_pct": str(_sol._dec(cfg.get("live_min_leader_median_return_pct"), "5")),
+                "min_recent_median_return_pct": str(_sol._dec(cfg.get("live_min_leader_recent_median_return_pct"), "4")),
+            },
+            "thresholds_unchanged": True,
+            "wallet_addresses_published": False,
+        }
+        with _BRIDGE_LOCK:
+            _BRIDGE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _BRIDGE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, _BRIDGE)
+    except Exception:
+        pass
 
 
 def refresh_rankings(app, telegram_id=None):
@@ -96,8 +174,8 @@ def refresh_rankings(app, telegram_id=None):
 
     Previously the broad profitability ranking was truncated to Top-20 first and
     the stricter PF/win-rate/drawdown/recent/median-return gates were applied only
-    afterwards.  Twenty failures therefore produced zero leaders even when a wallet
-    outside that display shortlist could satisfy every LIVE gate.  This function
+    afterwards. Twenty failures therefore produced zero leaders even when a wallet
+    outside that display shortlist could satisfy every LIVE gate. This function
     preserves the original Top-20 output, then evaluates a bounded broader pool with
     the same unchanged gates before filling leader slots.
     """
@@ -106,7 +184,7 @@ def refresh_rankings(app, telegram_id=None):
 
     try:
         candidates = _broad_positive_candidates(app, cfg)
-        qualified = _qualified_candidates(app, cfg, candidates)
+        qualified, failures = _evaluate_candidates(app, cfg, candidates)
     except Exception as exc:
         print(
             "[solana-leader-edge-alignment] broader_search_failed="
@@ -182,6 +260,7 @@ def refresh_rankings(app, telegram_id=None):
 
     _sol.export_csv(app)
     total_selected = sum(len(v) for v in selected.values())
+    _write_bridge(len(candidates), len(qualified), total_selected, failures, cfg)
     print(
         "[solana-leader-edge-alignment] broader_pool=%d qualified=%d selected=%d "
         "thresholds=unchanged"
