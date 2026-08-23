@@ -19,6 +19,12 @@ def test_fixed_paths_and_request_parsing(provider):
     assert bridge.request_id_from_gpt(provider, message) == "solana-review-1"
 
 
+def test_grok_is_a_supported_fallback_provider():
+    assert "grok" in bridge.ALLOWED_PROVIDERS
+    assert bridge.request_path("grok") == ".github/ai-mailbox/gpt-to-grok.md"
+    assert bridge.response_path("grok") == ".github/ai-mailbox/grok-to-gpt.md"
+
+
 def test_non_request_cannot_invoke_provider():
     text = "GPT_TO_GEMINI\nmessage_id: x1\nstatus: COMPLETED\n\nDone\n"
     assert bridge.request_id_from_gpt("gemini", text) == ""
@@ -53,14 +59,19 @@ def test_provider_relay_is_event_driven_without_schedule():
     assert "schedule" not in trigger
     assert "workflow_run" in trigger
     assert workflow["jobs"]["relay"]["runs-on"] == ["self-hosted", "linux", "x64", "boot-vps"]
+    assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == ["deepseek", "gemini", "grok", "copilot"]
+    route_env = workflow["jobs"]["relay"]["steps"][5]["env"]
+    assert "XAI_API_KEY" in route_env
+    assert "XAI_COUNCIL_MODEL" in route_env
 
 
-def test_signal_watches_only_provider_request_files():
+def test_signal_watches_all_provider_request_files_including_grok():
     workflow = yaml.safe_load(Path(".github/workflows/ai-mailbox-provider-signal.yml").read_text())
     trigger = workflow.get("on") or workflow.get(True)
     paths = trigger["push"]["paths"]
     assert paths == [
         ".github/ai-mailbox/gpt-to-deepseek.md",
         ".github/ai-mailbox/gpt-to-gemini.md",
+        ".github/ai-mailbox/gpt-to-grok.md",
         ".github/ai-mailbox/gpt-to-copilot.md",
     ]
