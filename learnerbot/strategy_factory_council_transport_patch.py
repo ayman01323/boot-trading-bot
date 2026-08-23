@@ -7,13 +7,21 @@ from scripts.strategy_factory_transport import exchange
 
 
 async def _ask_one(target: str, request_id: str, body: str, attempt: int, timeout: float = 150.0) -> dict:
-    """COUNCIL-mode adapter over the same transport used by DIRECT messaging."""
+    """COUNCIL-mode adapter over the same transport used by DIRECT messaging.
+
+    All advisers for one MASTER request share its Council thread, while separate
+    MASTER requests remain isolated even if they execute concurrently.
+    """
     message_id = f"master-change-{request_id}-{target}-{attempt}-{secrets.token_hex(2)}"
+    thread_id = f"council-{request_id}"
+    subject = f"MASTER change {request_id}"
     result = await exchange(
         "gpt",
         target,
         body,
         message_id=message_id,
+        thread_id=thread_id,
+        subject=subject,
         timeout=timeout,
     )
     error = str(result.get("error") or "")[:1200]
@@ -23,6 +31,8 @@ async def _ask_one(target: str, request_id: str, body: str, attempt: int, timeou
     return {
         "target": target,
         "message_id": message_id,
+        "thread_id": str(result.get("thread_id") or thread_id),
+        "subject": str(result.get("subject") or subject),
         "acknowledged": bool(result.get("acknowledged")),
         "provider_rc": 0 if ok else 1,
         "reply": reply,
