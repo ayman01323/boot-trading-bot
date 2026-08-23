@@ -84,7 +84,7 @@ def provider_health_text(engineering: dict, strategy: dict) -> str:
         "",
     ]
     for provider, icon, primary, secondary in rows:
-        lines.append(f"{icon} <b>{_compact._LABELS[provider]}</b> — {primary}")
+        lines.append(f"{icon} {_compact._LABELS[provider]} — {primary}")
         if secondary:
             lines.append(f"↳ <i>{secondary}</i>")
     return "\n".join(lines)
@@ -102,7 +102,7 @@ def lane_summary_text(lane: str, health: dict) -> str:
         ])
 
     rows = _truth._classified_rows(lane, health)
-    overall, summary = _truth._summary_for_rows(rows)
+    overall, _summary = _truth._summary_for_rows(rows)
     working = sum(1 for _provider, icon, _status in rows if icon == "🟢")
     pending = sum(1 for _provider, icon, _status in rows if icon == "🟡")
     issues = len(rows) - working - pending
