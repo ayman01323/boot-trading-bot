@@ -8,12 +8,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: one-time-read-grok-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   read-reply:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 5
     steps:
-      - name: Read exact Strategy Factory message from forensic snapshot
+      - name: Search Strategy Factory snapshot and journal for Grok audit reply
         shell: bash
         run: |
           set -euo pipefail
@@ -24,32 +28,38 @@ jobs:
           [[ -r "${src}-wal" ]] && cp "${src}-wal" "${snap}-wal" || true
           [[ -r "${src}-shm" ]] && cp "${src}-shm" "${snap}-shm" || true
           SNAP="$snap" python3 - <<'PY'
-          import json, os, sqlite3
-          mid='2026-08-23T18-10-grok-full-trading-stop-audit'
+          import os, sqlite3
+          exact='2026-08-23T18-10-grok-full-trading-stop-audit'
           conn=sqlite3.connect(os.environ['SNAP'])
           conn.row_factory=sqlite3.Row
           cols={r['name'] for r in conn.execute('PRAGMA table_info(messages)')}
           wanted=['message_id','thread_id','subject','sender','target','status','body','reply','error','created_at','delivered_at','acknowledged_at','replied_at']
           selected=[c for c in wanted if c in cols]
-          row=conn.execute('SELECT '+','.join(selected)+' FROM messages WHERE message_id=? LIMIT 1',(mid,)).fetchone()
+          select='SELECT '+','.join(selected)+' FROM messages '
+          rows=[]
+          if 'message_id' in cols:
+              rows.extend(conn.execute(select+'WHERE message_id=?',(exact,)).fetchall())
+              if not rows:
+                  rows.extend(conn.execute(select+"WHERE message_id LIKE ? ORDER BY rowid DESC LIMIT 20",('%grok-full-trading-stop-audit%',)).fetchall())
+          if not rows and {'sender','target'} <= cols:
+              rows.extend(conn.execute(select+"WHERE sender='grok' OR target='grok' ORDER BY rowid DESC LIMIT 40").fetchall())
           conn.close()
-          if row is None:
-              print('MESSAGE_FOUND=NO')
-              raise SystemExit(2)
-          value=dict(row)
-          print('MESSAGE_FOUND=YES')
-          print('MESSAGE_ID='+str(value.get('message_id') or ''))
-          print('SENDER='+str(value.get('sender') or ''))
-          print('TARGET='+str(value.get('target') or ''))
-          print('STATUS='+str(value.get('status') or ''))
-          print('SUBJECT='+str(value.get('subject') or ''))
-          print('THREAD_ID='+str(value.get('thread_id') or ''))
-          print('DELIVERED_AT='+str(value.get('delivered_at') or ''))
-          print('ACKNOWLEDGED_AT='+str(value.get('acknowledged_at') or ''))
-          print('REPLIED_AT='+str(value.get('replied_at') or ''))
-          print('GROK_REPLY_BEGIN')
-          print(str(value.get('reply') or value.get('body') or ''))
-          print('GROK_REPLY_END')
-          if str(value.get('error') or ''):
-              print('ERROR='+str(value.get('error')))
+          print('CANDIDATE_ROWS='+str(len(rows)))
+          for i,row in enumerate(rows,1):
+              v=dict(row)
+              print(f'--- CANDIDATE {i} ---')
+              for key in ['message_id','sender','target','status','subject','thread_id','created_at','delivered_at','acknowledged_at','replied_at']:
+                  if key in v: print(key.upper()+'='+str(v.get(key) or ''))
+              text=str(v.get('reply') or v.get('body') or '')
+              print('TEXT_BEGIN')
+              print(text)
+              print('TEXT_END')
+              if str(v.get('error') or ''): print('ERROR='+str(v.get('error')))
           PY
+
+          echo '=== JOURNAL EXACT-ID SEARCH ==='
+          journalctl -u learnerbot --since '2026-08-23 18:00:00 UTC' --until '2026-08-23 18:30:00 UTC' --no-pager 2>/dev/null \
+            | grep -F -C 8 '2026-08-23T18-10-grok-full-trading-stop-audit' || true
+          echo '=== JOURNAL GROK/TRADING-AUDIT SEARCH ==='
+          journalctl -u learnerbot --since '2026-08-23 18:00:00 UTC' --until '2026-08-23 18:30:00 UTC' --no-pager 2>/dev/null \
+            | grep -Eai -C 4 'grok|trading.?stop|full.?trading' | tail -n 300 || true
