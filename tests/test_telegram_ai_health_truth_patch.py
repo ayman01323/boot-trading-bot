@@ -18,6 +18,7 @@ def test_lane_drilldown_contains_pipeline_state_only():
             "gemini": ("WORKING", "HEALTHY"),
             "deepseek": ("NOT_WORKING", "unsupported model config"),
             "grok": ("NOT_WORKING", "pipeline failed"),
+            "kimi": ("WORKING", "HEALTHY"),
             "copilot": ("WAITING", "waiting for Copilot report"),
         }
     )
@@ -29,6 +30,7 @@ def test_lane_drilldown_contains_pipeline_state_only():
     assert "API check stale" not in text
     assert "🟢 GPT — Working" in text
     assert "🟡 Claude — In progress" in text
+    assert "🟢 Kimi — Working" in text
     assert "🔴 DeepSeek — Model config" in text
     assert "🟠 Grok — Pipeline failure" in text
 
@@ -55,6 +57,7 @@ def test_provider_health_is_shown_once_and_independent_of_review_failure(monkeyp
             "gemini": ("WORKING", "HEALTHY"),
             "deepseek": ("WAITING", "refreshing"),
             "grok": ("WAITING", "refreshing"),
+            "kimi": ("WORKING", "HEALTHY"),
             "copilot": ("WAITING", "waiting"),
         }
     )
@@ -65,6 +68,7 @@ def test_provider_health_is_shown_once_and_independent_of_review_failure(monkeyp
             "gemini": ("WORKING", "HEALTHY"),
             "deepseek": ("NOT_WORKING", "unsupported model config"),
             "grok": ("NOT_WORKING", "pipeline failed"),
+            "kimi": ("WORKING", "HEALTHY"),
             "copilot": ("WAITING", "waiting"),
         }
     )
@@ -76,13 +80,14 @@ def test_provider_health_is_shown_once_and_independent_of_review_failure(monkeyp
     assert "🟢 Claude — API working" in providers
     assert "🟢 Grok — API working" in providers
     assert "🔴 Grok — API/provider problem" not in providers
+    assert "Kimi" in providers
     assert "🔴 DeepSeek — Model config" in strategy_summary
     assert "🟠 Grok — Pipeline failure" in strategy_summary
 
 
 def test_stale_api_evidence_shows_age_and_escalates_when_too_old(monkeypatch):
-    engineering = _health({"gemini": ("WORKING", "HEALTHY"), "copilot": ("WAITING", "waiting")})
-    strategy = _health({"gemini": ("WORKING", "HEALTHY"), "copilot": ("WAITING", "waiting")})
+    engineering = _health({"gemini": ("WORKING", "HEALTHY"), "kimi": ("WORKING", "HEALTHY"), "copilot": ("WAITING", "waiting")})
+    strategy = _health({"gemini": ("WORKING", "HEALTHY"), "kimi": ("WORKING", "HEALTHY"), "copilot": ("WAITING", "waiting")})
     monkeypatch.setattr(truth, "_copilot_assignment_state", lambda lane, health: "ASSIGNED")
 
     monkeypatch.setattr(
@@ -144,6 +149,7 @@ def test_master_operational_sections_are_compact_and_only_expand_issues(monkeypa
             "gemini": ("WORKING", "HEALTHY"),
             "deepseek": ("NOT_WORKING", "unsupported model config"),
             "grok": ("NOT_WORKING", "pipeline failed"),
+            "kimi": ("WORKING", "HEALTHY"),
             "copilot": ("WAITING", "review in progress"),
         }
     )
@@ -159,15 +165,15 @@ def test_master_operational_sections_are_compact_and_only_expand_issues(monkeypa
     factory_summary = truth.factory_summary_text(factory)
     dashboard = truth.dashboard_text(engineering, strategy, factory)
 
-    assert "🟡 <b>0 working · 6 in progress · 0 issues</b>" in engineering_summary
+    assert "🟡 <b>0 working · 7 in progress · 0 issues</b>" in engineering_summary
     assert engineering_summary.count(" — ") == 0
 
-    assert "🔴 <b>3 working · 1 in progress · 2 issues</b>" in strategy_summary
+    assert "🔴 <b>4 working · 1 in progress · 2 issues</b>" in strategy_summary
     assert "🔴 DeepSeek — Model config" in strategy_summary
     assert "🟠 Grok — Pipeline failure" in strategy_summary
     assert strategy_summary.count(" — ") == 2
 
-    assert "🟡 <b>0 working · 6 in progress · 0 issues</b>" in factory_summary
+    assert "🟡 <b>0 working · 7 in progress · 0 issues</b>" in factory_summary
     assert factory_summary.count(" — ") == 0
 
     assert "First status = agent/provider" not in dashboard
