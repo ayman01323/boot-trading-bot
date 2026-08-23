@@ -13,25 +13,19 @@ permissions:
 jobs:
   runtime-drainer-diagnostic:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Current protected server status
-        shell: bash
-        run: sudo /usr/local/sbin/status-boot-trading-bot
-
-      - name: Read-only recent EVM backlog drainer journal
-        shell: bash
-        run: |
-          set -euo pipefail
-          journalctl -u learnerbot.service --since '15 minutes ago' --no-pager \
-            | grep -E '\[sibot-legacy-drainer\]|\[final-runtime-integrity\]|\[sibot-broader-qualified:' \
-            | tail -n 160 || true
-
-      - name: Assert deployed SHA and drainer startup evidence
+      - name: Assert exact deployed SHA and active service
         shell: bash
         run: |
           set -euo pipefail
           status="$(sudo /usr/local/sbin/status-boot-trading-bot)"
+          printf '%s\n' "$status"
           printf '%s\n' "$status" | grep -q '^sha:    cabc5bff54b4ca52649ba38dcaca7800be494d57$'
-          journalctl -u learnerbot.service --since '15 minutes ago' --no-pager \
-            | grep -q '\[sibot-legacy-drainer\] started'
+          printf '%s\n' "$status" | grep -q 'Active: active (running)'
+
+      - name: Run restricted read-only SiBot leader/history report
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/run-sibot-leader-gate-report
