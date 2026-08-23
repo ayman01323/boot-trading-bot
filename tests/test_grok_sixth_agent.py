@@ -5,6 +5,7 @@ from pathlib import Path
 from learnerbot import ai_council as council
 from learnerbot import ai_master_control
 from learnerbot import grok_provider
+from learnerbot import ai_cost_provider_patch as cost_provider
 from scripts import ai_agent_bus
 from scripts import ai_agent_bus_provider_compat
 
@@ -15,7 +16,10 @@ def test_grok_provider_is_sixth_council_member_and_leader() -> None:
     grok_provider.install()
     assert "grok" in council.PROVIDERS
     assert "grok" in council.LEADERS
-    assert council.call_provider is grok_provider.call_provider
+    # The final public hook must remain budget-gated. Its saved underlying
+    # provider implementation is the Grok-aware adapter installed first.
+    assert council.call_provider is cost_provider.call_provider
+    assert cost_provider._ORIGINAL_CALL_PROVIDER is grok_provider.call_provider
 
 
 def test_grok_uses_bounded_xai_chat_completions(monkeypatch) -> None:
