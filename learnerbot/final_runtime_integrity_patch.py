@@ -22,6 +22,9 @@ from . import sibot_alchemy_trace_progress_patch as _trace
 from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import sibot_leader_quality_hard_floor_patch as _evm_quality
 from . import sibot_legacy_error_sweep_patch as _legacy
+# Low-priority orphaned-history recovery. Importing this late preserves every
+# existing history selector/refresher identity and wraps only worker/menu startup.
+from . import sibot_legacy_backlog_drainer_patch as _legacy_drainer
 from . import solana_atomic_close_fallback_patch as _atomic
 from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_efficiency_patch as _efficiency
@@ -42,6 +45,9 @@ from . import solana_profit_guard_patch as _sol_guard
 from . import solana_quote_execution_consistency_patch as _quote
 from . import solana_simulated_reserve_guard_patch as _reserve
 from . import solana_sibot as _sol
+from . import telegram_ai_council_friendly_patch as _friendly
+from . import telegram_ui as _telegram_ui
+from . import transaction_audit_worker_patch as _audit_worker
 from . import trade_strategy_provenance_patch as _provenance
 
 
@@ -75,6 +81,23 @@ def composition_checks() -> dict[str, bool]:
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
         "evm_history_trace_to_retry": _trace._PREV_NEXT_HISTORY_WALLET is _retry._next_history_wallet,
+        # Background recovery is additive scheduling only. It must be the final
+        # outer startup wrapper, while the AI Council recovery and transaction-audit
+        # startup chain underneath it remains exactly intact.
+        "evm_history_background_worker_start": (
+            _sibot.start_workers is _legacy_drainer.start_workers_with_legacy_backlog_drainer
+        ),
+        "evm_history_background_menu_start": (
+            _telegram_ui.start_menu_thread
+            is _legacy_drainer.start_menu_thread_with_legacy_backlog_drainer
+        ),
+        "evm_history_background_menu_inner": (
+            _legacy_drainer._PREV_START_MENU_THREAD is _friendly.start_menu_thread
+        ),
+        "evm_history_background_menu_audit_inner": (
+            _friendly._PREV_START_MENU_THREAD
+            is _audit_worker.start_menu_thread_with_transaction_audit
+        ),
         # WebSocket wake-up serialization is the intended outer wrapper. The
         # retry-safe/no-skip cursor remains authoritative immediately inside it.
         "evm_leader_cursor_ws_outer": _sibot.poll_leader_blocks is _evm_ws.poll_leader_blocks_locked,
