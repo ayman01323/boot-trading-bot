@@ -145,3 +145,12 @@ def install() -> None:
 
 
 install()
+
+# This module is imported only after final_runtime_integrity_patch has verified the
+# audited trading hook identities. The observability patch changes no execution
+# hook; it adds read-only bridges/monitor presentation and SHADOW reconstruction
+# counters around the Alchemy history store helper. The service-sender patch maps
+# only the synthetic Strategy Factory research identity onto the broker's existing
+# audited MASTER sender; it does not broaden broker recipients or permissions.
+from . import trading_pipeline_observability_patch as _trading_pipeline  # noqa: E402,F401
+from . import strategy_factory_service_sender_patch as _strategy_factory_sender  # noqa: E402,F401
