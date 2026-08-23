@@ -1,12 +1,12 @@
-requested_sha=c262fc6311a7d1479261b85204872bc6c6a7245c
-deploy_outcome=failure
+requested_sha=4ecd77e6336525d3b3c63757af73776f46da9ae2
+deploy_outcome=cancelled
 deploy_exit=10
-run_id=32638338623
-utc=2026-08-23T12:06:19Z
+run_id=32638471082
+utc=2026-08-23T12:09:11Z
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-23T12:06:19Z
+UTC: 2026-08-23T12:09:11Z
 branch: main
 sha:    77c596822c344bfa0f78741fdcfd0ebbad682bd5
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -17,17 +17,14 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Sun 2026-08-23 12:42:58 BST; 23min ago
+     Active: active (running) since Sun 2026-08-23 12:42:58 BST; 26min ago
    Main PID: 908306 (python)
       Tasks: 22 (limit: 5869)
-     Memory: 645.1M (peak: 786.9M)
-        CPU: 12min 9.318s
+     Memory: 573.0M (peak: 786.9M)
+        CPU: 13min 13.048s
      CGroup: /system.slice/learnerbot.service
              └─908306 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 23 13:03:18 mint.yesgoodwill.com python[908306]:     yield await self.recv()
-Aug 23 13:03:18 mint.yesgoodwill.com python[908306]:           ^^^^^^^^^^^^^^^^^
-Aug 23 13:03:18 mint.yesgoodwill.com python[908306]:   File "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/asyncio/connection.py", line 322, in recv
 Aug 23 13:03:18 mint.yesgoodwill.com python[908306]:     raise self.protocol.close_exc from self.recv_exc
 Aug 23 13:03:18 mint.yesgoodwill.com python[908306]: websockets.exceptions.ConnectionClosedError: sent 1011 (internal error) keepalive ping timeout; no close frame received
 Aug 23 13:03:19 mint.yesgoodwill.com python[908306]: copilot worker connected; model=provider-default
@@ -35,57 +32,119 @@ Aug 23 13:03:20 mint.yesgoodwill.com python[908306]: deepseek worker connected; 
 Aug 23 13:03:20 mint.yesgoodwill.com python[908306]: gemini worker connected; model=gemini-3.5-flash-lite
 Aug 23 13:05:04 mint.yesgoodwill.com python[908306]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=165.103
 Aug 23 13:05:16 mint.yesgoodwill.com python[908306]: [solana-ws] connected logsSubscribe=true leaders=1 commitment=confirmed fallback_poll=true
+Aug 23 13:06:48 mint.yesgoodwill.com python[908306]: [solana-ws] connected logsSubscribe=true leaders=1 commitment=confirmed fallback_poll=true
+Aug 23 13:06:52 mint.yesgoodwill.com python[908306]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=107.726
+Aug 23 13:09:04 mint.yesgoodwill.com python[908306]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=130.283
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-23T12:05:24Z BEGIN current=77c596822c344bfa0f78741fdcfd0ebbad682bd5 requested=c262fc6311a7d1479261b85204872bc6c6a7245c
-From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
- * branch            main       -> FETCH_HEAD
-   ade8051..c262fc6  main       -> origin/main
-Updating 77c5968..c262fc6
-Fast-forward
- .deploy-current-main.trigger                       |   2 +-
- .github/workflows/copilot-stalled-wip-recovery.yml | 183 +++++++++++++++++++++
- AI_AGENT_MESSAGING.md                              | 172 ++++++++-----------
- .../strategy_factory_council_transport_patch.py    |  42 +++++
- learnerbot/telegram_master_change_patch.py         |   8 +-
- scripts/ai_agent_ws_send.py                        |  60 ++-----
- scripts/install_ai_agent_ws_bus.sh                 |   1 +
- scripts/master_change_policy.py                    |   3 +
- scripts/strategy_factory_transport.py              | 127 ++++++++++++++
- tests/test_strategy_factory_transport.py           |  81 +++++++++
- 10 files changed, 526 insertions(+), 153 deletions(-)
- create mode 100644 .github/workflows/copilot-stalled-wip-recovery.yml
- create mode 100644 learnerbot/strategy_factory_council_transport_patch.py
- create mode 100644 scripts/strategy_factory_transport.py
- create mode 100644 tests/test_strategy_factory_transport.py
+                "gpt": {"state": "WORKING", "reason": ""},
+                "claude": {"state": "WORKING", "reason": ""},
+                "gemini": {"state": "WORKING", "reason": ""},
+                "deepseek": {"state": "NOT_WORKING", "reason": "unsupported model config"},
+                "grok": {"state": "WORKING", "reason": ""},
+                "copilot": {"state": "WAITING", "reason": "in progress"},
+            }
+        }
+        strategy_room = _health("WAITING", "WAITING", "WAITING", "WAITING", "WAITING", "WAITING")
+    
+        text = compact.warning_message(
+            {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
+        )
+    
+>       assert text == "\n\n".join(
+            [
+                "<b>🤖 AI AGENT HEALTH</b>",
+                "\n".join(
+                    [
+                        "<b>🛠 ENGINEERING MONITOR</b>",
+                        "🟢 GPT — Working",
+                        "🟠 Claude — Pipeline failure",
+                        "🟢 Gemini — Working",
+                        "🔴 DeepSeek — Model config",
+                        "🟢 Grok — Working",
+                        "🟡 Copilot — In progress",
+                    ]
+                ),
+                "\n".join(
+                    [
+                        "<b>🧠 STRATEGY MONITOR</b>",
+                        "🟢 GPT — Working",
+                        "🟢 Claude — Working",
+                        "🟢 Gemini — Working",
+                        "🔴 DeepSeek — Model config",
+                        "🟢 Grok — Working",
+                        "🟡 Copilot — In progress",
+                    ]
+                ),
+                "\n".join(
+                    [
+                        "<b>🧠 STRATEGY FACTORY</b>",
+                        "🟡 GPT — In progress",
+                        "🟡 Claude — In progress",
+                        "🟡 Gemini — In progress",
+                        "🟡 DeepSeek — In progress",
+                        "🟡 Grok — In progress",
+                        "🟡 Copilot — In progress",
+                    ]
+                ),
+            ]
+        )
+E       AssertionError: assert '<b>🤖 AI AGEN...y in progress' == '<b>🤖 AI AGEN...— In progress'
+E         
+E         Skipping 45 identical leading characters in diff, use -v to show
+E           NITOR</b>
+E         - 🟢 GPT — Working
+E         - 🟠 Claude — Pipeline failure
+E         - 🟢 Gemini — Working
+E         - 🔴 DeepSeek — Model config...
+E         
+E         ...Full output truncated (43 lines hidden), use '-vv' to show
 
-[notice] A new release of pip available: 22.3.1 -> 26.2.1
-[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [  8%]
-........................................................................ [ 16%]
-........................................................................ [ 24%]
-........................................................................ [ 32%]
-........................................................................ [ 40%]
-........................................................................ [ 48%]
-........................................................................ [ 56%]
-........................................................................ [ 64%]
-........................................................................ [ 72%]
-.....F.................................................................. [ 80%]
-........................................................................ [ 88%]
-........................................................................ [ 96%]
-....................................                                     [100%]
-=================================== FAILURES ===================================
-_____ test_documentation_defines_one_transport_two_modes_and_fallback_only _____
+tests/test_ai_health_compact_report.py:41: AssertionError
+__________ test_all_unsafe_slices_defer_without_broadcast_retry_spam ___________
 
-    def test_documentation_defines_one_transport_two_modes_and_fallback_only() -> None:
-        text = _text("AI_AGENT_MESSAGING.md")
-        assert "one primary messaging transport" in text
-        assert "DIRECT mode" in text
-        assert "COUNCIL mode" in text
->       assert "not a second normal messaging system" in text
-E       AssertionError: assert 'not a second normal messaging system' in '# Strategy Factory messaging\n\nStrategy Factory uses **one primary messaging transport** for all agent communication... that gate passes. DIRECT or COUNCIL messaging does not itself grant deployment authority.\n\nProtocol: `ws-bus-v2`.\n'
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f4d05cdbe90>
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-450/test_all_unsafe_slices_defer_w0')
 
-tests/test_strategy_factory_transport.py:80: AssertionError
+    def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch, tmp_path):
+        app = _app(tmp_path)
+        calls = []
+        notices = []
+    
+        def fake_close(app_, tid, position, fraction, reason):
+            calls.append(Decimal(str(fraction)))
+            raise patch._exec.SolanaLiveError(
+                "Economic execution guard: quoted price impact 10000.00 bps + slippage 30 bps = 10030.00 bps exceeds 500 bps"
+            )
+    
+        monkeypatch.setattr(patch, "_BASE_CLOSE", fake_close)
+        monkeypatch.setattr(patch._sol, "settings", lambda app_: _cfg())
+        monkeypatch.setattr(patch._live, "_notify", lambda app_, tid, text: notices.append(text))
+    
+        first = patch.close_live_with_emergency_liquidity_unwind(
+            app,
+            "123",
+            {"position_id": "p2"},
+            Decimal(1),
+            "SOLANA_LEADER_EXIT_LOSS_CAP",
+        )
+        first_call_count = len(calls)
+    
+        second = patch.close_live_with_emergency_liquidity_unwind(
+            app,
+            "123",
+            {"position_id": "p2"},
+            Decimal(1),
+            "SOLANA_LEADER_EXIT_LOSS_CAP",
+        )
+    
+>       assert calls == [Decimal("1"), Decimal("0.75"), Decimal("0.50"), Decimal("0.25")]
+E       AssertionError: assert [Decimal('1')...('0.05'), ...] == [Decimal('1')...cimal('0.25')]
+E         
+E         Left contains 4 more items, first extra item: Decimal('0.10')
+E         Use -v to get more diff
+
+tests/test_solana_emergency_liquidity_unwind.py:158: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -93,7 +152,8 @@ tests/test_strategy_factory_transport.py:80: AssertionError
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
-FAILED tests/test_strategy_factory_transport.py::test_documentation_defines_one_transport_two_modes_and_fallback_only
-1 failed, 899 passed, 1 warning in 47.27s
-2026-08-23T12:06:19Z TESTS FAILED; service remains on old running process
+FAILED tests/test_ai_health_compact_report.py::test_master_dashboard_keeps_original_rows_and_only_renames_sections
+FAILED tests/test_solana_emergency_liquidity_unwind.py::test_all_unsafe_slices_defer_without_broadcast_retry_spam
+2 failed, 909 passed, 1 warning in 45.99s
+2026-08-23T12:09:10Z TESTS FAILED; service remains on old running process
 HEAD is now at 77c5968 Fix stale AI health false failures
