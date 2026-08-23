@@ -8,28 +8,36 @@ from contextlib import closing
 from . import sibot as _sibot
 from . import sibot_alchemy_history_patch as _alchemy
 from . import sibot_alchemy_retry_queue_patch as _retry
+from . import telegram_ui as _telegram_ui
 from .config import load_chains
 
-"""Low-priority recovery for orphaned EVM history backlog.
+"""Bounded low-priority recovery for orphaned EVM history backlog.
 
-The normal SiBot history worker intentionally prioritises the ranked candidate
-window.  The legacy sweep guarantees old Etherscan rows eventually get a turn,
-but its 15-minute-per-chain cadence is intentionally conservative and can take a
-long time to clear a large inherited backlog.
+The normal SiBot history worker owns the ranked candidate window.  The existing
+legacy sweep guarantees old Etherscan rows eventually get a turn, but its
+15-minute-per-chain cadence is intentionally conservative.  A large inherited
+backlog can therefore keep wallet_trades and the leader pool empty for too long.
 
-This patch adds a separate *bounded* background drainer that:
-- handles only errored history rows outside the current ranked candidate window;
-- performs at most one extra wallet refresh globally per pacing interval;
-- uses the existing serial Alchemy history lock, so it cannot burst providers in
-  parallel with the normal history worker;
-- yields for a full pacing interval after each completed attempt, so normal ranked
-  work gets priority again before the drainer can make another attempt;
+This patch adds one separate recovery lane which:
+- selects only errored wallets outside the current ranked history window;
+- performs at most one extra reconstruction globally per pacing interval;
+- calls the existing final Alchemy refresher, which already serialises history
+  work across chains and contains bounded provider retries;
+- yields after every completed attempt so normal ranked work gets priority;
 - applies account-wide exponential backoff after Alchemy rate-limit pressure;
+- gives a non-transient failure a chain-local cooldown so another chain can drain;
+- records sanitised progress counters in the existing SiBot state table;
 - never changes leader quality, trading, LIVE/ARMED, capital, wallet/signing,
-  liquidity, simulation, profit, or execution gates.
+  liquidity, simulation, profitability or execution decisions.
 """
 
+# Capture the fully composed worker/startup hooks that exist when this module is
+# imported by final_runtime_integrity_patch.  telegram_sibot_patch captured an
+# older start_workers symbol early in boot, so wrapping only _sibot.start_workers
+# would not reliably start this drainer on the real Telegram production path.
 _PREV_START_WORKERS = _sibot.start_workers
+_PREV_START_MENU_THREAD = _telegram_ui.start_menu_thread
+
 _DRAINER_STARTED = False
 _DRAINER_START_LOCK = threading.Lock()
 
@@ -44,6 +52,7 @@ _MIN_TRANSIENT_RETRY_AGE_SECONDS = 60
 _SCAN_ROWS = 250
 
 _GLOBAL_NEXT_KEY = "legacy_backlog_drainer:global_next"
+_GLOBAL_PRESSURE_KEY = "legacy_backlog_drainer:global_consecutive_pressure"
 _PREFIX = "legacy_backlog_drainer"
 
 
@@ -153,7 +162,7 @@ def _enabled_evm_chains(app) -> list:
 
 
 def _ranked_wallets(app, chain) -> set[str]:
-    """Return the normal ranked history window already owned by the main worker."""
+    """Return the normal ranked history window owned by the main history worker."""
     try:
         cfg = _sibot.platform_settings(app, int(chain.chain_id))
         limit = max(20, min(500, _sibot._int(cfg.get("history_candidate_wallets"), 40)))
@@ -179,7 +188,7 @@ def _error_kind(error: str, fetched_at: int, now_epoch: int) -> str:
 
 
 def _background_candidate(app, chain, now_epoch: int) -> tuple[str, str] | None:
-    """Pick one orphaned backlog row not already owned by the ranked queue."""
+    """Pick one retryable backlog row which is not in the ranked queue."""
     ranked = _ranked_wallets(app, chain)
     try:
         with _sibot._DB_LOCK, closing(_sibot.connect(app)) as conn:
@@ -193,13 +202,17 @@ def _background_candidate(app, chain, now_epoch: int) -> tuple[str, str] | None:
     except Exception:
         return None
 
-    # Prefer true pre-Alchemy migration backlog over current transient failures.
+    # Pre-Alchemy migration backlog is higher value than a recent transient retry.
     for wanted_kind in ("LEGACY_ETHERSCAN", "TRANSIENT_ALCHEMY"):
         for row in rows:
             wallet = str(row["wallet"] or "").lower().strip()
             if not wallet or wallet in ranked:
                 continue
-            kind = _error_kind(str(row["error"] or ""), int(row["fetched_at"] or 0), now_epoch)
+            kind = _error_kind(
+                str(row["error"] or ""),
+                int(row["fetched_at"] or 0),
+                now_epoch,
+            )
             if kind == wanted_kind:
                 return wallet, kind
     return None
@@ -207,7 +220,8 @@ def _background_candidate(app, chain, now_epoch: int) -> tuple[str, str] | None:
 
 def _eligible_attempts(app, now_epoch: int, chains=None) -> list[tuple[int, int, object, str, str]]:
     eligible = []
-    for chain in list(chains) if chains is not None else _enabled_evm_chains(app):
+    source = list(chains) if chains is not None else _enabled_evm_chains(app)
+    for chain in source:
         if not _is_evm_chain(chain):
             continue
         try:
@@ -245,7 +259,7 @@ def _provider_pressure(error: str) -> bool:
 
 
 def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
-    """Perform at most one globally-paced background recovery attempt."""
+    """Perform at most one globally paced background recovery attempt."""
     now = int(time.time()) if now_epoch is None else int(now_epoch)
     global_next = _read_state_int(app, _GLOBAL_NEXT_KEY, 0)
     if global_next > now:
@@ -267,15 +281,17 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
         },
     )
 
-    result = None
     try:
         result = _sibot.refresh_wallet_history(app, chain, wallet)
     except Exception as exc:
-        result = {"wallet": wallet, "complete": False, "error": f"{type(exc).__name__}: {exc}"}
+        result = {
+            "wallet": wallet,
+            "complete": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
 
-    # In production use completion time, not start time. A slow reconstruction can
-    # hold the shared serial history lock for minutes; pacing from completion gives
-    # the normal ranked worker a guaranteed yield window before the next drain.
+    # A reconstruction can itself take significant time. Pace from completion so
+    # the normal ranked history worker receives a guaranteed yield window.
     finished = int(time.time()) if now_epoch is None else now
     error = str((result or {}).get("error") or "") if isinstance(result, dict) else ""
     interval = _interval_seconds(app)
@@ -287,8 +303,8 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
             app,
             {
                 _GLOBAL_NEXT_KEY: next_epoch,
+                _GLOBAL_PRESSURE_KEY: 0,
                 _key(cid, "next_epoch"): next_epoch,
-                _key(cid, "consecutive_pressure"): 0,
                 _key(cid, "last_result"): "SUCCESS",
                 _key(cid, "last_success_epoch"): finished,
             },
@@ -306,7 +322,7 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
 
     if _provider_pressure(error):
         pressure_count = _increment_state(app, _key(cid, "rate_limits"), 1)
-        consecutive = _read_state_int(app, _key(cid, "consecutive_pressure"), 0) + 1
+        consecutive = _read_state_int(app, _GLOBAL_PRESSURE_KEY, 0) + 1
         base = _rate_limit_backoff_seconds(app)
         backoff = min(_max_backoff_seconds(app), base * (2 ** max(0, consecutive - 1)))
         next_epoch = finished + backoff
@@ -314,8 +330,8 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
             app,
             {
                 _GLOBAL_NEXT_KEY: next_epoch,
+                _GLOBAL_PRESSURE_KEY: consecutive,
                 _key(cid, "next_epoch"): next_epoch,
-                _key(cid, "consecutive_pressure"): consecutive,
                 _key(cid, "last_result"): "RATE_LIMIT",
             },
         )
@@ -337,8 +353,8 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
         app,
         {
             _GLOBAL_NEXT_KEY: global_next,
+            _GLOBAL_PRESSURE_KEY: 0,
             _key(cid, "next_epoch"): chain_next,
-            _key(cid, "consecutive_pressure"): 0,
             _key(cid, "last_result"): "FAILED",
         },
     )
@@ -354,7 +370,7 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
 
 
 def status_for_chain(app, chain) -> dict:
-    """Return sanitised recovery telemetry for /whynotrade and diagnostics."""
+    """Return sanitised recovery telemetry for diagnostics."""
     cid = int(chain.chain_id)
     legacy = 0
     transient = 0
@@ -420,14 +436,14 @@ def _is_runtime_run_command() -> bool:
     return len(sys.argv) >= 2 and str(sys.argv[1]).strip().lower() == "run"
 
 
-def start_workers_with_legacy_backlog_drainer(app):
+def _ensure_drainer_started(app) -> bool:
+    """Start exactly one daemon on the real production run command."""
     global _DRAINER_STARTED
-    result = _PREV_START_WORKERS(app)
     if not _is_runtime_run_command():
-        return result
+        return False
     with _DRAINER_START_LOCK:
         if _DRAINER_STARTED:
-            return result
+            return False
         _DRAINER_STARTED = True
         threading.Thread(
             target=_drainer_loop,
@@ -436,9 +452,23 @@ def start_workers_with_legacy_backlog_drainer(app):
             name="sibot-legacy-backlog-drainer",
         ).start()
     print(
-        "[sibot-legacy-drainer] started global_interval=%ss provider_backoff=adaptive ranked_queue_priority=true"
+        "[sibot-legacy-drainer] started global_interval=%ss provider_backoff=adaptive "
+        "ranked_queue_priority=true"
         % _interval_seconds(app)
     )
+    return True
+
+
+def start_workers_with_legacy_backlog_drainer(app):
+    result = _PREV_START_WORKERS(app)
+    _ensure_drainer_started(app)
+    return result
+
+
+def start_menu_thread_with_legacy_backlog_drainer(app):
+    """Wrap the actual final Telegram startup path without replacing its inner work."""
+    result = _PREV_START_MENU_THREAD(app)
+    _ensure_drainer_started(app)
     return result
 
 
@@ -446,6 +476,7 @@ def install() -> None:
     if getattr(_sibot, "_legacy_backlog_drainer_patch_installed", False):
         return
     _sibot.start_workers = start_workers_with_legacy_backlog_drainer
+    _telegram_ui.start_menu_thread = start_menu_thread_with_legacy_backlog_drainer
     _sibot._legacy_backlog_drainer_patch_installed = True
 
 
