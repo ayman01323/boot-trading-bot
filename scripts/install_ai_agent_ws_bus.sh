@@ -13,12 +13,17 @@ fi
 
 install -d -m 0755 "$DEST_DIR/scripts" "$DEST_DIR/learnerbot" "$DATA_DIR"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_bus.py" "$DEST_DIR/scripts/ai_agent_ws_bus.py"
+install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_bus_grok.py" "$DEST_DIR/scripts/ai_agent_ws_bus_grok.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_worker.py" "$DEST_DIR/scripts/ai_agent_ws_worker.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_send.py" "$DEST_DIR/scripts/ai_agent_ws_send.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_task_executor.py" "$DEST_DIR/scripts/ai_agent_task_executor.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/__init__.py" "$DEST_DIR/learnerbot/__init__.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_council.py" "$DEST_DIR/learnerbot/ai_council.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_council_http_patch.py" "$DEST_DIR/learnerbot/ai_council_http_patch.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/grok_provider.py" "$DEST_DIR/learnerbot/grok_provider.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_router.py" "$DEST_DIR/learnerbot/ai_cost_router.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_grok_patch.py" "$DEST_DIR/learnerbot/ai_cost_grok_patch.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_provider_patch.py" "$DEST_DIR/learnerbot/ai_cost_provider_patch.py"
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   python3 -m venv "$VENV"
@@ -40,7 +45,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=AI_AGENT_BUS_HOST=127.0.0.1
 Environment=AI_AGENT_BUS_PORT=8765
 Environment=AI_AGENT_BUS_DB=$DATA_DIR/ai_agent_bus.sqlite3
-ExecStart=$VENV/bin/python $DEST_DIR/scripts/ai_agent_ws_bus.py
+ExecStart=$VENV/bin/python $DEST_DIR/scripts/ai_agent_ws_bus_grok.py
 Restart=always
 RestartSec=2
 NoNewPrivileges=true
@@ -77,14 +82,14 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now boot-ai-agent-bus.service
-for agent in gpt claude gemini deepseek copilot; do
+for agent in gpt claude gemini deepseek grok copilot; do
   systemctl enable --now "boot-ai-agent-worker@${agent}.service"
 done
 
 sleep 1
 systemctl is-active --quiet boot-ai-agent-bus.service
-for agent in gpt claude gemini deepseek copilot; do
+for agent in gpt claude gemini deepseek grok copilot; do
   systemctl is-active --quiet "boot-ai-agent-worker@${agent}.service"
 done
 
-echo "AI agent WebSocket bus installed and active on 127.0.0.1:8765"
+echo "AI agent WebSocket bus installed and active on 127.0.0.1:8765 with six workers"

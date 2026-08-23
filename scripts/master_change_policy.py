@@ -6,7 +6,13 @@ import pathlib
 import subprocess
 from pathlib import Path
 
+from learnerbot import ai_cost_grok_patch as _grok_cost  # noqa: F401
 from learnerbot.ai_cost_router import ALL_ADVISERS, master_change_route
+
+# Schema-v1 evidence predates Grok. Keep those already-created requests bound to
+# the original four-adviser contract instead of retroactively requiring a fifth
+# adviser. Schema-v2 cost-routed requests use the current ALL_ADVISERS set.
+LEGACY_ADVISERS = ("claude", "gemini", "deepseek", "copilot")
 
 GOVERNANCE_FILES = frozenset({
     ".github/workflows/ai-cost-router-ci.yml",
@@ -16,15 +22,20 @@ GOVERNANCE_FILES = frozenset({
     "learnerbot/master_change_council.py",
     "learnerbot/master_change_cost_router_patch.py",
     "learnerbot/ai_cost_router.py",
+    "learnerbot/ai_cost_grok_patch.py",
     "learnerbot/ai_cost_provider_patch.py",
+    "learnerbot/grok_provider.py",
+    "learnerbot/telegram_grok_council_patch.py",
     "learnerbot/telegram_master_change_patch.py",
     "learnerbot/ai_agent_ws_runtime_patch.py",
     "scripts/ai_agent_ws_bus.py",
+    "scripts/ai_agent_ws_bus_grok.py",
     "scripts/ai_agent_ws_worker.py",
     "scripts/ai_agent_ws_send.py",
     "scripts/master_change_policy.py",
     "tests/test_master_change_council.py",
     "tests/test_ai_cost_router.py",
+    "tests/test_grok_sixth_agent.py",
 })
 
 
@@ -44,7 +55,9 @@ def load_request(path: str | Path) -> dict:
 
 def _required_advisers(evidence: dict) -> tuple[str, ...]:
     schema = int(evidence.get("schema_version") or 1)
-    if schema < 2 or not evidence.get("cost_route"):
+    if schema < 2:
+        return LEGACY_ADVISERS
+    if not evidence.get("cost_route"):
         return tuple(ALL_ADVISERS)
 
     expected = master_change_route(

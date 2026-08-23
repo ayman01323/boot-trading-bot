@@ -1,0 +1,296 @@
+name: Grok Sixth Strategy Agent
+
+on:
+  workflow_run:
+    workflows: ["Hourly Three-Agent Strategy Cycle"]
+    types: [completed]
+  schedule:
+    - cron: '47 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      cycle_id:
+        description: 'Optional immutable strategy cycle; defaults to latest published cycle'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: grok-sixth-strategy-agent
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out orchestration source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install review dependencies and official Grok Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -r requirements.txt
+          npm install -g @xai-official/grok@latest
+          grok version || grok --version
+
+      - name: Resolve immutable strategy cycle and exact evidence
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_CYCLE: ${{ inputs.cycle_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .strategy_grok
+          cycle="${INPUT_CYCLE:-}"
+          if [[ -z "$cycle" ]]; then
+            cycle="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/strategy/latest_cycle_id.txt?ref=ai-reviews" \
+              --jq '.content' | tr -d '\n' | base64 -d | tr -d '\r\n')"
+          fi
+          [[ "$cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]] || { echo 'Invalid strategy cycle id.' >&2; exit 2; }
+          root="strategy/runs/${cycle}"
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/${root}/context.json?ref=ai-reviews" \
+            --jq '.content' | tr -d '\n' | base64 -d > .strategy_grok/context.json
+
+          python - <<'PY' > /tmp/grok-meta.env
+          import json
+          p=json.load(open('.strategy_grok/context.json'))
+          print('SOURCE_SHA='+str(p.get('source_commit') or ''))
+          print('EVIDENCE_SHA='+str(p.get('evidence_sha256') or ''))
+          print('EVIDENCE_SOURCE='+str(p.get('evidence_source') or ''))
+          PY
+          source /tmp/grok-meta.env
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid source SHA.' >&2; exit 2; }
+          [[ "$EVIDENCE_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo 'Invalid evidence SHA.' >&2; exit 2; }
+
+          exact=false
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/latest_loss_forensics.json?ref=audit-status" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > .strategy_grok/evidence.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 && -s .strategy_grok/evidence.json ]]; then
+            got="$(sha256sum .strategy_grok/evidence.json | awk '{print $1}')"
+            [[ "$got" == "$EVIDENCE_SHA" ]] && exact=true
+          fi
+          if [[ "$exact" != true && "$EVIDENCE_SOURCE" == architecture-only ]]; then
+            python - "$SOURCE_SHA" <<'PY' > .strategy_grok/evidence.json
+          import json,sys
+          print(json.dumps({
+            'schema_version':1,'generated_epoch':0,'generated_utc':'',
+            'evidence_status':'MISSING_RUNTIME_FORENSICS','source_commit':sys.argv[1],
+            'note':'No current sanitised runtime forensics branch was available. Review code/architecture only; do not claim measured profitability or LIVE readiness.'
+          },indent=2,sort_keys=True))
+          PY
+            got="$(sha256sum .strategy_grok/evidence.json | awk '{print $1}')"
+            [[ "$got" == "$EVIDENCE_SHA" ]] && exact=true
+          fi
+          echo "cycle_id=$cycle" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "evidence_sha=$EVIDENCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "evidence_source=$EVIDENCE_SOURCE" >> "$GITHUB_OUTPUT"
+          echo "evidence_exact=$exact" >> "$GITHUB_OUTPUT"
+
+      - name: Check out exact source reviewed by other agents
+        env:
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$SOURCE_SHA"
+          git clean -fdx -e .strategy_grok/
+
+      - name: Evaluate Grok paid-AI material-change gate
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/contents/strategy/grok_cost_gate_state.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
+            | tr -d '\n' | base64 -d > /tmp/grok-cost-state.json 2>/dev/null
+          rc=$?
+          set -e
+          [[ $rc -eq 0 && -s /tmp/grok-cost-state.json ]] || echo '{}' > /tmp/grok-cost-state.json
+          PYTHONPATH="$GITHUB_WORKSPACE" python - "$SOURCE_SHA" "$MANUAL" <<'PY' >> "$GITHUB_OUTPUT"
+          import json,sys
+          from learnerbot.strategy_ai_cost_gate import evaluate_cost_gate
+          source,manual=sys.argv[1],sys.argv[2].lower()=='true'
+          evidence=json.load(open('.strategy_grok/evidence.json'))
+          try: previous=json.load(open('/tmp/grok-cost-state.json'))
+          except Exception: previous={}
+          r=evaluate_cost_gate(source_commit=source,evidence=evidence,previous_state=previous,manual=manual)
+          print('run_ai='+str(r['run_ai']).lower())
+          print('reason='+str(r['reason']))
+          print('material_sha256='+str(r['material_sha256']))
+          PY
+
+      - name: Skip paid Grok review when unchanged
+        if: steps.gate.outputs.run_ai != 'true'
+        run: echo "Grok strategy review skipped by material-change cost gate — ${{ steps.gate.outputs.reason }}"
+
+      - name: Grok independent strategy report
+        id: grok
+        if: steps.gate.outputs.run_ai == 'true' && steps.meta.outputs.evidence_exact == 'true'
+        continue-on-error: true
+        env:
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          GROK_STRATEGY_MODEL: ${{ vars.GROK_STRATEGY_MODEL || 'grok-build-0.1' }}
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
+          EVIDENCE_SOURCE: ${{ steps.meta.outputs.evidence_source }}
+          GROK_HOME: ${{ runner.temp }}/grok-strategy-home
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${XAI_API_KEY:-}"
+          cat > .strategy_grok/prompt.txt <<EOF
+          You are GROK, the sixth INDEPENDENT strategy reviewer for a multi-chain automated trading bot.
+          Inspect the checked-out repository and .strategy_grok/evidence.json.
+          Cycle: ${CYCLE_ID}
+          Source commit: ${SOURCE_SHA}
+          Evidence SHA-256: ${EVIDENCE_SHA}
+          Evidence source: ${EVIDENCE_SOURCE}
+
+          Optimise only for durable money-weighted NET P&L after all recorded costs. Distinguish strategy/market loss from execution/infrastructure failure. Compare Solana and EVM with chain-specific costs and executability.
+          REPORT ONLY. Do not edit code, trade, deploy, change LIVE/risk/capital settings, touch secrets/wallets/signing, add assets, weaken simulation/liquidity/sellability controls, or use external web research.
+
+          Return exactly one JSON report between these markers:
+          STRATEGY_REVIEW_JSON_BEGIN
+          {
+            "schema_version":1,"provider":"grok","cycle_id":"${CYCLE_ID}",
+            "source_commit":"${SOURCE_SHA}","evidence_sha256":"${EVIDENCE_SHA}",
+            "scope":"MULTI_AGENT_STRATEGY_REVIEW","status":"HEALTHY|CHANGES_PROPOSED|INCOMPLETE",
+            "summary":"...","proposals":[{
+              "id":"stable-id","action":"KEEP|IMPROVE|REWORK|SHADOW_MORE|REPLACE|DORMANT|NEW_SHADOW|ASSET_REQUEST|RESEARCH_MORE",
+              "strategy":"...","chain_scope":["SOLANA","EVM"],
+              "evidence":[{"path":"repository or JSON path","detail":"specific support"}],
+              "rationale":"...","expected_effect":"...","downside_risk":"...",
+              "shadow_test":"falsifiable test including costs and stop/failure condition",
+              "minimum_observation":"...","confidence":0.0,
+              "suggested_files":["Strategy Lab/SHADOW files only"]
+            }],"rejected_ideas":[],"evidence_gaps":[],"review_only":true,"no_live_changes":true
+          }
+          STRATEGY_REVIEW_JSON_END
+          Prefer no change over unsupported confidence.
+          EOF
+          grok --no-auto-update --cwd "$GITHUB_WORKSPACE" \
+            --permission-mode dontAsk \
+            --allow 'Read' --allow 'Grep' \
+            --deny 'Edit' --deny 'Bash(*)' --deny 'WebFetch' --deny 'WebSearch' \
+            --sandbox strict --no-subagents --disable-web-search --max-turns 8 \
+            -m "$GROK_STRATEGY_MODEL" \
+            -p "$(cat .strategy_grok/prompt.txt)" --output-format plain \
+            > .strategy_grok/grok_stdout.txt 2> .strategy_grok/grok_error.txt
+          python - "$CYCLE_ID" "$SOURCE_SHA" "$EVIDENCE_SHA" <<'PY'
+          import json,re,sys,pathlib
+          cycle,source,evidence=sys.argv[1:4]
+          raw=pathlib.Path('.strategy_grok/grok_stdout.txt').read_text(errors='replace')
+          m=re.search(r'STRATEGY_REVIEW_JSON_BEGIN\s*(\{.*?\})\s*STRATEGY_REVIEW_JSON_END',raw,re.S)
+          if not m: raise SystemExit('Grok strategy JSON markers missing')
+          p=json.loads(m.group(1))
+          if p.get('provider')!='grok' or p.get('cycle_id')!=cycle or p.get('source_commit')!=source or p.get('evidence_sha256')!=evidence: raise SystemExit('Grok report identity mismatch')
+          if p.get('scope')!='MULTI_AGENT_STRATEGY_REVIEW' or p.get('status') not in {'HEALTHY','CHANGES_PROPOSED','INCOMPLETE'}: raise SystemExit('Grok report contract mismatch')
+          if p.get('review_only') is not True or p.get('no_live_changes') is not True or not isinstance(p.get('proposals'),list): raise SystemExit('Grok report safety contract mismatch')
+          pathlib.Path('.strategy_grok/grok.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          lines=['# Grok strategy review','',str(p.get('summary') or '')]
+          for x in p.get('proposals') or []: lines += ['',f"## {x.get('action')} — {x.get('strategy')}",str(x.get('rationale') or '')]
+          pathlib.Path('.strategy_grok/grok.md').write_text('\n'.join(lines)+'\n')
+          PY
+          python - <<'PY'
+          import subprocess,sys
+          bad=[]
+          for line in subprocess.check_output(['git','status','--porcelain'],text=True).splitlines():
+              if line[:2]=='??' and line[3:].replace('\\','/').startswith('.strategy_grok/'): continue
+              bad.append(line)
+          if bad:
+              print('Grok reviewer changed tracked/out-of-scope files:',*bad,sep='\n',file=sys.stderr)
+              raise SystemExit(3)
+          PY
+
+      - name: Recover explicit Grok incomplete report
+        if: steps.gate.outputs.run_ai == 'true' && (steps.meta.outputs.evidence_exact != 'true' || steps.grok.outcome != 'success')
+        env:
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
+          EVIDENCE_EXACT: ${{ steps.meta.outputs.evidence_exact }}
+          GROK_PRESENT: ${{ secrets.XAI_API_KEY != '' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json,os,pathlib,re
+          if os.environ.get('EVIDENCE_EXACT')!='true': reason='Exact immutable evidence bytes could not be recovered; Grok was not allowed to review different evidence.'
+          elif os.environ.get('GROK_PRESENT')!='true': reason='XAI_API_KEY is missing.'
+          else:
+              parts=[]
+              for n in ('grok_error.txt','grok_stdout.txt'):
+                  p=pathlib.Path('.strategy_grok')/n
+                  if p.exists(): parts.append(p.read_text(errors='replace')[-1200:])
+              reason=re.sub(r'(?i)(api[_ -]?key|authorization|bearer|token)[^\n]*','[REDACTED]', '\n'.join(parts)).strip() or 'Grok execution/report extraction failed.'
+          p={'schema_version':1,'provider':'grok','cycle_id':os.environ['CYCLE_ID'],'source_commit':os.environ['SOURCE_SHA'],'evidence_sha256':os.environ['EVIDENCE_SHA'],'scope':'MULTI_AGENT_STRATEGY_REVIEW','status':'INCOMPLETE','summary':'Grok report did not complete.','proposals':[],'rejected_ideas':[],'evidence_gaps':[reason[:1800]],'review_only':True,'no_live_changes':True}
+          pathlib.Path('.strategy_grok/grok.json').write_text(json.dumps(p,indent=2,sort_keys=True)+'\n')
+          pathlib.Path('.strategy_grok/grok.md').write_text('# Grok strategy review\n\nINCOMPLETE\n\n'+reason[:1800]+'\n')
+          PY
+
+      - name: Publish Grok report only
+        if: steps.gate.outputs.run_ai == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
+          SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
+          MATERIAL_SHA: ${{ steps.gate.outputs.material_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/grok-strategy-reviews
+          git worktree add --detach /tmp/grok-strategy-reviews origin/ai-reviews
+          dest="/tmp/grok-strategy-reviews/strategy/runs/${CYCLE_ID}"
+          mkdir -p "$dest" /tmp/grok-strategy-reviews/strategy
+          cp .strategy_grok/grok.json "$dest/grok.json"
+          cp .strategy_grok/grok.md "$dest/grok.md"
+          python - <<PY > /tmp/grok-strategy-reviews/strategy/grok_cost_gate_state.json
+          import json,time
+          print(json.dumps({'last_ai_attempt_epoch':int(time.time()),'last_ai_attempt_source_commit':'${SOURCE_SHA}','last_ai_attempt_material_sha256':'${MATERIAL_SHA}'},indent=2,sort_keys=True))
+          PY
+          cd /tmp/grok-strategy-reviews
+          git config user.name 'grok-sixth-strategy-agent'
+          git config user.email 'grok-sixth-strategy-agent@users.noreply.github.com'
+          git add "strategy/runs/${CYCLE_ID}/grok.json" "strategy/runs/${CYCLE_ID}/grok.md" strategy/grok_cost_gate_state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Add Grok strategy review ${CYCLE_ID}"
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
+
+      - name: Clean workspace
+        if: always()
+        run: rm -rf .strategy_grok /tmp/grok-strategy-reviews /tmp/grok-meta.env /tmp/grok-cost-state.json "$RUNNER_TEMP/grok-strategy-home"

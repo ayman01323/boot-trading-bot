@@ -7,16 +7,22 @@ on:
       - '.github/workflows/master-change-council-protected-deploy.yml'
       - 'learnerbot/ai_cost_router.py'
       - 'learnerbot/ai_cost_provider_patch.py'
+      - 'learnerbot/ai_cost_grok_patch.py'
+      - 'learnerbot/grok_provider.py'
       - 'learnerbot/master_change_cost_router_patch.py'
       - 'learnerbot/master_change_council.py'
+      - 'learnerbot/telegram_grok_council_patch.py'
       - 'learnerbot/telegram_master_change_patch.py'
       - 'learnerbot/telegram_ai_ops_verification_patch.py'
+      - 'scripts/ai_agent_ws_bus_grok.py'
       - 'scripts/ai_agent_ws_worker.py'
       - 'scripts/ai_mailbox_provider_relay.py'
       - 'scripts/master_change_policy.py'
       - 'tests/test_ai_cost_router.py'
       - 'tests/test_master_change_council.py'
       - 'tests/test_ai_council_http_patch.py'
+      - 'tests/test_grok_cost_router_integration.py'
+      - 'tests/test_grok_sixth_agent.py'
       - 'docs/MASTER_TELEGRAM_CHANGE_COUNCIL.md'
   workflow_dispatch:
 
@@ -43,25 +49,31 @@ jobs:
           "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml python-dotenv 'websockets>=15,<16' requests
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Compile cost and council controls
+      - name: Compile cost, Grok and council controls
         shell: bash
         run: |
           set -euo pipefail
           "$VENV/bin/python" -m py_compile \
             learnerbot/ai_cost_router.py \
             learnerbot/ai_cost_provider_patch.py \
+            learnerbot/ai_cost_grok_patch.py \
+            learnerbot/grok_provider.py \
             learnerbot/master_change_cost_router_patch.py \
             learnerbot/master_change_council.py \
+            learnerbot/telegram_grok_council_patch.py \
             learnerbot/telegram_master_change_patch.py \
             learnerbot/telegram_ai_ops_verification_patch.py \
+            scripts/ai_agent_ws_bus_grok.py \
             scripts/ai_agent_ws_worker.py \
             scripts/ai_mailbox_provider_relay.py \
             scripts/master_change_policy.py \
             tests/test_ai_cost_router.py \
             tests/test_master_change_council.py \
-            tests/test_ai_council_http_patch.py
+            tests/test_ai_council_http_patch.py \
+            tests/test_grok_cost_router_integration.py \
+            tests/test_grok_sixth_agent.py
 
-      - name: Run cost router and provider compatibility regression tests
+      - name: Run cost router, provider and Grok regression tests
         env:
           AI_COST_TELEGRAM_ALERTS: '0'
           AI_COST_BUDGET_ENFORCE: '1'
@@ -71,7 +83,9 @@ jobs:
           "$VENV/bin/python" -m pytest -q \
             tests/test_ai_cost_router.py \
             tests/test_master_change_council.py \
-            tests/test_ai_council_http_patch.py
+            tests/test_ai_council_http_patch.py \
+            tests/test_grok_cost_router_integration.py \
+            tests/test_grok_sixth_agent.py
 
       - name: Remove isolated environment
         if: always()

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
+
 from learnerbot import ai_council_http_patch as _http
+from learnerbot import grok_provider as _grok  # noqa: F401  # installs Grok on the shared provider hook
 
 
 def _call_claude_without_deprecated_temperature(prompt: str) -> tuple[int, str, str]:
@@ -37,11 +40,31 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
     provider = str(provider or "").strip().lower()
     if provider == "claude":
         return _call_claude_without_deprecated_temperature(prompt)
+    # Keep the event-driven bus on the shared public provider hook. Importing
+    # grok_provider above extends that hook to Grok, while ai_cost_provider_patch
+    # may later replace the same hook with the authoritative budget gate. Looking
+    # it up dynamically here therefore preserves Grok support without bypassing
+    # cost controls.
     return _http.call_provider(provider, prompt)
 
 
 def install() -> None:
-    """Install compatibility only inside the current AI-bus process."""
+    """Install provider compatibility only inside the current AI-bus process."""
     from scripts import ai_agent_bus
 
+    ai_agent_bus.AGENTS = tuple(dict.fromkeys((*ai_agent_bus.AGENTS, "grok")))
+    ai_agent_bus._AGENT_SET = set(ai_agent_bus.AGENTS)
+    ai_agent_bus._SECRET_ENV_KEYS = tuple(dict.fromkeys((*ai_agent_bus._SECRET_ENV_KEYS, "XAI_API_KEY")))
+    if not any(getattr(pattern, "pattern", "").startswith("xai-") for pattern in ai_agent_bus._SECRET_PATTERNS):
+        ai_agent_bus._SECRET_PATTERNS = (*ai_agent_bus._SECRET_PATTERNS, re.compile(r"xai-[A-Za-z0-9_-]{12,}"))
+
+    base_prompt = ai_agent_bus._prompt
+
+    def prompt_with_grok(**kwargs):
+        return base_prompt(**kwargs).replace(
+            "<GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT>",
+            "<GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK>",
+        )
+
+    ai_agent_bus._prompt = prompt_with_grok
     ai_agent_bus.call_provider = call_provider

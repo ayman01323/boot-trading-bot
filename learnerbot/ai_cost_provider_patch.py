@@ -4,10 +4,12 @@ import os
 
 from . import ai_cost_router as _cost
 from . import ai_council_http_patch as _base
+from . import grok_provider as _grok  # installs raw xAI-compatible routing first
+from . import ai_cost_grok_patch as _grok_cost  # noqa: F401
 
-# Preserve the already-installed HTTP provider implementation before replacing
-# the public hook with the budget gate. The wrapper normally calls this saved
-# implementation, never itself.
+# Preserve the already-installed Grok-aware provider implementation before
+# replacing the public hook with the budget gate. The wrapper normally calls
+# this saved implementation, never itself.
 _ORIGINAL_CALL_PROVIDER = _base.call_provider
 
 
@@ -34,6 +36,13 @@ def _model(provider: str) -> str:
             os.environ.get("DEEPSEEK_COUNCIL_MODEL")
             or os.environ.get("DEEPSEEK_MASTER_MODEL")
             or "deepseek-v4-flash"
+        ).strip()
+    if provider == "grok":
+        return str(
+            os.environ.get("XAI_COUNCIL_MODEL")
+            or os.environ.get("GROK_COUNCIL_MODEL")
+            or os.environ.get("XAI_MASTER_MODEL")
+            or "grok-4.20-non-reasoning"
         ).strip()
     if provider == "copilot":
         return "github-copilot-subscription"
@@ -101,8 +110,8 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
 def install() -> None:
     # Keep the historical invariant required by the existing provider-patch
     # regression: ai_council.call_provider and ai_council_http_patch.call_provider
-    # must be the same public function object. The actual HTTP implementation is
-    # retained privately in _ORIGINAL_CALL_PROVIDER above.
+    # must be the same public function object. The actual Grok-aware HTTP
+    # implementation is retained privately in _ORIGINAL_CALL_PROVIDER above.
     _base.call_provider = call_provider
     _base._council.call_provider = call_provider
 

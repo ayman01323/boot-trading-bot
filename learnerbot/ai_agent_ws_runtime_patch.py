@@ -14,7 +14,7 @@ HOST = "127.0.0.1"
 PORT = 8765
 DB_PATH = "/var/tmp/boot/ai_agent_bus.sqlite3"
 STATUS_PATH = "/var/tmp/boot/ai_agent_ws_status.json"
-AGENTS = ("gpt", "claude", "gemini", "deepseek", "copilot")
+AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
 
 
 def _port_open() -> bool:
@@ -55,7 +55,7 @@ def _write_status(state: str, detail: str = "") -> None:
 
 
 async def _run_embedded() -> None:
-    from scripts.ai_agent_ws_bus import run as run_broker
+    from scripts.ai_agent_ws_bus_grok import run as run_broker
     from scripts.ai_agent_ws_worker import run as run_worker
 
     broker = asyncio.create_task(run_broker(HOST, PORT, DB_PATH, os.environ.get("AI_AGENT_BUS_TOKEN", "")))
@@ -67,7 +67,7 @@ async def _run_embedded() -> None:
         for agent in AGENTS
     ]
     _write_status("ACTIVE", "embedded learnerbot WebSocket broker and persistent workers started")
-    print("[ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/copilot workers", flush=True)
+    print("[ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/grok/copilot workers", flush=True)
     await asyncio.gather(broker, *workers)
 
 
