@@ -1,4 +1,4 @@
 DeepSeek GitHub-to-VPS full-link inspection trigger
-requested: 2026-08-23T00:36Z
+requested: 2026-08-23T22:43Z
 mode: inspect-only
-focus: diagnose SiBot leader-gate report job failure; report deployed SHA, service/runner health, memory/resource warnings, and any recent fatal/OOM/runner interruption indicators exposed by the restricted status wrapper; no mutation
+focus: verify current deployed SHA and learnerbot health after Solana liquidity-stuck safe-slice/nonblocking changes; identify any service/resource warning exposed by the restricted status wrapper; no wallet access, no risk-gate bypass, no mutation
