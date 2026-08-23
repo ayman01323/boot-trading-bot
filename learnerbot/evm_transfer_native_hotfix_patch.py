@@ -68,3 +68,8 @@ def install() -> None:
 
 
 install()
+
+# Runtime EVM safety composition: install the universal pool-rug gate after the
+# native-transfer hotfix. This wraps only BUY/AUTO pre-broadcast entry paths and
+# does not alter SELL, transfer, signing, capital, slippage or profit protections.
+from . import evm_pool_rug_gate as _evm_pool_rug_gate  # noqa: E402,F401
