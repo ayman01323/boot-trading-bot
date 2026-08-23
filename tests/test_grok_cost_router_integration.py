@@ -22,9 +22,9 @@ def test_cheap_routes_remain_unchanged_and_full_council_adds_grok() -> None:
 
 
 def test_grok_models_have_explicit_cost_rates() -> None:
-    assert cost._rate("grok", "grok-build-0.1") == (1.0, 2.0, 0.20)
-    assert cost._rate("grok", "grok-4.20-non-reasoning") == (1.25, 2.50, 0.20)
-    assert cost._rate("grok", "grok-4.6") == (2.0, 6.0, 0.50)
+    assert cost.price_per_mtok("grok", "grok-build-0.1") == (1.0, 2.0, 0.20)
+    assert cost.price_per_mtok("grok", "grok-4.20-non-reasoning") == (1.25, 2.50, 0.20)
+    assert cost.price_per_mtok("grok", "grok-4.6") == (2.0, 6.0, 0.50)
     assert provider_patch._model("grok") == "grok-4.20-non-reasoning"
 
 
