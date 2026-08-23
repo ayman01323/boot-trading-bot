@@ -1,0 +1,155 @@
+{
+  "cycle_id": "6bf53243c8b6-2026082322-e5d08f35",
+  "evidence_gaps": [
+    "Runtime evidence is MISSING_RUNTIME_FORENSICS with generated_epoch 0; fresh-within-2h is false.",
+    "No per-strategy, per-chain SHADOW windows containing cost-complete money-weighted NET P&L.",
+    "No per-trade Solana network fee, priority fee, Jupiter fee, price-impact, slippage, failed-attempt cost, and reconciled wallet-delta evidence.",
+    "No per-trade EVM gas, approval gas, builder payment, route fee, slippage, reverted-transaction cost, and final user-fee-adjusted P&L evidence.",
+    "No reproducible STRATEGY/MARKET versus EXECUTION/INFRASTRUCTURE terminal classification.",
+    "No quote-age, detection latency, submission latency, inclusion latency, exit latency, or counterfactual decision-time price evidence tied to trade outcomes.",
+    "No out-of-sample results, regime segmentation, capital-weighted drawdown, tail-loss, profit-factor confidence interval, or asset/leader concentration evidence.",
+    "Before any promotion: require fresh cost-complete SHADOW evidence meeting the proposal observation floors, positive net P&L and profit factor out of sample, bounded drawdown and concentration, reproducible loss attribution, and zero unresolved safety or reconciliation failures."
+  ],
+  "evidence_sha256": "e5d08f35b0471fe1cbe08bdcd1757ca4cfd050fecf6119d42996a95b6a316f1c",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.94,
+      "downside_risk": "Slightly more complex database state updates, but has zero impact on live execution paths.",
+      "evidence": [
+        {
+          "detail": "The strategy_lab_windows schema tracks fees and slippage_cost, but does not enforce cost-complete verification of gas, Solana priority fees, builder payments, or user-profit fees.",
+          "path": "learnerbot/strategy_lab.py:79"
+        },
+        {
+          "detail": "_accumulate_and_record omits fees and slippage_cost parameters, causing them to permanently default to zero in the database for LEADER_COPY and MARKET_NATIVE strategies.",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py:86"
+        }
+      ],
+      "expected_effect": "Strategy Lab will correctly evaluate and rank active families by economically complete net returns, preventing the promotion of strategies that appear positive only due to omitted costs.",
+      "id": "net-pnl-complete-cost-ledger-v1",
+      "minimum_observation": "At least 30 closed SHADOW trades across 5 independent windows per chain with 100% cost-field completeness.",
+      "rationale": "Durable money-weighted net P&L must incorporate every network, router, and platform fee. Storing zero fees and slippage masks execution overhead, which can erroneously promote unprofitable strategies to the canary stage.",
+      "shadow_test": "In SHADOW only, compare the existing simple ledger against a cost-complete ledger that enforces non-zero gas/priority fees and slippage. Fail the test if any completed trade's net profit cannot be verified against the actual reconciled wallet balance delta within a 1% tolerance threshold.",
+      "strategy": "Strategy Lab portfolio evaluation",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.92,
+      "downside_risk": "Increased network traffic and latency during scanning due to external RPC or Jupiter API calls, requiring asynchronous and throttled execution.",
+      "evidence": [
+        {
+          "detail": "load_solana_market_features adapts Solana events but explicitly fails closed on gross_edge_bps, fees_bps, slippage_bps, price_impact_bps, liquidity_score, and sellability_score, keeping them all at zero.",
+          "path": "learnerbot/market_feature_adapter.py:269"
+        },
+        {
+          "detail": "The instantiated Solana MarketFeatures lacks contemporaneous executable pricing, forcing Strategy Lab to record an evidence gap and preventing any Solana strategies from producing eligible opportunities.",
+          "path": "learnerbot/market_feature_adapter.py:306"
+        }
+      ],
+      "expected_effect": "Strategy Lab will be able to evaluate Solana leader-copy and directional strategies with realistic, real-time economic pricing, enabling eventual canary promotion.",
+      "id": "solana-contemporaneous-quote-adapter-v1",
+      "minimum_observation": "At least 50 observed leader events with active contemporaneous quotes across 5 independent windows on Solana.",
+      "rationale": "Because Solana leader events are stored without real-time executable pricing quotes, Solana strategies are structurally stuck in SHADOW with zero eligible opportunities. Adding a contemporaneous quote adapter (fetching live Jupiter/Raydium swap routes during shadow scanning) resolves this evidence gap and enables valid shadow testing.",
+      "shadow_test": "Implement contemporaneous Jupiter re-quoting with a 500ms timeout. Compare simulated shadow execution against actual leader balances. Halt the test if average quote latency exceeds 1.0 seconds or if pricing mismatch exceeds 2% in more than 5% of samples.",
+      "strategy": "Solana leader-market observations",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.91,
+      "downside_risk": "May lead to reduced trade frequency at smaller notional sizes, which is economically correct but could limit data gathering if notional ranges are not well-calibrated.",
+      "evidence": [
+        {
+          "detail": "The MarketFeatures class defines all costs as static basis points of notional (gross_edge_bps, fees_bps, slippage_bps, price_impact_bps, latency_reserve_bps), which fails to capture state-dependent or fixed chain costs like gas or Solana priority fees.",
+          "path": "learnerbot/cross_chain_strategy_signals.py:19"
+        },
+        {
+          "detail": "net_edge_bps subtracts fees_bps, slippage_bps, price_impact_bps, and latency_reserve_bps from gross_edge_bps, but these are represented as flat basis points independent of actual order size.",
+          "path": "learnerbot/cross_chain_strategy_signals.py:65"
+        }
+      ],
+      "expected_effect": "Allows strategies to automatically abstain from trades where the relative cost burden of fixed fees exceeds the gross edge, protecting capital and improving money-weighted net P&L.",
+      "id": "chain-specific-edge-denominator-v1",
+      "minimum_observation": "At least 100 eligible-or-near-threshold observations per chain across 7 days, with at least 30 closed simulated trades.",
+      "rationale": "Solana priority fees and EVM gas are fixed or state-dependent native-token costs whose basis-point burden changes with notional. A common static bps edge floor can be positive while executable user net is negative, especially at lower notional trade sizes.",
+      "shadow_test": "For every SHADOW signal, calculate edge using both the flat basis-point floor and a notional-dynamic chain-specific native cost floor. Reject the flat basis-point model if more than 5% of signals classified as eligible yield negative simulated returns after incorporating actual gas/priority fees.",
+      "strategy": "Cross-chain executable-edge strategies",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.88,
+      "downside_risk": "Requires detailed logging of pre-flight simulations, tx receipts, and execution timestamps, which increases trace-log sizes.",
+      "evidence": [
+        {
+          "detail": "The strategy_lab_windows table records execution_failures as a simple integer counter, and does not support categorizing loss amount or execution costs by root cause.",
+          "path": "learnerbot/strategy_lab.py:95"
+        },
+        {
+          "detail": "The shadow_strategy_events table records eligible, score, confidence, expected_net_edge_bps, and reasons_json, but does not support terminal classification (e.g. distinguishing strategy-specific edge decay from infrastructure-specific failures).",
+          "path": "learnerbot/shadow_strategy_executor.py:53"
+        }
+      ],
+      "expected_effect": "Remediation efforts can be precisely targeted: signals are reworked for strategy-driven losses, while network/RPC/latency issues are addressed for execution-driven losses.",
+      "id": "loss-cause-attribution-v1",
+      "minimum_observation": "At least 30 closed trades per strategy and chain, with at least 5 natural execution-failure cases observed.",
+      "rationale": "A negative return after a correctly executed signal is a STRATEGY_MARKET_LOSS, whereas quote failures, stale detection, submission delays, or transaction reverts represent EXECUTION_INFRA_FAILURE. Distinguishing these causes is vital for directing engineering effort (reworking signal rules vs. improving RPCs and routing).",
+      "shadow_test": "Assign every closed shadow trade to one of: STRATEGY_LOSS, EXECUTION_FAILURE, SUCCESS, or UNRESOLVED. Record timestamps, gas/priority fees, and slippage for each. Halt the test and fail the hypothesis if more than 2% of trades are classified as UNRESOLVED, or if classification is non-reproducible from stored logs.",
+      "strategy": "Solana and EVM leader-copy and market-native strategies",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy because repository thresholds show positive net profit or profit factor.",
+      "reason": "No fresh runtime windows exist, and current aggregation does not guarantee inclusion of every chain-specific cost."
+    },
+    {
+      "idea": "Increase trade frequency or loosen liquidity, sellability, simulation, edge, reserve, stop-loss, or circuit-breaker controls.",
+      "reason": "No executable profitability evidence supports additional exposure; inactivity without positive edge is preferable."
+    },
+    {
+      "idea": "Use leader win rate as the primary selection metric.",
+      "reason": "Win count is not money-weighted and can conceal rare large losses, follower-copy latency, and fixed execution costs."
+    },
+    {
+      "idea": "Treat all negative P&L as a strategy defect.",
+      "reason": "Execution failures, delayed or failed exits, fee overruns, and reconciliation faults require separate attribution."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "6bf53243c8b6f2e8aeb3c2aae7e4a136fb915065",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. Strategy Lab successfully isolates risk in SHADOW but currently writes zero fees and zero slippage into live strategy windows due to a logging bug in the live recording patch. Furthermore, Solana strategies are structurally stalled in SHADOW because the market feature adapter lacks a contemporaneous quote mechanism, forcing all economic and liquidity metrics to zero. A notional-aware edge denominator and detailed terminal loss classification are proposed to resolve these structural validation issues before any real-money canary promotion can be considered."
+}
