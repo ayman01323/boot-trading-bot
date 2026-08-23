@@ -1,0 +1,104 @@
+name: Six-Agent Health Retry
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/six-agent-health-retry.trigger'
+  schedule:
+    - cron: '7 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: six-agent-health-retry
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Retry only missing or incomplete reviewer reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          read_text() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n' || true
+          }
+
+          report_status() {
+            local path="$1"
+            set +e
+            body="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d 2>/dev/null)"
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 || -z "$body" ]]; then
+              echo MISSING
+              return 0
+            fi
+            printf '%s' "$body" | python3 -c "import json,sys; print(str((json.load(sys.stdin) or {}).get('status') or 'MISSING').upper())" 2>/dev/null || echo FAILED
+          }
+
+          bad_status() {
+            case "$1" in
+              MISSING|INCOMPLETE|FAILED|ERROR|BLOCKED|BLOCKED_AUTH) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
+          dispatch_engineering() {
+            local provider="$1" workflow="$2" source="$3" status="$4"
+            if bad_status "$status"; then
+              echo "Retry engineering ${provider}: ${status}"
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main -f source_commit="$source"
+            else
+              echo "Engineering ${provider}: ${status}; no retry."
+            fi
+          }
+
+          dispatch_strategy() {
+            local provider="$1" workflow="$2" cycle="$3" status="$4"
+            if bad_status "$status"; then
+              echo "Retry strategy ${provider}: ${status}"
+              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main -f cycle_id="$cycle"
+            else
+              echo "Strategy ${provider}: ${status}; no retry."
+            fi
+          }
+
+          engineering_source="$(read_text weekly/latest_source_commit.txt)"
+          if [[ "$engineering_source" =~ ^[0-9a-f]{40}$ ]]; then
+            dispatch_engineering claude claude-fourth-engineering-agent.yml "$engineering_source" \
+              "$(report_status "weekly/runs/${engineering_source}/claude.json")"
+            dispatch_engineering deepseek deepseek-fifth-engineering-agent.yml "$engineering_source" \
+              "$(report_status "weekly/runs/${engineering_source}/deepseek.json")"
+            dispatch_engineering grok grok-sixth-engineering-agent.yml "$engineering_source" \
+              "$(report_status "weekly/runs/${engineering_source}/grok.json")"
+          else
+            echo 'No valid engineering source; no engineering retry dispatched.'
+          fi
+
+          strategy_cycle="$(read_text strategy/latest_cycle_id.txt)"
+          if [[ "$strategy_cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
+            dispatch_strategy claude claude-fourth-strategy-agent.yml "$strategy_cycle" \
+              "$(report_status "strategy/runs/${strategy_cycle}/claude.json")"
+            dispatch_strategy deepseek deepseek-fifth-strategy-agent.yml "$strategy_cycle" \
+              "$(report_status "strategy/runs/${strategy_cycle}/deepseek.json")"
+            dispatch_strategy grok grok-sixth-strategy-agent.yml "$strategy_cycle" \
+              "$(report_status "strategy/runs/${strategy_cycle}/grok.json")"
+          else
+            echo 'No valid strategy cycle; no strategy retry dispatched.'
+          fi
+
+          echo 'Health retry dispatch is advisory/review-only. It does not trade, deploy, restart, change LIVE/ARMED, capital, risk, wallets or signing.'

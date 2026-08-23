@@ -90,19 +90,24 @@ jobs:
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash' }}
+          # DeepSeek maps claude-sonnet-* to deepseek-v4-flash. Use a Claude Code
+          # recognised alias so the client does not reject DeepSeek's raw model
+          # name while keeping the same low-cost V4 Flash backend.
+          DEEPSEEK_CLAUDE_MODEL: 'claude-sonnet-4-5'
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_EFFORT_LEVEL: 'max'
         shell: bash
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
           export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
           export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
-          export ANTHROPIC_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
-          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
-          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
-          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
+          export ANTHROPIC_MODEL="$DEEPSEEK_CLAUDE_MODEL"
+          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_CLAUDE_MODEL"
+          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_CLAUDE_MODEL"
+          export ANTHROPIC_DEFAULT_HAIKU_MODEL='claude-haiku-4-5'
+          export CLAUDE_CODE_SUBAGENT_MODEL='claude-haiku-4-5'
           unset ANTHROPIC_API_KEY || true
           cat > /tmp/deepseek-engineering-prompt.txt <<EOF
           You are DEEPSEEK, the fifth INDEPENDENT engineering reviewer of an automated multi-chain trading bot.

@@ -198,21 +198,26 @@ jobs:
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_STRATEGY_MODEL: ${{ vars.DEEPSEEK_STRATEGY_MODEL || 'deepseek-v4-flash' }}
+          # DeepSeek maps claude-sonnet-* to deepseek-v4-flash. Use a Claude Code
+          # recognised alias to keep the low-cost V4 Flash backend without the
+          # client-side unknown-model context-window failure.
+          DEEPSEEK_CLAUDE_MODEL: 'claude-sonnet-4-5'
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
           EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
           DISABLE_AUTOUPDATER: '1'
+          CLAUDE_CODE_EFFORT_LEVEL: 'max'
         shell: bash
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
           export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
           export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
-          export ANTHROPIC_MODEL="$DEEPSEEK_STRATEGY_MODEL"
-          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_STRATEGY_MODEL"
-          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_STRATEGY_MODEL"
-          export ANTHROPIC_DEFAULT_HAIKU_MODEL="$DEEPSEEK_STRATEGY_MODEL"
+          export ANTHROPIC_MODEL="$DEEPSEEK_CLAUDE_MODEL"
+          export ANTHROPIC_DEFAULT_OPUS_MODEL="$DEEPSEEK_CLAUDE_MODEL"
+          export ANTHROPIC_DEFAULT_SONNET_MODEL="$DEEPSEEK_CLAUDE_MODEL"
+          export ANTHROPIC_DEFAULT_HAIKU_MODEL='claude-haiku-4-5'
+          export CLAUDE_CODE_SUBAGENT_MODEL='claude-haiku-4-5'
           unset ANTHROPIC_API_KEY || true
           claude -p --permission-mode plan --max-turns 6 --output-format text \
             "$(cat .strategy_deepseek/prompt.txt)" > .strategy_deepseek/deepseek_stdout.txt 2> .strategy_deepseek/deepseek_error.txt
