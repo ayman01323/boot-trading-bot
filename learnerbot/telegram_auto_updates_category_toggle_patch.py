@@ -67,3 +67,8 @@ def install():
 
 
 install()
+
+# Load the final AI-health reconciliation only after the six-agent health and
+# Telegram presentation patches have installed. This affects monitoring only;
+# it does not alter trading, risk, capital, wallets, signing or deployment.
+from . import ai_health_preflight_overlay_patch  # noqa: E402,F401
