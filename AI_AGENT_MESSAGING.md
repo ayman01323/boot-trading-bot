@@ -107,8 +107,10 @@ The GitHub mailbox is **not** a second normal messaging system. It is fallback/a
 
 Do not claim a Git mailbox commit itself proves recipient receipt. A mailbox commit proves only that a handoff was written to Git; correlated delivery evidence is still required before reporting receipt.
 
-## Runtime
+## Runtime and protected deployment
 
 Production normally runs the embedded Strategy Factory bus inside `learnerbot.service` with six persistent workers. The optional `scripts/install_ai_agent_ws_bus.sh` installer remains available for a deliberately separate standalone/systemd deployment and installs the same shared transport client used by DIRECT mode.
+
+Production deployment remains outside the messaging transport. It uses the restricted wrapper `/usr/local/sbin/deploy-boot-trading-bot`, which runs the repository test gate and restarts the service only after that gate passes. DIRECT or COUNCIL messaging does not itself grant deployment authority.
 
 Protocol: `ws-bus-v2`.
