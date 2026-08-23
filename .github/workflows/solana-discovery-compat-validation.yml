@@ -10,6 +10,8 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   validate:
@@ -34,22 +36,35 @@ jobs:
           "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
 
       - name: Compile changed runtime modules
-        run: "$CI_VENV/bin/python" -m compileall -q learnerbot tests
-
-      - name: Import order and compatibility regressions
+        id: compile
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
+          "$CI_VENV/bin/python" -m compileall -q learnerbot tests 2>&1 | tee /tmp/solana-compat-compile.log
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Import order and compatibility regressions
+        id: compat
+        shell: bash
+        run: |
+          set +e
           "$CI_VENV/bin/python" -m pytest -q \
             tests/test_imports.py \
             tests/test_main_import_order.py \
             tests/test_telegram_trade_blocker_health.py \
-            tests/test_solana_leader_discovery_coverage.py
+            tests/test_solana_leader_discovery_coverage.py \
+            2>&1 | tee /tmp/solana-compat-tests.log
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Solana safety regression subset
+        id: safety
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           "$CI_VENV/bin/python" -m pytest -q \
             tests/test_solana_profit_guard.py \
             tests/test_solana_live_canary.py \
@@ -59,7 +74,49 @@ jobs:
             tests/test_solana_runtime_composition.py \
             tests/test_solana_positive_edge_entry_gate.py \
             tests/test_solana_liquidity_fail_closed.py \
-            tests/test_solana_profit_first_live_correction.py
+            tests/test_solana_profit_first_live_correction.py \
+            2>&1 | tee /tmp/solana-safety-tests.log
+          rc=${PIPESTATUS[0]}
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Publish bounded validation result
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMPILE_RC: ${{ steps.compile.outputs.rc }}
+          COMPAT_RC: ${{ steps.compat.outputs.rc }}
+          SAFETY_RC: ${{ steps.safety.outputs.rc }}
+        run: |
+          set -euo pipefail
+          compile_rc="${COMPILE_RC:-99}"
+          compat_rc="${COMPAT_RC:-99}"
+          safety_rc="${SAFETY_RC:-99}"
+          overall=PASS
+          if [[ "$compile_rc" != 0 || "$compat_rc" != 0 || "$safety_rc" != 0 ]]; then overall=FAIL; fi
+          {
+            echo "## Solana discovery compatibility validation — ${overall}"
+            echo
+            echo "Validated commit: \`${GITHUB_SHA}\`"
+            echo "- compile: rc=${compile_rc}"
+            echo "- compatibility/import tests: rc=${compat_rc}"
+            echo "- Solana safety subset: rc=${safety_rc}"
+            echo "- runner isolation: /tmp venv only; no sudo, production write, wallet/signing or deploy step"
+            if [[ "$overall" == FAIL ]]; then
+              echo
+              echo '<details><summary>Failure tail</summary>'
+              echo
+              echo '```text'
+              tail -n 35 /tmp/solana-compat-compile.log 2>/dev/null || true
+              tail -n 55 /tmp/solana-compat-tests.log 2>/dev/null || true
+              tail -n 55 /tmp/solana-safety-tests.log 2>/dev/null || true
+              echo '```'
+              echo '</details>'
+            fi
+          } > /tmp/validation-result.md
+          gh pr comment 549 --repo "$GITHUB_REPOSITORY" --body-file /tmp/validation-result.md
+          [[ "$overall" == PASS ]]
 
       - name: Clean isolated environment
         if: always()
