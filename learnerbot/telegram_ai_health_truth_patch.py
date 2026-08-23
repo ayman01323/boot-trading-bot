@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import time
+from pathlib import Path
 
 from . import ai_agent_health_warning_patch as _warning
 from . import ai_health_compact_report_patch as _compact
@@ -14,6 +17,8 @@ _PREFLIGHT_KEYS = {
 }
 _PREFLIGHT_MAX_AGE_SECONDS = 20 * 60
 _PROVIDER_UNVERIFIED_RED_SECONDS = 3 * 60 * 60
+_REVIEW_STALE_SECONDS = 90 * 60
+_CONNECTION_STATUS_PATH = Path("/var/tmp/boot/ai_agent_ws_connections.json")
 _HARD_FAILURE_STATES = {
     "NOT_WORKING",
     "FAILED",
@@ -35,6 +40,33 @@ def _fresh_preflight() -> dict:
     value["_truth_age_seconds"] = age
     value["_truth_stale"] = bool(age is None or age > _PREFLIGHT_MAX_AGE_SECONDS)
     return value
+
+
+def _runtime_connections() -> dict:
+    """Return live broker registration truth only for this running process.
+
+    The broker writes its current registered recipient set whenever a worker
+    connects or disconnects. A PID mismatch means the file belongs to an older
+    learnerbot process and is ignored rather than producing stale green health.
+    """
+    try:
+        value = json.loads(_CONNECTION_STATUS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            return {}
+        if int(value.get("pid") or 0) != os.getpid():
+            return {}
+        connected = {
+            str(agent).strip().lower()
+            for agent in (value.get("connected_agents") or [])
+            if str(agent).strip().lower() in set(_compact.PROVIDERS)
+        }
+        return {
+            "available": True,
+            "connected_agents": connected,
+            "updated_epoch": int(value.get("updated_epoch") or 0),
+        }
+    except Exception:
+        return {}
 
 
 def _age_text(seconds) -> str:
@@ -134,18 +166,47 @@ def _unmapped_agent_status(provider: str, engineering: dict, strategy: dict) -> 
     return "🟡", "Agent state pending"
 
 
-def _provider_status(provider: str, engineering: dict, strategy: dict, preflight: dict) -> tuple[str, str]:
+def _provider_status(
+    provider: str,
+    engineering: dict,
+    strategy: dict,
+    preflight: dict,
+    runtime: dict,
+) -> tuple[str, str]:
+    """Prefer actual registered worker state over stale review-cycle state."""
+    if (runtime or {}).get("available"):
+        connected = provider in ((runtime or {}).get("connected_agents") or set())
+        if not connected:
+            return "🔴", "Worker disconnected"
+
+        key = _PREFLIGHT_KEYS.get(provider)
+        if key:
+            live = (preflight or {}).get(key) or {}
+            live_state = str(live.get("state") or "").upper()
+            stale = bool((preflight or {}).get("_truth_stale", True))
+            age = (preflight or {}).get("_truth_age_seconds")
+            if live_state and not stale and live_state != "WORKING":
+                return "🔴", "Worker connected · API/provider problem"
+            if live_state == "WORKING":
+                if stale:
+                    return "🟢", f"Worker connected · API last OK {_age_text(age)} ago"
+                return "🟢", "Worker connected · API working"
+            if live_state and stale:
+                return "🟡", f"Worker connected · API last problem {_age_text(age)} ago"
+        return "🟢", "Worker connected"
+
     if provider in _PREFLIGHT_KEYS:
         return _mapped_provider_status(provider, preflight)
     return _unmapped_agent_status(provider, engineering, strategy)
 
 
 def provider_health_text(engineering: dict, strategy: dict) -> str:
-    """Show provider/agent reachability once, independent of review pipelines."""
+    """Show live agent runtime once, with provider API evidence as secondary detail."""
     preflight = _fresh_preflight()
+    runtime = _runtime_connections()
     rows: list[tuple[str, str, str]] = []
     for provider in _compact.PROVIDERS:
-        icon, status = _provider_status(provider, engineering, strategy, preflight)
+        icon, status = _provider_status(provider, engineering, strategy, preflight, runtime)
         rows.append((provider, icon, status))
 
     healthy = sum(1 for _provider, icon, _status in rows if icon == "🟢")
@@ -191,8 +252,59 @@ def _summary_for_rows(rows: list[tuple[str, str, str]]) -> tuple[str, str]:
     return overall, f"{working} working · {pending} in progress · {issues} issues"
 
 
+def _current_checkout_sha() -> str:
+    root = _compact._repo_root()
+    git_dir = root / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head
+        ref = head.split(":", 1)[1].strip()
+        ref_path = git_dir / ref
+        if ref_path.exists():
+            return ref_path.read_text(encoding="utf-8").strip()
+        packed = (git_dir / "packed-refs").read_text(encoding="utf-8")
+        for line in packed.splitlines():
+            if line.startswith("#") or line.startswith("^"):
+                continue
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == ref:
+                return parts[0]
+    except Exception:
+        pass
+    return ""
+
+
+def _review_source_commit(lane: str, health: dict) -> str:
+    source = str((health or {}).get("source_commit") or "").strip()
+    if source:
+        return source
+    if lane == "strategy":
+        latest = _warning.read_json(_compact._repo_root(), "strategy/latest_status.json") or {}
+        return str(latest.get("source_commit") or "").strip()
+    return ""
+
+
+def _review_stale_reason(lane: str, health: dict) -> str:
+    source = _review_source_commit(lane, health)
+    current = _current_checkout_sha()
+    if source and current and source != current:
+        return "Review snapshot predates current code"
+    try:
+        age = int((health or {}).get("age_seconds"))
+    except Exception:
+        age = 0
+    if age > _REVIEW_STALE_SECONDS:
+        return f"Review snapshot {_age_text(age)} old"
+    return ""
+
+
 def lane_summary_text(lane: str, health: dict) -> str:
     heading = _compact._ENGINEERING_HEADING if lane == "engineering" else _compact._STRATEGY_HEADING
+    stale = _review_stale_reason(lane, health)
+    if stale:
+        return "\n".join([heading, f"🟡 <b>{stale} · refresh needed</b>"])
+
     rows = _classified_rows(lane, health)
     overall, summary = _summary_for_rows(rows)
     lines = [heading, f"{overall} <b>{summary}</b>"]
@@ -203,6 +315,20 @@ def lane_summary_text(lane: str, health: dict) -> str:
 
 
 def factory_summary_text(health: dict) -> str:
+    agents = (health or {}).get("agents") or {}
+    if agents and all(
+        str((agents.get(provider) or {}).get("state") or "WAITING").upper() == "WAITING"
+        and any(
+            marker in str((agents.get(provider) or {}).get("reason") or "").lower()
+            for marker in ("no strategy room request", "stale")
+        )
+        for provider in _compact.PROVIDERS
+    ):
+        return "\n".join([
+            _compact._STRATEGY_FACTORY_HEADING,
+            "⚪ <b>Idle · no active factory request</b>",
+        ])
+
     rows = _classified_rows("strategy_room", health)
     overall, summary = _summary_for_rows(rows)
     lines = [_compact._STRATEGY_FACTORY_HEADING, f"{overall} <b>{summary}</b>"]
@@ -218,6 +344,9 @@ def lane_text(lane: str, health: dict | None = None) -> str:
     heading = _compact._ENGINEERING_HEADING if lane == "engineering" else _compact._STRATEGY_HEADING
     rows = _classified_rows(lane, health)
     lines = [heading]
+    stale = _review_stale_reason(lane, health)
+    if stale:
+        lines.append(f"🟡 {stale} · historical detail below")
     for provider, icon, status in rows:
         lines.append(f"{icon} {_compact._LABELS[provider]} — {status}")
     return "\n".join(lines)
@@ -238,7 +367,7 @@ def dashboard_text(
     strategy: dict | None = None,
     strategy_room: dict | None = None,
 ) -> str:
-    """MASTER view: provider health once, then compact operational summaries."""
+    """MASTER view: live runtime once, then compact operational summaries."""
     engineering = engineering if engineering is not None else _compact._lane_health("engineering")
     strategy = strategy if strategy is not None else _compact._lane_health("strategy")
     strategy_room = strategy_room if strategy_room is not None else _compact._strategy_room_health()
