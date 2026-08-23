@@ -1,4 +1,5 @@
 name: Publish Lightweight Selector Funnel Truth
+# Manual post-deploy trigger: 2026-08-23T14:58Z
 
 on:
   push:
@@ -88,7 +89,6 @@ jobs:
                       'thresholds_unchanged':bool(row.get('thresholds_unchanged')),
                   }
 
-          # Hard privacy assertion: bridge schema must not publish candidate identities.
           raw=json.dumps(out,sort_keys=True).lower()
           if 'wallet_address' in raw.replace('wallet_addresses_published','') or 'leader_wallet' in raw:
               raise SystemExit('unexpected wallet identity field in selector bridge')
