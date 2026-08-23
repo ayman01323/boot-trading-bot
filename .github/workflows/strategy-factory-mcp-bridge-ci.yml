@@ -40,9 +40,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          command -v python3.11 >/dev/null 2>&1
+          python3.11 --version
           bridge="$RUNNER_TEMP/mcp-bridge-real-venv"
           rm -rf "$bridge"
-          python3 -m venv "$bridge"
+          python3.11 -m venv "$bridge"
           "$bridge/bin/python" -m pip install --disable-pip-version-check -q -r requirements-mcp-bridge.txt
           "$bridge/bin/python" - <<'PY'
           import os
