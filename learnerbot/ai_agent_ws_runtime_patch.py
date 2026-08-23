@@ -154,3 +154,8 @@ from . import solana_trade_gate_truth_patch  # noqa: E402,F401
 # Final Solana LIVE correction: SHADOW rows must never block a LIVE same-mint
 # entry, and the global status counter must report real LIVE capacity usage only.
 from . import solana_live_position_scope_fix_patch  # noqa: E402,F401
+
+# Recovery-mode exclusivity must use the same verified wallet-balance
+# reconciliation as the LIVE capacity guard, so a proven-empty stale LIVE row
+# cannot block the one permitted recovery canary. RPC uncertainty still fails closed.
+from . import solana_platform_recovery_reconcile_patch  # noqa: E402,F401
