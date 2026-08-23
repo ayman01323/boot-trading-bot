@@ -1,2 +1,2 @@
-reason=deploy AI health live WebSocket worker truth and stale-review classification fix
-generated_utc=2026-08-23T15:59:10Z
+reason=deploy mobile AI health Telegram layout and send one-time MASTER refresh
+generated_utc=2026-08-23T16:42:10Z
