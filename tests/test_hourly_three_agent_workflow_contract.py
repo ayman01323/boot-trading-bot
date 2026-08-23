@@ -8,11 +8,12 @@ def _text():
     return WORKFLOW.read_text(encoding='utf-8')
 
 
-def test_hourly_strategy_cycle_remains_hourly_and_not_weekly_dependent():
+def test_paid_strategy_cycle_is_daily_and_not_weekly_dependent():
     text = _text()
-    # Cadence reduced from hourly to every 4 hours (~75% API cost cut); still
-    # its own independent schedule trigger, not gated by the weekly workflow.
-    assert "cron: '17 */4 * * *'" in text
+    # Non-urgent paid AI is once daily. Cheap deterministic strategy monitoring
+    # remains hourly in the Monitor/Factory workflow.
+    assert "cron: '17 2 * * *'" in text
+    assert 'Compatibility name retained' in text
     assert 'Weekly GPT Master Corrective Action' not in text
 
 
@@ -40,6 +41,8 @@ def test_evidence_digest_binds_exact_file_bytes():
     assert "sha256sum .strategy_cycle/evidence.json" in text
     assert 'do not canonicalise/re-hash JSON' in text
     assert "json.dumps(p,sort_keys=True,separators=(',',':')" not in text
+    assert 'EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}' in text
+    assert 'steps.meta.outputs.evidence_sha256' not in text
 
 
 def test_gemini_extraction_has_repo_pythonpath_and_phase_diagnostics():
