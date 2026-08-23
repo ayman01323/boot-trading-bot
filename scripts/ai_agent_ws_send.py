@@ -9,7 +9,12 @@ import time
 
 from websockets.asyncio.client import connect
 
-from scripts.ai_agent_task_executor import build_task_envelope
+try:
+    from scripts.ai_agent_task_executor import build_task_envelope
+except ModuleNotFoundError as exc:
+    if exc.name != "scripts":
+        raise
+    from ai_agent_task_executor import build_task_envelope
 
 AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
 DEFAULT_URL = "ws://127.0.0.1:8765"
