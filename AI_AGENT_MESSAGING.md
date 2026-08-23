@@ -81,7 +81,7 @@ The runtime status file is `/var/tmp/boot/ai_agent_ws_status.json`.
 
 ## Cost policy
 
-Routing, queueing, validation, delivery and ACKs use zero model tokens. Bounded deterministic `ws-bus-v2` tasks also use zero model calls.
+Routing, queueing, validation, delivery and ACKs use **zero AI/model tokens**. Bounded deterministic `ws-bus-v2` tasks also use zero model calls.
 
 DIRECT should be the default for routine communication. COUNCIL should be used only when the Cost Router or governance policy requires multiple advisers. Successful adviser replies may be cached/reused on retry to avoid duplicate spend.
 
