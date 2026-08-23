@@ -1,0 +1,31 @@
+name: Trigger Three-Agent Strategy Review
+
+on:
+  push:
+    branches:
+      - ops/ai-cycle
+    paths:
+      - '.ai/trigger/strategy-review.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: trigger-three-agent-strategy-review
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch production strategy review against main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run three-agent-strategy-review.yml --ref main
+          echo "Dispatched Three-Agent Strategy Review on ref main."
