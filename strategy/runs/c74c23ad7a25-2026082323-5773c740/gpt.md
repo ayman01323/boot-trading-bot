@@ -1,15 +1,12 @@
 # GPT strategy review
 
-Architecture-only review completed. The repository generally enforces abstention and cost-adjusted executable edge, but current evidence cannot establish profitability or CANARY/LIVE readiness. Solana deliberately lacks a current executable-edge adapter. EVM shadow outcomes are simulations, while LIVE aggregation can substitute expected P&L for missing realised P&L and excludes rejected execution attempts, preventing reliable separation of STRATEGY/MARKET loss from EXECUTION/INFRASTRUCTURE failure.
+Architecture-only review completed. Both engines contain fail-closed executability protections, but the Strategy Lab evidence model does not consistently preserve every cost or execution failure and cannot safely aggregate unnormalised native-token results across chains. Solana leader-copy has a current-quote executable-edge gate, whereas its expected move and fixed latency/fee reserves remain hypotheses requiring SHADOW calibration. EVM direct-market execution re-simulates per wallet and records realised gas-adjusted results, but rejected executions are excluded from strategy evaluation. STRATEGY/MARKET losses must be measured from successfully executable trades with negative net outcomes; quote, simulation, broadcast, inclusion, reconciliation, or exit failures must be separately attributed as EXECUTION/INFRASTRUCTURE failures. No profitability, CANARY-readiness, or LIVE-readiness conclusion is possible from the supplied architecture-only evidence.
 
-## REWORK — Strategy Lab outcome accounting
-Expected P&L is not realised money-weighted evidence, BROADCAST is not confirmed success, and omitted failed attempts can bias strategy evaluation upward. Record confirmed realised net after every applicable cost and classify each non-success as STRATEGY_MARKET, EXECUTION_INFRASTRUCTURE or SAFETY_ABSTENTION.
+## REWORK — Strategy Lab cross-chain evaluation
+Lifecycle decisions should use durable money-weighted net P&L and explicitly separate signal economics from execution reliability. Current recording can overstate strategy quality or obscure infrastructure failures.
 
-## NEW_SHADOW — Solana executable-edge adapter
-Leader history or win ratio cannot demonstrate current executable edge. Solana needs decision-time round-trip quote, sellability and cost evidence including priority fees, account rent where applicable, price impact, latency reserve and failed-attempt cost.
+## SHADOW_MORE — Solana SiBot leader copy
+The architecture correctly demands positive executable edge, but fixed reserves and leader-history forecasts require calibration against follower outcomes, especially for fast Solana markets where copy delay can consume the signal.
 
-## REWORK — Learned Route Replication
-A positive-only historical mean creates survivorship bias, and rescaling absolute historical profit by current notional does not produce a valid historical return estimate.
-
-## SHADOW_MORE — All cross-chain strategy families
-Eight trades cannot establish durable money-weighted edge, and pooled results can hide materially different Solana and EVM economics.
+## IMPROVE — EVM direct-market arbitrage
+EVM chain economics differ materially. Candidate ranking and evaluation should optimise expected net value per unit of capital and time after gas and failure probability, not only gross opportunity size.

@@ -1,15 +1,12 @@
 # Gemini strategy review
 
-This strategy review has been completed using a pure architecture-only evaluation because the latest runtime evidence is unavailable (MISSING_RUNTIME_FORENSICS). Consequently, no claims of live profitability, canary readiness, or live promotion are made. The review covers the multi-chain spot-copy engine (SiBot) on EVM and Solana, as well as the 7 built-in Strategy Lab market/pattern-learning families. We propose maintaining all active strategies under strict SHADOW evaluation to gather high-fidelity data, while introducing key structural improvements and a new volatility-dislocated mean reversion shadow strategy.
-
-## SHADOW_MORE — SiBot / SiMo Leader Copy Trading
-Due to missing runtime forensics in evidence.json, we cannot assess active copy-trading performance or leader profitability. SIBOT is highly mature with precise FIFO matching and stop-loss/take-profit guards, but it must remain strictly in SHADOW mode across both EVM and Solana to reconstruct long-term wallet history and measure leader persistence.
+Completed a comprehensive architecture-only review of the multi-chain trading bot strategy framework. The pure separation of signal logic in cross_chain_strategy_signals.py and the robust automated canary lifecycles in strategy_canary.py are technically sound and represent exceptional risk management. Because the current cycle lacks fresh runtime diagnostics (evidence.json status is MISSING_RUNTIME_FORENSICS), we cannot evaluate live profitability, slip, or execution failure rates. We recommend maintaining all active strategies in SHADOW_MORE mode to establish a statistically significant simulated performance baseline.
 
 ## SHADOW_MORE — Cross Venue Net Arbitrage
-This strategy relies on fleeting price differences between venues. Real-world execution requires ultra-low latency. Because runtime forensics and RPC latencies are missing from our environment, we must evaluate this strategy purely in SHADOW mode to determine if typical RPC delays (e.g. polygon or solana network congestion) would invalidate the net edge (currently set to 4 basis points minimum).
+Cross-venue arbitrage relies heavily on execution speed and tight latency reserve bounds. Given the absence of live network forensics for this cycle, we must benchmark simulated latency/friction in SHADOW mode. Loosening or promoting this strategy prematurely would expose real capital to frontrunning.
 
-## SHADOW_MORE — Liquidity Confirmed Momentum
-Confirming momentum via liquidity and flow expansion protects the bot from buying into illiquid, highly-maniputable tokens. In the absence of live trading diagnostics, we must keep this strategy under SHADOW evaluation to calibrates optimal z-score thresholds (momentum_z >= 1.0, flow_acceleration_z >= 0.5) across different market regimes.
+## SHADOW_MORE — Dislocation Mean Reversion
+Mean reversion of localized price dislocation requires stable underlying liquidity pools. Without live trade metrics, we cannot confirm whether high-volatility events trigger sellability/liquidity degradation. Maintaining a SHADOW lane allows us to verify if the 10% stop loss is frequently hit during unexpected trending regimes.
 
-## NEW_SHADOW — Volatility Dislocated Mean Reversion
-We propose a new shadow strategy variant that specifically targets localized, high-velocity price dislocations on liquid pairs during sudden volatility spikes, provided the volatility remains within a bounded moderate range (volatility_z between 1.0 and 2.5). This avoids the 'falling knife' scenarios of extreme volatility (volatility_z > 3.0 is rejected by standard reversion) while exploiting short-term liquidity imbalances that are highly likely to revert.
+## SHADOW_MORE — Forecasted Positive Net Edge
+ML-based forecasted models are highly sensitive to drift and training-serving skew. Keeping this strategy in SHADOW is mandatory to build a robust out-of-sample calibration curve before promoting to real-money canary trading.

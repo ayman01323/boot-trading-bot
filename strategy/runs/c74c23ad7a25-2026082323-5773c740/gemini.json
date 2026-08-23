@@ -1,9 +1,9 @@
 {
   "cycle_id": "c74c23ad7a25-2026082323-5773c740",
   "evidence_gaps": [
-    "No current sanitised runtime forensics branch was available. .strategy_cycle/evidence.json reports MISSING_RUNTIME_FORENSICS with empty timestamp and generated epoch 0.",
-    "Lack of a local VPS resource snapshot (ai-reviews:engineering/ops/latest.json) prevents measured trade latency, RPC round-trips, and infrastructure fee review.",
-    "No live execution/preflight logs are available to inspect actual network fee spikes, gas exhaustion, or round-trip sellability metrics across polygon or solana chains."
+    "No fresh runtime forensics branch/file containing trade outcome logs, execution failure tracking, or actual realized P&L.",
+    "Lack of active VPS resource snapshot (ai-reviews:engineering/ops/latest.json) to measure network/RPC round-trip times.",
+    "Missing data/strategy_shadow.sqlite3 database tables to analyze live opportunity and participation baseline frequencies."
   ],
   "evidence_sha256": "5773c74015f152b3d8f07b39b0350fde44e29a7b84f3fabca786d26a140ac6f9",
   "no_live_changes": true,
@@ -14,56 +14,19 @@
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.9,
-      "downside_risk": "SIBOT remains inactive for live execution, avoiding capital risk but missing any potential profits from highly persistent copy-leaders.",
+      "confidence": 0.7,
+      "downside_risk": "None, as shadow executions do not commit real capital; minor storage overhead in the local sqlite3 database.",
       "evidence": [
         {
-          "detail": "Describes the spot-copy FIFO matching and ranking logic.",
-          "path": "docs/SIBOT_SIMO_STRATEGY.md"
-        },
-        {
-          "detail": "Implements EVM ranking, settings and database schema.",
-          "path": "learnerbot/sibot.py"
-        },
-        {
-          "detail": "Implements Solana signature tracking, signature polling, and Jupiter quote simulation.",
-          "path": "learnerbot/solana_sibot.py"
-        }
-      ],
-      "expected_effect": "Avoids premature deployment of real funds, protecting user capital while building high-fidelity simulated execution records for top wallets.",
-      "id": "gemini-prop-sibot-shadow",
-      "minimum_observation": "14 days and 50 closed virtual trades",
-      "rationale": "Due to missing runtime forensics in evidence.json, we cannot assess active copy-trading performance or leader profitability. SIBOT is highly mature with precise FIFO matching and stop-loss/take-profit guards, but it must remain strictly in SHADOW mode across both EVM and Solana to reconstruct long-term wallet history and measure leader persistence.",
-      "shadow_test": "Simulate copy-trading on at least 20 leaders per chain over a minimum of 14 days, executing at least 50 virtual trades. Verify that the simulated win-rate remains above 55% and profit factor is above 1.10 after accounting for estimated priority fees and 1.5% max price deterioration. Stop test if simulated virtual drawdown exceeds 15%.",
-      "strategy": "SiBot / SiMo Leader Copy Trading",
-      "suggested_files": [
-        "learnerbot/sibot.py",
-        "learnerbot/solana_sibot.py"
-      ]
-    },
-    {
-      "action": "SHADOW_MORE",
-      "chain_scope": [
-        "SOLANA",
-        "EVM"
-      ],
-      "confidence": 0.85,
-      "downside_risk": "None, as the strategy is pure and does not execute or sign real transactions in SHADOW mode.",
-      "evidence": [
-        {
-          "detail": "Implements cross_venue_net_arbitrage on lines 105-120.",
+          "detail": "Implemented in lines 139-142 with strict _common_executable checks and high-frequency quote age requirements.",
           "path": "learnerbot/cross_chain_strategy_signals.py"
-        },
-        {
-          "detail": "Establishes Cross Venue Net Arbitrage as the first built-in shadow family.",
-          "path": "docs/STRATEGY_LAB.md"
         }
       ],
-      "expected_effect": "Prevents capital loss on low-spread arbitrage routes where latency or gas spikes would erase the calculated edge.",
-      "id": "gemini-prop-cross-venue-arb",
-      "minimum_observation": "7 days and 1000 logged opportunities",
-      "rationale": "This strategy relies on fleeting price differences between venues. Real-world execution requires ultra-low latency. Because runtime forensics and RPC latencies are missing from our environment, we must evaluate this strategy purely in SHADOW mode to determine if typical RPC delays (e.g. polygon or solana network congestion) would invalidate the net edge (currently set to 4 basis points minimum).",
-      "shadow_test": "Collect at least 1,000 real-time price opportunities across EVM and Solana. Filter those where quote age is <= 1500ms and net edge is >= 4 basis points. Track RPC roundtrip latencies during signal generation. The shadow test is falsified and stops if average roundtrip latency exceeds 800ms or if simulated net P&L after fee/gas estimation is negative.",
+      "expected_effect": "Accumulates out-of-sample simulated data to measure if the 1500ms quote age and 4bps net edge threshold are sufficient to clear fee and gas friction on fast chains.",
+      "id": "cross-venue-net-arbitrage-shadow",
+      "minimum_observation": "48 hours and 50 simulated events",
+      "rationale": "Cross-venue arbitrage relies heavily on execution speed and tight latency reserve bounds. Given the absence of live network forensics for this cycle, we must benchmark simulated latency/friction in SHADOW mode. Loosening or promoting this strategy prematurely would expose real capital to frontrunning.",
+      "shadow_test": "Collect 50 simulated shadow events over a minimum of 48 hours. Stop evaluation and flag for rework if simulated net profit factor drops below 1.10.",
       "strategy": "Cross Venue Net Arbitrage",
       "suggested_files": [
         "learnerbot/cross_chain_strategy_signals.py"
@@ -75,52 +38,44 @@
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.8,
-      "downside_risk": "May fail to participate in extremely early-stage high-velocity moves where liquidity metrics haven't registered fully yet.",
+      "confidence": 0.65,
+      "downside_risk": "Risk of catching a falling knife if the volatility limit (3.0) is too permissive, though mitigated entirely by SHADOW non-signing constraints.",
       "evidence": [
         {
-          "detail": "Implements liquidity_confirmed_momentum on lines 125-155.",
+          "detail": "Implemented in lines 162-174 requiring dislocation_z >= 1.5, volatility_z <= 3.0, and liquidity_score >= 0.65.",
           "path": "learnerbot/cross_chain_strategy_signals.py"
-        },
-        {
-          "detail": "Defines liquidity confirmed momentum using volume/flow expansion.",
-          "path": "docs/STRATEGY_LAB.md"
         }
       ],
-      "expected_effect": "Establishes an empirical baseline for trend acceleration and avoids entering false breakout signals.",
-      "id": "gemini-prop-liquidity-momentum",
-      "minimum_observation": "14 days and 30 simulated trades",
-      "rationale": "Confirming momentum via liquidity and flow expansion protects the bot from buying into illiquid, highly-maniputable tokens. In the absence of live trading diagnostics, we must keep this strategy under SHADOW evaluation to calibrates optimal z-score thresholds (momentum_z >= 1.0, flow_acceleration_z >= 0.5) across different market regimes.",
-      "shadow_test": "Observe 30 simulated entries over 14 days. Evaluate post-entry reversion over 24-hour holding windows. Verify that the asset exit occurs profitably or is safely stopped by the 10% stop-loss guard. Stop the test if simulated win rate drops below 45% or average entry slippage exceeds 2.5%.",
-      "strategy": "Liquidity Confirmed Momentum",
+      "expected_effect": "Identifies localized panic dislocation signals and measures whether the 0.65 liquidity score filter effectively guards against structural decay or rug-pull events.",
+      "id": "dislocation-mean-reversion-shadow",
+      "minimum_observation": "72 hours and 30 simulated events",
+      "rationale": "Mean reversion of localized price dislocation requires stable underlying liquidity pools. Without live trade metrics, we cannot confirm whether high-volatility events trigger sellability/liquidity degradation. Maintaining a SHADOW lane allows us to verify if the 10% stop loss is frequently hit during unexpected trending regimes.",
+      "shadow_test": "Simulate 30 reversion events during high-volatility regimes. If 3 consecutive simulated trades hit the 10% stop loss, immediately quarantine the strategy.",
+      "strategy": "Dislocation Mean Reversion",
       "suggested_files": [
         "learnerbot/cross_chain_strategy_signals.py"
       ]
     },
     {
-      "action": "NEW_SHADOW",
+      "action": "SHADOW_MORE",
       "chain_scope": [
         "SOLANA",
         "EVM"
       ],
-      "confidence": 0.85,
-      "downside_risk": "If the price dislocation is caused by a fundamental contract exploit or permanent exit of liquidity, the position will exit at a stop-loss (10% max loss).",
+      "confidence": 0.6,
+      "downside_risk": "Model overconfidence due to lag in feature updates, completely isolated by shadow mock execution.",
       "evidence": [
         {
-          "detail": "Encourages creative AI strategy proposals that are declarative and uncorrelated with leader copy-trading.",
-          "path": "docs/STRATEGY_LAB.md"
-        },
-        {
-          "detail": "Defines dislocation_mean_reversion on lines 160-185.",
+          "detail": "Implemented in lines 231-249. Requires probability >= 0.65, expected net bps >= 4, and uncertainty <= 0.35.",
           "path": "learnerbot/cross_chain_strategy_signals.py"
         }
       ],
-      "expected_effect": "Captures low-risk mean-reversion gains during brief market dislocations without taking on high-volatility structural decay risk.",
-      "id": "gemini-prop-volatility-dislocation-reversion",
-      "minimum_observation": "14 days and 50 simulated events",
-      "rationale": "We propose a new shadow strategy variant that specifically targets localized, high-velocity price dislocations on liquid pairs during sudden volatility spikes, provided the volatility remains within a bounded moderate range (volatility_z between 1.0 and 2.5). This avoids the 'falling knife' scenarios of extreme volatility (volatility_z > 3.0 is rejected by standard reversion) while exploiting short-term liquidity imbalances that are highly likely to revert.",
-      "shadow_test": "Track at least 100 dislocation events across EVM and Solana over 14 days. Require dislocation_z > 1.8, liquidity_score > 0.75, and volatility_z between 1.0 and 2.5. Track exits at mean-reversion (z-score < 0.2) or 12-hour timeout. The strategy is falsified if total virtual drawdown exceeds 12% or if the simulated win rate is under 50%.",
-      "strategy": "Volatility Dislocated Mean Reversion",
+      "expected_effect": "Verifies whether the model's expected net edge and uncertainty bounds align with mock transaction outcomes under real-world slippage and gas variations.",
+      "id": "forecasted-positive-net-edge-shadow",
+      "minimum_observation": "96 hours and 100 simulated signals",
+      "rationale": "ML-based forecasted models are highly sensitive to drift and training-serving skew. Keeping this strategy in SHADOW is mandatory to build a robust out-of-sample calibration curve before promoting to real-money canary trading.",
+      "shadow_test": "Track 100 simulated signals to construct a probability calibration curve. Reject the model if actual win rate is statistically significantly below 60%.",
+      "strategy": "Forecasted Positive Net Edge",
       "suggested_files": [
         "learnerbot/cross_chain_strategy_signals.py"
       ]
@@ -129,18 +84,18 @@
   "provider": "gemini",
   "rejected_ideas": [
     {
-      "idea": "Force automatic live trading of SiBot without complete history",
-      "reason": "Allows copy-trading of wallets with incomplete or unreconciled history (e.g. unmatched sells). This violates strict safety controls. Incomplete histories can mask structural losses, LP provisioning, or non-spot transfer behaviors, which would expose live capital to high-risk non-profitable wallets."
+      "idea": "Promoting Forecasted Positive Net Edge directly to CANARY or LIVE stage.",
+      "reason": "ML models are highly vulnerable to drift. Bypassing the out-of-sample SHADOW phase without calibration statistics under current market regimes violates the core safety mandates in STRATEGY_CANARY_LIVE_PROMOTION.md."
     },
     {
-      "idea": "Allow AI strategy proposals to contain executable code scripts",
-      "reason": "Permitting AI strategy models to submit direct python files/scripts to be executed in the runtime would violate critical security sandboxing and operational control. All AI proposals must remain strictly declarative data (JSON) registered within the Strategy Lab registry, reusing pre-vetted execution pathways."
+      "idea": "Loosening quote age and net edge thresholds in Cross Venue Net Arbitrage to increase participation.",
+      "reason": "Lowering thresholds or allowing older quotes (e.g., >1500ms) on fast-moving chains significantly increases slippage and the rate of reverted/landed-invalid execution transactions."
     }
   ],
   "review_only": true,
   "schema_version": 1,
   "scope": "THREE_AGENT_STRATEGY_REVIEW",
   "source_commit": "c74c23ad7a25dbfcdbdadd97e59c42803bb3ddbe",
-  "status": "CHANGES_PROPOSED",
-  "summary": "This strategy review has been completed using a pure architecture-only evaluation because the latest runtime evidence is unavailable (MISSING_RUNTIME_FORENSICS). Consequently, no claims of live profitability, canary readiness, or live promotion are made. The review covers the multi-chain spot-copy engine (SiBot) on EVM and Solana, as well as the 7 built-in Strategy Lab market/pattern-learning families. We propose maintaining all active strategies under strict SHADOW evaluation to gather high-fidelity data, while introducing key structural improvements and a new volatility-dislocated mean reversion shadow strategy."
+  "status": "HEALTHY",
+  "summary": "Completed a comprehensive architecture-only review of the multi-chain trading bot strategy framework. The pure separation of signal logic in cross_chain_strategy_signals.py and the robust automated canary lifecycles in strategy_canary.py are technically sound and represent exceptional risk management. Because the current cycle lacks fresh runtime diagnostics (evidence.json status is MISSING_RUNTIME_FORENSICS), we cannot evaluate live profitability, slip, or execution failure rates. We recommend maintaining all active strategies in SHADOW_MORE mode to establish a statistically significant simulated performance baseline."
 }
