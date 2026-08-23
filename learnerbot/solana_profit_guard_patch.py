@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict
 from contextlib import closing
 from decimal import Decimal
 
@@ -58,13 +59,53 @@ def _drawdown(rows):
     return worst
 
 
+def _bucket_positions(rows):
+    """Group FIFO trade fragments back into the economic positions that produced them.
+
+    solana_sibot._match_events() can split one buy lot across several sells (partial
+    profit-taking) or match one sell against several buy lots (scaled-in entries),
+    emitting a separate `trades` row per matched slice. Counting win/loss per row
+    therefore scores how a position happened to get sliced, not whether the trade
+    was a win. A wallet's (mint) fragments are one position until its held quantity
+    would have returned to zero -- approximated here as: a new buy_ts occurring only
+    after every sell_ts seen so far for that mint starts a fresh position.
+    """
+    by_mint = defaultdict(list)
+    for r in rows:
+        by_mint[r["mint"]].append(r)
+    positions = []
+    for mint_rows in by_mint.values():
+        ordered = sorted(mint_rows, key=lambda r: (r["buy_ts"], r["sell_ts"]))
+        current = []
+        current_max_sell_ts = None
+        for r in ordered:
+            if current and current_max_sell_ts is not None and r["buy_ts"] > current_max_sell_ts:
+                positions.append(current)
+                current = []
+                current_max_sell_ts = None
+            current.append(r)
+            current_max_sell_ts = r["sell_ts"] if current_max_sell_ts is None else max(current_max_sell_ts, r["sell_ts"])
+        if current:
+            positions.append(current)
+    return positions
+
+
+def _position_win_rate(rows):
+    positions = _bucket_positions(rows)
+    closed = len(positions)
+    if not closed:
+        return Decimal(0), 0
+    wins = sum(1 for pos in positions if sum((_d(r["net_sol"]) for r in pos), Decimal(0)) > 0)
+    return Decimal(wins * 100) / Decimal(closed), closed
+
+
 def quality_metrics(app, wallet, cfg):
     lookback = max(1, min(365, _i(cfg.get("lookback_days"), 60)))
     cutoff = int(time.time()) - lookback * 86400
     recent_n = max(5, min(100, _i(cfg.get("recent_trade_window"), 20)))
     with closing(_sol.connect(app)) as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT cost_sol,net_sol,sell_ts FROM trades WHERE wallet=? AND sell_ts>=? ORDER BY sell_ts",
+            "SELECT mint,buy_ts,cost_sol,net_sol,sell_ts FROM trades WHERE wallet=? AND sell_ts>=? ORDER BY sell_ts",
             (str(wallet), cutoff),
         ).fetchall()]
         hs = conn.execute("SELECT truncated,error FROM history_status WHERE wallet=?", (str(wallet),)).fetchone()
@@ -80,15 +121,27 @@ def quality_metrics(app, wallet, cfg):
             "profit_factor": _pf(profit, loss),
         }
     all_s = stats(rows); recent = stats(rows[-recent_n:])
+    position_win_rate, position_closed = _position_win_rate(rows)
+    recent_position_win_rate, recent_position_closed = _position_win_rate(rows[-recent_n:])
     trade_last = max((int(r.get("sell_ts") or 0) for r in rows), default=0)
     candidate_last = int(candidate["last_seen"] or 0) if candidate else 0
     all_s.update({
         "drawdown_pct": _drawdown(rows),
         "recent_closed": recent["closed"],
-        "recent_win_rate": recent["win_rate"],
         "recent_profit_factor": recent["profit_factor"],
         "history_complete": bool(hs and not int(hs["truncated"] or 0) and not str(hs["error"] or "").strip()),
         "last_activity_ts": max(trade_last, candidate_last),
+        # win_rate gates on the closed POSITION, not the FIFO cost-basis fragment: a
+        # single profitable position scaled out across many partial sells (or scaled
+        # into across many buys) was previously scored as several separate win/loss
+        # rows, which measures fill granularity rather than trading decision quality.
+        # The 65%-style floors in _historical_ok are unchanged; only this denominator is.
+        "win_rate": position_win_rate,
+        "recent_win_rate": recent_position_win_rate,
+        "position_closed": position_closed,
+        "recent_position_closed": recent_position_closed,
+        "fragment_win_rate": all_s["win_rate"],
+        "recent_fragment_win_rate": recent["win_rate"],
     })
     return all_s
 
