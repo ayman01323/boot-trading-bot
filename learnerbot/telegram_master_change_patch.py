@@ -59,7 +59,7 @@ def _cost_status() -> str:
         "L3 important architecture → Gemini + Claude + GPT\n"
         "L4 trading/security/deployment → full council + GPT"
     )
-    return "<b>💰 AI COST ROUTER</b>\n\n" + _safe(body, 2500) + policy
+    return "<b>💰 AI Cost Router</b>\n\n" + _safe(body, 2500) + policy
 
 
 def snapshot_with_master_change(repo_root):
