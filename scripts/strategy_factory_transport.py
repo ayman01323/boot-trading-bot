@@ -11,6 +11,7 @@ from typing import Any
 from websockets.asyncio.client import connect
 
 AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
+SENDERS = AGENTS + ("master",)
 DEFAULT_URL = "ws://127.0.0.1:8765"
 MAX_MESSAGE_BYTES = 32_768
 
@@ -39,13 +40,14 @@ async def exchange(
 ) -> dict[str, Any]:
     """Send one Strategy Factory exchange over the single local WebSocket transport.
 
-    DIRECT and COUNCIL callers both use this function. It owns registration,
-    delivery/ACK correlation, timeout handling and the final reply contract so
-    those modes cannot silently drift into separate messaging implementations.
+    DIRECT, COUNCIL and the MASTER interactive chat entrypoint all use this
+    function. It owns registration, delivery/ACK correlation, timeout handling
+    and the final reply contract so those modes cannot silently drift into
+    separate messaging implementations.
     """
     sender = str(sender or "").strip().lower()
     target = str(target or "").strip().lower()
-    if sender not in AGENTS:
+    if sender not in SENDERS:
         raise ValueError(f"unsupported Strategy Factory sender: {sender}")
     if target not in AGENTS:
         raise ValueError(f"unsupported Strategy Factory target: {target}")
