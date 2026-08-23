@@ -1,0 +1,81 @@
+name: Kimi Read-Only Full Audit
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/kimi-full-audit-pr.yml'
+      - 'scripts/kimi_full_audit_once.py'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kimi-full-audit-trading-stop
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 50
+          persist-credentials: false
+
+      - name: Copy audit runner from PR head only
+        shell: bash
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git show "${HEAD_SHA}:scripts/kimi_full_audit_once.py" > /tmp/kimi_full_audit_once.py
+
+      - name: Prepare isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .kimi_audit
+          venv="$RUNNER_TEMP/kimi-full-audit-visible"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt 'pytest>=8,<9' 'websockets>=15,<16'
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Collect fresh production status through restricted wrapper
+        shell: bash
+        run: sudo /usr/local/sbin/status-boot-trading-bot > .kimi_audit/server_status.txt 2>&1 || true
+
+      - name: Compile and run full test suite against current main
+        shell: bash
+        run: |
+          set +e
+          "$VENV/bin/python" -m compileall -q learnerbot scripts > .kimi_audit/compile.txt 2>&1
+          compile_rc=$?
+          "$VENV/bin/python" -m pytest -q -p no:cacheprovider > .kimi_audit/pytest.txt 2>&1
+          pytest_rc=$?
+          set -e
+          printf 'compile_rc=%s\npytest_rc=%s\n' "$compile_rc" "$pytest_rc" > .kimi_audit/test_status.txt
+          tail -n 120 .kimi_audit/pytest.txt > .kimi_audit/pytest_tail.txt
+
+      - name: Kimi audits source and production evidence
+        shell: bash
+        run: "$VENV/bin/python" /tmp/kimi_full_audit_once.py
+
+      - name: Print audit metadata
+        if: always()
+        shell: bash
+        run: |
+          echo '=== AUDIT METADATA ==='
+          git rev-parse HEAD
+          cat .kimi_audit/test_status.txt 2>/dev/null || true
+          cat .kimi_audit/source_manifest.json 2>/dev/null | head -40 || true
+
+      - name: Cleanup isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "${VENV:-$RUNNER_TEMP/kimi-full-audit-visible}"
