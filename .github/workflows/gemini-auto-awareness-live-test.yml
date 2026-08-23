@@ -89,11 +89,15 @@ jobs:
                           remaining = per_try - asyncio.get_running_loop().time()
                           if remaining <= 0:
                               break
-                          data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                          try:
+                              data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                          except asyncio.TimeoutError:
+                              break
                           if data.get("message_id") != first_id:
                               continue
                           print("FIRST_POST_DISCONNECT_EVENT=" + json.dumps(data, ensure_ascii=False), flush=True)
-                          if data.get("type") == "status" and str(data.get("status") or "").upper() == "REPLIED":
+                          status = str(data.get("status") or "").upper()
+                          if status == "REPLIED" and data.get("type") in {"status", "reply"}:
                               return
                   finally:
                       await ws.close()
