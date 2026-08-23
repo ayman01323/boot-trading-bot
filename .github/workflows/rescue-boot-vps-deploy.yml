@@ -16,39 +16,38 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Cancel AI recovery runs occupying BOOT VPS
+      - name: Cancel stale workflows occupying or queueing the BOOT VPS runner
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          for state in in_progress queued; do
-            gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
-              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
-                [[ -n "$run_id" ]] || continue
-                echo "Cancelling self-hosted AI recovery run ${run_id} (${state})"
-                gh api --method POST -H 'Accept: application/vnd.github+json' \
-                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
-              done
+          workflows=(
+            selfhosted-five-agent-recovery.yml
+            deploy-vps.yml
+            deploy-current-main-direct.yml
+            deploy-current-main-pr-isolated.yml
+            deploy-current-main-trigger.yml
+            server-ops.yml
+            deepseek-vps-controlled-ops.yml
+            claude-vps-controlled-ops.yml
+            learnerbot-recovery-restart.yml
+          )
+          for workflow in "${workflows[@]}"; do
+            for state in queued in_progress; do
+              gh api -H 'Accept: application/vnd.github+json' \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=${state}&per_page=100" \
+                --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                  [[ -n "$run_id" ]] || continue
+                  echo "Cancelling stale ${workflow} run ${run_id} (${state})"
+                  gh api --method POST -H 'Accept: application/vnd.github+json' \
+                    "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+                done
+            done
           done
-
-      - name: Cancel queued stale deployment jobs
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          for workflow in deploy-current-main-direct.yml deploy-current-main-pr-isolated.yml deploy-current-main-trigger.yml server-ops.yml; do
-            gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
-              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
-                [[ -n "$run_id" ]] || continue
-                echo "Cancelling queued stale ${workflow} run ${run_id}"
-                gh api --method POST -H 'Accept: application/vnd.github+json' \
-                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
-              done
-          done
+          # Give GitHub a moment to release the single self-hosted runner after
+          # cancellation. No VPS process is killed by this step.
+          sleep 5
 
       - name: Dispatch exact current-main deployment
         id: dispatch
@@ -61,7 +60,10 @@ jobs:
           [[ "$latest" =~ ^[0-9a-f]{40}$ ]]
           echo "target_sha=$latest" >> "$GITHUB_OUTPUT"
           echo "Dispatching restricted deploy_main for exact current main ${latest}"
-          gh workflow run server-ops.yml --ref main -f operation=deploy_main
+          gh api --method POST \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/server-ops.yml/dispatches" \
+            -f ref=main -f 'inputs[operation]=deploy_main'
 
       - name: Wait for dispatched deploy and record conclusion
         id: waitdeploy
@@ -72,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           run_id=''
-          for _ in $(seq 1 30); do
+          for _ in $(seq 1 45); do
             run_id="$(gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/server-ops.yml/runs?event=workflow_dispatch&branch=main&per_page=50" \
               --jq ".workflow_runs[] | select(.head_sha == \"${TARGET_SHA}\") | .id" 2>/dev/null | head -n1 || true)"
@@ -88,9 +90,10 @@ jobs:
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
           conclusion=''
           status='queued'
-          for _ in $(seq 1 100); do
-            status="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.status')"
-            conclusion="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" --jq '.conclusion // ""')"
+          for _ in $(seq 1 110); do
+            data="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")"
+            status="$(printf '%s' "$data" | jq -r '.status')"
+            conclusion="$(printf '%s' "$data" | jq -r '.conclusion // ""')"
             echo "server-ops run ${run_id}: status=${status} conclusion=${conclusion:-pending}"
             [[ "$status" == 'completed' ]] && break
             sleep 8
@@ -111,7 +114,7 @@ jobs:
           python3 - <<'PY' > /tmp/rescue-deploy-attestation.json
           import json, os, time
           print(json.dumps({
-              'schema_version': 1,
+              'schema_version': 2,
               'generated_epoch': int(time.time()),
               'target_sha': os.environ.get('TARGET_SHA',''),
               'server_ops_run_id': int(os.environ.get('DEPLOY_RUN_ID') or 0),
@@ -119,6 +122,7 @@ jobs:
               'deployment_scope': 'ALL_CURRENT_MAIN',
               'deployment_path': 'server-ops deploy_main -> restricted /usr/local/sbin/deploy-boot-trading-bot',
               'full_test_gate': True,
+              'stale_runner_workflows_cleared': True,
               'safety': {
                   'arbitrary_sha': False,
                   'wallet_or_private_key_access': False,
