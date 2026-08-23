@@ -16,29 +16,51 @@ def test_installer_shell_syntax_is_valid():
     subprocess.run(["bash", "-n", str(INSTALLER)], check=True)
 
 
-def test_report_requires_snapshot_and_never_loads_dotenv_secrets():
+def test_report_requires_isolated_snapshot():
     text = _text(REPORT)
     assert 'os.getenv("SIBOT_GATE_SNAPSHOT") != "1"' in text
     assert "Refusing to run SiBot leader-gate report outside the isolated snapshot" in text
-    assert "dotenv.load_dotenv = lambda" in text
 
 
-def test_report_forces_read_only_sqlite_and_disables_settings_migrations():
+def test_report_is_low_memory_sqlite_only_and_has_no_provider_calls():
+    text = _text(REPORT)
+    assert "LOW_MEMORY_SQLITE_ONLY" in text
+    assert "provider_calls: 0" in text
+    assert "CANDIDATE_CAP = 5" in text
+    assert "PROOF_CHAIN_IDS = {56, 42161}" in text
+    assert "import requests" not in text
+    assert "from web3" not in text.lower()
+    assert "_load_patch_chain" not in text
+    assert "learnerbot." not in text
+
+
+def test_report_forces_read_only_sqlite():
     text = _text(REPORT)
     assert "?mode=ro" in text
     assert "PRAGMA query_only=ON" in text
-    assert "_sibot.connect = lambda app: _readonly_sqlite" in text
-    assert "_sol.connect = lambda app: _readonly_sqlite" in text
-    assert "_sibot.ensure_settings = sibot_settings_path" in text
-    assert "_sol.ensure_settings = solana_settings_path" in text
-    assert "_sibot._atomic_csv = _blocked_config_write" in text
-    assert text.count("_install_readonly_guards()") >= 2
+    assert "PRAGMA busy_timeout=30000" in text
+    assert "sqlite3.connect" in text
 
 
-def test_report_does_not_silently_skip_uppercase_evm_chain_types():
+def test_report_emits_explicit_bounded_scope_metadata():
     text = _text(REPORT)
-    assert 'str(chain.type).strip().lower() != "evm"' in text
-    assert 'chain.type != "evm"' not in text
+    assert "eligible_candidates=" in text
+    assert "processed_candidates=" in text
+    assert "BOUNDED_PROOF_RESULT=" in text
+    assert "candidate_reconstruction_any=" in text
+    assert "store_reconstruction_any=" in text
+
+
+def test_report_keeps_final_quality_floors_visible_in_code():
+    text = _text(REPORT)
+    assert '"min_closed_trades": Decimal("50")' in text
+    assert '"min_win_rate_pct": Decimal("55")' in text
+    assert '"min_profit_factor": Decimal("1.5")' in text
+    assert '"min_recent_win_rate_pct": Decimal("55")' in text
+    assert '"min_recent_profit_factor": Decimal("1.10")' in text
+    assert '"max_leader_drawdown_pct": Decimal("20")' in text
+    assert '"min_win_rate_pct": Decimal("65")' in text
+    assert '"min_profit_factor": Decimal("1.75")' in text
 
 
 def test_root_wrapper_is_fixed_no_argument_and_refuses_dirty_non_main_code():
