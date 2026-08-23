@@ -67,6 +67,37 @@ jobs:
             tests/test_universal_agent_git_mailbox_bridge.py \
             tests/test_ai_agent_bus.py \
             tests/test_ai_agent_task_executor.py
+      - name: Live GPT to DeepSeek alert and reply probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/deepseek-alert.jsonl"
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to deepseek \
+            --message 'Reply exactly: DEEPSEEK_WS_ALERT_OK' \
+            --message-id "gpt-to-deepseek-alert-${GITHUB_RUN_ID}" \
+            --timeout 120 | tee "$out"
+          grep -q 'ACKNOWLEDGED' "$out"
+          grep -q 'DEEPSEEK_WS_ALERT_OK' "$out"
+      - name: Live DeepSeek ws-bus-v2 bounded execution probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/deepseek-task.jsonl"
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to deepseek \
+            --task-action READ_FILE \
+            --task-args-json '{"path":"AI_AGENT_MESSAGING.md"}' \
+            --task-instruction 'Read this safe repository file and return execution evidence.' \
+            --message-id "gpt-to-deepseek-task-${GITHUB_RUN_ID}" \
+            --timeout 120 | tee "$out"
+          grep -q 'ACKNOWLEDGED' "$out"
+          grep -q 'ACCEPTED' "$out"
+          grep -q 'EXECUTING' "$out"
+          grep -q 'COMPLETED' "$out"
+          grep -q 'AI_AGENT_MESSAGING.md' "$out"
       - name: Remove isolated environment
         if: always()
         shell: bash
