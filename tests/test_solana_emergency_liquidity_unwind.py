@@ -155,8 +155,17 @@ def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch, tmp_p
         "SOLANA_LEADER_EXIT_LOSS_CAP",
     )
 
-    assert calls == [Decimal("1"), Decimal("0.75"), Decimal("0.50"), Decimal("0.25")]
-    assert first_call_count == 4
+    assert calls == [
+        Decimal("1"),
+        Decimal("0.75"),
+        Decimal("0.50"),
+        Decimal("0.25"),
+        Decimal("0.10"),
+        Decimal("0.05"),
+        Decimal("0.02"),
+        Decimal("0.01"),
+    ]
+    assert first_call_count == 8
     assert first["deferred"] is True
     assert second["deferred"] is True
     assert len(calls) == first_call_count
