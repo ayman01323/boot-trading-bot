@@ -15,10 +15,12 @@ from websockets.asyncio.server import ServerConnection, serve
 
 AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
 MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
+THREAD_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_DB = "/var/tmp/boot/ai_agent_bus.sqlite3"
 MAX_BODY_CHARS = 8000
+MAX_SUBJECT_CHARS = 160
 PROGRESS_STATUSES = {"ACCEPTED", "EXECUTING"}
 FINAL_STATUSES = {"REPLIED", "COMPLETED", "FAILED", "BLOCKED", "REJECTED"}
 
@@ -44,6 +46,20 @@ def _normalise_message_id(value: Any) -> str:
     if not MESSAGE_ID_RE.fullmatch(message_id):
         raise BusError("invalid message_id")
     return message_id
+
+
+def _normalise_thread_id(value: Any) -> str:
+    thread_id = str(value or "").strip()
+    if thread_id and not THREAD_ID_RE.fullmatch(thread_id):
+        raise BusError("invalid thread_id")
+    return thread_id
+
+
+def _normalise_subject(value: Any) -> str:
+    subject = " ".join(str(value or "").split())
+    if len(subject) > MAX_SUBJECT_CHARS:
+        raise BusError(f"subject exceeds {MAX_SUBJECT_CHARS} characters")
+    return subject
 
 
 def _normalise_body(value: Any) -> str:
@@ -92,6 +108,8 @@ class Store:
                     sender TEXT NOT NULL,
                     target TEXT NOT NULL,
                     body TEXT NOT NULL,
+                    thread_id TEXT NOT NULL DEFAULT '',
+                    subject TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL,
                     reply TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
@@ -102,28 +120,56 @@ class Store:
                     replied_at INTEGER,
                     reply_delivered_at INTEGER
                 );
+                """
+            )
+            # Existing production databases predate subject threads. ALTER is
+            # additive and keeps every historical message intact.
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")}
+            if "thread_id" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN thread_id TEXT NOT NULL DEFAULT ''")
+            if "subject" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN subject TEXT NOT NULL DEFAULT ''")
+            conn.executescript(
+                """
                 CREATE INDEX IF NOT EXISTS idx_messages_target_status
                     ON messages(target, status, created_at);
                 CREATE INDEX IF NOT EXISTS idx_messages_sender_reply_delivery
                     ON messages(sender, reply_delivered_at, replied_at);
+                CREATE INDEX IF NOT EXISTS idx_messages_thread_history
+                    ON messages(thread_id, replied_at, updated_at);
                 """
             )
 
-    def put(self, message_id: str, sender: str, target: str, body: str) -> sqlite3.Row:
+    def put(
+        self,
+        message_id: str,
+        sender: str,
+        target: str,
+        body: str,
+        *,
+        thread_id: str = "",
+        subject: str = "",
+    ) -> sqlite3.Row:
         now = _now()
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
             if row is not None:
-                if row["sender"] != sender or row["target"] != target or row["body"] != body:
+                if (
+                    row["sender"] != sender
+                    or row["target"] != target
+                    or row["body"] != body
+                    or str(row["thread_id"] or "") != thread_id
+                    or str(row["subject"] or "") != subject
+                ):
                     raise BusError("message_id collision")
                 return row
             conn.execute(
                 """
                 INSERT INTO messages
-                    (message_id, sender, target, body, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, 'QUEUED', ?, ?)
+                    (message_id, sender, target, body, thread_id, subject, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', ?, ?)
                 """,
-                (message_id, sender, target, body, now, now),
+                (message_id, sender, target, body, thread_id, subject, now, now),
             )
             return conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
 
@@ -281,10 +327,18 @@ class Broker:
         await self._deliver_pending(agent)
         await self._deliver_pending_replies(agent)
 
+    @staticmethod
+    def _thread_fields(row: sqlite3.Row) -> dict[str, str]:
+        return {
+            "thread_id": str(row["thread_id"] or ""),
+            "subject": str(row["subject"] or ""),
+        }
+
     def _message_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "type": "message",
             "message_id": row["message_id"],
+            **self._thread_fields(row),
             "from": row["sender"],
             "to": row["target"],
             "body": row["body"],
@@ -306,6 +360,7 @@ class Broker:
             payload = {
                 "type": "reply",
                 "message_id": row["message_id"],
+                **self._thread_fields(row),
                 "from": row["target"],
                 "to": row["sender"],
                 "body": row["reply"],
@@ -319,6 +374,7 @@ class Broker:
         await self._broadcast_agent(row["sender"], {
             "type": "status",
             "message_id": row["message_id"],
+            **self._thread_fields(row),
             "status": row["status"],
             "to": row["target"],
         })
@@ -362,6 +418,10 @@ class Broker:
         message_id = _normalise_message_id(data.get("message_id"))
         target = _normalise_agent(data.get("to"), allow_all=True)
         body = _normalise_body(data.get("body"))
+        thread_id = _normalise_thread_id(data.get("thread_id"))
+        subject = _normalise_subject(data.get("subject"))
+        if subject and not thread_id:
+            raise BusError("thread_id is required when subject is provided")
         if str(data.get("from") or agent).strip().lower() != agent:
             raise BusError("from does not match registered sender")
         if target == agent:
@@ -372,16 +432,29 @@ class Broker:
             targets = sorted(AGENTS - {agent})
             for recipient in targets:
                 child_id = f"{message_id}:{recipient}"
-                row = self.store.put(child_id, agent, recipient, body)
+                row = self.store.put(child_id, agent, recipient, body, thread_id=thread_id, subject=subject)
                 if await self._broadcast_agent(recipient, self._message_payload(row)):
                     self.store.mark_delivered(child_id)
-            await self._send(ws, {"type": "accepted", "message_id": message_id, "status": "FANOUT", "targets": targets})
+            await self._send(ws, {
+                "type": "accepted",
+                "message_id": message_id,
+                "thread_id": thread_id,
+                "subject": subject,
+                "status": "FANOUT",
+                "targets": targets,
+            })
             return
-        row = self.store.put(message_id, agent, target, body)
+        row = self.store.put(message_id, agent, target, body, thread_id=thread_id, subject=subject)
         if await self._broadcast_agent(target, self._message_payload(row)):
             self.store.mark_delivered(message_id)
             row = self.store.get(message_id) or row
-        await self._send(ws, {"type": "accepted", "message_id": message_id, "status": row["status"], "to": target})
+        await self._send(ws, {
+            "type": "accepted",
+            "message_id": message_id,
+            **self._thread_fields(row),
+            "status": row["status"],
+            "to": target,
+        })
 
     async def _handle_ack(self, agent: str, data: dict[str, Any]) -> None:
         row = self.store.acknowledge(_normalise_message_id(data.get("message_id")), agent)
@@ -408,6 +481,7 @@ class Broker:
         payload = {
             "type": "reply",
             "message_id": row["message_id"],
+            **self._thread_fields(row),
             "from": row["target"],
             "to": row["sender"],
             "body": row["reply"],
@@ -426,6 +500,7 @@ class Broker:
         await self._send(ws, {
             "type": "status",
             "message_id": row["message_id"],
+            **self._thread_fields(row),
             "from": row["sender"],
             "to": row["target"],
             "status": row["status"],
