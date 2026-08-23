@@ -1,0 +1,50 @@
+name: Kimi Will Answer Check
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/kimi-will-answer-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ask-kimi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+    steps:
+      - name: Ask Kimi whether it will answer the audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${KIMI_API_KEY:-}"
+          python - <<'PY'
+          import json, os, urllib.request
+          prompt = (
+              "You are Kimi. The owner asks: will you complete and return the full read-only audit of the trading bot "
+              "that is currently running, including the reason trading stopped, bugs, and safe solutions? "
+              "Reply briefly and directly. Do not claim the audit is complete if it is not."
+          )
+          payload={
+              "model":"kimi-k2.6",
+              "messages":[{"role":"user","content":prompt}],
+              "max_tokens":300,
+              "thinking":{"type":"disabled"},
+          }
+          req=urllib.request.Request(
+              "https://api.moonshot.ai/v1/chat/completions",
+              data=json.dumps(payload).encode(),
+              headers={"Authorization":"Bearer "+os.environ["KIMI_API_KEY"],"Content-Type":"application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=90) as r:
+              body=json.loads(r.read().decode())
+          text=body["choices"][0]["message"]["content"]
+          print("KIMI_REPLY_BEGIN")
+          print(text)
+          print("KIMI_REPLY_END")
+          PY
