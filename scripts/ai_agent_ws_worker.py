@@ -12,7 +12,7 @@ from typing import Any
 
 from websockets.asyncio.client import connect
 
-from learnerbot.ai_council_http_patch import call_provider
+from learnerbot.ai_cost_provider_patch import call_provider
 from scripts.ai_agent_task_executor import TaskError, execute_task, parse_task_envelope
 
 AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
@@ -72,29 +72,37 @@ def _restore_env(key: str, previous: object | str) -> None:
 
 def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
     with _PROVIDER_CALL_LOCK:
-        if agent == "copilot":
-            previous_path: object | str = os.environ.get("PATH", _MISSING)
-            configured_dir = str(os.environ.get("AI_BUS_COPILOT_BIN_DIR") or COPILOT_BUS_BIN_DIR).strip()
-            copilot_bin = Path(configured_dir) / "copilot"
-            if copilot_bin.is_file() and os.access(copilot_bin, os.X_OK):
-                current_path = str(os.environ.get("PATH") or "")
-                os.environ["PATH"] = configured_dir + (os.pathsep + current_path if current_path else "")
+        previous_kind: object | str = os.environ.get("AI_COST_TASK_KIND", _MISSING)
+        previous_level: object | str = os.environ.get("AI_COST_ROUTE_LEVEL", _MISSING)
+        os.environ["AI_COST_TASK_KIND"] = "ws-message"
+        os.environ["AI_COST_ROUTE_LEVEL"] = "1"
+        try:
+            if agent == "copilot":
+                previous_path: object | str = os.environ.get("PATH", _MISSING)
+                configured_dir = str(os.environ.get("AI_BUS_COPILOT_BIN_DIR") or COPILOT_BUS_BIN_DIR).strip()
+                copilot_bin = Path(configured_dir) / "copilot"
+                if copilot_bin.is_file() and os.access(copilot_bin, os.X_OK):
+                    current_path = str(os.environ.get("PATH") or "")
+                    os.environ["PATH"] = configured_dir + (os.pathsep + current_path if current_path else "")
+                try:
+                    return call_provider(agent, prompt)
+                finally:
+                    _restore_env("PATH", previous_path)
+
+            if agent not in CHEAP_MODELS:
+                return call_provider(agent, prompt)
+
+            env_key, _ = CHEAP_MODELS[agent]
+            model = low_cost_model(agent)
+            previous: object | str = os.environ.get(env_key, _MISSING)
+            os.environ[env_key] = model
             try:
                 return call_provider(agent, prompt)
             finally:
-                _restore_env("PATH", previous_path)
-
-        if agent not in CHEAP_MODELS:
-            return call_provider(agent, prompt)
-
-        env_key, _ = CHEAP_MODELS[agent]
-        model = low_cost_model(agent)
-        previous: object | str = os.environ.get(env_key, _MISSING)
-        os.environ[env_key] = model
-        try:
-            return call_provider(agent, prompt)
+                _restore_env(env_key, previous)
         finally:
-            _restore_env(env_key, previous)
+            _restore_env("AI_COST_TASK_KIND", previous_kind)
+            _restore_env("AI_COST_ROUTE_LEVEL", previous_level)
 
 
 async def send_json(ws, payload: dict[str, Any]) -> None:
