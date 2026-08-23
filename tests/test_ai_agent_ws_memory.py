@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from scripts.ai_agent_ws_bus import Store
@@ -7,8 +8,18 @@ from scripts.ai_agent_ws_memory import recent_context
 from scripts.ai_agent_ws_worker import build_prompt
 
 
-def _reply(store: Store, message_id: str, sender: str, target: str, body: str, reply: str) -> None:
-    store.put(message_id, sender, target, body)
+def _reply(
+    store: Store,
+    message_id: str,
+    sender: str,
+    target: str,
+    body: str,
+    reply: str,
+    *,
+    thread_id: str = "",
+    subject: str = "",
+) -> None:
+    store.put(message_id, sender, target, body, thread_id=thread_id, subject=subject)
     store.mark_delivered(message_id)
     store.acknowledge(message_id, target)
     store.reply(message_id, target, reply, final_status="REPLIED")
@@ -50,13 +61,69 @@ def test_recent_context_is_bounded_to_newest_history(tmp_path: Path) -> None:
     assert "question-4" in memory
 
 
+def test_thread_memory_is_shared_across_agents_but_isolated_from_other_subjects(tmp_path: Path) -> None:
+    db = tmp_path / "bus.sqlite3"
+    store = Store(str(db))
+    _reply(store, "risk-1", "master", "gpt", "Review HOOD risk", "Use liquidity checks", thread_id="thr-risk", subject="HOOD risk")
+    _reply(store, "risk-2", "gpt", "claude", "Check the same risk", "Add holder concentration", thread_id="thr-risk", subject="HOOD risk")
+    _reply(store, "infra-1", "master", "gemini", "Review server latency", "Measure p95", thread_id="thr-infra", subject="Infrastructure")
+
+    memory = recent_context("gemini", thread_id="thr-risk", db_path=str(db), max_exchanges=6, max_chars=3200)
+    assert "Review HOOD risk" in memory
+    assert "Add holder concentration" in memory
+    assert "Review server latency" not in memory
+    assert "Measure p95" not in memory
+
+
+def test_store_migrates_existing_database_without_losing_messages(tmp_path: Path) -> None:
+    db = tmp_path / "legacy.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE messages (
+            message_id TEXT PRIMARY KEY, sender TEXT NOT NULL, target TEXT NOT NULL,
+            body TEXT NOT NULL, status TEXT NOT NULL, reply TEXT NOT NULL DEFAULT '',
+            error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+            delivered_at INTEGER, acknowledged_at INTEGER, replied_at INTEGER, reply_delivered_at INTEGER
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO messages(message_id,sender,target,body,status,created_at,updated_at) VALUES ('legacy','gpt','gemini','old','QUEUED',1,1)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(str(db))
+    old = store.get("legacy")
+    assert old is not None
+    assert old["body"] == "old"
+    assert old["thread_id"] == ""
+    assert old["subject"] == ""
+    store.put("threaded", "gpt", "gemini", "new", thread_id="thr-new", subject="New subject")
+    new = store.get("threaded")
+    assert new is not None
+    assert new["thread_id"] == "thr-new"
+    assert new["subject"] == "New subject"
+
+
 def test_missing_memory_db_fails_open(tmp_path: Path) -> None:
     assert recent_context("gemini", db_path=str(tmp_path / "missing.sqlite3")) == ""
 
 
-def test_worker_prompt_labels_memory_scope_and_external_chat_boundary() -> None:
-    prompt = build_prompt("gemini", {"from": "gpt", "message_id": "new", "body": "What did I ask last time?"}, "GPT → GEMINI: Previous question\nGEMINI → GPT: Previous answer")
-    assert "RECENT STRATEGY FACTORY CONVERSATION MEMORY" in prompt
+def test_worker_prompt_labels_thread_scope_and_external_chat_boundary() -> None:
+    prompt = build_prompt(
+        "gemini",
+        {
+            "from": "gpt",
+            "message_id": "new",
+            "thread_id": "thr-risk",
+            "subject": "HOOD risk",
+            "body": "What did we decide?",
+        },
+        "GPT → CLAUDE: Previous question\nCLAUDE → GPT: Previous answer",
+    )
+    assert "THIS SUBJECT THREAD" in prompt
+    assert "Subject: HOOD risk" in prompt
+    assert "Thread ID: thr-risk" in prompt
     assert "Previous question" in prompt
     assert "does NOT imply access to separate external web-chat sessions" in prompt
-    assert "What did I ask last time?" in prompt
+    assert "What did we decide?" in prompt
