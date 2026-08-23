@@ -1,0 +1,167 @@
+name: Kimi GitHub-Hosted Code Audit
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/kimi-hosted-code-audit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit-code:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+    steps:
+      - name: Check out exact current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 50
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q -r requirements.txt 'pytest>=8,<9'
+
+      - name: Verify Kimi credential presence without printing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${KIMI_API_KEY:-}"
+          echo 'Kimi credential present.'
+
+      - name: Compile and run full test suite
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .kimi_hosted
+          python -m compileall -q learnerbot scripts > .kimi_hosted/compile.txt 2>&1
+          compile_rc=$?
+          python -m pytest -q -p no:cacheprovider > .kimi_hosted/pytest.txt 2>&1
+          pytest_rc=$?
+          set -e
+          printf 'compile_rc=%s\npytest_rc=%s\n' "$compile_rc" "$pytest_rc" | tee .kimi_hosted/test_status.txt
+          tail -n 100 .kimi_hosted/pytest.txt > .kimi_hosted/pytest_tail.txt
+
+      - name: Kimi full application source audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib, subprocess, urllib.request, urllib.error, time
+
+          key=os.environ['KIMI_API_KEY']
+          model=os.environ.get('KIMI_COUNCIL_MODEL','kimi-k2.6')
+          out=pathlib.Path('.kimi_hosted'); out.mkdir(exist_ok=True)
+
+          def call(prompt, max_tokens=1800):
+              payload={
+                  'model':model,
+                  'messages':[{'role':'user','content':prompt}],
+                  'max_tokens':max_tokens,
+              }
+              if model.startswith(('kimi-k2.6','kimi-k2.5')):
+                  payload['thinking']={'type':'enabled'}
+              req=urllib.request.Request(
+                  'https://api.moonshot.ai/v1/chat/completions',
+                  data=json.dumps(payload).encode(),
+                  headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'},
+                  method='POST',
+              )
+              last=''
+              for attempt in range(4):
+                  try:
+                      with urllib.request.urlopen(req,timeout=180) as r:
+                          body=json.loads(r.read().decode('utf-8','replace'))
+                      text=body['choices'][0]['message']['content']
+                      if isinstance(text,list):
+                          text='\n'.join(str(x.get('text','')) for x in text if isinstance(x,dict))
+                      return str(text).strip()
+                  except Exception as e:
+                      last=repr(e)
+                      time.sleep(2*(attempt+1))
+              raise RuntimeError(last)
+
+          tracked=subprocess.check_output(['git','ls-files'],text=True).splitlines()
+          exts={'.py','.sh','.toml','.ini','.cfg','.json','.yaml','.yml'}
+          files=[]
+          for name in tracked:
+              p=pathlib.Path(name)
+              if p.suffix.lower() not in exts and name not in {'requirements.txt','pyproject.toml'}: continue
+              if name.startswith(('tests/','.github/','docs/','data/','CSVbot/','.git/')): continue
+              include=name.startswith('learnerbot/') or len(p.parts)==1 or name.startswith(('strategy/','config/'))
+              if name.startswith('scripts/'):
+                  low=name.lower()
+                  include=any(k in low for k in ('trade','bot','strategy','execution','wallet','runtime','health','monitor','forensic','solana','evm','polygon','arbit','copy','signal','position','loss','profit','server','rpc'))
+              if include and p.is_file(): files.append(name)
+          files=sorted(set(files),key=lambda x:(0 if x.startswith('learnerbot/') else 1,x))
+
+          max_chars=60000
+          chunks=[]; cur=''; manifest=[]
+          for name in files:
+              text=pathlib.Path(name).read_text(encoding='utf-8',errors='replace')
+              manifest.append({'path':name,'chars':len(text)})
+              block=f'\n===== FILE: {name} =====\n{text}\n'
+              while block:
+                  room=max_chars-len(cur)
+                  if room<1000:
+                      chunks.append(cur); cur=''; room=max_chars
+                  cur += block[:room]; block=block[room:]
+                  if len(cur)>=max_chars:
+                      chunks.append(cur); cur=''
+                      if block: block='\n===== CONTINUED =====\n'+block
+          if cur: chunks.append(cur)
+
+          meta={'file_count':len(manifest),'chunk_count':len(chunks),'total_chars':sum(x['chars'] for x in manifest),'files':manifest}
+          out.joinpath('manifest.json').write_text(json.dumps(meta,indent=2))
+          sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          findings=[]
+          for i,chunk in enumerate(chunks,1):
+              prompt=(f'You are Kimi performing a rigorous read-only audit of application source for multi-chain trading bot main SHA {sha}. '
+                      f'This is source chunk {i}/{len(chunks)}. Find concrete defects: exceptions, bad defaults, stale state, races, gating bugs, provider/RPC/execution failures, chain-specific errors, persistence bugs, and logic that can make LIVE trading stop after previously working. '
+                      'Also flag security/correctness defects. Never recommend weakening risk/liquidity/sellability/simulation/wallet/signing controls merely to force trades. '
+                      'Return <=1500 characters of high-signal findings with file/function references. If no concrete issue, say NO_CONCRETE_BUG.\n\n'+chunk)
+              ans=call(prompt,1500)
+              findings.append(f'[{i}/{len(chunks)}] {ans[:1800]}')
+              print(f'KIMI_CODE_CHUNK {i}/{len(chunks)} {ans[:180].replace(chr(10)," ")}',flush=True)
+
+          groups=[]; cur=''
+          for f in findings:
+              if cur and len(cur)+len(f)>30000:
+                  groups.append(cur); cur=''
+              cur += f+'\n\n'
+          if cur: groups.append(cur)
+          summaries=[]
+          for i,g in enumerate(groups,1):
+              ans=call('You are Kimi consolidating your own code-audit findings. Remove duplicates and unsupported speculation. Rank concrete defects by severity and confidence, preserving file/function references and stopped-trading relevance. Return <=4500 characters.\n\n'+g,2200)
+              summaries.append(f'=== KIMI CODE AUDIT GROUP {i}/{len(groups)} ===\n{ans}')
+          consolidated='\n\n'.join(summaries)
+          out.joinpath('code_findings.txt').write_text(consolidated)
+
+          tests=out.joinpath('test_status.txt').read_text(errors='replace')+'\n'+out.joinpath('pytest_tail.txt').read_text(errors='replace')[-4000:]
+          final_prompt=f'''You are Kimi. Produce the FINAL code-audit report for this trading bot.
+Current main SHA: {sha}
+Coverage: {json.dumps({k:meta[k] for k in ('file_count','chunk_count','total_chars')})}
+Test evidence:\n{tests[:5000]}
+
+Your consolidated code findings:\n{consolidated[:24000]}
+
+Explain which concrete bugs could stop trading after it previously worked. Separate CONFIRMED CODE DEFECTS from hypotheses that need runtime evidence. Give an ordered safe fix plan with exact files/functions and a verification plan. Do not weaken safety/risk/liquidity/simulation/sellability/wallet/signing controls to force trades. Use headings: Executive code conclusion; Confirmed code defects; Stopped-trading candidates; Fix plan; Tests/verification; Runtime evidence still required.'''
+          final=call(final_prompt[:60000],2400)
+          out.joinpath('final_code_audit.txt').write_text(final)
+          print('KIMI_HOSTED_FINAL_BEGIN')
+          print(final)
+          print('KIMI_HOSTED_FINAL_END')
+          print('KIMI_COVERAGE='+json.dumps({k:meta[k] for k in ('file_count','chunk_count','total_chars')}))
+          PY
