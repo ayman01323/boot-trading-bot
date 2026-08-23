@@ -8,6 +8,8 @@ on:
       - 'learnerbot/strategy_external_research.py'
       - 'learnerbot/strategy_internal_learning.py'
       - 'learnerbot/strategy_source_extension.py'
+      - 'learnerbot/strategy_research_worker.py'
+      - 'learnerbot/strategy_research_ingestion.py'
       - 'learnerbot/strategy_lab_audit_patch.py'
       - 'learnerbot/strategy_ai_proposals.py'
       - 'learnerbot/cross_chain_strategy_signals.py'
@@ -22,6 +24,7 @@ on:
       - 'tests/test_strategy_ai_proposals.py'
       - 'tests/test_strategy_lab_cross_chain_research.py'
       - 'tests/test_strategy_external_research.py'
+      - 'tests/test_strategy_research_worker.py'
       - 'tests/test_strategy_internal_learning.py'
       - 'tests/test_cross_chain_strategy_signals.py'
       - 'tests/test_market_feature_shadow_executor.py'
@@ -30,6 +33,7 @@ on:
       - 'tests/test_vps_deploy_attestation.py'
       - 'docs/STRATEGY_LAB.md'
       - 'docs/STRATEGY_SOURCE_RESEARCH.md'
+      - 'docs/STRATEGY_RESEARCH_WORKER.md'
       - 'docs/STRATEGY_INTERNAL_LEARNING_SOURCES.md'
       - '.github/copilot-instructions.md'
       - '.github/workflows/hourly-gemini-strategy-review.yml'
@@ -47,12 +51,15 @@ on:
       - 'release/market-feature-shadow-executor'
       - 'release/three-agent-strategy-cycle'
       - 'release/fast-canary-and-vps-attestation'
+      - 'gpt/strategy-research-worker-live'
     paths:
       - 'learnerbot/strategy_lab.py'
       - 'learnerbot/strategy_lab_research.py'
       - 'learnerbot/strategy_external_research.py'
       - 'learnerbot/strategy_internal_learning.py'
       - 'learnerbot/strategy_source_extension.py'
+      - 'learnerbot/strategy_research_worker.py'
+      - 'learnerbot/strategy_research_ingestion.py'
       - 'learnerbot/strategy_lab_audit_patch.py'
       - 'learnerbot/strategy_ai_proposals.py'
       - 'learnerbot/cross_chain_strategy_signals.py'
@@ -67,6 +74,7 @@ on:
       - 'tests/test_strategy_ai_proposals.py'
       - 'tests/test_strategy_lab_cross_chain_research.py'
       - 'tests/test_strategy_external_research.py'
+      - 'tests/test_strategy_research_worker.py'
       - 'tests/test_strategy_internal_learning.py'
       - 'tests/test_cross_chain_strategy_signals.py'
       - 'tests/test_market_feature_shadow_executor.py'
@@ -74,6 +82,7 @@ on:
       - 'tests/test_strategy_canary.py'
       - 'tests/test_vps_deploy_attestation.py'
       - 'docs/STRATEGY_SOURCE_RESEARCH.md'
+      - 'docs/STRATEGY_RESEARCH_WORKER.md'
       - 'docs/STRATEGY_INTERNAL_LEARNING_SOURCES.md'
       - '.github/copilot-instructions.md'
       - '.github/workflows/hourly-gemini-strategy-review.yml'
@@ -98,12 +107,14 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt pytest
-      - name: Compile strategy laboratory, source research, canary and deployment attestation
+      - name: Compile strategy laboratory, research worker, source research, canary and deployment attestation
         run: |
           python -m py_compile \
             learnerbot/strategy_lab.py \
             learnerbot/strategy_lab_research.py \
             learnerbot/strategy_external_research.py \
+            learnerbot/strategy_research_worker.py \
+            learnerbot/strategy_research_ingestion.py \
             learnerbot/strategy_internal_learning.py \
             learnerbot/strategy_source_extension.py \
             learnerbot/strategy_lab_audit_patch.py \
@@ -117,17 +128,19 @@ jobs:
             scripts/extract_strategy_report.py \
             scripts/vps_deploy_attestation.py \
             tests/test_strategy_external_research.py \
+            tests/test_strategy_research_worker.py \
             tests/test_strategy_internal_learning.py \
             tests/test_three_agent_strategy_contract.py \
             tests/test_strategy_canary.py \
             tests/test_vps_deploy_attestation.py
-      - name: Run Strategy Lab, source research, canary and guarded three-agent strategy tests
+      - name: Run Strategy Lab, research-worker, source research, canary and guarded three-agent strategy tests
         run: |
           pytest -x -vv \
             tests/test_strategy_lab.py \
             tests/test_strategy_ai_proposals.py \
             tests/test_strategy_lab_cross_chain_research.py \
             tests/test_strategy_external_research.py \
+            tests/test_strategy_research_worker.py \
             tests/test_strategy_internal_learning.py \
             tests/test_cross_chain_strategy_signals.py \
             tests/test_market_feature_shadow_executor.py \
