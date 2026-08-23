@@ -1,10 +1,10 @@
 {
   "action": "inspect",
   "action_return_code": 0,
-  "deepseek_analysis": ".\n\n**Service health:** `learnerbot.service` appears **healthy/running**:\n- Active: `active (running)`, enabled, uptime 27s at inspection time.\n- Main PID `774400` stable across before/after snapshots.\n- Logs confirm expected components started: multi-chain learning loop, SiBot/SiMo research, Solana WebSocket connected, BSC scanner processing blocks (`tx=644`), Telegram AI ops verified, command scopes loaded.\n- No errors, crashes, or restart loops observed in the supplied log lines.\n\n**Concrete warnings / observations:**\n1. **Very early uptime:** The service had been running only 27 seconds at inspection. This confirms startup success, but not yet long-term stability. Follow-up monitoring is needed.\n2. **Memory usage is high early on:** ~503\u2013510 MB with peak 526 MB. This may be normal for this workload, but should stabilize or be investigated if it keeps climbing.\n3. **Version mismatch indicator:** Boot server status reports `version: 2.3.10`, while the service startup log says `Starting multi-chain learning loop v2.3.3`. This inconsistency should be clarified or aligned.\n4. **No tracked changes / clean checkout:** The context shows no uncommitted or tracked changes \u2014 good for reproducibility, but also means the inspection did not validate whether the deployed SHA matches the intended GitHub push-triggered SHA.\n\n**Concrete follow-up:**\n- Re-run inspection after 5\u201310 minutes to confirm memory stabilizes and no delayed errors appear.\n- Check logs for continued cross-chain scanning (BSC, Solana, others) and Telegram command connectivity.\n- Clarify/align the `2.3.10` vs `2.3.3` version string in deployment/build metadata.\n- Confirm that the running SHA `b6654493...` is the expected SHA for this push-triggered inspection; if not, the CI/CD trigger metadata should be reviewed.",
+  "deepseek_analysis": "0 selected=0` for polygon, base, ethereum, arbitrum, and bsc. Broad market scanning may not have been finding usable pools immediately before termination.\n3. **Solana execution rejection.** Last action log: `REJECT tid=5923828381 action=SELL` because quoted price impact `10000.00 bps` + slippage `50 bps` = `10050.00 bps`, which exceeds the configured `500 bps` limit. This is a protective rejection, but the magnitude is extreme and may indicate poor liquidity or bad quoting at that moment.\n4. **Version/deployment mismatch risk.** The inspection context shows `branch: main`, `sha: f1087a1...`, `version: 2.3.10`, but the service path/description references `v2.2` (`multichain-learning-bot-v2.2-fast-direct-market`). The requested GitHub source SHA `6bf53243...` does not appear in the supplied context. Confirm which deployment is actually running before acting on this inspection.\n5. **Resource peak is notable.** Nearly `800 MB` peak memory and high CPU usage over less than two hours should be monitored on restart to ensure the process is not resource-constrained.\n\n**Follow-up recommendations:**\n\n- Start/restart `learnerbot.service` through normal service management and confirm it reaches `active (running)`.\n- Re-run a bounded status check after startup to verify healthy operation.\n- Investigate why no pools were qualified across multiple chains before shutdown.\n- Review the Solana SELL rejection: `10050 bps` total impact is far above the `500 bps` guardrail; ensure order routing/liquidity sources are sane.\n- Verify that the running service version/path matches the intended deployment SHA before trusting the restart state.\n\nOverall: the inspection action succeeded, but the service is not healthy. It is stopped and needs operator attention before it can resume normal function.",
   "deepseek_analysis_available": true,
-  "deployed_sha": "b6654493b69e3802360cc3b9a52c251201be3d60",
-  "generated_epoch": 1787445670,
+  "deployed_sha": "f1087a1bb1556952594b1f60b1c9946ec0d62155",
+  "generated_epoch": 1787525187,
   "github_to_vps_link": true,
   "provider": "deepseek",
   "provider_return_code": 0,
@@ -19,9 +19,9 @@
     "wallet_or_private_key_access": false
   },
   "self_hosted_runner": true,
-  "service_active": true,
-  "source_commit": "33f3bc1fb98ac91377f04345ea37f09e947d6a33",
+  "service_active": false,
+  "source_commit": "6bf53243c8b6f2e8aeb3c2aae7e4a136fb915065",
   "status": "SUCCESS",
-  "target_sha": "33f3bc1fb98ac91377f04345ea37f09e947d6a33",
-  "workflow_run_id": 32608421939
+  "target_sha": "6bf53243c8b6f2e8aeb3c2aae7e4a136fb915065",
+  "workflow_run_id": 32671577904
 }
