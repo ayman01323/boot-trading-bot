@@ -15,12 +15,15 @@ def test_build_message_supports_all_agents(agent: str) -> None:
     assert "Message ID: msg-1" in text
     assert "Status: COMPLETED" in text
     assert "Tell GPT: check" in text
+    assert "Strategy Factory" in text
+    assert "mailbox" not in text.lower()
 
 
 def test_initiation_wording_is_metadata_only() -> None:
     text = notify.build_message("gemini", "initiation", "gemini-2", "REQUEST")
     assert "GEMINI → GPT MESSAGE" in text
     assert "New agent message received for GPT." in text
+    assert "Strategy Factory" in text
     assert "message body" not in text.lower()
 
 
