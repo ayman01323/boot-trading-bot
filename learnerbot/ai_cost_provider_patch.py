@@ -4,6 +4,7 @@ import os
 
 from . import ai_cost_router as _cost
 from . import ai_council_http_patch as _base
+from . import ai_runtime_secret_fallback_patch as _runtime_secret_fallback  # noqa: F401
 from . import grok_provider as _grok  # installs raw xAI-compatible routing first
 from . import ai_cost_grok_patch as _grok_cost  # noqa: F401
 
