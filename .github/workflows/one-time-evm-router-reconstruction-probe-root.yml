@@ -1,0 +1,43 @@
+name: One-time EVM Router Reconstruction Probe Root
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-evm-router-reconstruction-probe-root.yml'
+      - 'scripts/one_time_evm_router_reconstruction_probe.py'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify current production baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          status="$(sudo /usr/local/sbin/status-boot-trading-bot)"
+          printf '%s\n' "$status"
+          printf '%s\n' "$status" | grep -q '^sha:    cabc5bff54b4ca52649ba38dcaca7800be494d57$'
+          printf '%s\n' "$status" | grep -q 'Active: active (running)'
+
+      - name: Trace profitable wallet through production reconstruction code
+        shell: bash
+        run: |
+          set -euo pipefail
+          workdir="$(systemctl show learnerbot.service -p WorkingDirectory --value)"
+          test -n "$workdir"
+          py="$workdir/.venv/bin/python"
+          test -x "$py"
+          probe="/tmp/boot-evm-router-probe-${GITHUB_RUN_ID}.py"
+          cp scripts/one_time_evm_router_reconstruction_probe.py "$probe"
+          chmod 0644 "$probe"
+          sudo bash -lc "cd '$workdir' && PYTHONPATH='$workdir' '$py' '$probe'"
+          rm -f "$probe"
