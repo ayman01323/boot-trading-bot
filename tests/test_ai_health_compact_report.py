@@ -11,7 +11,7 @@ def _health(*states):
     }
 
 
-def test_master_dashboard_keeps_all_sections_and_six_agent_rows_under_truth_overlay():
+def test_master_dashboard_keeps_sections_but_does_not_repeat_every_agent_per_lane():
     engineering = {
         "agents": {
             "gpt": {"state": "WORKING", "reason": ""},
@@ -38,9 +38,6 @@ def test_master_dashboard_keeps_all_sections_and_six_agent_rows_under_truth_over
         {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
     )
 
-    # Presentation overlays may add provider/API truth beside review-pipeline
-    # truth. Preserve the stable dashboard contract instead of pinning the old
-    # pre-overlay sentence-by-sentence rendering.
     for heading in (
         "<b>🤖 AI AGENT HEALTH</b>",
         "<b>🛠 ENGINEERING MONITOR</b>",
@@ -49,12 +46,19 @@ def test_master_dashboard_keeps_all_sections_and_six_agent_rows_under_truth_over
     ):
         assert heading in text
 
+    # Provider/agent reachability is shown once in AI AGENT HEALTH. Operational
+    # lanes collapse normal rows into counts and expand only actual issues.
     for label in ("GPT", "Claude", "Gemini", "DeepSeek", "Grok", "Copilot"):
-        # Each provider must remain visible in engineering, strategy and factory.
-        assert text.count(f" {label} —") >= 3
+        assert text.count(f" {label} —") >= 1
 
-    # The underlying classification contract is still present even when an
-    # outer truth overlay enriches the final line wording.
+    assert "3 working · 1 in progress · 2 issues" in text
+    assert "4 working · 1 in progress · 1 issues" in text
+    assert "0 working · 6 in progress · 0 issues" in text
+    assert "First status = agent/provider" not in text
+    assert "Factory status is work state" not in text
+
+    # The underlying classification contract remains available for dedicated
+    # /aiaudit and /aistrategy drill-down views.
     assert compact.classify_health(
         "engineering", "claude", engineering["agents"]["claude"]
     ) == ("🟠", "Pipeline failure")
