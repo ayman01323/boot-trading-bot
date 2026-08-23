@@ -174,6 +174,9 @@ from . import sibot_leader_quality_hard_floor_patch  # noqa: F401
 # owned by learnerbot. It never edits trading state and skips itself if an external
 # broker is already serving 127.0.0.1:8765.
 from . import ai_agent_ws_runtime_patch  # noqa: F401
+# Absolute final fail-closed composition gate after every late runtime wrapper.
+# Verification only: never repairs/rebinds a hook or changes trading settings.
+from . import final_runtime_integrity_patch  # noqa: F401
 # Activate the V4 AI operations/governance layer only after the full trading
 # runtime and its final integrity gate have installed. V4 is observational and
 # cannot authorise protected trading state changes.
