@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import html
+import json
 import time
 from contextlib import closing
 from decimal import Decimal
+from pathlib import Path
 
 from . import solana_emergency_liquidity_unwind_patch as _emergency
 from . import solana_live_patch as _live
@@ -14,6 +16,35 @@ from . import telegram_trade_blocker_health_patch as _trade
 from .solana_wallet_store import SolanaWalletStore
 
 _PREV_BUILD_REPORT = _trade.build_report
+_SELECTOR_BRIDGE = Path("/var/tmp/boot/solana_leader_selector.json")
+
+
+def _selector_truth(max_age_seconds: int = 300) -> dict:
+    """Read the tiny sanitised selector bridge; never read the large history DB here."""
+    try:
+        payload = json.loads(_SELECTOR_BRIDGE.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+        generated = int(payload.get("generated_epoch") or 0)
+        if generated <= 0 or int(time.time()) - generated > max(30, int(max_age_seconds)):
+            return {}
+        failures = payload.get("first_failure_counts") or {}
+        if not isinstance(failures, dict):
+            failures = {}
+        return {
+            "generated_epoch": generated,
+            "pool": max(0, int(payload.get("pool") or 0)),
+            "qualified": max(0, int(payload.get("qualified") or 0)),
+            "selected": max(0, int(payload.get("selected") or 0)),
+            "failures": {
+                str(reason)[:100]: max(0, int(count or 0))
+                for reason, count in failures.items()
+                if str(reason or "").strip()
+            },
+            "thresholds_unchanged": bool(payload.get("thresholds_unchanged", False)),
+        }
+    except Exception:
+        return {}
 
 
 def _wallet_truth(app, tid: str, cfg: dict) -> dict:
@@ -49,13 +80,7 @@ def _wallet_truth(app, tid: str, cfg: dict) -> dict:
 
 
 def _liquidity_state(app, position_id: str) -> dict:
-    """Observational state only; the DB row deliberately remains OPEN.
-
-    Keeping the real position OPEN means every existing recovery, capacity,
-    exposure and reconciliation query continues to count/block it exactly as
-    before. LIQUIDITY_STUCK is a reporting label derived from durable emergency
-    backoff evidence, not a way to remove deployed capital from risk accounting.
-    """
+    """Observational state only; the DB row deliberately remains OPEN."""
     try:
         state = _emergency._load_backoff(app, str(position_id)) or {}
     except Exception:
@@ -184,6 +209,7 @@ def gate_snapshot(app, tid: str) -> dict:
         "recovery_canary": bool(recovery),
         "open_live_positions": _open_live_truth(app, str(tid)),
         "leaders": leaders,
+        "selector_truth": _selector_truth(),
     }
 
 
@@ -259,6 +285,15 @@ def build_report_with_gate_truth(app, tid) -> str:
     leaders = truth.get("leaders") or []
     if not leaders:
         lines.append("🔴 Leader edge gate: <b>NO SELECTED LEADER</b>")
+        selector = truth.get("selector_truth") or {}
+        if selector:
+            lines.append(
+                f"   Selector: pool <b>{selector.get('pool', 0)}</b> • "
+                f"qualified <b>{selector.get('qualified', 0)}</b> • selected <b>{selector.get('selected', 0)}</b>"
+            )
+            failures = selector.get("failures") or {}
+            for reason, count in sorted(failures.items(), key=lambda item: (-int(item[1]), item[0]))[:3]:
+                lines.append(f"   ↳ <code>{html.escape(str(reason))}</code>: <b>{int(count)}</b>")
     else:
         for leader in leaders[:3]:
             lines.append(
