@@ -1,0 +1,145 @@
+{
+  "cycle_id": "2fa508d18d0b-2026082323-bdffb1de",
+  "evidence_gaps": [
+    "Fresh runtime forensics within two hours are unavailable; evidence.json explicitly reports MISSING_RUNTIME_FORENSICS.",
+    "No per-strategy, per-chain money-weighted realised NET P&L after every fee, slippage, price-impact, gas/priority/builder cost and refundable-rent adjustment.",
+    "No complete attempt ledger correlating signal, quote, simulation, submission, inclusion, wallet-delta reconciliation and final outcome.",
+    "No fresh separation of STRATEGY/MARKET losses from EXECUTION/INFRASTRUCTURE failures, including pending and censored attempts.",
+    "No out-of-sample performance by strategy, chain, regime, asset, position size and observation window.",
+    "No follower-edge decay evidence by signal age, entry deterioration and leader-chain cohort.",
+    "No forecast-versus-realised calibration, cost-estimation error distribution, profit factor, drawdown, largest loss or failure-adjusted expectancy.",
+    "Before any promotion: require sufficient reconciled closed outcomes, complete cost coverage, positive cumulative money-weighted net and profit factor out of sample, bounded drawdown, stable chain/regime breakdown, acceptable execution-failure rate, and preserved liquidity, sellability, simulation, reserve, signing, reconciliation and circuit-breaker controls."
+  ],
+  "evidence_sha256": "bdffb1defff130538fab374ad1b4502f3f7789506777b88c8863dde990eef8cb",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.98,
+      "downside_risk": "Fewer immediately usable observations and longer SHADOW evaluation windows.",
+      "evidence": [
+        {
+          "detail": "_EXECUTED_STATUSES includes BROADCAST and SUCCESS_FEE_PENDING, while _record_market_native_progress falls back from realised_net_base to expected_net_base and records the result as a LIVE trade.",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py"
+        },
+        {
+          "detail": "evaluate_strategy can emit PROMOTION_CANDIDATE from aggregated net profit and profit factor without checking whether every outcome is reconciled and realised.",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Prevents premature strategy promotion and produces trustworthy realised net economics plus a separate execution reliability denominator.",
+      "id": "strategy-realised-outcome-integrity-v1",
+      "minimum_observation": "At least 30 reconciled closed cycles across at least 3 independent time windows, plus all pending attempts resolved or explicitly censored.",
+      "rationale": "A broadcast transaction is not a realised outcome, and an expected result is not money-weighted NET P&L. Mixing these states can create false profit or loss evidence. Market-negative reconciled outcomes should be classified STRATEGY/MARKET; reverted, dropped, unresolved, RPC-failed or reconciliation-incomplete attempts should be classified EXECUTION/INFRASTRUCTURE and excluded from realised P&L until resolved.",
+      "shadow_test": "Replay at least 100 historical or synthetic EVM attempts spanning confirmed success, revert, dropped/broadcast-only, fee-pending and reconciliation-missing states. Require realised strategy P&L to include only confirmed reconciled wallet deltas after gas, fees and slippage; require all other attempts to appear only in execution-failure or pending buckets. Stop if any unresolved attempt changes realised net profit or promotion status.",
+      "strategy": "Strategy Lab LIVE outcome attribution",
+      "suggested_files": [
+        "learnerbot/strategy_lab_live_recording_patch.py",
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab_live_recording.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "More missing-cost abstentions and reduced apparent opportunity volume.",
+      "evidence": [
+        {
+          "detail": "The scorecard stores quote-simulated net and correctly marks it non-promotional, but its common fee_base and slippage_base fields do not expose detailed chain-specific cost attribution.",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        },
+        {
+          "detail": "The portability requirements explicitly call for separate Solana priority/Jito and EVM gas/MEV assumptions.",
+          "path": "learnerbot/strategy_lab_research.py"
+        },
+        {
+          "detail": "Solana execution architecture separately models base fee, priority fee, Jito tip, platform fee, price impact, slippage and route hops.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py"
+        },
+        {
+          "detail": "EVM discovery rows initially set estimated_gas_base and builder_fee_base to zero, with wallet-specific simulation deferred.",
+          "path": "learnerbot/market_scanner.py"
+        }
+      ],
+      "expected_effect": "Improves abstention and strategy selection based on executable chain-specific NET P&L rather than gross spread or raw signal count.",
+      "id": "chain-specific-net-edge-scorecards-v1",
+      "minimum_observation": "At least 50 executable simulations and 30 reconciled closed outcomes per strategy-chain cohort across at least 3 market regimes; no pooling across chains for promotion evidence.",
+      "rationale": "Cross-chain ranking in native units or with generic cost buckets is not economically comparable. Solana edge must reserve priority/Jito/platform and route costs; EVM edge must include gas, builder/MEV exposure and revert cost. Discovery quotes with zero gas must never be interpreted as executable net edge.",
+      "shadow_test": "For every SHADOW candidate, snapshot the pre-trade quote and chain-specific cost decomposition, then compare with simulated and subsequently reconciled outcomes. Require positive net under a conservative cost quantile and report calibration separately by chain and regime. Stop a strategy-chain cohort if cost coverage is below 95%, median forecast error is materially biased positive, or cumulative reconciled net after all costs is non-positive.",
+      "strategy": "Cross-chain executable-edge SHADOW scorecards",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab.py",
+        "tests/test_market_feature_shadow_executor.py",
+        "tests/test_strategy_lab_cross_chain_research.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.88,
+      "downside_risk": "Cohort segmentation increases sample requirements and may leave most leaders without enough evidence.",
+      "evidence": [
+        {
+          "detail": "Leader selection uses historical net, profit speed, positive ratio and copy score; recommendations apply a follower edge haircut and require fresh quote, simulation, liquidity, sellability and conservative positive profit.",
+          "path": "learnerbot/copy_engine.py"
+        },
+        {
+          "detail": "Solana applies signal-age, entry-deterioration, copied-performance, fee-share and impact/slippage controls, reflecting material follower timing and execution decay.",
+          "path": "learnerbot/solana_profit_first_live_correction_patch.py"
+        },
+        {
+          "detail": "Leader-copy recording currently converts closed net outcomes into aggregate wins/losses but does not preserve signal-age, entry deterioration, leader edge, follower edge or failure cause in Strategy Lab metadata.",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py"
+        }
+      ],
+      "expected_effect": "Identifies leader-chain-latency cohorts that retain positive follower edge and keeps stale or non-replicable cohorts dormant.",
+      "id": "leader-copy-net-edge-decay-v1",
+      "minimum_observation": "At least 30 reconciled follower closed cycles per leader-chain cohort, 5 independent active days, and at least 20 observations in each promoted signal-age bucket.",
+      "rationale": "A historically profitable leader can be unprofitable for the follower after latency and chain-specific costs. The strategy should be judged on follower money-weighted net edge conditional on signal age and deterioration, not leader win rate. Negative reconciled follower outcomes with successful execution are STRATEGY/MARKET losses; failed or unresolved execution attempts are EXECUTION/INFRASTRUCTURE failures.",
+      "shadow_test": "Record leader-side reconstructed edge, follower quote edge, signal age, entry deterioration, complete costs, execution status and reconciled follower net for every eligible signal, including abstentions. Compare fixed out-of-sample cohorts by chain and age bucket. Stop a cohort when at least 20 reconciled copies have non-positive cumulative net, profit factor at or below 1, or when execution-failure incidence prevents reliable attribution.",
+      "strategy": "SiBot leader-copy with follower-execution decay",
+      "suggested_files": [
+        "learnerbot/strategy_lab_live_recording_patch.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_strategy_lab_live_recording.py",
+        "tests/test_solana_leader_edge_alignment.py"
+      ]
+    }
+  ],
+  "provider": "gpt",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any strategy because repository thresholds or safety gates appear conservative.",
+      "reason": "Architecture cannot establish realised profitability, calibration or current execution reliability."
+    },
+    {
+      "idea": "Increase trade frequency by lowering minimum edge, liquidity, sellability, simulation, fee, slippage or price-impact protections.",
+      "reason": "More trades do not imply positive money-weighted net P&L and would weaken required safety controls."
+    },
+    {
+      "idea": "Rank Solana and EVM strategies by raw win count, gross spread or unconverted native-unit profit.",
+      "reason": "These measures ignore position size and materially different chain-specific execution costs."
+    },
+    {
+      "idea": "Treat all negative or missing outcomes as strategy losses.",
+      "reason": "Reconciled negative executions are STRATEGY/MARKET evidence, while revert, RPC, dropped, unresolved and reconciliation failures are EXECUTION/INFRASTRUCTURE evidence."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "2fa508d18d0b2a96857fa80d0f3397e7672270df",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. The repository generally enforces positive executable edge, chain-specific cost controls and SHADOW-first governance, but Strategy Lab can treat BROADCAST, fee-pending or expected EVM results as completed LIVE economic evidence. This can contaminate money-weighted evaluation and obscure STRATEGY/MARKET loss versus EXECUTION/INFRASTRUCTURE failure. No profitability, CANARY-readiness or LIVE-readiness conclusion is possible without fresh runtime forensics."
+}
