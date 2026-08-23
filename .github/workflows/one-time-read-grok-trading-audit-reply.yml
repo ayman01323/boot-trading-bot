@@ -1,0 +1,55 @@
+name: One-time Read Grok Trading Audit Reply
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-read-grok-trading-audit-reply.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  read-reply:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Read exact Strategy Factory message from forensic snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=/var/tmp/boot/ai_agent_bus.sqlite3
+          snap="$RUNNER_TEMP/grok-audit.sqlite3"
+          test -s "$src"
+          cp "$src" "$snap"
+          [[ -r "${src}-wal" ]] && cp "${src}-wal" "${snap}-wal" || true
+          [[ -r "${src}-shm" ]] && cp "${src}-shm" "${snap}-shm" || true
+          SNAP="$snap" python3 - <<'PY'
+          import json, os, sqlite3
+          mid='2026-08-23T18-10-grok-full-trading-stop-audit'
+          conn=sqlite3.connect(os.environ['SNAP'])
+          conn.row_factory=sqlite3.Row
+          cols={r['name'] for r in conn.execute('PRAGMA table_info(messages)')}
+          wanted=['message_id','thread_id','subject','sender','target','status','body','reply','error','created_at','delivered_at','acknowledged_at','replied_at']
+          selected=[c for c in wanted if c in cols]
+          row=conn.execute('SELECT '+','.join(selected)+' FROM messages WHERE message_id=? LIMIT 1',(mid,)).fetchone()
+          conn.close()
+          if row is None:
+              print('MESSAGE_FOUND=NO')
+              raise SystemExit(2)
+          value=dict(row)
+          print('MESSAGE_FOUND=YES')
+          print('MESSAGE_ID='+str(value.get('message_id') or ''))
+          print('SENDER='+str(value.get('sender') or ''))
+          print('TARGET='+str(value.get('target') or ''))
+          print('STATUS='+str(value.get('status') or ''))
+          print('SUBJECT='+str(value.get('subject') or ''))
+          print('THREAD_ID='+str(value.get('thread_id') or ''))
+          print('DELIVERED_AT='+str(value.get('delivered_at') or ''))
+          print('ACKNOWLEDGED_AT='+str(value.get('acknowledged_at') or ''))
+          print('REPLIED_AT='+str(value.get('replied_at') or ''))
+          print('GROK_REPLY_BEGIN')
+          print(str(value.get('reply') or value.get('body') or ''))
+          print('GROK_REPLY_END')
+          if str(value.get('error') or ''):
+              print('ERROR='+str(value.get('error')))
+          PY
