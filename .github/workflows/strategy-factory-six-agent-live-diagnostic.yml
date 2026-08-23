@@ -1,35 +1,29 @@
-name: Strategy Factory Seven-Agent Live Diagnostic
+name: One-Shot Seven-Agent Solana No-Trade Audit
 
 on:
-  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
-      - 'learnerbot/ai_agent_ws_runtime_patch.py'
-      - 'learnerbot/kimi_provider.py'
-      - 'scripts/ai_agent_ws_worker.py'
-      - 'scripts/ai_agent_ws_send.py'
-      - 'scripts/strategy_factory_transport.py'
-      - 'learnerbot/grok_provider.py'
-      - 'learnerbot/strategy_room.py'
-      - 'learnerbot/ai_health_compact_report_patch.py'
 
 permissions:
   contents: read
 
 concurrency:
-  group: strategy-factory-seven-agent-live-${{ github.event.pull_request.number || github.ref }}
+  group: solana-seven-agent-audit-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  live-diagnostic:
+  audit:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 15
+    timeout-minutes: 25
+    env:
+      DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+      AI_AGENT_BUS_URL: ws://127.0.0.1:8765
     steps:
-      - name: Check out repository without persisted credentials
+      - name: Check out audit branch without persisted credentials
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 30
           persist-credentials: false
 
       - name: Verify seven-agent Strategy Factory runtime
@@ -39,109 +33,128 @@ jobs:
           systemctl is-active --quiet learnerbot
           test -s /var/tmp/boot/ai_agent_ws_status.json
           python3 - <<'PY'
-          import json, time
-          p='/var/tmp/boot/ai_agent_ws_status.json'
-          d=json.load(open(p,encoding='utf-8'))
-          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d.get('state')
-          assert d.get('host') == '127.0.0.1'
-          assert int(d.get('port') or 0) == 8765
+          import json,time
+          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
           expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
-          assert set(d.get('workers') or []) == expected, d.get('workers')
-          age=int(time.time())-int(d.get('updated_epoch') or 0)
-          assert age < 86400, age
-          print('runtime_state='+str(d.get('state')))
-          print('workers='+','.join(d.get('workers') or []))
-          print('status_age_seconds='+str(age))
+          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d
+          assert set(d.get('workers') or []) == expected, d
+          assert int(time.time())-int(d.get('updated_epoch') or 0) < 86400, d
+          print('seven_agent_bus=ready')
           PY
 
-      - name: Build isolated diagnostic environment
+      - name: Build sanitised evidence package
         shell: bash
         run: |
           set -euo pipefail
-          venv="$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic"
-          rm -rf "$venv"
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
-          echo "VENV=$venv" >> "$GITHUB_ENV"
-
-      - name: Probe all seven providers strictly
-        shell: bash
-        run: |
-          set -euo pipefail
-          probe() {
-            sender="$1"
-            target="$2"
-            mid="sf7-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
-            set +e
-            output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-              --from "$sender" \
-              --to "$target" \
-              --message-id "$mid" \
-              --timeout 90 \
-              --message 'Strategy Factory seven-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
-            sender_rc=$?
-            set -e
-            printf '%s\n' "$output"
-            if [[ $sender_rc -ne 0 ]]; then
-              echo "${target}_provider_health=FAILED sender_rc=${sender_rc}"
-              return 1
+          git fetch --quiet origin main
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/boot-status.txt 2>&1 || true
+          deployed="$(awk '/^sha:/{print $2; exit}' /tmp/boot-status.txt)"
+          main_sha="$(git rev-parse origin/main)"
+          {
+            echo "CURRENT_MAIN_SHA=$main_sha"
+            echo "DEPLOYED_SHA=${deployed:-unknown}"
+            echo ""
+            echo "RECENT MAIN COMMITS:"
+            git log --oneline -8 origin/main
+            echo ""
+            echo "DEPLOYED..MAIN DIFF STAT:"
+            if [[ -n "${deployed:-}" && "$deployed" =~ ^[0-9a-f]{40}$ ]]; then
+              git diff --stat "$deployed"..origin/main -- learnerbot scripts tests | head -n 80
+            else
+              echo "deployed SHA unavailable"
             fi
-            final="$(printf '%s\n' "$output" | tail -n 1)"
-            TARGET="$target" FINAL="$final" python3 - <<'PY'
-          import json, os
-          target=os.environ['TARGET']
-          value=json.loads(os.environ['FINAL'])
-          assert value.get('status') == 'REPLIED', (target,value.get('status'))
-          assert value.get('delivered') is True, (target,value)
-          assert value.get('acknowledged') is True, (target,value)
-          assert not str(value.get('error') or ''), (target,value.get('error'))
-          assert str(value.get('body') or '').strip() == 'HEALTH_OK', (target,value.get('body'))
-          print(f'{target}_provider_health=HEALTH_OK')
-          PY
-          }
+            echo ""
+            echo "SOLANA SELECTOR BRIDGE (sanitised, if present):"
+            if [[ -r /var/tmp/boot/solana_leader_selector.json ]]; then
+              head -c 2600 /var/tmp/boot/solana_leader_selector.json
+              echo
+            else
+              echo "not readable/present"
+            fi
+            echo ""
+            echo "RECENT SOLANA/LEADER LOG EVIDENCE:"
+            journalctl -u learnerbot.service --since '45 minutes ago' --no-pager 2>/dev/null \
+              | grep -Ei 'solana|leader|preflight|selected|copy|qualified|reject' \
+              | tail -n 45 \
+              | sed -E 's/(0x)?[0-9A-Fa-f]{32,}/<redacted-id>/g' \
+              | head -c 3600 || true
+          } > /tmp/solana-audit-evidence.txt
+          echo '--- evidence package ---'
+          cat /tmp/solana-audit-evidence.txt
+
+      - name: Ask all seven agents independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin="$DEPLOY_ROOT/.venv/bin/python"
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          subject='Solana no-trade audit after MASTER funnel changes'
+          thread='solana-no-trade-audit-20260823'
+          evidence="$(head -c 6100 /tmp/solana-audit-evidence.txt)"
+          prompt="$(cat <<EOF
+          Review the newly merged BOOT trading-funnel changes and advise why Solana is not trading NOW.
+
+          Important distinction: repository main may be ahead of the deployed production SHA. Do not attribute a production symptom to an undeployed change. The earlier audit reported 45 Solana candidates with 0 qualified: 42 failed historical win-rate, 2 median-return and 1 recent-win-rate gates. Verify or challenge that against the supplied fresh evidence rather than assuming it remains true.
+
+          Your task:
+          1. State the exact first zero stage in the current Solana funnel: discovered -> reconstructed -> positive pool -> quality-qualified -> selected -> preflight -> copied.
+          2. Decide whether the cause is expected safety/strategy filtering, DATA, EXECUTION, INFRASTRUCTURE, or a software defect.
+          3. Check whether the new merged changes can plausibly be causal, noting whether they are actually deployed.
+          4. Identify the strongest evidence and the strongest competing explanation.
+          5. Recommend the next read-only diagnostic or SHADOW experiment. Do NOT lower win-rate/return/liquidity/sellability/simulation/preflight thresholds merely to force trades.
+          6. If candidate quality is genuinely the blocker for several cycles, advise how Strategy Factory should broaden/research leader sources without weakening safety gates.
+          7. Name any P0/P1 bug you can support; otherwise say no supported bug.
+
+          No trading, deploy, restart, LIVE/ARMED, capital/risk, wallet/signing, secret access, threshold weakening or repository mutation is authorised.
+
+          End with exactly:
+          SOLANA_FIRST_ZERO_STAGE: <stage>
+          ROOT_CAUSE_CLASS: STRATEGY|MARKET|DATA|EXECUTION|INFRASTRUCTURE|BUG|MORE_EVIDENCE
+          NEW_CHANGES_CAUSAL: YES|NO|UNPROVEN
+          RECOMMENDED_NEXT_ACTION: <one bounded action>
+
+          EVIDENCE:
+          $evidence
+          EOF
+          )"
+
+          : > /tmp/solana-agent-results.txt
           failures=0
-          probe gemini gpt || failures=$((failures+1))
-          probe gpt claude || failures=$((failures+1))
-          probe gpt gemini || failures=$((failures+1))
-          probe gpt deepseek || failures=$((failures+1))
-          probe gpt grok || failures=$((failures+1))
-          probe gpt kimi || failures=$((failures+1))
-          probe gpt copilot || failures=$((failures+1))
-          echo "provider_failures=$failures"
+          for agent in gpt claude gemini deepseek grok kimi copilot; do
+            echo "===== ${agent^^} =====" | tee -a /tmp/solana-agent-results.txt
+            set +e
+            output="$($python_bin scripts/strategy_factory_chat.py "$agent" "$prompt" --subject "$subject" --thread-id "$thread" --timeout 150 2>&1)"
+            rc=$?
+            set -e
+            printf '%s\n' "$output" | tee -a /tmp/solana-agent-results.txt
+            final="$(printf '%s\n' "$output" | tail -n 1)"
+            AGENT="$agent" FINAL="$final" python3 - <<'PY' || failures=$((failures+1))
+          import json,os
+          a=os.environ['AGENT']
+          v=json.loads(os.environ['FINAL'])
+          assert v.get('delivered') is True, (a,v)
+          assert v.get('acknowledged') is True, (a,v)
+          assert str(v.get('status') or '').upper() == 'REPLIED', (a,v)
+          print(f'{a}_delivery=ACKNOWLEDGED_REPLIED')
+          print(f'{a}_reply='+str(v.get('body') or '').replace('\n',' | ')[:1800])
+          PY
+          done
+          echo "agent_failures=$failures"
           test "$failures" -eq 0
 
-      - name: Verify Kimi bounded deterministic server task
+      - name: Publish concise seven-agent result
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to kimi \
-            --message-id "sf7-kimi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --timeout 90 \
-            --task-action GIT_STATUS \
-            --task-args-json '{}' \
-            --task-instruction 'Return bounded read-only git status evidence from the production server repository. Do not modify anything.')"
-          printf '%s\n' "$output"
-          final="$(printf '%s\n' "$output" | tail -n 1)"
-          FINAL="$final" python3 - <<'PY'
-          import json,os
-          outer=json.loads(os.environ['FINAL'])
-          assert outer.get('status') == 'COMPLETED', outer
-          assert outer.get('delivered') is True, outer
-          assert outer.get('acknowledged') is True, outer
-          assert not str(outer.get('error') or ''), outer
-          result=json.loads(str(outer.get('body') or '{}'))
-          assert result.get('status') == 'COMPLETED', result
-          assert result.get('action') == 'GIT_STATUS', result
-          evidence=result.get('evidence') or {}
-          assert int(evidence.get('returncode') or 0) == 0, result
-          print('kimi_bounded_server_task=COMPLETED')
-          print('kimi_git_status_chars='+str(len(str(evidence.get('stdout') or ''))))
-          PY
-
-      - name: Remove isolated environment
-        if: always()
-        shell: bash
-        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic}"
+          {
+            echo '### Seven-Agent Solana No-Trade Audit'
+            echo
+            echo '- Transport: primary Strategy Factory WebSocket bus'
+            echo '- Authority: read-only advice only'
+            echo '- Trading/LIVE/capital/wallet/deploy changes: none'
+            echo
+            echo '```text'
+            tail -c 15000 /tmp/solana-agent-results.txt 2>/dev/null || true
+            echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
