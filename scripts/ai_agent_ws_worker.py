@@ -33,7 +33,10 @@ _RETIRED_MODEL_ALIASES = {
         "models/gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
     },
 }
-_PROVIDER_CALL_LOCK = threading.Lock()
+# Production embeds all seven workers in one Python process. A single global
+# provider lock made one slow agent block every other agent, including Kimi.
+# Serialize only per provider so unrelated workers can answer independently.
+_PROVIDER_CALL_LOCKS = {agent: threading.Lock() for agent in AGENTS}
 _MISSING = object()
 MAX_REPLY_CHARS = 7600
 
@@ -89,7 +92,7 @@ def _restore_env(key: str, previous: object | str) -> None:
 
 
 def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
-    with _PROVIDER_CALL_LOCK:
+    with _PROVIDER_CALL_LOCKS[agent]:
         previous_kind: object | str = os.environ.get("AI_COST_TASK_KIND", _MISSING)
         previous_level: object | str = os.environ.get("AI_COST_ROUTE_LEVEL", _MISSING)
         os.environ["AI_COST_TASK_KIND"] = "ws-message"

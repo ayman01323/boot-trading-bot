@@ -89,3 +89,45 @@ def test_kimi_runtime_secret_sync_is_redacted_and_deploy_safe() -> None:
     assert "'kimi': ('KIMI_API_KEY' in present or 'MOONSHOT_API_KEY' in present)" in workflow
     assert "'Kimi=' + ('present' if {'KIMI_API_KEY','MOONSHOT_API_KEY'} & names else 'missing')" in deploy
     assert 'cat "$target"' not in workflow
+
+
+def test_embedded_provider_calls_do_not_head_of_line_block_kimi(monkeypatch) -> None:
+    """A slow GPT call must not prevent Kimi from starting in embedded runtime."""
+    import threading
+    import time
+
+    gpt_entered = threading.Event()
+    release_gpt = threading.Event()
+
+    def fake_call_provider(provider: str, prompt: str):
+        if provider == "gpt":
+            gpt_entered.set()
+            assert release_gpt.wait(timeout=2.0)
+            return 0, "gpt done", ""
+        if provider == "kimi":
+            return 0, "kimi done", ""
+        return 0, "other", ""
+
+    monkeypatch.setattr(ai_agent_ws_worker, "call_provider", fake_call_provider)
+
+    holder = {}
+    thread = threading.Thread(
+        target=lambda: holder.setdefault(
+            "gpt", ai_agent_ws_worker._call_provider_locked("gpt", "slow")
+        ),
+        daemon=True,
+    )
+    thread.start()
+    assert gpt_entered.wait(timeout=1.0)
+
+    started = time.monotonic()
+    kimi = ai_agent_ws_worker._call_provider_locked("kimi", "fast")
+    elapsed = time.monotonic() - started
+
+    release_gpt.set()
+    thread.join(timeout=2.0)
+
+    assert kimi == (0, "kimi done", "")
+    assert elapsed < 0.5
+    assert holder["gpt"] == (0, "gpt done", "")
+    assert ai_agent_ws_worker._PROVIDER_CALL_LOCKS["gpt"] is not ai_agent_ws_worker._PROVIDER_CALL_LOCKS["kimi"]
