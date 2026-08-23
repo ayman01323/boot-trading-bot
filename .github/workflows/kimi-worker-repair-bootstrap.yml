@@ -1,0 +1,112 @@
+name: Bootstrap Kimi Worker Repair
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/kimi-worker-repair-bootstrap.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Replace global provider lock with per-agent locks and add regression test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          worker = Path('scripts/ai_agent_ws_worker.py')
+          text = worker.read_text(encoding='utf-8')
+          old = '_PROVIDER_CALL_LOCK = threading.Lock()\n'
+          new = '''# The embedded production runtime hosts all seven workers in one Python process.\n# A single process-wide lock creates head-of-line blocking: one slow provider can\n# prevent Kimi (and every other agent) from even starting its provider call.\n# Keep serialization only within each provider, because each provider mutates a\n# distinct model override key while handling its own request.\n_PROVIDER_CALL_LOCKS = {agent: threading.Lock() for agent in AGENTS}\n'''
+          if old not in text:
+              raise SystemExit('expected global provider lock not found')
+          text = text.replace(old, new, 1)
+          old2 = 'def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:\n    with _PROVIDER_CALL_LOCK:\n'
+          new2 = 'def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:\n    with _PROVIDER_CALL_LOCKS[agent]:\n'
+          if old2 not in text:
+              raise SystemExit('expected provider lock usage not found')
+          text = text.replace(old2, new2, 1)
+          worker.write_text(text, encoding='utf-8')
+
+          test = Path('tests/test_kimi_seventh_agent.py')
+          body = test.read_text(encoding='utf-8')
+          marker = 'def test_embedded_provider_calls_do_not_head_of_line_block_kimi'
+          if marker not in body:
+              body += r'''
+
+
+def test_embedded_provider_calls_do_not_head_of_line_block_kimi(monkeypatch) -> None:
+    """A slow GPT call must not prevent Kimi from starting in embedded runtime."""
+    import threading
+    import time
+
+    gpt_entered = threading.Event()
+    release_gpt = threading.Event()
+
+    def fake_call_provider(provider: str, prompt: str):
+        if provider == "gpt":
+            gpt_entered.set()
+            assert release_gpt.wait(timeout=2.0)
+            return 0, "gpt done", ""
+        if provider == "kimi":
+            return 0, "kimi done", ""
+        return 0, "other", ""
+
+    monkeypatch.setattr(ai_agent_ws_worker, "call_provider", fake_call_provider)
+
+    holder = {}
+    thread = threading.Thread(
+        target=lambda: holder.setdefault(
+            "gpt", ai_agent_ws_worker._call_provider_locked("gpt", "slow")
+        ),
+        daemon=True,
+    )
+    thread.start()
+    assert gpt_entered.wait(timeout=1.0)
+
+    started = time.monotonic()
+    kimi = ai_agent_ws_worker._call_provider_locked("kimi", "fast")
+    elapsed = time.monotonic() - started
+
+    release_gpt.set()
+    thread.join(timeout=2.0)
+
+    assert kimi == (0, "kimi done", "")
+    assert elapsed < 0.5
+    assert holder["gpt"] == (0, "gpt done", "")
+    assert ai_agent_ws_worker._PROVIDER_CALL_LOCKS["gpt"] is not ai_agent_ws_worker._PROVIDER_CALL_LOCKS["kimi"]
+'''
+          test.write_text(body, encoding='utf-8')
+          PY
+      - name: Run focused Kimi regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/kimi-worker-repair-venv"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'pytest>=8,<9' 'websockets>=15,<16' 'python-dotenv>=1,<2'
+          "$venv/bin/python" -m py_compile scripts/ai_agent_ws_worker.py
+          "$venv/bin/python" -m pytest -q tests/test_kimi_seventh_agent.py
+      - name: Commit tested repair to PR branch and remove bootstrap workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/kimi-worker-repair-bootstrap.yml
+          git config user.name 'GPT Kimi Repair'
+          git config user.email 'actions@users.noreply.github.com'
+          git add scripts/ai_agent_ws_worker.py tests/test_kimi_seventh_agent.py
+          git commit -m 'Prevent cross-agent blocking in embedded AI workers'
+          git push origin "HEAD:${GITHUB_HEAD_REF}"
