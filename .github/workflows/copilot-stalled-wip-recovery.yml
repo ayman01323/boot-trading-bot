@@ -56,7 +56,7 @@ jobs:
           find_issue() {
             local title="$1"
             gh issue list --state open --search "${title} in:title" --limit 5 --json number,title \
-              --jq --arg t "$title" '.[] | select(.title == $t) | .number' | head -n1
+              | python3 -c 'import json,sys; t=sys.argv[1]; rows=json.load(sys.stdin); print(next((str(x.get("number")) for x in rows if x.get("title")==t), ""))' "$title"
           }
 
           find_empty_stale_pr() {
@@ -65,7 +65,7 @@ jobs:
             now="$(date +%s)"
             gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
-              --jq --arg n "$needle" '.[] | select((.user.login | ascii_downcase) == "copilot" and .draft == true and (.title | contains($n))) | .number' \
+              | python3 -c 'import json,sys; n=sys.argv[1]; rows=json.load(sys.stdin); [print(x.get("number")) for x in rows if str((x.get("user") or {}).get("login") or "").lower() in {"copilot","copilot-swe-agent[bot]"} and bool(x.get("draft")) and n in str(x.get("title") or "")]' "$needle" \
             | while read -r pr; do
                 [[ "$pr" =~ ^[0-9]+$ ]] || continue
                 details="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/pulls/${pr}")"
