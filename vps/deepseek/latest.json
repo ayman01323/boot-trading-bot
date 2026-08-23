@@ -1,10 +1,10 @@
 {
   "action": "inspect",
   "action_return_code": 0,
-  "deepseek_analysis": "istic return code was `0`. No VPS mutation was performed.\n\n**Service status:** `learnerbot.service` is **active (running)** and enabled. PID `1132054`, uptime ~55s, process tasks within limit (`23/5869`), CPU and memory activity observed. Before/after snapshots show no crash or restart; memory increased from `504.7M` to `519.3M` and CPU advanced normally.\n\n**Concrete warnings / findings:**\n- **Alchemy API rate limit:** `evm-router-probe` logged `HTTP 429; retries exhausted` for `alchemy_getAssetTransfers`. This indicates degraded EVM asset-transfer probing.\n- **Solana execution rejection:** `solana-exec-efficiency` rejected a SELL trade because quoted price impact `10000.00 bps` + slippage `50 bps` = `10050.00 bps`, far exceeding the `500 bps` limit. This is protective behaviour, but it may indicate illiquid quote data or stale routing.\n- **Low/zero qualified pools:** Multiple chains (`bsc`, `base`, `ethereum`, `arbitrum`, `polygon`) show `pool=0 qualified=0 selected=0`; Solana shows `broader_pool=46 qualified=0 selected=0`. This suggests no current opportunities passed filters, and the broader pool is empty on several chains.\n\n**Follow-up recommendations:**\n1. Investigate Alchemy 429 rate limiting: check configured request rates, backoff behaviour, and whether the Alchemy plan/endpoint quota needs adjustment.\n2. Review Solana price-impact rejection: verify price oracle/quote freshness and whether the 10000 bps impact is expected for that [REDACTED]\n3. Monitor memory trend: `519.3M` is below peak `604.5M`, but continued growth should be watched.\n4. Diagnose why qualified pools are `0` across chains \u2014 confirm market data feeds, pool discovery, and filtering thresholds are healthy.\n5. Re-run a bounded inspection after the above items are reviewed to confirm improvements.",
+  "deepseek_analysis": ".8M`, still below observed peak `624.0M`.\n- No tracked changes in workspace; branch `main` and SHA `c74c23ad...` unchanged before and after inspection.\n- No error-level log lines shown in provided context.\n\n---\n\n### Concrete warnings\n\n1. **All scan counters are zero across every chain and scan type.**  \n   Logs show:\n   - `sibot-broader-qualified`: `pool=0 qualified=0 selected=0` for base, ethereum, arbitrum, polygon, bsc.\n   - `fast-market-scan`: `direct=0 merged=0 eligible=0 auto-events=0`.\n\n   This is the most important warning. A running service with zero market candidates may indicate:\n   - RPC/node connectivity degradation.\n   - Stale or empty DEX/pool data sources.\n   - Incorrect chain/RPC configuration.\n   - Market scan filters being too restrictive, or a data-feed outage.\n\n2. **Memory usage is non-trivial at ~548 MB.**  \n   Not immediately critical, but worth monitoring for sustained growth over hours/days.\n\n3. **No successful non-zero scan evidence in the provided log window.**  \n   The service is alive, but we cannot yet confirm it is functionally healthy beyond process-level liveness.\n\n---\n\n### Follow-up recommendations\n\n- Check upstream market-data/RPC endpoints for connectivity and rate-limit errors.\n- Inspect full logs around the scan window for hidden warnings or exceptions not shown in the sanitised context.\n- Verify that liquidity-pool ingestion is populating for at least one chain.\n- Re-run a manual scan or targeted health probe to confirm non-zero `direct/merged/eligible` values.\n- Monitor memory trend over the next hour; sustained increase toward the 624 MB peak may need attention.\n\nOverall: **the action succeeded and the service process is running, but the zero-scan metrics indicate the bot may not be performing useful market discovery right now.**",
   "deepseek_analysis_available": true,
-  "deployed_sha": "fb37747ef970b8bb71b202cec2a95ae036dfae16",
-  "generated_epoch": 1787525549,
+  "deployed_sha": "c74c23ad7a25dbfcdbdadd97e59c42803bb3ddbe",
+  "generated_epoch": 1787526648,
   "github_to_vps_link": true,
   "provider": "deepseek",
   "provider_return_code": 0,
@@ -20,8 +20,8 @@
   },
   "self_hosted_runner": true,
   "service_active": true,
-  "source_commit": "b5b0ef535aab2874bf2666890c2ba1e671c09568",
+  "source_commit": "c74c23ad7a25dbfcdbdadd97e59c42803bb3ddbe",
   "status": "SUCCESS",
-  "target_sha": "b5b0ef535aab2874bf2666890c2ba1e671c09568",
-  "workflow_run_id": 32671853054
+  "target_sha": "c74c23ad7a25dbfcdbdadd97e59c42803bb3ddbe",
+  "workflow_run_id": 32672194358
 }
