@@ -44,13 +44,11 @@ def install() -> None:
     if getattr(_cost, "_kimi_cost_patch_installed", False):
         return
 
-    # Keep routine L1-L3 routes unchanged. Kimi joins only Level 4 full-council
-    # work so simply adding the provider does not multiply everyday API spend.
-    _cost.ALL_ADVISERS = tuple(dict.fromkeys((*_cost.ALL_ADVISERS, "kimi")))
-    levels = dict(_cost.LEVEL_ADVISERS)
-    levels[4] = _cost.ALL_ADVISERS
-    _cost.LEVEL_ADVISERS = levels
-
+    # Stage Kimi as an individually callable Strategy Factory/Council provider
+    # without altering the existing protected MASTER-change adviser quorum. Once
+    # a real Kimi credential has passed the live diagnostic, a separate bounded
+    # change can add it to ALL_ADVISERS/Level 4 without making missing credentials
+    # block production governance.
     existing = tuple(row for row in _cost._MODEL_RATES if not str(row[0]).startswith("kimi-"))
     _cost._MODEL_RATES = _KIMI_RATES + existing
     _cost._PROVIDER_FALLBACK_RATES["kimi"] = (1.00, 5.00, 0.20)
