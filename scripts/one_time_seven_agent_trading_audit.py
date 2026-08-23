@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 
-from scripts.strategy_factory_transport import exchange
+try:
+    from scripts.strategy_factory_transport import exchange
+except ModuleNotFoundError:
+    from strategy_factory_transport import exchange
 
 TARGETS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")
 THREAD = f"post-deploy-trading-audit-{os.environ.get('GITHUB_RUN_ID', 'manual')}"
