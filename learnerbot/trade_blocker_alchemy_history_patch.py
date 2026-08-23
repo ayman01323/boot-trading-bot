@@ -83,6 +83,7 @@ def _publish_startup_health(app):
         "etherscan_configured": bool(str(getattr(app, "etherscan_api_key", "") or "").strip()),
         "polygon_focus": snapshot.get("polygon_focus"),
         "platform_auto": snapshot.get("platform_auto"),
+        "platform_live": snapshot.get("platform_live"),
         "evm": snapshot.get("evm", {}),
         "fast_market": snapshot.get("fast_market", {}),
     }
@@ -112,6 +113,8 @@ def _publish_startup_health(app):
                 except Exception:
                     pass
             marker.write_text(str(int(time.time())) + "\n", encoding="utf-8")
+
+    _health._maybe_alert_platform_gate_off(app, masters, safe)
 
 
 def install():
