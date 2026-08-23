@@ -11,18 +11,19 @@ _ORIGINAL_RUNTIME_ENV = _base._runtime_env
 
 
 def runtime_env_with_synced_fallback() -> dict[str, str]:
-    """Merge the writable GitHub-synced credential bridge into provider env.
+    """Fill missing provider credentials from the writable synced bridge.
 
-    The existing root-owned compatibility bridge remains supported. The synced
-    /var/tmp bridge is read last so the newest GitHub Secret value wins. No
-    process-global environment is mutated and no credential is logged.
+    Explicit process, repository or compatibility-bridge credentials retain
+    precedence. The writable /var/tmp bridge is only a fallback for missing
+    provider secrets. No process-global environment is mutated and no secret is
+    logged.
     """
     env = _ORIGINAL_RUNTIME_ENV()
     try:
         values = dotenv_values(_SYNCED_RUNTIME_ENV) or {}
         for key in getattr(_base, '_SECRET_KEYS', set()):
             value = values.get(key)
-            if value:
+            if value and not str(env.get(str(key)) or '').strip():
                 env[str(key)] = str(value)
     except Exception:
         pass
