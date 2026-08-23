@@ -19,6 +19,7 @@ jobs:
     env:
       DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
       AI_AGENT_BUS_URL: ws://127.0.0.1:8765
+      MAIN_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - name: Check out audit branch without persisted credentials
         uses: actions/checkout@v4
@@ -46,22 +47,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --quiet origin main
           sudo /usr/local/sbin/status-boot-trading-bot > /tmp/boot-status.txt 2>&1 || true
           deployed="$(awk '/^sha:/{print $2; exit}' /tmp/boot-status.txt)"
-          main_sha="$(git rev-parse origin/main)"
+          main_sha="$MAIN_SHA"
+          git cat-file -e "${main_sha}^{commit}"
           {
             echo "CURRENT_MAIN_SHA=$main_sha"
             echo "DEPLOYED_SHA=${deployed:-unknown}"
             echo ""
             echo "RECENT MAIN COMMITS:"
-            git log --oneline -8 origin/main
+            git log --oneline -8 "$main_sha"
             echo ""
             echo "DEPLOYED..MAIN DIFF STAT:"
-            if [[ -n "${deployed:-}" && "$deployed" =~ ^[0-9a-f]{40}$ ]]; then
-              git diff --stat "$deployed"..origin/main -- learnerbot scripts tests | head -n 80
+            if [[ -n "${deployed:-}" && "$deployed" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${deployed}^{commit}" 2>/dev/null; then
+              git diff --stat "$deployed".."$main_sha" -- learnerbot scripts tests | head -n 80
             else
-              echo "deployed SHA unavailable"
+              echo "deployed SHA unavailable in this bounded checkout"
             fi
             echo ""
             echo "SOLANA SELECTOR BRIDGE (sanitised, if present):"
