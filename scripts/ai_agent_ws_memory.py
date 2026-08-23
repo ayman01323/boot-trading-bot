@@ -60,7 +60,7 @@ def recent_context(agent: str, *, current_message_id: str = "", db_path: str | N
                    FROM messages
                    WHERE status = 'REPLIED' AND reply <> '' AND COALESCE(error, '') = ''
                      AND (sender = ? OR target = ?) AND message_id <> ?
-                   ORDER BY COALESCE(replied_at, updated_at) DESC LIMIT ?""",
+                   ORDER BY COALESCE(replied_at, updated_at) DESC, rowid DESC LIMIT ?""",
                 (agent, agent, str(current_message_id or ""), max(exchanges * 3, exchanges)),
             ))
         finally:
