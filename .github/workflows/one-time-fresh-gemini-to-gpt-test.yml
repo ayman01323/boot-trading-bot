@@ -64,6 +64,36 @@ jobs:
           grep -F "GPT_REPLY=${marker}" <<<"$output"
           grep -F 'TEST_RESULT=PASS' <<<"$output"
 
+      - name: Verify durable Gemini to GPT bus evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -r /var/tmp/boot/ai_agent_bus.sqlite3
+          python3 - <<'PY'
+          import os, sqlite3
+          marker=f"GEMINI_TO_GPT_FRESH_{os.environ['GITHUB_RUN_ID']}_{os.environ['GITHUB_RUN_ATTEMPT']}_OK"
+          conn=sqlite3.connect('/var/tmp/boot/ai_agent_bus.sqlite3')
+          conn.row_factory=sqlite3.Row
+          rows=conn.execute(
+              """SELECT message_id,sender,target,body,status,reply,delivered_at,acknowledged_at,replied_at
+                   FROM messages
+                   WHERE sender='gemini' AND target='gpt' AND body LIKE ?
+                   ORDER BY created_at DESC LIMIT 5""",
+              (f'%{marker}%',),
+          ).fetchall()
+          assert rows, f'no durable gemini->gpt message found for {marker}'
+          row=rows[0]
+          assert row['status']=='REPLIED', dict(row)
+          assert row['reply'].strip()==marker, dict(row)
+          assert row['delivered_at'] is not None, dict(row)
+          assert row['acknowledged_at'] is not None, dict(row)
+          assert row['replied_at'] is not None, dict(row)
+          print('BUS_EVIDENCE=PASS')
+          print('MESSAGE_ID='+row['message_id'])
+          print('STATUS='+row['status'])
+          print('GPT_REPLY='+row['reply'].strip())
+          PY
+
       - name: Remove isolated environment
         if: always()
         shell: bash
