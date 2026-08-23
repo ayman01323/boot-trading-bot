@@ -118,6 +118,7 @@ def test_worker_identity_is_read_only_and_returns_provenance():
     assert payload["wallet_signing_authority"] is False
     assert payload["external_content_instruction_authority"] is False
     assert len(payload["findings"]) == 4
+    assert len(payload["source_snapshots"]) == 4
     assert all(row["url"].startswith("https://") for row in payload["findings"])
     assert all(row["retrieved_by"] == WORKER_IDENTITY for row in payload["findings"])
     assert all(row["instruction_authority"] is False for row in payload["findings"])
@@ -252,3 +253,44 @@ def test_live_requires_independent_challenge_and_dispute_fails_closed(tmp_path):
     gate = promotion_research_gate(disputed, target_stage="LIVE", now=1_800_000_100)
     assert gate["eligible"] is False
     assert "one or more findings disputed" in gate["reasons"]
+
+
+def test_source_extension_preserves_legacy_external_rows_and_new_worker_contract(monkeypatch, tmp_path):
+    from learnerbot import strategy_source_extension as extension
+
+    app = _app(tmp_path)
+    pack = {
+        "evidence_sha256": "c" * 64,
+        "sources": [{
+            "source_id": "EXT1",
+            "source_class": "PRIMARY_RAW_DATA",
+            "canonical_url": "https://api.llama.fi/v2/chains",
+            "retrieved_utc": "2026-08-23T00:00:00+00:00",
+            "data_sha256": "d" * 64,
+            "data": {"focus_chains": [{"name": "Solana"}]},
+            "notes": "Primary raw market context.",
+            "untrusted_external_content": True,
+            "instruction_authority": False,
+            "research_only": True,
+        }],
+        "errors": [],
+    }
+    worker = build_worker_payload(
+        question=extension._RESEARCH_QUESTION,
+        hypothesis_id=extension._RESEARCH_HYPOTHESIS_ID,
+        external_pack=pack,
+        now=1_800_000_000,
+    )
+    monkeypatch.setattr(extension, "_PREV_BUILD", lambda _app: {"baseline": True})
+    monkeypatch.setattr(extension, "attach_internal_learning_sources", lambda report, _app: report)
+    monkeypatch.setattr(extension, "source_catalogue", lambda: {"sources": [], "source_count": 0})
+    monkeypatch.setattr(extension, "internal_source_catalogue", lambda: [])
+    monkeypatch.setattr(extension, "_worker_research", lambda _app: (worker, False, {"stored": True}))
+
+    report = extension._build_with_source_governance(app)
+    legacy = report["external_source_research"]
+    assert legacy["source_ids"] == ["EXT1"]
+    assert legacy["sources"][0]["data"] == {"focus_chains": [{"name": "Solana"}]}
+    assert report["online_research_worker"]["findings"][0]["url"] == "https://api.llama.fi/v2/chains"
+    assert report["research_promotion_gates"]["CANARY"]["eligible"] is True
+    assert report["research_promotion_gates"]["LIVE"]["eligible"] is False
