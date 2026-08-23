@@ -125,6 +125,12 @@ def install() -> None:
 
 install()
 
+# Explicit owner-authorised one-time accounting write-off for the permanently
+# unsellable 8fip position. This runs only after every audited runtime hook above
+# passes. The migration is idempotent and performs no SELL, burn or transfer.
+from . import solana_operator_writeoff_8fip_migration as _writeoff_8fip  # noqa: E402
+_writeoff_8fip.apply()
+
 # Presentation-only owner warning overlay. It is loaded after the trading
 # integrity check and changes only alert composition/reminder cadence; the
 # audited execution/capacity/risk hooks above remain untouched.
