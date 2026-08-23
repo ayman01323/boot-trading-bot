@@ -7,15 +7,57 @@ on:
       - '.github/deploy-current-main.trigger'
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
   group: boot-vps-current-main-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
+  prepare:
+    name: Clear stale BOOT VPS work
+    if: >-
+      github.head_ref == 'agent/deploy-current-main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel non-deploy AI recovery occupancy and queued stale deploys
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # AI report recovery must never monopolise the trading VPS while a
+          # protected deployment is requested.
+          for state in in_progress queued; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                [[ -n "$run_id" && "$run_id" != "$GITHUB_RUN_ID" ]] || continue
+                echo "Cancelling AI recovery run ${run_id} (${state})"
+                gh api --method POST -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+              done
+          done
+
+          # Cancel only QUEUED stale deploy requests. Never interrupt a deploy
+          # already inside the restricted wrapper.
+          for workflow in deploy-current-main-direct.yml deploy-current-main-pr-isolated.yml server-ops.yml; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                [[ -n "$run_id" && "$run_id" != "$GITHUB_RUN_ID" ]] || continue
+                echo "Cancelling queued stale ${workflow} run ${run_id}"
+                gh api --method POST -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+              done
+          done
+
   deploy:
     name: Test and deploy exact PR base on VPS
+    needs: prepare
     if: >-
       github.head_ref == 'agent/deploy-current-main' &&
       github.event.pull_request.head.repo.full_name == github.repository
