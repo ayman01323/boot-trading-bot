@@ -16,15 +16,32 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Cancel proved-stale deploy-vps run
+      - name: Cancel non-trading recovery occupancy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for state in queued in_progress; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                [[ -n "$run_id" ]] || continue
+                echo "Cancelling AI recovery occupancy ${run_id} (${state})"
+                gh api --method POST -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+              done
+          done
+
+      - name: Cancel proved-stale old deploy-vps run
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Run 32673081630 has a completed/cancelled deploy job and only a stale
-          # queued post-deploy Claude proof job, so cancelling it cannot interrupt
-          # a live deployment or trading process.
+          # queued post-deploy Claude proof job. Cancelling it cannot interrupt a
+          # live deployment or the learnerbot service.
           gh api --method POST -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/runs/32673081630/cancel" >/dev/null 2>&1 || true
 
@@ -34,15 +51,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Queued only: never cancel a deployment that has actually started.
           for workflow in \
+            deploy-vps.yml \
+            final-deploy-v2.yml \
             deploy-current-main-direct.yml \
             deploy-current-main-pr-isolated.yml \
             deploy-current-main-trigger.yml \
             server-ops.yml \
             deepseek-vps-controlled-ops.yml \
             claude-vps-controlled-ops.yml \
-            learnerbot-recovery-restart.yml \
-            selfhosted-five-agent-recovery.yml; do
+            learnerbot-recovery-restart.yml; do
             gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
               --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
