@@ -1,0 +1,157 @@
+{
+  "cycle_id": "0663cdeaabc2-2026082323-722f1aef",
+  "evidence_gaps": [
+    ".strategy_claude/evidence.json is a MISSING_RUNTIME_FORENSICS placeholder (generated_epoch=0, generated_utc empty) with no trade_latency, infrastructure, operational_efficiency_audit, P&L, fee, slippage, gas, or shadow-test data for this cycle; all findings above are architecture-only, not measured.",
+    "Unconfirmed whether learnerbot/strategy_lab.py's SHADOW-stage profit_factor evaluation for Solana-sourced signals consumes market_feature_adapter.py::load_solana_market_features's placeholder (edge/liquidity/sellability=0) output or the real net_sol ledger in solana_sibot.py::evaluate_position.",
+    "No EVM equivalent of learnerbot/execution_latency.py stage-timing instrumentation was found, so Solana-vs-EVM latency cannot currently be compared even qualitatively from code.",
+    "No EVM equivalent of a single authoritative net-P&L-after-gas ledger (analogous to solana_sibot.py::evaluate_position) was confirmed; EVM net P&L would need to be reconstructed from transaction_audit.py/receipts.py, and that reconstruction was not verified to exist end-to-end already."
+  ],
+  "evidence_sha256": "1e612a7b29d10c016d7f25f5418b6daea6cf445c4400dc3f90b33e7ab7116bf5",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.55,
+      "downside_risk": "None from asking the question. If real code changes follow (e.g., wiring a genuine Solana quote-based edge into the shared framework), risk is scope creep or introducing new bugs in a currently-working leader-copy pipeline if the two systems are conflated incorrectly.",
+      "evidence": [
+        {
+          "detail": "load_solana_market_features hardcodes gross_edge_bps, liquidity and sellability fields to 0 and sets needs_quote_feature_adapter: True, meaning it cannot yet compute a contemporaneous executable edge for Solana",
+          "path": "learnerbot/market_feature_adapter.py"
+        },
+        {
+          "detail": "net_edge_bps = gross_edge_bps minus fees_bps/slippage_bps/price_impact_bps/latency_reserve_bps; evaluators gate on this net figure plus _common_executable liquidity/sellability checks",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "SHADOW stage evaluation uses MIN_PROFIT_FACTOR=1.10 to gate promotion to PROMOTION_CANDIDATE",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "evaluate_position() computes a separate, real net_sol = proceeds - cost ledger for the leader-copy live pipeline, distinct from the shared signal framework",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "If confirmed and fixed, prevents mis-calibrated Solana strategies from reaching PROMOTION_CANDIDATE/CANARY on artificially favorable shadow statistics; if the concern is unfounded (Solana promotion actually uses the real solana_sibot ledger), this closes the question with no code change needed.",
+      "id": "solana-shadow-quote-adapter-verification",
+      "minimum_observation": "At least 30 paired Solana shadow evaluation events across both feature sources, or a definitive code-path trace confirming which ledger strategy_lab.py actually reads for Solana profit_factor.",
+      "rationale": "If Strategy Lab's Solana SHADOW profit-factor evaluation is fed by the placeholder MarketFeatures (edge/liquidity/sellability = 0) rather than a real quote-derived figure, a Solana strategy could statistically clear the 1.10 profit-factor gate without reflecting real slippage, price impact, or sellability risk, directly undermining the durable money-weighted NET P&L objective on Solana specifically. This was not confirmed by tracing every call site, so it is raised as a question to resolve, not an established defect.",
+      "shadow_test": "Trace (read-only) which MarketFeatures instance strategy_lab.py's evaluate_strategy() actually consumes for Solana-sourced SHADOW events feeding profit_factor calculations; instrument a small sample of live Solana shadow events with both the placeholder path and, in parallel, a manually computed real-quote net edge, and diff profit_factor outcomes over >=30 paired events before drawing conclusions. Stop if fewer than 30 comparable shadow events accumulate within 2 weeks (insufficient data) or if the trace shows the real ledger is already used (question resolved, no further action).",
+      "strategy": "Cross-chain Strategy Lab signal evaluators (all 7 in cross_chain_strategy_signals.py) as applied to Solana opportunities",
+      "suggested_files": [
+        "Strategy Lab/solana_quote_adapter_verification_notes.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.5,
+      "downside_risk": "Low if purely additive/read-only reporting logic; risk only arises if implementation accidentally touches the live execution or signing path rather than a downstream accounting rollup.",
+      "evidence": [
+        {
+          "detail": "evaluate_position() produces one authoritative net_sol = proceeds - cost figure per position, refined by solana_refundable_rent_accounting_patch.py to exclude refundable rent from cost",
+          "path": "learnerbot/solana_sibot.py"
+        },
+        {
+          "detail": "ingest_receipt() stores gas_used and effective_gas_price_wei per EVM transaction but does not itself produce a rolled-up net-P&L figure",
+          "path": "learnerbot/receipts.py"
+        },
+        {
+          "detail": "periodic 2h cross-chain audit ledger with fee_native/native_delta/status columns, the closest existing EVM analogue, but described as forensic/reconciliation rather than a dedicated per-trade net-P&L ledger",
+          "path": "learnerbot/transaction_audit.py"
+        }
+      ],
+      "expected_effect": "Enables apples-to-apples Solana vs EVM NET P&L comparison once runtime evidence is available again; no behavioral change to trading itself.",
+      "id": "evm-net-pnl-ledger-parity",
+      "minimum_observation": "20 reconciled historical EVM trades with no unresolved discrepancy between the new rollup and manual reconstruction.",
+      "rationale": "Without a single authoritative EVM net-P&L-after-gas figure comparable in structure to Solana's evaluate_position, chain-specific NET P&L comparisons required by this review's objective (Solana vs EVM using chain-specific economics) cannot be made cleanly from code alone, and any future runtime evidence comparing the two chains risks comparing differently-derived numbers.",
+      "shadow_test": "Build the EVM ledger rollup as a read-only reporting function over existing receipts.py/transaction_audit.py data (no new signing/execution paths); backtest it against at least 20 historical closed EVM positions and confirm net figures reconcile against manually reconstructed gas+fee totals within a small tolerance before relying on it for any comparison.",
+      "strategy": "EVM live execution net P&L accounting parity with Solana",
+      "suggested_files": [
+        "Strategy Lab/evm_pnl_ledger_parity_notes.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.5,
+      "downside_risk": "Low \u2014 instrumentation is observational; risk only if timing hooks are inserted in the hot path in a way that adds overhead to signing/submission.",
+      "evidence": [
+        {
+          "detail": "records per-attempt stage timings (receive_delay_ms, strategy_ms, pre_balance_ms, order_ms, transaction_construction_ms, simulation_ms, execute_ms, post_balance_ms, execution_total_ms, total_event_to_result_ms) with p50/p95 summaries and an infra-move heuristic",
+          "path": "learnerbot/execution_latency.py"
+        },
+        {
+          "detail": "the only wiring found that populates execution_latency.py's samples, and it is Solana-specific",
+          "path": "learnerbot/solana_execution_latency_patch.py"
+        }
+      ],
+      "expected_effect": "Future engineering-audit and strategy-review cycles gain EVM-side latency evidence, enabling genuine cross-chain infra comparisons instead of Solana-only data.",
+      "id": "evm-latency-instrumentation-parity",
+      "minimum_observation": "2 weeks of EVM latency samples with confirmed negligible instrumentation overhead.",
+      "rationale": "The review objective requires comparing Solana and EVM using chain-specific economics including latency, and CLAUDE.md's engineering-audit process requires chain-by-chain trade_latency evidence with p50/p95 and RPC round-trip; without equivalent EVM instrumentation this comparison structurally favors/only-covers Solana.",
+      "shadow_test": "Add read-only timing hooks around the existing EVM live_executor.py quote->sign->submit->confirm stages, mirroring solana_execution_latency_patch.py's approach; validate for >=2 weeks that added overhead is negligible (<5ms) and that recorded stage sums are internally consistent before treating the data as decision-grade.",
+      "strategy": "Execution latency instrumentation parity with Solana",
+      "suggested_files": [
+        "Strategy Lab/evm_latency_instrumentation_notes.md"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.6,
+      "downside_risk": "None identified from keeping as-is; the risk lies in the input data quality (see proposal solana-shadow-quote-adapter-verification), not this gating structure itself.",
+      "evidence": [
+        {
+          "detail": "live_auto_promote: False always; MIN_EVALUATION_TRADES and MIN_PROFIT_FACTOR=1.10 gate SHADOW to PROMOTION_CANDIDATE",
+          "path": "learnerbot/strategy_lab.py"
+        },
+        {
+          "detail": "bounded live validation requires MIN_LIVE_PROFIT_FACTOR=1.20 and AI-council approval at MIN_MASTER_CONFIDENCE=0.85",
+          "path": "learnerbot/strategy_canary.py"
+        },
+        {
+          "detail": "explicitly non-signing: signing=False, transaction_submission=False, capital_changes=False",
+          "path": "learnerbot/shadow_strategy_executor.py"
+        }
+      ],
+      "expected_effect": "Continued protection against promoting strategies on insufficient or misleading evidence, independent of the specific quote-adapter concern raised in proposal solana-shadow-quote-adapter-verification.",
+      "id": "keep-shadow-promotion-gate-structure",
+      "minimum_observation": "N/A",
+      "rationale": "This staged, non-auto-promoting gate structure with escalating profit-factor thresholds and AI-council sign-off is a sound structural control against premature capital exposure to unproven strategies; no evidence was found of it being weakened.",
+      "shadow_test": "N/A - KEEP proposal, no test required; continue monitoring MIN_PROFIT_FACTOR/MIN_LIVE_PROFIT_FACTOR outcomes as normal.",
+      "strategy": "SHADOW -> PROMOTION_CANDIDATE -> CANARY promotion pipeline",
+      "suggested_files": []
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Lower MIN_PROFIT_FACTOR or MIN_LIVE_PROFIT_FACTOR thresholds in strategy_lab.py/strategy_canary.py to accelerate strategy rollout velocity",
+      "reason": "No evidence in this cycle supports loosening a control whose explicit purpose is gating durable NET P&L before capital exposure; missing runtime evidence makes this the wrong cycle to relax any gate."
+    },
+    {
+      "idea": "Optimize new or existing strategies for shadow win-rate/hit-count",
+      "reason": "Explicitly out of scope per review objective, which requires durable money-weighted NET P&L after all costs, not win count."
+    },
+    {
+      "idea": "Recommend a specific infrastructure/server move (KEEP/BENCHMARK/MOVE) based on code structure alone",
+      "reason": "trade_latency and infrastructure objects are entirely absent from this cycle's evidence; CLAUDE.md requires cost-adjusted, chain-weighted measured evidence for any such call, and none exists this cycle."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "f2d0b0fbc12303c6e49b4e2c0f15635117dd64ba",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Evidence for this cycle is architecture-only (.strategy_claude/evidence.json is a MISSING_RUNTIME_FORENSICS placeholder with generated_epoch=0, no trade_latency/infrastructure/P&L data), so no measured profitability, latency, or canary-readiness claims are made. Code review of learnerbot/ shows a chain-agnostic net-edge signal framework (cross_chain_strategy_signals.py) gating on fees/slippage/impact/latency-reserve, with a well-structured SHADOW->PROMOTION_CANDIDATE->CANARY promotion pipeline (strategy_lab.py, strategy_canary.py) that never auto-promotes. The main asymmetry found is between Solana and EVM: Solana's shared-signal adapter (market_feature_adapter.py::load_solana_market_features) hardcodes gross_edge_bps/liquidity/sellability to 0 (needs_quote_feature_adapter=True), unlike EVM's EXACT_QUOTE_AND_SIMULATION basis, and it is unconfirmed whether this placeholder feeds the SHADOW profit-factor gate or whether Solana promotion instead uses the real net_sol ledger in solana_sibot.py::evaluate_position. EVM also lacks an evaluate_position-equivalent single net-P&L-after-gas ledger, and lacks the per-stage latency instrumentation that Solana has via execution_latency.py/solana_execution_latency_patch.py. These gaps limit how confidently Solana and EVM economics can be compared chain-specifically, independent of strategy quality."
+}
