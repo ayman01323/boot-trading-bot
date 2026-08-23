@@ -1,0 +1,51 @@
+name: Bounded Deploy Current Main Trigger
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/deploy-current-main.trigger'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-vps-bounded-current-main-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Deploy current main through restricted root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin main
+          target="$(git rev-parse origin/main)"
+          git checkout --detach "$target"
+          current="$(git rev-parse HEAD)"
+          if [[ ! "$target" =~ ^[0-9a-f]{40}$ || "$current" != "$target" ]]; then
+            echo 'Refusing deploy: checkout is not exact current origin/main.' >&2
+            exit 42
+          fi
+          echo "Deploying exact current main: $target"
+          set +e
+          sudo /usr/local/sbin/deploy-boot-trading-bot "$target"
+          rc=$?
+          set -e
+          if [[ $rc -ne 0 ]]; then
+            echo 'Deploy rejected; restoring previously deployed learnerbot service.' >&2
+            sudo /usr/local/sbin/restart-boot-trading-bot || true
+            sudo /usr/local/sbin/status-boot-trading-bot || true
+            exit "$rc"
+          fi
+          sudo /usr/local/sbin/status-boot-trading-bot
