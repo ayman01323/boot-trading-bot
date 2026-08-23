@@ -53,10 +53,12 @@ The Python MCP process itself refuses a non-loopback bind. Public HTTPS and OAut
 
 ## Local smoke test
 
+MCP v2 requires Python 3.10+. This VPS already has Python 3.11, so use it explicitly instead of the older default `python3`.
+
 Create a separate environment; do not install MCP packages into the trading bot venv:
 
 ```bash
-python3 -m venv /opt/strategy-factory-mcp-bridge-venv
+python3.11 -m venv /opt/strategy-factory-mcp-bridge-venv
 /opt/strategy-factory-mcp-bridge-venv/bin/pip install -r requirements-mcp-bridge.txt
 
 STRATEGY_MCP_HOST=127.0.0.1 \
