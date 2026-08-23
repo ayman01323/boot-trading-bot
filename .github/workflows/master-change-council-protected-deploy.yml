@@ -8,10 +8,17 @@ on:
       - '.github/workflows/gpt-master-change-implement.yml'
       - '.github/workflows/publish-ai-master-control.yml'
       - 'learnerbot/master_change_council.py'
+      - 'learnerbot/master_change_cost_router_patch.py'
+      - 'learnerbot/ai_cost_router.py'
+      - 'learnerbot/ai_cost_provider_patch.py'
       - 'learnerbot/telegram_master_change_patch.py'
+      - 'learnerbot/telegram_ai_ops_verification_patch.py'
       - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_mailbox_provider_relay.py'
       - 'scripts/master_change_policy.py'
       - 'tests/test_master_change_council.py'
+      - 'tests/test_ai_cost_router.py'
       - 'docs/MASTER_TELEGRAM_CHANGE_COUNCIL.md'
   workflow_dispatch:
 
@@ -45,7 +52,7 @@ jobs:
           for _ in 1 2 3 4 5 6; do
             sudo /usr/local/sbin/status-boot-trading-bot > /tmp/master-change-status.txt 2>&1 || true
             if grep -q '\[telegram-ai-ops-commands\] verified=true' /tmp/master-change-status.txt \
-               && grep -Eq 'expected=[^[:space:]]*aichange' /tmp/master-change-status.txt \
+               && grep -Eq 'expected=[^[:space:]]*aichange[^[:space:]]*aicost' /tmp/master-change-status.txt \
                && grep -q '\[ai-agent-ws\] embedded broker active' /tmp/master-change-status.txt; then
               found=true
               break
@@ -83,15 +90,17 @@ jobs:
           python3 - <<'PY' > /tmp/master-change-deploy-result.json
           import json,os,time
           print(json.dumps({
-              'schema_version':1,
+              'schema_version':2,
               'status':os.environ['JOB_STATUS'].upper(),
               'deploy_outcome':os.environ.get('DEPLOY_OUTCOME',''),
               'verify_outcome':os.environ.get('VERIFY_OUTCOME',''),
               'source_sha':os.environ['GITHUB_SHA'],
               'run_id':os.environ['GITHUB_RUN_ID'],
               'full_repo_test_gate':'deploy-boot-trading-bot',
-              'telegram_master_command':'aichange',
+              'telegram_master_commands':['aichange','aicost'],
               'websocket_endpoint':'ws://127.0.0.1:8765',
+              'cost_router_levels':[0,1,2,3,4],
+              'cost_budget_enforced_by_default':True,
               'routing_model_calls':0,
               'updated_epoch':int(time.time()),
           },indent=2,sort_keys=True))
