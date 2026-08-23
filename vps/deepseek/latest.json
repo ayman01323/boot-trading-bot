@@ -1,10 +1,10 @@
 {
   "action": "inspect",
   "action_return_code": 0,
-  "deepseek_analysis": "\ud83d\udd34 AGENT: DEEPSEEK\n\nRequested action: **inspect** \u2014 succeeded with deterministic return code **0**.  \nNo VPS mutation was performed.\n\n**Service health: mostly healthy at process level, but scanner output warrants attention.**\n\n- `learnerbot.service` is **active (running)**, enabled, Main PID `754862` stable across before/after snapshots.\n- Memory: `507.3M \u2192 512.6M`, peak `719.9M`; CPU advanced only `~0.105s`; no restart detected.\n- Telegram AI ops verified: masters present, expected command set complete, no missing components.\n- Daily backup already completed and retained on Drive.\n- Tracked changes: none; branch `main`, version `2.3.10`, deployed SHA `e8e6526f2343173ba09ca8053b55be4458e34daf`.\n\n**Concrete warnings:**\n\n1. **Repeated zero-result market scans**  \n   Multiple consecutive `fast-market-scan` cycles report `direct=0 merged=0 eligible=0 auto-events=0`. This may be a genuinely quiet market, but it could also indicate a scanner/RPC/configuration issue.\n\n2. **SHA mismatch with request context**  \n   Requested GitHub source SHA is `240f45f41c36c6999a2ca9b469c4a0f23da165ed`, while the boot server reports deployed SHA `e8e6526f2343173ba09ca8053b55be4458e34daf`. Confirm which commit is expected; do not deploy blindly during an inspect-only run.\n\n3. **Scan duration variance**  \n   Scan durations range from `20.08s` to `53.61s`, which may indicate RPC latency or load variability.\n\n**Recommended follow-up:**\n\n- Check BSC RPC/node health and chain head synchronisation.\n- Inspect scanner eligibility thresholds and logs to determine why all values are zero.\n- Confirm whether zero eligible events is normal for the current market window.\n- If the newer SHA must be deployed, run a separate bounded deploy/release workflow \u2014 do not mutate during inspection.",
+  "deepseek_analysis": ".\n\n**Service health:** `learnerbot.service` appears **healthy/running**:\n- Active: `active (running)`, enabled, uptime 27s at inspection time.\n- Main PID `774400` stable across before/after snapshots.\n- Logs confirm expected components started: multi-chain learning loop, SiBot/SiMo research, Solana WebSocket connected, BSC scanner processing blocks (`tx=644`), Telegram AI ops verified, command scopes loaded.\n- No errors, crashes, or restart loops observed in the supplied log lines.\n\n**Concrete warnings / observations:**\n1. **Very early uptime:** The service had been running only 27 seconds at inspection. This confirms startup success, but not yet long-term stability. Follow-up monitoring is needed.\n2. **Memory usage is high early on:** ~503\u2013510 MB with peak 526 MB. This may be normal for this workload, but should stabilize or be investigated if it keeps climbing.\n3. **Version mismatch indicator:** Boot server status reports `version: 2.3.10`, while the service startup log says `Starting multi-chain learning loop v2.3.3`. This inconsistency should be clarified or aligned.\n4. **No tracked changes / clean checkout:** The context shows no uncommitted or tracked changes \u2014 good for reproducibility, but also means the inspection did not validate whether the deployed SHA matches the intended GitHub push-triggered SHA.\n\n**Concrete follow-up:**\n- Re-run inspection after 5\u201310 minutes to confirm memory stabilizes and no delayed errors appear.\n- Check logs for continued cross-chain scanning (BSC, Solana, others) and Telegram command connectivity.\n- Clarify/align the `2.3.10` vs `2.3.3` version string in deployment/build metadata.\n- Confirm that the running SHA `b6654493...` is the expected SHA for this push-triggered inspection; if not, the CI/CD trigger metadata should be reviewed.",
   "deepseek_analysis_available": true,
-  "deployed_sha": "e8e6526f2343173ba09ca8053b55be4458e34daf",
-  "generated_epoch": 1787437599,
+  "deployed_sha": "b6654493b69e3802360cc3b9a52c251201be3d60",
+  "generated_epoch": 1787445670,
   "github_to_vps_link": true,
   "provider": "deepseek",
   "provider_return_code": 0,
@@ -20,8 +20,8 @@
   },
   "self_hosted_runner": true,
   "service_active": true,
-  "source_commit": "240f45f41c36c6999a2ca9b469c4a0f23da165ed",
+  "source_commit": "33f3bc1fb98ac91377f04345ea37f09e947d6a33",
   "status": "SUCCESS",
-  "target_sha": "240f45f41c36c6999a2ca9b469c4a0f23da165ed",
-  "workflow_run_id": 32602386664
+  "target_sha": "33f3bc1fb98ac91377f04345ea37f09e947d6a33",
+  "workflow_run_id": 32608421939
 }
