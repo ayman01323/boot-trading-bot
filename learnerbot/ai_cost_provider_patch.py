@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from typing import Callable
 
 from . import ai_cost_router as _cost
 from . import ai_council_http_patch as _base
@@ -38,11 +37,13 @@ def _model(provider: str) -> str:
 
 def _estimated_output_tokens(provider: str) -> int:
     provider = str(provider or "").upper().strip()
-    raw = os.environ.get(f"AI_COST_{provider}_ESTIMATED_OUTPUT_TOKENS") or os.environ.get("AI_COST_ESTIMATED_OUTPUT_TOKENS") or "800"
+    # Existing provider adapters permit up to 2400 output tokens. Reserve that
+    # worst case by default so a hard budget cannot be crossed by a long reply.
+    raw = os.environ.get(f"AI_COST_{provider}_ESTIMATED_OUTPUT_TOKENS") or os.environ.get("AI_COST_ESTIMATED_OUTPUT_TOKENS") or "2400"
     try:
         return max(64, min(int(float(raw)), 2400))
     except Exception:
-        return 800
+        return 2400
 
 
 def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
