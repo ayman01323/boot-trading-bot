@@ -8,11 +8,12 @@ from pathlib import Path
 
 from learnerbot.ai_cost_provider_patch import call_provider
 
-_ALLOWED_PROVIDERS = {"deepseek", "gemini", "copilot"}
+_ALLOWED_PROVIDERS = {"deepseek", "gemini", "grok", "copilot"}
 _MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 _SECRET_ENV_KEYS = (
     "DEEPSEEK_API_KEY",
     "GEMINI_API_KEY",
+    "XAI_API_KEY",
     "COPILOT_ASSIGN_TOKEN",
     "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN",
@@ -20,6 +21,7 @@ _SECRET_ENV_KEYS = (
 )
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{12,}"),
+    re.compile(r"xai-[A-Za-z0-9_-]{12,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]+"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]+"),
 )
