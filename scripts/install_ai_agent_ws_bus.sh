@@ -14,6 +14,7 @@ fi
 install -d -m 0755 "$DEST_DIR/scripts" "$DEST_DIR/learnerbot" "$DATA_DIR"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_bus.py" "$DEST_DIR/scripts/ai_agent_ws_bus.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_worker.py" "$DEST_DIR/scripts/ai_agent_ws_worker.py"
+install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_memory.py" "$DEST_DIR/scripts/ai_agent_ws_memory.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_send.py" "$DEST_DIR/scripts/ai_agent_ws_send.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_task_executor.py" "$DEST_DIR/scripts/ai_agent_task_executor.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/__init__.py" "$DEST_DIR/learnerbot/__init__.py"
@@ -63,6 +64,7 @@ WorkingDirectory=$DEST_DIR
 Environment=PYTHONPATH=$DEST_DIR
 Environment=PYTHONUNBUFFERED=1
 Environment=AI_AGENT_BUS_URL=ws://127.0.0.1:8765
+Environment=AI_AGENT_BUS_DB=$DATA_DIR/ai_agent_bus.sqlite3
 Environment=PATH=/root/.local/bin:/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=$VENV/bin/python $DEST_DIR/scripts/ai_agent_ws_worker.py --agent %i
 Restart=always
