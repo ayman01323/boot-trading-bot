@@ -1,27 +1,22 @@
-requested_sha=0066c3f72f2e071a8e5d8d4956e8598d59c6b352
-deploy_outcome=cancelled
-deploy_exit=unknown
-run_id=32671727221
-utc=2026-08-23T22:50:28Z
+requested_sha=b5b0ef535aab2874bf2666890c2ba1e671c09568
+deploy_outcome=success
+deploy_exit=0
+run_id=32671853066
+utc=2026-08-23T22:53:48Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-23T22:49:49Z BEGIN current=f1087a1bb1556952594b1f60b1c9946ec0d62155 requested=0066c3f72f2e071a8e5d8d4956e8598d59c6b352
+2026-08-23T22:52:38Z BEGIN current=fb37747ef970b8bb71b202cec2a95ae036dfae16 requested=b5b0ef535aab2874bf2666890c2ba1e671c09568
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-Updating f1087a1..0066c3f
+   fb37747..b5b0ef5  main       -> origin/main
+Updating fb37747..b5b0ef5
 Fast-forward
- .github/deepseek-vps-inspect.trigger               |   4 +-
- .../strategy_factory_service_sender_patch.py       |  29 +
- learnerbot/telegram_ai_target_score_patch.py       |   9 +
- learnerbot/trading_pipeline_observability_patch.py | 943 +++++++++++++++++++++
- ops/restart.trigger                                |   2 +-
- tests/test_runtime_rpc_health_probe.py             |  27 +-
- tests/test_telegram_trade_blocker_health.py        | 133 ++-
- tests/test_trading_pipeline_observability.py       | 198 +++++
- 8 files changed, 1306 insertions(+), 39 deletions(-)
- create mode 100644 learnerbot/strategy_factory_service_sender_patch.py
- create mode 100644 learnerbot/trading_pipeline_observability_patch.py
- create mode 100644 tests/test_trading_pipeline_observability.py
+ .github/deepseek-vps-inspect.trigger              |  4 ++--
+ .github/learnerbot-recovery-restart.trigger       |  1 +
+ .github/workflows/learnerbot-recovery-restart.yml | 26 +++++++++++++++++++++++
+ 3 files changed, 29 insertions(+), 2 deletions(-)
+ create mode 100644 .github/learnerbot-recovery-restart.trigger
+ create mode 100644 .github/workflows/learnerbot-recovery-restart.yml
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
@@ -37,26 +32,9 @@ Fast-forward
 ........................................................................ [ 69%]
 ........................................................................ [ 76%]
 ........................................................................ [ 83%]
-....F................................................................... [ 90%]
+........................................................................ [ 90%]
 ........................................................................ [ 97%]
 ............................                                             [100%]
-=================================== FAILURES ===================================
-________________ test_report_explains_each_major_no_trade_layer ________________
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f6e34c0c2d0>
-
-    def test_report_explains_each_major_no_trade_layer(monkeypatch):
-        monkeypatch.setattr(obs, "snapshot", lambda app, tid: _sample_pipeline_snapshot())
-        monkeypatch.setattr(obs, "_compact_backlog_line", lambda app: "collecting")
-        text = obs.build_report(SimpleNamespace(), "master")
-        assert "MASTER TRADING DIAGNOSTIC" in text
-        assert "BSC: history <b>1007/1007</b>" in text
-        assert "Polygon AUTO" in text and "economically eligible" in text
-        assert "Solana: discovered" in text and "quality-qualified" in text
->       assert "Leader-source research" in text
-E       AssertionError: assert 'Leader-source research' in '<b>🧭 MASTER TRADING DIAGNOSTIC</b>\n━━━━━━━━━━━━━━━━━━━━\n\n<b>EVM SiBot: history → reconstructed → pool → qualified ...it, quality, liquidity, simulation, reserve, loss-quarantine, signing, LIVE/ARMED and capital gates are unchanged.</i>'
-
-tests/test_telegram_trade_blocker_health.py:123: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -65,37 +43,56 @@ tests/test_telegram_trade_blocker_health.py:123: AssertionError
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-FAILED tests/test_telegram_trade_blocker_health.py::test_report_explains_each_major_no_trade_layer
-1 failed, 1034 passed, 1 skipped, 1 warning in 28.55s
-2026-08-23T22:50:20Z TESTS FAILED; service remains on old running process
-HEAD is now at f1087a1 Redeploy Monitor Factory after promotion-gate test fix
+1035 passed, 1 skipped, 1 warning in 50.91s
+2026-08-23T22:53:36Z TESTS PASSED; restarting learnerbot
+2026-08-23T22:53:40Z SUCCESS sha=b5b0ef535aab2874bf2666890c2ba1e671c09568 version=2.3.10 service=active
+     Active: active (running) since Sun 2026-08-23 23:53:36 BST; 4s ago
+   Main PID: 1132874 (python)
+      Tasks: 24 (limit: 5869)
+     Memory: 556.0M (peak: 572.2M)
+        CPU: 2.974s
+     CGroup: /system.slice/learnerbot.service
+             └─1132874 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: [ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/grok/kimi/copilot workers
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: [config] CSVbot configuration loaded/reloaded
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: gpt worker connected; model=gpt-5-nano
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: claude worker connected; model=claude-haiku-4-5
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: gemini worker connected; model=gemini-3.5-flash-lite
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: deepseek worker connected; model=deepseek-v4-flash
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: grok worker connected; model=grok-4.20-non-reasoning
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: kimi worker connected; model=kimi-k2.6
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: copilot worker connected; model=provider-default
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-23T22:50:24Z
+UTC: 2026-08-23T22:53:47Z
 branch: main
-sha:    f1087a1bb1556952594b1f60b1c9946ec0d62155
+sha:    b5b0ef535aab2874bf2666890c2ba1e671c09568
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
 version: 2.3.10
 
 tracked changes:
 
 service:
-○ learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
+● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: inactive (dead) since Sun 2026-08-23 23:45:33 BST; 4min 50s ago
-   Duration: 1h 50min 53.131s
-    Process: 1102816 ExecStart=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run (code=killed, signal=TERM)
-   Main PID: 1102816 (code=killed, signal=TERM)
-        CPU: 1h 12min 3.259s
+     Active: active (running) since Sun 2026-08-23 23:53:36 BST; 10s ago
+   Main PID: 1132874 (python)
+      Tasks: 30 (limit: 5869)
+     Memory: 601.4M (peak: 619.8M)
+        CPU: 8.614s
+     CGroup: /system.slice/learnerbot.service
+             └─1132874 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 23 23:45:30 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:polygon] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 23:45:30 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:base] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 23:45:31 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:ethereum] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 23:45:32 mint.yesgoodwill.com python[1102816]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 23 23:45:32 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:arbitrum] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 23:45:32 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:bsc] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: Stopping Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner...
-Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: learnerbot.service: Deactivated successfully.
-Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: Stopped Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner.
-Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: learnerbot.service: Consumed 1h 12min 3.259s CPU time, 796.8M memory peak.
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: claude worker connected; model=claude-haiku-4-5
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: gemini worker connected; model=gemini-3.5-flash-lite
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: deepseek worker connected; model=deepseek-v4-flash
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: grok worker connected; model=grok-4.20-non-reasoning
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: kimi worker connected; model=kimi-k2.6
+Aug 23 23:53:37 mint.yesgoodwill.com python[1132874]: copilot worker connected; model=provider-default
+Aug 23 23:53:40 mint.yesgoodwill.com python[1132874]: [scan:bsc] 115381812..115381821 tx=546
+Aug 23 23:53:42 mint.yesgoodwill.com python[1132874]: [sibot-broader-qualified:bsc] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 23:53:46 mint.yesgoodwill.com python[1132874]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
+Aug 23 23:53:46 mint.yesgoodwill.com python[1132874]: [sibot-broader-qualified:base] pool=0 qualified=0 selected=0 thresholds=unchanged
