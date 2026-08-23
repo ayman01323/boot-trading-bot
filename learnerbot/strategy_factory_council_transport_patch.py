@@ -9,15 +9,18 @@ from scripts.strategy_factory_transport import exchange
 async def _ask_one(target: str, request_id: str, body: str, attempt: int, timeout: float = 150.0) -> dict:
     """COUNCIL-mode adapter over the same transport used by DIRECT messaging.
 
-    All advisers for one MASTER request share its Council thread, while separate
-    MASTER requests remain isolated even if they execute concurrently.
+    All advisers for one MASTER request share its Council thread. Claude in the
+    advisory Council is always the GENERAL division; Coding is a separate
+    repository implementation identity and is never silently invoked here.
     """
-    message_id = f"master-change-{request_id}-{target}-{attempt}-{secrets.token_hex(2)}"
+    requested_target = str(target or "").strip().lower()
+    routed_target = "claude-general" if requested_target == "claude" else requested_target
+    message_id = f"master-change-{request_id}-{requested_target}-{attempt}-{secrets.token_hex(2)}"
     thread_id = f"council-{request_id}"
     subject = f"MASTER change {request_id}"
     result = await exchange(
         "gpt",
-        target,
+        routed_target,
         body,
         message_id=message_id,
         thread_id=thread_id,
@@ -28,8 +31,8 @@ async def _ask_one(target: str, request_id: str, body: str, attempt: int, timeou
     reply = str(result.get("body") or "")[:12000]
     status = str(result.get("status") or "").upper()
     ok = status in {"REPLIED", "COMPLETED"} and not error and bool(reply.strip())
-    return {
-        "target": target,
+    row = {
+        "target": requested_target,
         "message_id": message_id,
         "thread_id": str(result.get("thread_id") or thread_id),
         "subject": str(result.get("subject") or subject),
@@ -40,6 +43,10 @@ async def _ask_one(target: str, request_id: str, body: str, attempt: int, timeou
         "transport": "strategy-factory-websocket",
         "routing_mode": "COUNCIL",
     }
+    if requested_target == "claude":
+        row["claude_division"] = "GENERAL"
+        row["claude_identity"] = "AUTOMATED_GENERAL"
+    return row
 
 
 def install() -> None:
