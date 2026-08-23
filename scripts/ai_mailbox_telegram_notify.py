@@ -62,7 +62,7 @@ def build_message(agent: str, kind: str, message_id: str, status: str) -> str:
         f"Message ID: {message_id}\n"
         f"Status: {status}\n"
         f"{action}\n"
-        f"Tell GPT: check {agent} mailbox"
+        f"Tell GPT: check {agent} Strategy Factory"
     )
 
 
@@ -101,7 +101,7 @@ def send_telegram(token: str, chat_id: str, text: str) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send a metadata-only Telegram alert for a bounded AI mailbox event.")
+    parser = argparse.ArgumentParser(description="Send a metadata-only Telegram alert for a bounded Strategy Factory fallback event.")
     parser.add_argument("--agent", required=True, choices=sorted(_ALLOWED_AGENTS))
     parser.add_argument("--kind", required=True, choices=sorted(_ALLOWED_KINDS))
     parser.add_argument("--message-id", required=True)
