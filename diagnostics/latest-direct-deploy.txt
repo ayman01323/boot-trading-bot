@@ -1,14 +1,14 @@
-requested_sha=2eaa5ee0ac026d80be347e44e3ee51a05dcda2ee
-deploy_outcome=failure
-deploy_exit=10
-run_id=32650997521
-utc=2026-08-23T16:14:28Z
+requested_sha=1f97c6c7534b99d096a585f75dccca3b298fdf6b
+deploy_outcome=success
+deploy_exit=0
+run_id=32651296276
+utc=2026-08-23T16:24:48Z
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-23T16:14:28Z
+UTC: 2026-08-23T16:24:48Z
 branch: main
-sha:    3e053770fa723696faa5eeb4bc51c94b50ff7ecc
+sha:    1f97c6c7534b99d096a585f75dccca3b298fdf6b
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -17,143 +17,74 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Sun 2026-08-23 16:50:38 BST; 23min ago
-   Main PID: 1008648 (python)
-      Tasks: 24 (limit: 5869)
-     Memory: 577.5M (peak: 736.4M)
-        CPU: 15min 27.511s
+     Active: active (running) since Sun 2026-08-23 17:24:44 BST; 4s ago
+   Main PID: 1030062 (python)
+      Tasks: 22 (limit: 5869)
+     Memory: 581.2M (peak: 627.0M)
+        CPU: 3.285s
      CGroup: /system.slice/learnerbot.service
-             └─1008648 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─1030062 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 23 17:14:06 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:base] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:07 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:ethereum] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:08 mint.yesgoodwill.com python[1008648]: [solana-leader-edge-alignment] broader_pool=42 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:08 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:arbitrum] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:10 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:polygon] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:14 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:bsc] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:24 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:base] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:25 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:ethereum] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:25 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:arbitrum] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 17:14:28 mint.yesgoodwill.com python[1008648]: [sibot-broader-qualified:polygon] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: deepseek worker connected; model=deepseek-v4-flash
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: grok worker connected; model=grok-4.20-non-reasoning
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: copilot worker connected; model=provider-default
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [trade-blocker-health] evm_history=ALCHEMY polygon_focus=True
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [config] CSVbot configuration loaded/reloaded
 
 === DEPLOY OUTPUT (tail) ===
+2026-08-23T16:23:48Z BEGIN current=abc530ad9da14cc863f9db7e62bf56c7c276ba5a requested=1f97c6c7534b99d096a585f75dccca3b298fdf6b
+From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
+ * branch            main       -> FETCH_HEAD
+Updating abc530a..1f97c6c
+Fast-forward
+ .deploy-current-main.trigger | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
 
-    def test_main_patch_import_order_starts_cleanly():
-        """Import the __main__ patch stack in production order without starting the bot."""
-        main_path = Path(__file__).resolve().parents[1] / "learnerbot" / "__main__.py"
-        modules = []
-        pattern = re.compile(r"^from \. import ([A-Za-z0-9_]+)")
-        for line in main_path.read_text(encoding="utf-8").splitlines():
-            match = pattern.match(line.strip())
-            if match:
-                modules.append(match.group(1))
-    
-        assert modules, "No ordered patch imports found in learnerbot/__main__.py"
-        script = "\n".join(
-            ["import importlib"]
-            + [f"importlib.import_module('learnerbot.{name}')" for name in modules]
-            + ["print('MAIN_PATCH_IMPORT_ORDER_OK')"]
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
->       assert result.returncode == 0, result.stdout + "\n" + result.stderr
-E       AssertionError: [solana-min-settings] already_applied=true live_trade_sol=0.0005 live_min_sol_reserve=0.01
-E         [solana-quality] already_applied=true
-E         [solana-frequency] already_applied=true
-E         [solana-live-latency] already_applied=true
-E         [solana-capacity] already_applied=true
-E         [solana-final-runtime-guard] close_live=wallet_bound_reconcile monitor=solana_live_patch
-E         [solana-overhead-gate] unreconciled_entry_wallet_delta_block=false hard_minimum=true
-E         [solana-capacity-reconcile] verified_zero_only=true rpc_uncertainty=fails_closed
-E         [solana-quote-consistency] excludeRouters=jupiterz preflight_matches_live=true
-E         [solana-entry-exit-liquidity] reverse_quote_reused=true fail_closed=true combined_impact_slippage_hard_cap_bps=500 route_telemetry=true existing_roundtrip_preserved=true
-E         [solana-preflight-cache] ttl=3s exact_signal_allocation_risk_key=true
-E         [solana-pool-risk] installed=true live_only=true shadow_external_outage_unaffected=true reference_probe_sol=0.01 reference_impact_hard_cap_bps=200 rugcheck=true dexscreener=true
-E         [solana-profit-epoch] corrected_pnl_only=true historical_rows_preserved=true pending_rent_excluded=true amount_fields_preserved=true
-E         [sibot-evm-reliability] failed_block_or_receipt_retry=true cursor_no_skip=true
-E         [solana-worker-reliability] rpc_retries=true no_slot_skip=true history_independent=true leader_heartbeat=true
-E         [solana-leader-cursor] confirmed_fast_lane=true processed_signature_checkpoint=true stale_backlog_fast_forward=true transient_preflight_retry=true
-E         [solana-token-reclaim] bot_created_only=true zero_balance_only=true late_confirmation_reconcile=true
-E         [solana-rent-accounting] open_pnl_excludes_refundable_rent=true partial_keeps_rent=true gross_output_separate_from_wallet_cashflow=true
-E         [solana-simulated-reserve] post_buy_wallet_balance_required=true
-E         [solana-exec-efficiency] dynamic_total_fee_cap=true impact_slippage_guard=true atomic_full_close=true detailed_receipts=true unconstrained_tip=false
-E         [solana-jupiter-order-recovery] detailed_http_errors=true orphan_broadcast_fee_removed=true http400_fee_retry=true rfq_excluded=true
-E         [solana-jupiter-429-recovery] shared_cooldown=true retries=bounded retry_after_respected=true economics_unchanged=true pre_signing_only=true
-E         [solana-atomic-close-fallback] eligible_full_exit=atomic legacy_unproven_exit=capped_managed rfq_excluded=true
-E         [solana-sell-pnl] profit=💚 loss=❤️ break_even=🍉
-E         [telegram-profit-alerts] configurable profit/loss thresholds + report time presets enabled
-E         [solana-exit-circuit] ambiguous_success=reconcile_only position_retry_block=true chain_metadata_authoritative=true legacy_stale_balance_recovery=true
-E         [solana-liquidity-guard] missing_price_impact=reject route_level_simulation_required=true
-E         [solana-emergency-liquidity] loss_exit_cap_bps=500 adaptive_slices=100,75,50,25 no_impact_bypass=true retry_backoff=true backoff_persisted=true escalation_hours=24 manual_force_cap_bps=9500
-E         [solana-stuck-liquidity-safe-slices] adaptive_slices=100,75,50,25,10,5,2,1 impact_ceiling_unchanged=true min_net_lamports=10000 prebroadcast_only=true jupiter_no_quote_backoff=true
-E         [solana-emergency-halt] already_applied=true
-E         [hourly-gpt-wording] LIVE engine unchanged; deterministic profit-control results displayed
-E         [profit-control-loop] hourly=true objective=wins_gt_losses+positive_net+pf_gt_1.10 leader_memory=true strategy_memory=true bounded_profiles=true live_arm_unchanged=true
-E         [profit-control-amount-objective] realised_profit_amount>=1.30x_realised_loss_amount
-E         [profit-control-audit] strategy_registry=true control_runs=true leader_registry=true strategy_lab=true
-E         [profit-control-master-summary] every_cycle=true all_active_masters=true notify=true
-E         [solana-profit-first-live] signal_age<=10s entry_deterioration<=0.25% roundtrip_loss<=1% fee_ratio<=1.2% leader_sell=immediate copied_guard_after=2 break_even=3% trailing=5% take_profit=10%
-E         [solana-partial-sell-profit-guard] full_exit=immediate partial_exit=disabled_below_0.002_sol_and_profit_gated min_net=3%
-E         [solana-positive-edge-entry] historical_median>=5% recent_median>=4% platform_realised_pf>=1.30 recovery_canary=single mint_loss_quarantine=24-72h first_copied_loss_quarantine=24h vmv_bypasses_edge_only
-E         [solana-first-day-strategy] restored=true reference=f0ca88450fe9 leaders=5 signal_age=30s roundtrip<=3% entry_deterioration<=2% positive_executable_edge>=0.25% stop=10% tp=25% leader_sell=original_gated execution_safety=current
-E         [solana-leader-quality-restore] history_complete=false win_rate>=65% pf>=1.75 recent_win_rate>=65% recent_pf>=1.50 drawdown<=20% copied_win_rate>=50% copied_pf>=1.50 consecutive_loss_limit=2 leader_suspend=1440m leader_event_gate=median_return+mint_loss+platform_pf_breaker
-E         [solana-liquidity-health] check_interval=900s warning_combined_bps=150 repeat_alert_hours=4 action=notify_only never_executes_or_closes=true
-E         [trading-runtime-invariant] OK audited_hooks=45
-E         [evm-ws] installed chains=137,42161,56,8453 subscription=newHeads source=rpc_endpoints_csv_only fallback_poll=true
-E         [solana-ws] installed subscription=logsSubscribe commitment=confirmed fallback_poll=true
-E         [polygon-live-runtime-invariant] OK audited_hooks=5
-E         [sibot-leader-quality-floor] history_complete=false win_rate>=55% pf>=1.5 recent_win_rate>=55% recent_pf>=1.10 drawdown<=20% copied_win_rate>=50% copied_pf>=1.50 consecutive_loss_limit<=2 min_copied_trades_for_guard<=3 leader_suspend>=1440m no_per_user_override_past_platform_floor=true
-E         [execution-latency] high-resolution Solana LIVE stage telemetry enabled
-E         [sibot-alchemy-trace-progress] bsc_arbitrum=progressive batch=4 cross_chain_fairness=true history_complete_fail_closed=true
-E         [sibot-alchemy-context-progress] all_evm=true hashes_per_cycle=30 cross_chain_fairness=true history_complete_fail_closed=true
-E         [sibot-legacy-error-sweep] checked_first=true per_chain_cooldown=15m all_etherscan_origin_errors=true
-E         [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
-E         [sibot-broader-qualified] all_evm=true top20_preserved=true thresholds=unchanged
-E         [sibot-alchemy-runtime] final_refresh=trace_progress legacy_etherscan_runtime=false
-E         [solana-live-position-scope-fix] duplicate_guard=LIVE_only global_open_positions=LIVE_only risk_cap=unchanged
-E         [solana-platform-recovery-reconcile] open_live=verified_balance_only rpc_uncertainty=fails_closed thresholds=unchanged
-E         [solana-leader-edge-alignment] selector_matches_live_edge=true broader_qualified_search=true thresholds=unchanged
-E         [solana-liquidity-stuck-nonblocking] verified_only=true min_attempts=2 min_seconds=60 same_mint_blocked=true exposure_open=true owner_resolution=true systemic_max=3
-E         
-E         Traceback (most recent call last):
-E           File "<string>", line 81, in <module>
-E           File "/usr/lib64/python3.11/importlib/__init__.py", line 126, in import_module
-E             return _bootstrap._gcd_import(name[level:], package, level)
-E                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E           File "<frozen importlib._bootstrap>", line 1204, in _gcd_import
-E           File "<frozen importlib._bootstrap>", line 1176, in _find_and_load
-E           File "<frozen importlib._bootstrap>", line 1147, in _find_and_load_unlocked
-E           File "<frozen importlib._bootstrap>", line 690, in _load_unlocked
-E           File "<frozen importlib._bootstrap_external>", line 940, in exec_module
-E           File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
-E           File "/root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/ai_agent_ws_runtime_patch.py", line 181, in <module>
-E             from . import final_runtime_integrity_patch  # noqa: E402,F401
-E             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-E           File "/root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/final_runtime_integrity_patch.py", line 91, in <module>
-E             install()
-E           File "/root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/final_runtime_integrity_patch.py", line 87, in install
-E             raise RuntimeError("Final runtime integrity failed: " + ", ".join(failed))
-E         RuntimeError: Final runtime integrity failed: evm_leader_cursor_reliable
-E         
-E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python', '-c', "import importl... integrity failed: " + ", ".join(failed))\nRuntimeError: Final runtime integrity failed: evm_leader_cursor_reliable\n').returncode
-
-tests/test_main_import_order.py:30: AssertionError
+[notice] A new release of pip available: 22.3.1 -> 26.2.1
+[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
+........................................................................ [  7%]
+........................................................................ [ 14%]
+........................................................................ [ 22%]
+........................................................................ [ 29%]
+........................................................................ [ 36%]
+........................................................................ [ 44%]
+........................................................................ [ 51%]
+........................................................................ [ 58%]
+........................................................................ [ 66%]
+........................................................................ [ 73%]
+........................................................................ [ 81%]
+........................................................................ [ 88%]
+........................................................................ [ 95%]
+.........................................                                [100%]
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
     warnings.warn(  # deprecated in 14.0 - 2024-11-09
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_imports.py::test_all_learnerbot_modules_import - AssertionE...
-FAILED tests/test_imports.py::test_python_m_learnerbot_real_startup_stack_reaches_cli_help
-FAILED tests/test_main_import_order.py::test_main_patch_import_order_starts_cleanly
-3 failed, 966 passed, 1 warning in 50.05s
-2026-08-23T16:14:28Z TESTS FAILED; service remains on old running process
-HEAD is now at 3e05377 Deploy current main after runner release
+977 passed, 1 warning in 48.60s
+2026-08-23T16:24:44Z TESTS PASSED; restarting learnerbot
+2026-08-23T16:24:48Z SUCCESS sha=1f97c6c7534b99d096a585f75dccca3b298fdf6b version=2.3.10 service=active
+     Active: active (running) since Sun 2026-08-23 17:24:44 BST; 4s ago
+   Main PID: 1030062 (python)
+      Tasks: 22 (limit: 5869)
+     Memory: 602.9M (peak: 627.0M)
+        CPU: 3.124s
+     CGroup: /system.slice/learnerbot.service
+             └─1030062 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: deepseek worker connected; model=deepseek-v4-flash
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: grok worker connected; model=grok-4.20-non-reasoning
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: copilot worker connected; model=provider-default
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [trade-blocker-health] evm_history=ALCHEMY polygon_focus=True
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 23 17:24:45 mint.yesgoodwill.com python[1030062]: [config] CSVbot configuration loaded/reloaded
