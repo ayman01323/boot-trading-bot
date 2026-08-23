@@ -22,28 +22,31 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Install narrow Gemini sender policy
+      - name: Install narrow Gemini sender policy for runner user
         shell: bash
         run: |
           set -euo pipefail
-          test "$(id -u)" -eq 0
-          install -d -m 700 /root/.gemini/policies
-          cat > /root/.gemini/policies/strategy-factory-messaging.toml <<'EOF'
+          runner_user="$(id -un)"
+          runner_home="$(getent passwd "$runner_user" | cut -d: -f6)"
+          test -n "$runner_home"
+          test -d "$runner_home"
+          install -d -m 700 "$runner_home/.gemini/policies"
+          cat > "$runner_home/.gemini/policies/strategy-factory-messaging.toml" <<'EOF'
           [[rule]]
           toolName = "run_shell_command"
           commandPrefix = [
             "python scripts/ai_agent_ws_send.py",
-            "python3 scripts/ai_agent_ws_send.py",
-            "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python scripts/ai_agent_ws_send.py"
+            "python3 scripts/ai_agent_ws_send.py"
           ]
           decision = "allow"
           priority = 100
           modes = ["default"]
           EOF
-          chmod 600 /root/.gemini/policies/strategy-factory-messaging.toml
-          test "$(stat -c '%a' /root/.gemini/policies/strategy-factory-messaging.toml)" = 600
-          grep -F 'python scripts/ai_agent_ws_send.py' /root/.gemini/policies/strategy-factory-messaging.toml >/dev/null
-          echo 'gemini_strategy_factory_policy=INSTALLED'
+          chmod 600 "$runner_home/.gemini/policies/strategy-factory-messaging.toml"
+          test "$(stat -c '%a' "$runner_home/.gemini/policies/strategy-factory-messaging.toml")" = 600
+          grep -F 'python scripts/ai_agent_ws_send.py' "$runner_home/.gemini/policies/strategy-factory-messaging.toml" >/dev/null
+          echo "RUNNER_USER_HOME=$runner_home" >> "$GITHUB_ENV"
+          echo "gemini_strategy_factory_policy=INSTALLED user=$runner_user"
 
       - name: Build isolated sender environment
         shell: bash
@@ -57,11 +60,11 @@ jobs:
 
       - name: Gemini executes allowed Strategy Factory sender
         shell: bash
-        env:
-          HOME: /root
         run: |
           set -euo pipefail
           test -n "${GEMINI_API_KEY:-}"
+          test -n "${RUNNER_USER_HOME:-}"
+          export HOME="$RUNNER_USER_HOME"
           export PATH="$TEST_VENV/bin:/usr/local/lib/node-v24/bin:$PATH"
           test -x /usr/local/lib/node-v24/bin/gemini
           prompt="Use the run_shell_command tool to execute exactly this command and no other shell command: python scripts/ai_agent_ws_send.py --from gemini --to gpt --message 'Reply exactly: GEMINI_TO_GPT_OK'. Wait for the correlated Strategy Factory reply. Do not edit files, deploy, restart services, trade, change LIVE/ARMED, risk or capital, access wallets/signing, or reveal secrets. Your final response must include TEST_RESULT=PASS only if GPT actually replies GEMINI_TO_GPT_OK."
