@@ -1,1 +1,1 @@
-2026-08-23T23:09:00Z stable current-main deploy for owner-authorised zero-recovery accounting write-off of Solana mint 8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV; no further main mutations until attested; no SELL/burn/transfer; preserve 5% automatic exit ceiling
+2026-08-24T00:20+01:00 deploy ALL current main changes through protected direct VPS path; include Solana stuck-liquidity warning v2 and 8fip write-off migration; run full tests; restore prior learnerbot on failure; preserve all risk/signing/liquidity ceilings
