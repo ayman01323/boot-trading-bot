@@ -14,96 +14,132 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 8
     env:
-      PROD_REPO: /root/multichain-learning-bot-v2.2-fast-direct-market
       BUS_URL: ws://127.0.0.1:8765
     steps:
-      - name: Send first message and disconnect after recipient ACK
+      - name: Build isolated WebSocket test environment
         shell: bash
         run: |
           set -euo pipefail
-          PY="$PROD_REPO/.venv/bin/python"
+          VENV="$RUNNER_TEMP/gemini-awareness"
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "PY=$VENV/bin/python" >> "$GITHUB_ENV"
+
+      - name: Prove automatic Gemini receipt and memory
+        shell: bash
+        run: |
+          set -euo pipefail
           CODE="GEMINI-AWARE-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "CODE=$CODE" >> "$GITHUB_ENV"
           export CODE
-          cd "$PROD_REPO"
           "$PY" - <<'PY'
-          import asyncio, json, os, re
+          import asyncio
+          import json
+          import os
+          import re
+          import time
           from websockets.asyncio.client import connect
 
           code = os.environ["CODE"]
           url = os.environ.get("BUS_URL", "ws://127.0.0.1:8765")
           token = os.environ.get("AI_AGENT_BUS_TOKEN", "")
-          mid = "gpt-to-gemini-awareness-" + re.sub(r"[^A-Za-z0-9._:-]", "-", code.lower())
-          body = (
+          first_id = "gpt-to-gemini-awareness-" + re.sub(r"[^A-Za-z0-9._:-]", "-", code.lower())
+          second_id = first_id + "-recall"
+          first_body = (
               "AUTOMATIC AWARENESS TEST. You received this through Strategy Factory without being told to check GitHub, "
               f"a mailbox, or SQLite. Remember this exact code: {code}. Reply exactly: SEEN {code}"
           )
 
-          async def main():
-              async with connect(url, ping_interval=20, ping_timeout=20, max_size=32768) as ws:
-                  await ws.send(json.dumps({"type":"register","agent":"gpt","token":token}, separators=(",",":")))
-                  reg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
-                  assert reg.get("type") == "registered", reg
-                  await ws.send(json.dumps({"type":"send","message_id":mid,"from":"gpt","to":"gemini","body":body}, separators=(",",":")))
-                  acknowledged = False
+          async def register():
+              ws = await connect(url, ping_interval=20, ping_timeout=20, max_size=32768)
+              await ws.send(json.dumps({"type":"register","agent":"gpt","token":token}, separators=(",",":")))
+              reg = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+              assert reg.get("type") == "registered", reg
+              return ws
+
+          async def first_send_disconnect_after_ack():
+              ws = await register()
+              try:
+                  await ws.send(json.dumps({
+                      "type":"send","message_id":first_id,"from":"gpt","to":"gemini","body":first_body
+                  }, separators=(",",":"), ensure_ascii=False))
+                  deadline = asyncio.get_running_loop().time() + 30
                   while True:
-                      data = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
-                      if data.get("message_id") != mid:
+                      remaining = deadline - asyncio.get_running_loop().time()
+                      assert remaining > 0, "Gemini did not ACK first automatic message"
+                      data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                      if data.get("message_id") != first_id:
                           continue
-                      print(json.dumps(data, ensure_ascii=False), flush=True)
-                      if str(data.get("status") or "").upper() == "ACKNOWLEDGED":
-                          acknowledged = True
+                      print("FIRST_EVENT=" + json.dumps(data, ensure_ascii=False), flush=True)
+                      status = str(data.get("status") or "").upper()
+                      if status == "ACKNOWLEDGED":
                           break
-                  assert acknowledged
-              print(f"FIRST_SENDER_DISCONNECTED_AFTER_ACK message_id={mid}", flush=True)
+              finally:
+                  await ws.close()
+              print("FIRST_SENDER_DISCONNECTED_AFTER_ACK=true", flush=True)
+
+          async def wait_until_first_replied():
+              deadline = time.time() + 90
+              while time.time() < deadline:
+                  ws = await register()
+                  try:
+                      await ws.send(json.dumps({"type":"status","message_id":first_id}, separators=(",",":")))
+                      per_try = asyncio.get_running_loop().time() + 5
+                      while True:
+                          remaining = per_try - asyncio.get_running_loop().time()
+                          if remaining <= 0:
+                              break
+                          data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                          if data.get("message_id") != first_id:
+                              continue
+                          print("FIRST_POST_DISCONNECT_EVENT=" + json.dumps(data, ensure_ascii=False), flush=True)
+                          if data.get("type") == "status" and str(data.get("status") or "").upper() == "REPLIED":
+                              return
+                  finally:
+                      await ws.close()
+                  await asyncio.sleep(1)
+              raise AssertionError("Gemini did not finish the first message after sender disconnected")
+
+          async def recall_exchange():
+              ws = await register()
+              try:
+                  body = (
+                      "Do not inspect GitHub, a mailbox, or SQLite. From your own recent Strategy Factory conversation memory, "
+                      f"give the exact code from the immediately previous automatic-awareness test message. Reply exactly: REMEMBERED {code}"
+                  )
+                  await ws.send(json.dumps({
+                      "type":"send","message_id":second_id,"from":"gpt","to":"gemini","body":body
+                  }, separators=(",",":"), ensure_ascii=False))
+                  acknowledged = False
+                  deadline = asyncio.get_running_loop().time() + 120
+                  while True:
+                      remaining = deadline - asyncio.get_running_loop().time()
+                      assert remaining > 0, "timeout waiting for Gemini recall reply"
+                      data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
+                      if data.get("message_id") != second_id:
+                          continue
+                      print("RECALL_EVENT=" + json.dumps(data, ensure_ascii=False), flush=True)
+                      status = str(data.get("status") or "").upper()
+                      if status == "ACKNOWLEDGED":
+                          acknowledged = True
+                      if data.get("type") == "reply":
+                          assert acknowledged, "reply arrived without correlated ACK"
+                          reply = str(data.get("body") or "")
+                          assert f"REMEMBERED {code}" in reply, reply
+                          print(f"AUTOMATIC_AWARENESS_PROVED={code}", flush=True)
+                          return
+              finally:
+                  await ws.close()
+
+          async def main():
+              await first_send_disconnect_after_ack()
+              await wait_until_first_replied()
+              await recall_exchange()
 
           asyncio.run(main())
           PY
 
-      - name: Confirm Gemini completed first message after sender disconnected
+      - name: Remove isolated environment
+        if: always()
         shell: bash
-        run: |
-          set -euo pipefail
-          PY="$PROD_REPO/.venv/bin/python"
-          export CODE
-          "$PY" - <<'PY'
-          import os, re, sqlite3, time
-          code = os.environ["CODE"]
-          mid = "gpt-to-gemini-awareness-" + re.sub(r"[^A-Za-z0-9._:-]", "-", code.lower())
-          db = "/var/tmp/boot/ai_agent_bus.sqlite3"
-          deadline = time.time() + 90
-          row = None
-          while time.time() < deadline:
-              con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=2)
-              try:
-                  row = con.execute("SELECT status, reply, error, acknowledged_at, replied_at FROM messages WHERE message_id=?", (mid,)).fetchone()
-              finally:
-                  con.close()
-              if row and row[0] == "REPLIED" and row[1]:
-                  break
-              time.sleep(1)
-          assert row, "first message missing from durable bus"
-          print(f"FIRST_STATUS={row[0]}")
-          print(f"FIRST_ACK_AT={row[3]} FIRST_REPLIED_AT={row[4]}")
-          print("FIRST_REPLY=" + str(row[1])[:1000])
-          assert row[0] == "REPLIED", row
-          assert not (row[2] or ""), row
-          assert f"SEEN {code}" in row[1], row[1]
-          PY
-
-      - name: Ask Gemini to recall the previous automatically delivered message
-        shell: bash
-        run: |
-          set -euo pipefail
-          PY="$PROD_REPO/.venv/bin/python"
-          cd "$PROD_REPO"
-          OUT="$($PY scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to gemini \
-            --message "Do not inspect GitHub, a mailbox, or SQLite. From your own recent Strategy Factory conversation memory, give the exact code from the immediately previous automatic-awareness test message. Reply exactly: REMEMBERED ${CODE}" \
-            --timeout 120)"
-          printf '%s\n' "$OUT"
-          grep -F '"status": "ACKNOWLEDGED"' <<<"$OUT" >/dev/null
-          grep -F '"status": "REPLIED"' <<<"$OUT" >/dev/null
-          grep -F "REMEMBERED ${CODE}" <<<"$OUT" >/dev/null
-          echo "AUTOMATIC_AWARENESS_PROVED=${CODE}"
+        run: rm -rf "$RUNNER_TEMP/gemini-awareness"
