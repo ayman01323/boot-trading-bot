@@ -1,0 +1,76 @@
+name: MASTER Position Pool Extract
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: master-position-pool-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extract:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/master-position-lookup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Extract PumpSwap instruction pool account
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, urllib.request
+          from pathlib import Path
+
+          SIG='4ZSHzzHUSSsgLBwoT5MM9uXHoTJkhG68HyPSdw9XRFZKr5XRg9yyemFEGYwfJdCYTyXHsY3anhBGB7JvSyMJYADX'
+          PUMP='pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA'
+          RPC='https://api.mainnet-beta.solana.com'
+
+          body=json.dumps({'jsonrpc':'2.0','id':1,'method':'getTransaction','params':[SIG,{'encoding':'jsonParsed','maxSupportedTransactionVersion':0,'commitment':'confirmed'}]}).encode()
+          req=urllib.request.Request(RPC,data=body,headers={'Content-Type':'application/json','User-Agent':'BOOT-readonly-pool-extract/1.0'},method='POST')
+          with urllib.request.urlopen(req,timeout=35) as r:
+              payload=json.loads(r.read().decode('utf-8','replace'))
+          tx=payload.get('result') or {}
+          top=(((tx.get('transaction') or {}).get('message') or {}).get('instructions') or [])
+          inner=[]
+          for group in ((tx.get('meta') or {}).get('innerInstructions') or []):
+              inner.extend(group.get('instructions') or [])
+
+          matches=[]
+          for scope, rows in [('top',top),('inner',inner)]:
+              for ix in rows:
+                  pid=str(ix.get('programId') or '')
+                  if pid != PUMP:
+                      continue
+                  accounts=[str(x) for x in (ix.get('accounts') or [])]
+                  matches.append({'scope':scope,'accounts':accounts,'data':str(ix.get('data') or '')})
+
+          out=[]
+          out.append('## Historical PumpSwap pool extraction')
+          out.append('')
+          out.append(f'- BUY signature: `{SIG}`')
+          out.append(f'- PumpSwap programme: `{PUMP}`')
+          if not matches:
+              out.append('- No parsed PumpSwap instruction account list was returned by public RPC.')
+          for n,m in enumerate(matches,1):
+              out.append(f'- PumpSwap instruction #{n} ({m["scope"]}) account count: **{len(m["accounts"])}**')
+              if m['accounts']:
+                  out.append(f'  - **Pool account (PumpSwap buy account #1): `{m["accounts"][0]}`**')
+              for i,a in enumerate(m['accounts'][:12],1):
+                  out.append(f'  - account {i}: `{a}`')
+          out.append('')
+          out.append('_PumpSwap public docs define swap as buy(pool, user, …), so the first PumpSwap buy instruction account is the pool state account. Public RPC only; no signing or transaction submission._')
+          Path('/tmp/master-position-pool.md').write_text('\n'.join(out),encoding='utf-8')
+          PY
+
+      - name: Publish pool result
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "$GITHUB_REPOSITORY" --body-file /tmp/master-position-pool.md
