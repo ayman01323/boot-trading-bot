@@ -87,7 +87,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python_bin="$DEPLOY_ROOT/.venv/bin/python"
+          venv="$RUNNER_TEMP/solana-seven-agent-audit-venv"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          python_bin="$venv/bin/python"
           export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
           subject='Solana no-trade audit after MASTER funnel changes'
           thread='solana-no-trade-audit-20260823'
@@ -140,6 +144,7 @@ jobs:
           print(f'{a}_reply='+str(v.get('body') or '').replace('\n',' | ')[:1800])
           PY
           done
+          rm -rf "$venv"
           echo "agent_failures=$failures"
           test "$failures" -eq 0
 
