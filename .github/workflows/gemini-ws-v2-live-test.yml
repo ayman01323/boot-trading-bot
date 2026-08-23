@@ -1,0 +1,141 @@
+name: Gemini WebSocket v2 Live Test
+
+on:
+  push:
+    branches:
+      - 'gpt/gemini-ws-v2-live-test'
+    paths:
+      - '.github/workflows/gemini-ws-v2-live-test.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/gemini-ws-v2-live-test.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  gemini-live-test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Run Gemini live probe and publish durable result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VENV="$RUNNER_TEMP/gemini-ws-v2-live-test"
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+
+          alert_out="$RUNNER_TEMP/gemini-alert.jsonl"
+          task_out="$RUNNER_TEMP/gemini-task.jsonl"
+          set +e
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message 'Reply exactly: GEMINI_WS_ALERT_OK' \
+            --message-id "gpt-to-gemini-alert-${RUN_ID}" \
+            --timeout 120 >"$alert_out" 2>&1
+          alert_rc=$?
+
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --task-action READ_FILE \
+            --task-args-json '{"path":"AI_AGENT_MESSAGING.md"}' \
+            --task-instruction 'Read this safe repository file and return execution evidence.' \
+            --message-id "gpt-to-gemini-task-${RUN_ID}" \
+            --timeout 120 >"$task_out" 2>&1
+          task_rc=$?
+          set -e
+
+          export ALERT_RC="$alert_rc" TASK_RC="$task_rc" ALERT_OUT="$alert_out" TASK_OUT="$task_out"
+          python3 - <<'PY'
+          import base64, json, os, pathlib, time, urllib.error, urllib.parse, urllib.request
+
+          def read(path):
+              try:
+                  return pathlib.Path(path).read_text(encoding='utf-8', errors='replace')[-20000:]
+              except Exception as exc:
+                  return f'{type(exc).__name__}: {exc}'
+
+          alert = read(os.environ['ALERT_OUT'])
+          task = read(os.environ['TASK_OUT'])
+          status_file = {}
+          try:
+              status_file = json.loads(pathlib.Path('/var/tmp/boot/ai_agent_ws_status.json').read_text(encoding='utf-8'))
+          except Exception as exc:
+              status_file = {'error': f'{type(exc).__name__}: {exc}'}
+
+          alert_pass = int(os.environ['ALERT_RC']) == 0 and 'ACKNOWLEDGED' in alert and 'GEMINI_WS_ALERT_OK' in alert
+          task_pass = int(os.environ['TASK_RC']) == 0 and all(x in task for x in ('ACKNOWLEDGED','ACCEPTED','EXECUTING','COMPLETED','AI_AGENT_MESSAGING.md'))
+          result = {
+              'schema_version': 1,
+              'checked_epoch': int(time.time()),
+              'run_id': os.environ['RUN_ID'],
+              'run_attempt': os.environ['RUN_ATTEMPT'],
+              'endpoint': 'ws://127.0.0.1:8765',
+              'target': 'gemini',
+              'alert_test': {
+                  'passed': alert_pass,
+                  'returncode': int(os.environ['ALERT_RC']),
+                  'saw_acknowledged': 'ACKNOWLEDGED' in alert,
+                  'saw_expected_reply': 'GEMINI_WS_ALERT_OK' in alert,
+                  'output': alert,
+              },
+              'task_test': {
+                  'passed': task_pass,
+                  'returncode': int(os.environ['TASK_RC']),
+                  'saw_acknowledged': 'ACKNOWLEDGED' in task,
+                  'saw_accepted': 'ACCEPTED' in task,
+                  'saw_executing': 'EXECUTING' in task,
+                  'saw_completed': 'COMPLETED' in task,
+                  'saw_evidence_path': 'AI_AGENT_MESSAGING.md' in task,
+                  'output': task,
+              },
+              'runtime_status': status_file,
+              'overall_passed': alert_pass and task_pass,
+          }
+
+          repo=os.environ['REPO']; token=os.environ['GH_TOKEN']
+          path='.github/ai-mailbox/gemini-ws-v2-live-probe-result.json'; branch='ai-mailbox'
+          api=f'https://api.github.com/repos/{repo}/contents/{path}'
+          headers={
+              'Authorization':f'Bearer {token}',
+              'Accept':'application/vnd.github+json',
+              'X-GitHub-Api-Version':'2022-11-28',
+              'User-Agent':'gemini-ws-v2-live-probe',
+          }
+          existing=''
+          try:
+              req=urllib.request.Request(api+'?ref='+urllib.parse.quote(branch),headers=headers)
+              with urllib.request.urlopen(req,timeout=20) as resp:
+                  existing=str(json.load(resp).get('sha') or '')
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+          content=json.dumps(result,indent=2,sort_keys=True)+'\n'
+          payload={
+              'message':f"Gemini WebSocket v2 live probe {'passed' if result['overall_passed'] else 'failed'}",
+              'content':base64.b64encode(content.encode()).decode(),
+              'branch':branch,
+          }
+          if existing:
+              payload['sha']=existing
+          req=urllib.request.Request(api,data=json.dumps(payload).encode(),headers={**headers,'Content-Type':'application/json'},method='PUT')
+          with urllib.request.urlopen(req,timeout=20) as resp:
+              json.load(resp)
+          print(content)
+          PY
+
+          rm -rf "$VENV"
