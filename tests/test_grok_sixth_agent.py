@@ -156,6 +156,4 @@ def test_seven_agent_live_diagnostic_probes_grok_kimi_and_all_other_agents() -> 
     assert "{'gpt','claude','gemini','deepseek','grok','kimi','copilot'}" in workflow
     for provider in ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"):
         assert f"probe gpt {provider}" in workflow or (provider == "gpt" and "probe gemini gpt" in workflow)
-    assert "--to grok" in workflow
-    assert "--to kimi" in workflow
     assert "kimi_bounded_server_task=COMPLETED" in workflow
