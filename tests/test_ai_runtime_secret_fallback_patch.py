@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 
-def test_synced_runtime_bridge_overrides_base(monkeypatch) -> None:
+def test_synced_runtime_bridge_fills_only_missing_provider_secrets(monkeypatch) -> None:
     from learnerbot import ai_runtime_secret_fallback_patch as patch
 
-    monkeypatch.setattr(patch, '_ORIGINAL_RUNTIME_ENV', lambda: {'GEMINI_API_KEY': 'stale'})
+    monkeypatch.setattr(patch, '_ORIGINAL_RUNTIME_ENV', lambda: {'GEMINI_API_KEY': 'base'})
     monkeypatch.setattr(
         patch,
         'dotenv_values',
@@ -15,7 +15,7 @@ def test_synced_runtime_bridge_overrides_base(monkeypatch) -> None:
     monkeypatch.setattr(patch._base, '_SECRET_KEYS', {'GEMINI_API_KEY', 'OPENAI_API_KEY'})
 
     env = patch.runtime_env_with_synced_fallback()
-    assert env['GEMINI_API_KEY'] == 'fresh'
+    assert env['GEMINI_API_KEY'] == 'base'
     assert env['OPENAI_API_KEY'] == 'openai'
 
 
