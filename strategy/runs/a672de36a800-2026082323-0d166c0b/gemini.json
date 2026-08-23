@@ -1,0 +1,115 @@
+{
+  "cycle_id": "a672de36a800-2026082323-0d166c0b",
+  "evidence_gaps": [
+    "Fresh runtime forensics are unavailable; evidence_status is MISSING_RUNTIME_FORENSICS and fresh-within-2h=false.",
+    "No per-strategy, per-chain realized NET P&L distribution after all actual fee/slippage/reconciliation audits.",
+    "Lack of Solana real-time quote/preflight simulation integration in the market feature adapter, leaving all Solana strategies fail-closed at zero edge.",
+    "Substitution of expected edge for realized edge on fee-pending or BROADCAST rows in EVM live recording, obscuring execution failures and slippage.",
+    "Absence of disjoint chronological holdout validation in Strategy Lab's promotion logic to prove out-of-sample durability."
+  ],
+  "evidence_sha256": "0d166c0b6ea11bb291827d3ba85efff9181a2bf597b2596023e777d7947421a3",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "Increased Jupiter API traffic and latency. Rate limits or API timeouts may disrupt scanning if not handled with cached preflights or fail-closed fallbacks.",
+      "evidence": [
+        {
+          "detail": "Solana observations hardcode gross_edge_bps, fees, slippage, price_impact, liquidity_score, and sellability_score to zero, marking needs_quote_feature_adapter=True.",
+          "path": "learnerbot/market_feature_adapter.py:load_solana_market_features"
+        },
+        {
+          "detail": "The solana_sibot module already implements a Jupiter quote client (jupiter_quote) and entry/exit validators (_validate_shadow_entry, evaluate_position) capable of real-time round-trip cost calculations.",
+          "path": "learnerbot/solana_sibot.py:jupiter_quote"
+        }
+      ],
+      "expected_effect": "Populates Solana MarketFeatures with realistic contemporaneous economics, enabling Solana copy-trading and market-native strategies to be properly evaluated on an economic basis.",
+      "id": "solana-quote-adapter-integration",
+      "minimum_observation": "At least 100 consecutive Solana leader observations with valid Jupiter quotes across 3+ days of evaluation.",
+      "rationale": "Solana strategies are structurally fail-closed and unable to satisfy Strategy Lab's common eligibility filters. Reusing the existing jupiter_quote engine from solana_sibot to populate Solana features with real-time, quote-backed slippage and fee estimates resolves this gap.",
+      "shadow_test": "Run a shadow cycle where market_feature_adapter queries jupiter_quote for WSOL->Asset and Asset->WSOL on every loaded Solana leader event. Populated features must yield non-zero fees and slippage scores. Set a fail-condition if API failure or rate-limiting causes more than 5% of cycles to fail or time out.",
+      "strategy": "Solana market feature adaptation",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/solana_sibot.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.97,
+      "downside_risk": "Delay in scorecard updates for slow/congested blocks, and potential data omission if a transaction is never reconciled.",
+      "evidence": [
+        {
+          "detail": "The recording loops on _EXECUTED_STATUSES (SUCCESS, SUCCESS_FEE_PENDING, BROADCAST) and falls back to expected_net_base when realised_net_base is absent.",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py:_record_market_native_progress"
+        },
+        {
+          "detail": "Including BROADCAST rows means unconfirmed, pending transactions are recorded as successful trades using preflight estimates rather than final balance changes.",
+          "path": "learnerbot/strategy_lab_live_recording_patch.py:_EXECUTED_STATUSES"
+        }
+      ],
+      "expected_effect": "Enforces strict reconciliation before recording trade outcomes, ensuring that Strategy Lab scorecards reflect actual net wallet deltas and separate execution overhead from strategy performance.",
+      "id": "evm-realized-profit-reconciliation",
+      "minimum_observation": "At least 30 finalized EVM opportunities across multiple congestion levels without fallback expected-net substitutions.",
+      "rationale": "Substituting expected preflight edge for realized edge on fee-pending or broadcast rows obscures execution failures, reverts, replacement gas costs, and actual slippage. This leads to artificial profitability figures in Strategy Lab.",
+      "shadow_test": "Compare expected preflight edge to finalized wallet deltas on all SUCCESS/BROADCAST EVM transactions. Rejects must fail-close. Stop the evaluation if any unconfirmed or expected-fallback row contributes to promotion candidate status.",
+      "strategy": "EVM direct-market arbitrage",
+      "suggested_files": [
+        "learnerbot/strategy_lab_live_recording_patch.py",
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.93,
+      "downside_risk": "Strategies will spend significantly longer in SHADOW mode, and sparse strategies may take a long time to gather sufficient disjoint window samples.",
+      "evidence": [
+        {
+          "detail": "evaluate_strategy flags status='PROMOTION_CANDIDATE' based on MIN_EVALUATION_WINDOWS, MIN_EVALUATION_TRADES, and aggregate net P&L / profit factor, without split out-of-sample validation.",
+          "path": "learnerbot/strategy_lab.py:evaluate_strategy"
+        }
+      ],
+      "expected_effect": "Ensures promoted strategies possess a robust, durable edge across distinct chronological periods, reducing the risk of drawdown or failure during canary live testing.",
+      "id": "multi-window-out-of-sample-validation",
+      "minimum_observation": "At least 3 chronologically distinct evaluation windows containing at least 5 completed trades each for every strategy family under review.",
+      "rationale": "Evaluating a strategy on aggregate in-sample data is highly susceptible to overfitting to specific market regimes. Splitting the evaluation into chronologically disjoint out-of-sample windows ensures durability and prevents a single lucky window or outlier trade from causing premature promotion.",
+      "shadow_test": "Implement a cross-validation script in Strategy Lab that divides the evaluation history into 3 disjoint chronological windows. A strategy is only promoted to PROMOTION_CANDIDATE if it is net-profitable and has a profit factor >= 1.10 in all 3 windows individually. Reject promotion if any single window is unprofitable.",
+      "strategy": "Strategy Lab promotion evaluation",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote strategies based on aggregate raw win counts or simple win-rate percentages.",
+      "reason": "Win rate is a misleading metric that ignores the magnitude of losses. A high win rate can still be net-unprofitable due to large drawdowns or execution costs, violating the money-weighted net P&L objective."
+    },
+    {
+      "idea": "Bypass or loosen minimum liquidity and sellability score floors to increase Solana transaction frequency.",
+      "reason": "Solana's rapid execution environment and high volatility mean that lowering liquidity or sellability gates directly exposes the bot to toxic flow, frontrunning, and permanent slippage loss."
+    },
+    {
+      "idea": "Estimate transaction fees using static averages rather than real-time gas/priority fees.",
+      "reason": "Network congestion causes dramatic spikes in EVM gas prices and Solana priority fees. Static estimates would cause under-estimation of costs, resulting in fake-positive edge."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "a672de36a800c6174c4c4bfe8561b14909661174",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. The repository correctly prioritizes money-weighted net results and enforces strict risk controls, but holds critical structural gaps. Solana observations remain structurally fail-closed and ineligible due to lack of a real-time quote/simulation adapter, despite solana_sibot possessing a functional Jupiter client. EVM live recording conflates expected preflight returns with realized net P&L on broadcast or fee-pending rows, masking slippage and execution overhead. Strategy Lab's promotion engine lacks chronological out-of-sample holdout validation to protect against overfitting. No live readiness or profitability is supported without fresh runtime evidence."
+}
