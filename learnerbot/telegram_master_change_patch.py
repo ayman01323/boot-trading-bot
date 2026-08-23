@@ -4,6 +4,7 @@ import asyncio
 import html
 import threading
 
+from scripts import claude_division as _claude
 from scripts import strategy_factory_transport as _sf
 
 from . import ai_cost_router as _cost
@@ -60,29 +61,35 @@ def _cost_status() -> str:
         "L0 mechanical → deterministic executor, 0 AI calls\n"
         "L1 routine → DeepSeek + GPT final for repo changes\n"
         "L2 normal engineering → DeepSeek + Gemini + GPT\n"
-        "L3 important architecture → Gemini + Claude + GPT\n"
+        "L3 important architecture → Gemini + Claude General + GPT\n"
         "L4 trading/security/deployment → full council + GPT"
     )
     return "<b>💰 AI Cost Router</b>\n\n" + _safe(body, 2500) + policy
 
 
 def _chat_usage() -> str:
-    agents = " | ".join(_sf.AGENTS)
+    other_agents = [agent for agent in _sf.AGENTS if agent != "claude"]
+    agents = " | ".join((*other_agents, "claude-general", "claude-coding"))
     return (
         "<b>🧠 Strategy Factory Chat</b>\n\n"
-        "Use the persistent Strategy Factory identity instead of a separate vendor browser chat.\n"
-        f"Agents: <code>{_safe(agents,300)}</code>\n\n"
-        "Example: <code>/aichat gemini what did GPT ask you?</code>"
+        "Claude has two explicit divisions; bare <code>claude</code> is intentionally rejected.\n"
+        "<b>claude-general</b> = discussion, governance, research and advice via the Strategy Factory worker.\n"
+        "<b>claude-coding</b> = repository/code work routed to the persistent Claude Code mailbox.\n\n"
+        f"Agents: <code>{_safe(agents,400)}</code>\n\n"
+        "Examples:\n"
+        "<code>/aichat claude-general review this governance idea</code>\n"
+        "<code>/aichat claude-coding inspect and fix this repository bug</code>\n"
+        "<code>/aichat gemini what did GPT ask you?</code>"
     )
 
 
-def _chat_result_text(agent: str, result: dict) -> str:
+def _chat_result_text(label: str, result: dict) -> str:
     status = str(result.get("status") or "UNKNOWN").upper()
     acknowledged = bool(result.get("acknowledged"))
     reply = str(result.get("body") or "").strip()
     error = str(result.get("error") or "").strip()
     lines = [
-        f"<b>🤖 {_safe(agent.title(),80)} — Strategy Factory</b>",
+        f"<b>🤖 {_safe(label,100)} — Strategy Factory</b>",
         f"Delivery: <b>{'ACKNOWLEDGED' if acknowledged else status}</b>",
     ]
     if reply:
@@ -94,19 +101,47 @@ def _chat_result_text(agent: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def _master_chat_worker(app, tid, agent: str, body: str) -> None:
+def _master_chat_worker(app, tid, agent: str, body: str, label: str) -> None:
     try:
         result = asyncio.run(_sf.exchange("master", agent, body, timeout=180.0))
-        _ui._send(app, tid, _chat_result_text(agent, result))
+        _ui._send(app, tid, _chat_result_text(label, result))
     except Exception as exc:
         _ui._send(app, tid, f"⚠️ Strategy Factory chat failed: {_safe(exc,700)}")
 
 
-def _start_master_chat(app, tid, agent: str, body: str) -> None:
+def _start_master_chat(app, tid, agent: str, body: str, label: str) -> None:
     thread = threading.Thread(
         target=_master_chat_worker,
-        args=(app, tid, agent, body),
+        args=(app, tid, agent, body, label),
         name=f"strategy-factory-chat-{agent}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _claude_coding_worker(app, tid, body: str) -> None:
+    try:
+        result = _claude.publish_coding_request(body, requested_by="MASTER")
+        _ui._send(
+            app,
+            tid,
+            "🛠 <b>CLAUDE CODING</b>\n"
+            f"Message ID: <code>{_safe(result.get('message_id'),140)}</code>\n"
+            "State: <b>QUEUED</b>\n"
+            "Identity required: <b>PERSISTENT_AGENT</b>\n"
+            "Transport: <b>Claude Code git mailbox</b>\n\n"
+            "This did not invoke Claude General. The persistent Claude Code session must answer with "
+            "<code>division: CODING</code> and <code>identity: PERSISTENT_AGENT</code>.",
+        )
+    except Exception as exc:
+        _ui._send(app, tid, f"⚠️ Claude Coding route failed: {_safe(exc,700)}")
+
+
+def _start_claude_coding(app, tid, body: str) -> None:
+    thread = threading.Thread(
+        target=_claude_coding_worker,
+        args=(app, tid, body),
+        name="claude-coding-mailbox",
         daemon=True,
     )
     thread.start()
@@ -168,17 +203,39 @@ def handle_update(app, update):
             if len(chat_parts) != 2:
                 _ui._send(app, tid, _chat_usage())
                 return
-            agent = chat_parts[0].strip().lower()
+            raw_target = chat_parts[0].strip().lower()
             body = chat_parts[1].strip()
-            if agent not in _sf.AGENTS or not body:
+            try:
+                agent, division = _claude.parse_chat_target(raw_target)
+            except ValueError as exc:
+                _ui._send(app, tid, f"⚠️ {_safe(exc,300)}\n\n{_chat_usage()}")
+                return
+            if not body or agent not in _sf.AGENTS:
                 _ui._send(app, tid, _chat_usage())
                 return
+
+            if agent == "claude" and division == _claude.CODING:
+                _ui._send(
+                    app,
+                    tid,
+                    "📨 Routing to <b>Claude Coding</b> — persistent Claude Code mailbox. "
+                    "This will not invoke Claude General.",
+                )
+                _start_claude_coding(app, tid, body)
+                return
+
+            if agent == "claude" and division == _claude.GENERAL:
+                label = "Claude General"
+                body = _claude.general_message(body)
+            else:
+                label = agent.title()
+
             _ui._send(
                 app,
                 tid,
-                f"📨 Sent to <b>{_safe(agent.title(),80)}</b> via the persistent Strategy Factory identity. Waiting for the correlated reply…",
+                f"📨 Sent to <b>{_safe(label,100)}</b> via the persistent Strategy Factory identity. Waiting for the correlated reply…",
             )
-            _start_master_chat(app, tid, agent, body)
+            _start_master_chat(app, tid, agent, body, label)
             return
 
         if cmd == "/aichange":
@@ -197,8 +254,9 @@ def handle_update(app, update):
                 if remote:
                     body += _remote_result_text(remote)
                 body += (
-                    "\n\n<b>Flow</b>: one Strategy Factory WebSocket transport; DIRECT handles one-to-one messages, "
-                    "COUNCIL uses the same transport for cost-routed advisers → GPT final decision → deterministic policy gate → GPT implementation/tests. "
+                    "\n\n<b>Flow</b>: one Strategy Factory WebSocket transport for GENERAL agent reasoning; "
+                    "Claude Coding is deliberately separated through the persistent Claude Code mailbox. "
+                    "COUNCIL uses cost-routed advisers → GPT final decision → deterministic policy gate → GPT implementation/tests. "
                     "Critical trading/security/deployment requests still use the full council."
                 )
                 _ui._send(app, tid, body)
@@ -257,7 +315,7 @@ def install() -> None:
         )
     if not any(cmd == "aichat" for cmd, _ in _tgops.AI_MASTER_COMMANDS):
         _tgops.AI_MASTER_COMMANDS = tuple(_tgops.AI_MASTER_COMMANDS) + (
-            ("aichat", "MASTER persistent chat with a Strategy Factory agent"),
+            ("aichat", "MASTER chat; Claude requires general or coding division"),
         )
     _tgops.snapshot_for_display = snapshot_with_master_change
     _tgops.transition_messages = transitions_with_master_change
