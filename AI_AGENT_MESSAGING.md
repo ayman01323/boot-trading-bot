@@ -55,6 +55,49 @@ The Council is a governance/orchestration layer, not a second transport. `learne
 
 The Cost Router still decides which advisers are required. Critical trading, security and deployment changes still use the full Council. GPT remains final adjudicator for repository changes. Existing protected policy/deployment gates remain unchanged.
 
+## Subject threads for parallel work
+
+Strategy Factory messages may carry both a human-readable `subject` and a stable `thread_id`. The same normalised subject deterministically maps to the same thread, so several agents can collaborate on one topic while unrelated topics remain isolated.
+
+Example DIRECT messages:
+
+```bash
+python scripts/ai_agent_ws_send.py \
+  --from gpt \
+  --to gemini \
+  --subject 'HOOD fraud' \
+  --message 'Review the pool manipulation evidence.'
+
+python scripts/ai_agent_ws_send.py \
+  --from gpt \
+  --to claude \
+  --subject 'HOOD fraud' \
+  --message 'Challenge Gemini’s conclusion.'
+```
+
+Both messages use the same subject thread even though the recipient is different. A separate subject such as `Server latency` receives a different thread and cannot enter the HOOD thread’s bounded memory.
+
+Thread behaviour:
+
+- `subject` is human-readable and limited to 160 characters.
+- `thread_id` is stored on every threaded message and reply.
+- Supplying a subject without an explicit thread id generates a stable thread id from the subject.
+- Supplying `--thread-id` allows an exact existing thread to be continued.
+- Replies, ACK/status events and durable SQLite records retain the thread metadata.
+- Thread memory is bounded exactly like existing memory, but reads **only that thread**.
+- Thread memory is shared across Strategy Factory agents participating in that subject, allowing GPT, Claude, Gemini, DeepSeek, Grok and Copilot to work from the same bounded topic history.
+- Legacy messages that omit both fields continue to use the older unthreaded per-agent memory behaviour.
+
+Telegram MASTER syntax uses `[subject]` immediately after the agent name:
+
+```text
+/aichat gemini [HOOD fraud] review the latest finding
+/aichat claude [HOOD fraud] challenge Gemini's conclusion
+/aichat grok [Server latency] compare p95 execution latency
+```
+
+This lets the Strategy Factory run several subjects in parallel without context contamination.
+
 ## Canonical user-to-agent chat identity
 
 The user-facing canonical identity is `MASTER`. `MASTER` is a sender/client identity only; it is not a seventh AI worker, cannot be targeted as an AI recipient, and is never included in Council fan-out.
@@ -71,9 +114,10 @@ or the VPS CLI:
 
 ```bash
 python scripts/strategy_factory_chat.py gemini 'what did GPT ask you?'
+python scripts/strategy_factory_chat.py gemini 'review the latest finding' --subject 'HOOD fraud'
 ```
 
-Both paths send `MASTER -> agent` through the same persistent Strategy Factory worker and store the turn in the same durable conversation history used by agent-to-agent messages. This means a later GPT -> Gemini message and a later MASTER -> Gemini message can both be recalled by that same Gemini worker subject to the bounded memory limits.
+Both paths send `MASTER -> agent` through the same persistent Strategy Factory worker and store the turn in the same durable conversation history used by agent-to-agent messages. Threaded messages recall only their subject thread; legacy unthreaded messages retain the existing bounded per-agent memory behaviour.
 
 A separate vendor browser conversation such as Gemini Web, Claude Web, Grok Web or another third-party chat is an **external/unlinked session** unless it is explicitly bridged into Strategy Factory. Do not describe an external browser tab as the Strategy Factory agent and do not expect it to know Strategy Factory messages automatically. The canonical interactive agent is the persistent Strategy Factory worker reached through `/aichat` or `scripts/strategy_factory_chat.py`.
 
@@ -97,7 +141,7 @@ Do not claim an agent received a message unless it reached at least `ACKNOWLEDGE
 
 Persistent workers stay connected to the loopback bus. A recipient **must not poll GitHub**, SQLite, or a mailbox; messages are pushed automatically to the connected worker, and queued messages are delivered when that worker reconnects. The user does not need to tell an agent to check its messages.
 
-SQLite at `/var/tmp/boot/ai_agent_bus.sqlite3` is the durable queue, audit record and bounded Strategy Factory conversation-memory source. It is not the notification transport.
+SQLite at `/var/tmp/boot/ai_agent_bus.sqlite3` is the durable queue, audit record and bounded Strategy Factory conversation-memory source. It is not the notification transport. Subject threads add `thread_id` and `subject` fields to this durable record using an additive migration that preserves existing messages.
 
 The runtime status file is `/var/tmp/boot/ai_agent_ws_status.json`.
 

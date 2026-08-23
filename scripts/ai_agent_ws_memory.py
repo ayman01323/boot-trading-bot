@@ -36,11 +36,24 @@ def _db_path(explicit: str | None = None) -> str:
     return str(explicit or os.environ.get("AI_AGENT_BUS_DB") or DEFAULT_DB).strip()
 
 
-def recent_context(agent: str, *, current_message_id: str = "", db_path: str | None = None, max_exchanges: int | None = None, max_chars: int | None = None) -> str:
-    """Return bounded successful Strategy Factory conversation history for one agent."""
+def recent_context(
+    agent: str,
+    *,
+    current_message_id: str = "",
+    thread_id: str = "",
+    db_path: str | None = None,
+    max_exchanges: int | None = None,
+    max_chars: int | None = None,
+) -> str:
+    """Return bounded Strategy Factory history.
+
+    Threaded messages read only the named thread, across all participating agents.
+    Legacy unthreaded messages retain the older per-agent memory behaviour.
+    """
     if not _enabled():
         return ""
     agent = str(agent or "").strip().lower()
+    thread_id = str(thread_id or "").strip()
     if not agent:
         return ""
     exchanges = max_exchanges if max_exchanges is not None else _bounded_int("AI_BUS_MEMORY_MAX_EXCHANGES", DEFAULT_MAX_EXCHANGES, 1, MAX_EXCHANGES_CAP)
@@ -55,14 +68,24 @@ def recent_context(agent: str, *, current_message_id: str = "", db_path: str | N
         conn = sqlite3.connect(uri, uri=True, timeout=2)
         conn.row_factory = sqlite3.Row
         try:
-            rows = list(conn.execute(
-                """SELECT message_id, sender, target, body, reply, replied_at, updated_at
-                   FROM messages
-                   WHERE status = 'REPLIED' AND reply <> '' AND COALESCE(error, '') = ''
-                     AND (sender = ? OR target = ?) AND message_id <> ?
-                   ORDER BY COALESCE(replied_at, updated_at) DESC, rowid DESC LIMIT ?""",
-                (agent, agent, str(current_message_id or ""), max(exchanges * 3, exchanges)),
-            ))
+            if thread_id:
+                rows = list(conn.execute(
+                    """SELECT message_id, sender, target, body, reply, subject, replied_at, updated_at
+                       FROM messages
+                       WHERE status = 'REPLIED' AND reply <> '' AND COALESCE(error, '') = ''
+                         AND thread_id = ? AND message_id <> ?
+                       ORDER BY COALESCE(replied_at, updated_at) DESC, rowid DESC LIMIT ?""",
+                    (thread_id, str(current_message_id or ""), max(exchanges * 3, exchanges)),
+                ))
+            else:
+                rows = list(conn.execute(
+                    """SELECT message_id, sender, target, body, reply, '' AS subject, replied_at, updated_at
+                       FROM messages
+                       WHERE status = 'REPLIED' AND reply <> '' AND COALESCE(error, '') = ''
+                         AND (sender = ? OR target = ?) AND message_id <> ?
+                       ORDER BY COALESCE(replied_at, updated_at) DESC, rowid DESC LIMIT ?""",
+                    (agent, agent, str(current_message_id or ""), max(exchanges * 3, exchanges)),
+                ))
         finally:
             conn.close()
     except (OSError, sqlite3.Error):

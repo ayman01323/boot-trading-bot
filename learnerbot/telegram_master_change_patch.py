@@ -72,8 +72,24 @@ def _chat_usage() -> str:
         "<b>🧠 Strategy Factory Chat</b>\n\n"
         "Use the persistent Strategy Factory identity instead of a separate vendor browser chat.\n"
         f"Agents: <code>{_safe(agents,300)}</code>\n\n"
-        "Example: <code>/aichat gemini what did GPT ask you?</code>"
+        "Unthreaded: <code>/aichat gemini what did GPT ask you?</code>\n"
+        "Subject thread: <code>/aichat gemini [HOOD fraud] review the latest finding</code>\n\n"
+        "Use the same [subject] with any agent to continue that subject without mixing other topics."
     )
+
+
+def _parse_chat_body(value: str) -> tuple[str, str]:
+    body = str(value or "").strip()
+    if not body.startswith("["):
+        return "", body
+    end = body.find("]")
+    if end <= 1:
+        return "", body
+    subject = " ".join(body[1:end].split())
+    message = body[end + 1 :].strip()
+    if not subject or not message:
+        return "", body
+    return subject, message
 
 
 def _chat_result_text(agent: str, result: dict) -> str:
@@ -81,10 +97,16 @@ def _chat_result_text(agent: str, result: dict) -> str:
     acknowledged = bool(result.get("acknowledged"))
     reply = str(result.get("body") or "").strip()
     error = str(result.get("error") or "").strip()
+    subject = str(result.get("subject") or "").strip()
+    thread_id = str(result.get("thread_id") or "").strip()
     lines = [
         f"<b>🤖 {_safe(agent.title(),80)} — Strategy Factory</b>",
         f"Delivery: <b>{'ACKNOWLEDGED' if acknowledged else status}</b>",
     ]
+    if subject:
+        lines.append(f"Subject: <b>{_safe(subject,160)}</b>")
+    if thread_id:
+        lines.append(f"Thread: <code>{_safe(thread_id,140)}</code>")
     if reply:
         lines.extend(["", _safe(reply, 3500)])
     elif error:
@@ -94,18 +116,18 @@ def _chat_result_text(agent: str, result: dict) -> str:
     return "\n".join(lines)
 
 
-def _master_chat_worker(app, tid, agent: str, body: str) -> None:
+def _master_chat_worker(app, tid, agent: str, body: str, subject: str = "") -> None:
     try:
-        result = asyncio.run(_sf.exchange("master", agent, body, timeout=180.0))
+        result = asyncio.run(_sf.exchange("master", agent, body, subject=subject, timeout=180.0))
         _ui._send(app, tid, _chat_result_text(agent, result))
     except Exception as exc:
         _ui._send(app, tid, f"⚠️ Strategy Factory chat failed: {_safe(exc,700)}")
 
 
-def _start_master_chat(app, tid, agent: str, body: str) -> None:
+def _start_master_chat(app, tid, agent: str, body: str, subject: str = "") -> None:
     thread = threading.Thread(
         target=_master_chat_worker,
-        args=(app, tid, agent, body),
+        args=(app, tid, agent, body, subject),
         name=f"strategy-factory-chat-{agent}",
         daemon=True,
     )
@@ -169,16 +191,18 @@ def handle_update(app, update):
                 _ui._send(app, tid, _chat_usage())
                 return
             agent = chat_parts[0].strip().lower()
-            body = chat_parts[1].strip()
+            raw_body = chat_parts[1].strip()
+            subject, body = _parse_chat_body(raw_body)
             if agent not in _sf.AGENTS or not body:
                 _ui._send(app, tid, _chat_usage())
                 return
+            subject_line = f" Subject: <b>{_safe(subject,160)}</b>." if subject else ""
             _ui._send(
                 app,
                 tid,
-                f"📨 Sent to <b>{_safe(agent.title(),80)}</b> via the persistent Strategy Factory identity. Waiting for the correlated reply…",
+                f"📨 Sent to <b>{_safe(agent.title(),80)}</b> via the persistent Strategy Factory identity.{subject_line} Waiting for the correlated reply…",
             )
-            _start_master_chat(app, tid, agent, body)
+            _start_master_chat(app, tid, agent, body, subject)
             return
 
         if cmd == "/aichange":

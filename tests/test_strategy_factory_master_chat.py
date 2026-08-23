@@ -49,9 +49,32 @@ def test_master_chat_frontends_delegate_to_shared_transport() -> None:
     cli = _text("scripts/strategy_factory_chat.py")
     telegram = _text("learnerbot/telegram_master_change_patch.py")
     assert 'exchange(\n        "master",' in cli
-    assert '_sf.exchange("master", agent, body' in telegram
+    assert '_sf.exchange("master", agent, body, subject=subject' in telegram
     assert "websockets.asyncio" not in cli
     assert 'if cmd == "/aichat"' in telegram
+
+
+def test_subject_syntax_is_optional_and_bounded_without_telegram_imports() -> None:
+    assert transport.split_subject_message("plain question") == ("", "plain question")
+    assert transport.split_subject_message("[HOOD fraud] review the latest finding") == (
+        "HOOD fraud",
+        "review the latest finding",
+    )
+    assert transport.split_subject_message("[Server latency] compare p95") == (
+        "Server latency",
+        "compare p95",
+    )
+    with pytest.raises(ValueError):
+        transport.split_subject_message("[" + ("x" * 161) + "] message")
+
+
+def test_same_subject_reuses_same_thread_and_other_subject_is_isolated() -> None:
+    hood_one = transport.thread_id_for_subject("HOOD fraud")
+    hood_two = transport.thread_id_for_subject("  HOOD   fraud ")
+    latency = transport.thread_id_for_subject("Server latency")
+    assert hood_one == hood_two
+    assert hood_one != latency
+    assert transport.resolve_thread(subject="HOOD fraud") == (hood_one, "HOOD fraud")
 
 
 def test_docs_make_browser_sessions_explicitly_external() -> None:

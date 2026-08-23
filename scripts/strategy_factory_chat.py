@@ -11,11 +11,13 @@ def _event_printer(event: dict) -> None:
     print(json.dumps(event, ensure_ascii=False), flush=True)
 
 
-async def _run(agent: str, message: str, timeout: float) -> int:
+async def _run(agent: str, message: str, timeout: float, *, thread_id: str = "", subject: str = "") -> int:
     result = await exchange(
         "master",
         agent,
         message,
+        thread_id=thread_id,
+        subject=subject,
         timeout=timeout,
         on_event=_event_printer,
     )
@@ -29,9 +31,11 @@ def main() -> int:
     )
     parser.add_argument("agent", choices=AGENTS)
     parser.add_argument("message")
+    parser.add_argument("--subject", default="", help="Human-readable subject. Same subject automatically maps to the same thread.")
+    parser.add_argument("--thread-id", default="", help="Explicit Strategy Factory thread id.")
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
-    return asyncio.run(_run(args.agent, args.message, args.timeout))
+    return asyncio.run(_run(args.agent, args.message, args.timeout, thread_id=args.thread_id, subject=args.subject))
 
 
 if __name__ == "__main__":

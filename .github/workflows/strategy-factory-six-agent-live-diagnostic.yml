@@ -7,6 +7,8 @@ on:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
       - 'learnerbot/ai_agent_ws_runtime_patch.py'
       - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_agent_ws_send.py'
+      - 'scripts/strategy_factory_transport.py'
       - 'learnerbot/grok_provider.py'
       - 'learnerbot/strategy_room.py'
       - 'learnerbot/ai_health_compact_report_patch.py'
@@ -88,9 +90,10 @@ jobs:
           import json, os
           target=os.environ['TARGET']
           value=json.loads(os.environ['FINAL'])
-          assert value.get('type') == 'reply', (target,value)
           assert value.get('status') == 'REPLIED', (target,value.get('status'))
-          assert int(value.get('provider_rc') or 0) == 0, (target,value.get('provider_rc'),value.get('error'))
+          assert value.get('delivered') is True, (target,value)
+          assert value.get('acknowledged') is True, (target,value)
+          assert not str(value.get('error') or ''), (target,value.get('error'))
           assert str(value.get('body') or '').strip() == 'HEALTH_OK', (target,value.get('body'))
           print(f'{target}_provider_health=HEALTH_OK')
           PY
@@ -123,8 +126,10 @@ jobs:
           FINAL="$final" python3 - <<'PY'
           import json,os
           outer=json.loads(os.environ['FINAL'])
-          assert outer.get('type') == 'reply', outer
           assert outer.get('status') == 'COMPLETED', outer
+          assert outer.get('delivered') is True, outer
+          assert outer.get('acknowledged') is True, outer
+          assert not str(outer.get('error') or ''), outer
           result=json.loads(str(outer.get('body') or '{}'))
           assert result.get('status') == 'COMPLETED', result
           assert result.get('action') == 'GIT_STATUS', result

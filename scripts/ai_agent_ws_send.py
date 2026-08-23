@@ -18,15 +18,27 @@ def _print_event(data: dict) -> None:
     print(json.dumps(data, ensure_ascii=False))
 
 
-async def send_and_wait(sender: str, target: str, body: str, message_id: str, timeout: float) -> int:
+async def send_and_wait(
+    sender: str,
+    target: str,
+    body: str,
+    message_id: str,
+    timeout: float,
+    *,
+    thread_id: str = "",
+    subject: str = "",
+) -> int:
     result = await exchange(
         sender,
         target,
         body,
         message_id=message_id,
+        thread_id=thread_id,
+        subject=subject,
         timeout=timeout,
         on_event=_print_event,
     )
+    print(json.dumps(result, ensure_ascii=False))
     status = str(result.get("status") or "").upper()
     return 0 if status in {"REPLIED", "COMPLETED"} and not str(result.get("error") or "") else (2 if status == "TIMEOUT" else 1)
 
@@ -54,6 +66,8 @@ def main() -> int:
     parser.add_argument("--task-args-json", default="{}")
     parser.add_argument("--task-instruction", default="")
     parser.add_argument("--message-id", default="")
+    parser.add_argument("--subject", default="", help="Human-readable subject. Same subject automatically maps to the same thread.")
+    parser.add_argument("--thread-id", default="", help="Explicit thread id when continuing or overriding a subject thread.")
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
     if args.sender == args.target:
@@ -62,7 +76,15 @@ def main() -> int:
         parser.error("--message and --task-action are mutually exclusive")
     body = _task_body(args, parser)
     message_id = args.message_id or new_message_id(args.sender, args.target)
-    return asyncio.run(send_and_wait(args.sender, args.target, body, message_id, args.timeout))
+    return asyncio.run(send_and_wait(
+        args.sender,
+        args.target,
+        body,
+        message_id,
+        args.timeout,
+        thread_id=args.thread_id,
+        subject=args.subject,
+    ))
 
 
 if __name__ == "__main__":
