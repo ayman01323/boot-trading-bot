@@ -32,6 +32,28 @@ def _quote_price_impact_bps(quote: dict) -> Decimal | None:
     return None
 
 
+def _route_telemetry(quote: dict) -> dict:
+    """Extract no-cost Jupiter route provenance from a quote already fetched."""
+    plan = (quote or {}).get("routePlan") or []
+    if not isinstance(plan, list):
+        plan = []
+    venues = []
+    amms = []
+    for hop in plan:
+        if not isinstance(hop, dict):
+            continue
+        swap = hop.get("swapInfo") or {}
+        if not isinstance(swap, dict):
+            swap = {}
+        label = str(swap.get("label") or hop.get("label") or "").strip()
+        amm = str(swap.get("ammKey") or hop.get("ammKey") or "").strip()
+        if label and label not in venues:
+            venues.append(label[:80])
+        if amm and amm not in amms:
+            amms.append(amm[:64])
+    return {"hops": len(plan), "venues": venues, "amm_keys": amms}
+
+
 def _entry_exit_liquidity_limit_bps(cfg: dict) -> Decimal:
     configured = max(
         Decimal(1),
@@ -53,8 +75,9 @@ def validate_entry_with_exit_liquidity(app, event: dict, allocation_sol: Decimal
 
     This is deliberately a near-copy of the small base SiBot preflight so the
     already-fetched reverse Jupiter quote is inspected directly instead of making
-    a third network call.  Existing signal-age, round-trip-loss and entry-
-    deterioration rules are preserved unchanged.
+    a third network call. Existing signal-age, round-trip-loss and entry-
+    deterioration rules are preserved unchanged. Route/venue metadata is recorded
+    from those same quote responses for future pool forensics at zero API cost.
     """
     age = max(0, int(time.time()) - int(event["event_ts"]))
     if age > _sol._int(cfg.get("max_signal_age_seconds"), 30):
@@ -73,12 +96,20 @@ def validate_entry_with_exit_liquidity(app, event: dict, allocation_sol: Decimal
     limit_bps = _entry_exit_liquidity_limit_bps(cfg)
     slippage_bps = max(Decimal(0), _sol._dec(cfg.get("live_order_slippage_bps"), "50"))
 
+    buy_route = _route_telemetry(buy_quote)
+    reverse_route = _route_telemetry(reverse_quote)
     detail = {
         "out_raw": out_raw,
         "reverse_exit_out_lamports": reverse_out_raw,
         "reverse_exit_price_impact_bps": reverse_impact_bps,
         "reverse_exit_reserved_slippage_bps": slippage_bps,
         "reverse_exit_liquidity_limit_bps": limit_bps,
+        "entry_route_hops": buy_route["hops"],
+        "entry_route_venues": buy_route["venues"],
+        "entry_route_amm_keys": buy_route["amm_keys"],
+        "reverse_route_hops": reverse_route["hops"],
+        "reverse_route_venues": reverse_route["venues"],
+        "reverse_route_amm_keys": reverse_route["amm_keys"],
     }
 
     # Fail closed if Jupiter cannot prove the reverse-side price impact.  An
@@ -130,7 +161,7 @@ def install() -> None:
     _sol._entry_exit_liquidity_preflight_installed = True
     print(
         "[solana-entry-exit-liquidity] reverse_quote_reused=true fail_closed=true "
-        "combined_impact_slippage_hard_cap_bps=500 existing_roundtrip_preserved=true"
+        "combined_impact_slippage_hard_cap_bps=500 route_telemetry=true existing_roundtrip_preserved=true"
     )
 
 
