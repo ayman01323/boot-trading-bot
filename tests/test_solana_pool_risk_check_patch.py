@@ -4,7 +4,7 @@ import time
 from decimal import Decimal
 from types import SimpleNamespace
 
-from learnerbot import solana_pool_risk_check_patch as pool
+from learnerbot import solana_pool_risk_gate as pool
 
 HOOD = "8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV"
 
@@ -116,7 +116,7 @@ def test_legitimate_migration_is_not_blocked_after_cooling():
         _pair(created=now - 7200, liquidity=50000, volume=50000, price="0.000001", dex="pumpswap"),
         _pair(created=now - 1800, liquidity=48000, volume=30000, price="0.00000102", dex="meteora"),
     ]
-    pool._LIQUIDITY_HISTORY.clear()
+    pool._LIQ_HISTORY.clear()
     result = pool.evaluate_dexscreener(pairs, _cfg(), mint="legit", now_epoch=now)
     assert result["decision"] == "PASS"
     assert result["evidence"]["dex_cross_pool_price_ratio"] < Decimal("1.1")
@@ -125,7 +125,7 @@ def test_legitimate_migration_is_not_blocked_after_cooling():
 def test_new_material_pool_gets_cooling_not_hard_block():
     now = 1_800_000_000.0
     pairs = [_pair(created=now - 60, liquidity=20000, volume=5000)]
-    pool._LIQUIDITY_HISTORY.clear()
+    pool._LIQ_HISTORY.clear()
     result = pool.evaluate_dexscreener(pairs, _cfg(), mint="fresh", now_epoch=now)
     assert result["decision"] == "COOLING"
     assert result["reason_code"] == "POOL_NEW_COOLING"
@@ -133,12 +133,11 @@ def test_new_material_pool_gets_cooling_not_hard_block():
 
 def test_extreme_fresh_cross_pool_discontinuity_cools():
     now = 1_800_000_000.0
-    # Both pools are material; the new venue prints ~71x above the prior venue.
     pairs = [
         _pair(created=now - 7200, liquidity=1000, volume=5000, price="0.000000154", dex="pumpswap"),
         _pair(created=now - 1200, liquidity=900, volume=5000, price="0.0000109", dex="meteora"),
     ]
-    pool._LIQUIDITY_HISTORY.clear()
+    pool._LIQ_HISTORY.clear()
     result = pool.evaluate_dexscreener(pairs, _cfg(), mint=HOOD, now_epoch=now)
     assert result["decision"] == "COOLING"
     assert result["reason_code"] == "CROSS_POOL_PRICE_DISCONTINUITY"
@@ -151,7 +150,7 @@ def test_tiny_spam_pool_does_not_contaminate_deep_market_price_divergence():
         _pair(created=now - 7200, liquidity=100000, volume=500000, price="0.000001", dex="orca"),
         _pair(created=now - 60, liquidity=100, volume=10, price="0.1", dex="spam"),
     ]
-    pool._LIQUIDITY_HISTORY.clear()
+    pool._LIQ_HISTORY.clear()
     result = pool.evaluate_dexscreener(pairs, _cfg(), mint="deep", now_epoch=now)
     assert result["decision"] == "PASS"
     assert result["evidence"]["dex_material_pair_count"] == 1
@@ -159,7 +158,7 @@ def test_tiny_spam_pool_does_not_contaminate_deep_market_price_divergence():
 
 def test_observed_liquidity_drop_below_30_percent_hard_blocks():
     now = 1_800_000_000.0
-    pool._LIQUIDITY_HISTORY.clear()
+    pool._LIQ_HISTORY.clear()
     old = [_pair(created=now - 7200, liquidity=100000, volume=1000)]
     new = [_pair(created=now - 7200, liquidity=20000, volume=1000)]
     first = pool.evaluate_dexscreener(old, _cfg(), mint="drop", now_epoch=now - 60)
