@@ -1,0 +1,89 @@
+{
+  "findings": [
+    {
+      "category": "CONCURRENCY",
+      "confidence": 0.95,
+      "corrective_action": "Decouple transaction dispatch from settlement. Move receipt polling and fee accounting to an asynchronous background worker or queue.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "trader.w3.eth.wait_for_transaction_receipt(txh,timeout=180,poll_latency=2) is called synchronously inside the per-user execution loop, blocking all subsequent trades.",
+          "file": "learnerbot/auto_trader.py",
+          "line": 235,
+          "symbol": "execute_best_live_opportunity"
+        }
+      ],
+      "id": "AUDIT-EXEC-001",
+      "impact": "A slow or pending transaction for one user blocks the entire auto-trading process for up to 180 seconds, causing all subsequent users to miss fast-market arbitrage opportunities and degrading multi-tenant scalability.",
+      "root_cause": "The auto-trader dispatches trades and waits for their network settlement in a single synchronous loop.",
+      "severity": "P1",
+      "tests_required": [
+        "test_auto_trader_concurrency_non_blocking",
+        "test_auto_trader_slow_receipt_timeout"
+      ],
+      "title": "Synchronous transaction receipt polling blocks multi-tenant auto-trading loop"
+    },
+    {
+      "category": "ACCOUNTING",
+      "confidence": 0.98,
+      "corrective_action": "Extract the exact token and native deltas exclusively from the final transaction receipt's event logs (EVM) or preBalances/postBalances (Solana).",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "wallet_delta = None if wallet_after is None else int(wallet_after) - int(wallet_before)",
+          "file": "learnerbot/solana_live_executor.py",
+          "line": 139,
+          "symbol": "swap"
+        },
+        {
+          "detail": "realised=(after_wrapped-before_wrapped)-actual_gas",
+          "file": "learnerbot/auto_trader.py",
+          "line": 238,
+          "symbol": "execute_best_live_opportunity"
+        }
+      ],
+      "id": "AUDIT-ACCT-001",
+      "impact": "If background transfers, network rent collection, or concurrent trades occur during the multi-second order generation and execution window, those balance changes are falsely attributed to the trade's P&L, corrupting performance records and profit-share fee calculations.",
+      "root_cause": "P&L calculation relies on time-gapped RPC balance snapshots instead of deterministic on-chain transaction receipt data.",
+      "severity": "P1",
+      "tests_required": [
+        "test_solana_pnl_receipt_parsing",
+        "test_evm_pnl_event_log_parsing"
+      ],
+      "title": "Trade P&L is calculated using vulnerable pre-and-post RPC balance snapshots"
+    },
+    {
+      "category": "CONCURRENCY",
+      "confidence": 0.9,
+      "corrective_action": "Implement a local nonce manager with a lock that increments the nonce locally upon dispatch and reconciles with the RPC on failure.",
+      "deterministic_evidence": true,
+      "evidence": [
+        {
+          "detail": "nonce is fetched directly via self.w3.eth.get_transaction_count(self.address, \"pending\") without a local lock.",
+          "file": "learnerbot/live_executor.py",
+          "line": 236,
+          "symbol": "_base_tx"
+        }
+      ],
+      "id": "AUDIT-EXEC-002",
+      "impact": "If multiple trades or token approvals are dispatched concurrently for the same user wallet, they will fetch the same pending nonce from the RPC. Only one transaction will succeed, while others will be rejected or silently replace each other.",
+      "root_cause": "Pending nonce is fetched directly from the RPC for every transaction without a thread-safe local nonce manager to serialize assignments.",
+      "severity": "P2",
+      "tests_required": [
+        "test_live_executor_concurrent_nonce_assignment"
+      ],
+      "title": "Unlocked EVM nonce fetching causes transaction replacement collisions"
+    }
+  ],
+  "no_live_changes": true,
+  "provider": "gemini",
+  "refusals_or_limits": [
+    "Could not perform operational efficiency baseline comparison because .engineering_retry/baseline.json was found to be empty."
+  ],
+  "report_only": true,
+  "schema_version": 1,
+  "scope": "FULL_REPOSITORY_BUG_AUDIT",
+  "source_commit": "79fda32c32c6c8d782745831a296b9b98e8dca14",
+  "status": "ISSUES_FOUND",
+  "summary": "Completed engineering audit of EVM and Solana execution engines. Discovered severe execution concurrency bottlenecks where synchronous receipt waiting blocks multi-user dispatch, and race conditions in P&L accounting that rely on RPC balance snapshots rather than deterministic transaction receipt logs. Also identified unlocked EVM nonce fetching that drops concurrent transactions. (Note: .engineering_retry/baseline.json was found to be empty, so operational efficiency baseline comparison was skipped)."
+}
