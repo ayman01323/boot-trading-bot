@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from scripts import ai_agent_ws_send as ws_send
 from scripts import universal_agent_git_mailbox_bridge as bridge
+
+
+SIX_AGENTS = {"gpt", "claude", "gemini", "deepseek", "grok", "copilot"}
 
 
 class UniversalAgentMailboxTests(unittest.TestCase):
@@ -33,6 +37,12 @@ class UniversalAgentMailboxTests(unittest.TestCase):
             "max_hops: 1\n\n"
             "### GPT · hop 1 · COMPLETED · rc 0\n\nOK\n"
         )
+
+    def test_six_agent_roster_is_consistent_for_websocket_and_fallback(self) -> None:
+        self.assertEqual(set(bridge.AGENTS), SIX_AGENTS)
+        self.assertEqual(set(ws_send.AGENTS), SIX_AGENTS)
+        self.assertIn("grok", bridge.INCOMING_PATHS)
+        self.assertIn("grok", bridge.OUTGOING_PATHS)
 
     def test_every_sender_can_target_every_other_agent(self) -> None:
         for sender in bridge.AGENTS:
@@ -145,6 +155,9 @@ class UniversalAgentMailboxTests(unittest.TestCase):
         self.assertIn("ANTHROPIC_API_KEY", relay)
         self.assertIn("GEMINI_API_KEY", relay)
         self.assertIn("DEEPSEEK_API_KEY", relay)
+        self.assertIn("XAI_API_KEY", relay)
+        self.assertIn("XAI_COUNCIL_MODEL", relay)
+        self.assertIn("COPILOT_GITHUB_TOKEN", relay)
         self.assertIn("COPILOT_ASSIGN_TOKEN", relay)
         self.assertNotRegex(relay, re.compile(r"(?m)^\s*sudo\s+"))
         self.assertNotIn("deploy-boot-trading-bot", relay)
