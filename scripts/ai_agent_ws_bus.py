@@ -19,6 +19,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 DEFAULT_DB = "/var/tmp/boot/ai_agent_bus.sqlite3"
 MAX_BODY_CHARS = 8000
+PROGRESS_STATUSES = {"ACCEPTED", "EXECUTING"}
+FINAL_STATUSES = {"REPLIED", "COMPLETED", "FAILED", "BLOCKED", "REJECTED"}
 
 
 class BusError(ValueError):
@@ -51,6 +53,20 @@ def _normalise_body(value: Any) -> str:
     if len(body) > MAX_BODY_CHARS:
         raise BusError(f"message body exceeds {MAX_BODY_CHARS} characters")
     return body
+
+
+def _normalise_progress(value: Any) -> str:
+    status = str(value or "").strip().upper()
+    if status not in PROGRESS_STATUSES:
+        raise BusError("unsupported progress status")
+    return status
+
+
+def _normalise_final_status(value: Any) -> str:
+    status = str(value or "REPLIED").strip().upper()
+    if status not in FINAL_STATUSES:
+        raise BusError("unsupported final status")
+    return status
 
 
 class Store:
@@ -125,12 +141,15 @@ class Store:
             ))
 
     def pending_replies_for_sender(self, sender: str) -> list[sqlite3.Row]:
+        placeholders = ",".join("?" for _ in FINAL_STATUSES)
+        params = [sender, *sorted(FINAL_STATUSES)]
         with self._connect() as conn:
             return list(conn.execute(
-                """SELECT * FROM messages
-                   WHERE sender = ? AND status = 'REPLIED' AND reply_delivered_at IS NULL
-                   ORDER BY replied_at ASC LIMIT 100""",
-                (sender,),
+                f"""SELECT * FROM messages
+                    WHERE sender = ? AND status IN ({placeholders})
+                      AND replied_at IS NOT NULL AND reply_delivered_at IS NULL
+                    ORDER BY replied_at ASC LIMIT 100""",
+                params,
             ))
 
     def mark_delivered(self, message_id: str) -> None:
@@ -152,16 +171,44 @@ class Store:
                 raise BusError("unknown message_id")
             if row["target"] != target:
                 raise BusError("only the addressed agent may acknowledge")
-            if row["status"] not in {"ACKNOWLEDGED", "REPLIED"}:
+            if row["status"] in {"QUEUED", "DELIVERED"}:
                 conn.execute(
                     """UPDATE messages
-                       SET status = 'ACKNOWLEDGED', acknowledged_at = COALESCE(acknowledged_at, ?),
-                           updated_at = ? WHERE message_id = ?""",
+                       SET status = 'ACKNOWLEDGED',
+                           acknowledged_at = COALESCE(acknowledged_at, ?),
+                           updated_at = ?
+                       WHERE message_id = ?""",
                     (now, now, message_id),
                 )
             return conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
 
-    def reply(self, message_id: str, target: str, body: str, *, error: str = "") -> sqlite3.Row:
+    def progress(self, message_id: str, target: str, status: str) -> sqlite3.Row:
+        now = _now()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+            if row is None:
+                raise BusError("unknown message_id")
+            if row["target"] != target:
+                raise BusError("only the addressed agent may update progress")
+            if row["status"] in FINAL_STATUSES:
+                return row
+            conn.execute(
+                """UPDATE messages
+                   SET status = ?, acknowledged_at = COALESCE(acknowledged_at, ?), updated_at = ?
+                   WHERE message_id = ?""",
+                (status, now, now, message_id),
+            )
+            return conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+
+    def reply(
+        self,
+        message_id: str,
+        target: str,
+        body: str,
+        *,
+        error: str = "",
+        final_status: str = "REPLIED",
+    ) -> sqlite3.Row:
         now = _now()
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
@@ -171,9 +218,9 @@ class Store:
                 raise BusError("only the addressed agent may reply")
             conn.execute(
                 """UPDATE messages
-                   SET status = 'REPLIED', reply = ?, error = ?, replied_at = ?, updated_at = ?
+                   SET status = ?, reply = ?, error = ?, replied_at = ?, updated_at = ?
                    WHERE message_id = ?""",
-                (body, str(error or "")[:1600], now, now, message_id),
+                (final_status, body, str(error or "")[:1600], now, now, message_id),
             )
             return conn.execute("SELECT * FROM messages WHERE message_id = ?", (message_id,)).fetchone()
 
@@ -181,8 +228,9 @@ class Store:
         now = _now()
         with self._connect() as conn:
             conn.execute(
-                """UPDATE messages SET reply_delivered_at = COALESCE(reply_delivered_at, ?),
-                   updated_at = ? WHERE message_id = ?""",
+                """UPDATE messages
+                   SET reply_delivered_at = COALESCE(reply_delivered_at, ?), updated_at = ?
+                   WHERE message_id = ?""",
                 (now, now, message_id),
             )
 
@@ -235,8 +283,12 @@ class Broker:
 
     def _message_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
-            "type": "message", "message_id": row["message_id"], "from": row["sender"],
-            "to": row["target"], "body": row["body"], "status": row["status"],
+            "type": "message",
+            "message_id": row["message_id"],
+            "from": row["sender"],
+            "to": row["target"],
+            "body": row["body"],
+            "status": row["status"],
             "created_at": row["created_at"],
         }
 
@@ -252,15 +304,23 @@ class Broker:
             return
         for row in self.store.pending_replies_for_sender(agent):
             payload = {
-                "type": "reply", "message_id": row["message_id"], "from": row["target"],
-                "to": row["sender"], "body": row["reply"], "error": row["error"], "status": "REPLIED",
+                "type": "reply",
+                "message_id": row["message_id"],
+                "from": row["target"],
+                "to": row["sender"],
+                "body": row["reply"],
+                "error": row["error"],
+                "status": row["status"],
             }
             if await self._broadcast_agent(agent, payload):
                 self.store.mark_reply_delivered(row["message_id"])
 
     async def _notify_sender_status(self, row: sqlite3.Row) -> None:
         await self._broadcast_agent(row["sender"], {
-            "type": "status", "message_id": row["message_id"], "status": row["status"], "to": row["target"],
+            "type": "status",
+            "message_id": row["message_id"],
+            "status": row["status"],
+            "to": row["target"],
         })
 
     async def handle(self, ws: ServerConnection) -> None:
@@ -281,10 +341,12 @@ class Broker:
                         await self._handle_send(ws, agent, data)
                     elif kind == "ack":
                         await self._handle_ack(agent, data)
+                    elif kind == "progress":
+                        await self._handle_progress(agent, data)
                     elif kind == "reply":
                         await self._handle_reply(agent, data)
                     elif kind == "status":
-                        await self._handle_status(ws, data)
+                        await self._handle_status(ws, agent, data)
                     elif kind == "ping":
                         await self._send(ws, {"type": "pong", "ts": _now()})
                     else:
@@ -325,24 +387,52 @@ class Broker:
         row = self.store.acknowledge(_normalise_message_id(data.get("message_id")), agent)
         await self._notify_sender_status(row)
 
+    async def _handle_progress(self, agent: str, data: dict[str, Any]) -> None:
+        row = self.store.progress(
+            _normalise_message_id(data.get("message_id")),
+            agent,
+            _normalise_progress(data.get("status")),
+        )
+        await self._notify_sender_status(row)
+
     async def _handle_reply(self, agent: str, data: dict[str, Any]) -> None:
         message_id = _normalise_message_id(data.get("message_id"))
-        row = self.store.reply(message_id, agent, _normalise_body(data.get("body")), error=str(data.get("error") or ""))
+        final_status = _normalise_final_status(data.get("status"))
+        row = self.store.reply(
+            message_id,
+            agent,
+            _normalise_body(data.get("body")),
+            error=str(data.get("error") or ""),
+            final_status=final_status,
+        )
         payload = {
-            "type": "reply", "message_id": row["message_id"], "from": row["target"],
-            "to": row["sender"], "body": row["reply"], "error": row["error"], "status": "REPLIED",
+            "type": "reply",
+            "message_id": row["message_id"],
+            "from": row["target"],
+            "to": row["sender"],
+            "body": row["reply"],
+            "error": row["error"],
+            "status": row["status"],
         }
         if await self._broadcast_agent(row["sender"], payload):
             self.store.mark_reply_delivered(message_id)
 
-    async def _handle_status(self, ws: ServerConnection, data: dict[str, Any]) -> None:
+    async def _handle_status(self, ws: ServerConnection, agent: str, data: dict[str, Any]) -> None:
         row = self.store.get(_normalise_message_id(data.get("message_id")))
         if row is None:
             raise BusError("unknown message_id")
+        if agent not in {row["sender"], row["target"]}:
+            raise BusError("status is visible only to the sender or recipient")
         await self._send(ws, {
-            "type": "status", "message_id": row["message_id"], "from": row["sender"], "to": row["target"],
-            "status": row["status"], "created_at": row["created_at"], "delivered_at": row["delivered_at"],
-            "acknowledged_at": row["acknowledged_at"], "replied_at": row["replied_at"],
+            "type": "status",
+            "message_id": row["message_id"],
+            "from": row["sender"],
+            "to": row["target"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "delivered_at": row["delivered_at"],
+            "acknowledged_at": row["acknowledged_at"],
+            "replied_at": row["replied_at"],
         })
 
 
