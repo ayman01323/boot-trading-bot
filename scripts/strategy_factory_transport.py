@@ -60,6 +60,21 @@ def resolve_thread(*, thread_id: str = "", subject: str = "") -> tuple[str, str]
     return thread_id, subject
 
 
+def split_subject_message(value: str) -> tuple[str, str]:
+    """Parse optional ``[subject] message`` syntax without Telegram dependencies."""
+    body = str(value or "").strip()
+    if not body.startswith("["):
+        return "", body
+    end = body.find("]")
+    if end <= 1:
+        return "", body
+    subject = normalise_subject(body[1:end])
+    message = body[end + 1 :].strip()
+    if not subject or not message:
+        return "", body
+    return subject, message
+
+
 def _emit(callback: EventCallback | None, event: dict[str, Any]) -> None:
     if callback is not None:
         callback(event)
