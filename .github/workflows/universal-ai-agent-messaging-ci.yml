@@ -36,6 +36,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: strategy-factory-messaging-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   focused-tests:
     runs-on: [self-hosted, linux, x64, boot-vps]
