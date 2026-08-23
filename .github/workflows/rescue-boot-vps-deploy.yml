@@ -1,0 +1,43 @@
+name: Rescue BOOT VPS Deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/rescue-boot-vps-deploy.trigger'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel AI recovery runs occupying BOOT VPS
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for state in in_progress queued; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                [[ -n "$run_id" ]] || continue
+                echo "Cancelling self-hosted AI recovery run ${run_id} (${state})"
+                gh api --method POST -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+              done
+          done
+
+      - name: Dispatch restricted current-main deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run server-ops.yml --ref main -f operation=deploy_main
+          echo 'Restricted deploy_main dispatched to BOOT VPS runner.'
