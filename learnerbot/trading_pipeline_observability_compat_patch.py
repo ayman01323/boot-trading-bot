@@ -16,7 +16,6 @@ from pathlib import Path
 from . import polygon_focus_patch as _polygon
 from . import telegram_trade_blocker_health_patch as _trade_health
 from . import trading_pipeline_observability_patch as _obs
-from .user_registry import all_users
 
 _BASE_SNAPSHOT = _trade_health._snapshot
 _PREV_BUILD_REPORT = _trade_health.build_report
@@ -127,7 +126,7 @@ def _publish_startup_health(app) -> None:
 
     masters = [
         str(u.get("telegram_id") or "")
-        for u in all_users(app.csv_dir, enabled_only=True)
+        for u in _trade_health.all_users(app.csv_dir, enabled_only=True)
         if str(u.get("role") or "").upper() == "MASTER" and str(u.get("telegram_id") or "")
     ]
     tid = masters[0] if masters else ""
