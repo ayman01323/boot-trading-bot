@@ -109,7 +109,7 @@ def lane_summary_text(lane: str, health: dict) -> str:
     lines = [
         heading,
         "",
-        f"{overall} <b>{working} working</b> | {pending} pending | {issues} issues",
+        f"{overall} <b>{working} working · {pending} in progress · {issues} issues</b>",
     ]
     for provider, icon, status in rows:
         if icon in {"🔴", "🟠"}:
@@ -143,7 +143,7 @@ def factory_summary_text(health: dict) -> str:
     lines = [
         _compact._STRATEGY_FACTORY_HEADING,
         "",
-        f"{overall} <b>{working} working</b> | {pending} pending | {issues} issues",
+        f"{overall} <b>{working} working · {pending} in progress · {issues} issues</b>",
     ]
     for provider, icon, status in rows:
         if icon in {"🔴", "🟠"}:
