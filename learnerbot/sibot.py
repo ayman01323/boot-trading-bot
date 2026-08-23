@@ -1258,9 +1258,15 @@ def _history_worker(app):
             ensure_settings(app)
             if _bool(platform_settings(app, 0).get("platform_enabled"), True):
                 for c in load_chains(app, enabled_only=True):
-                    wallet = _next_history_wallet(app, c)
-                    if wallet:
-                        refresh_wallet_history(app, c, wallet)
+                    # Isolate each chain: an exception fetching one chain's history
+                    # must not abort the loop and starve every chain after it in
+                    # iteration order for the rest of this pass.
+                    try:
+                        wallet = _next_history_wallet(app, c)
+                        if wallet:
+                            refresh_wallet_history(app, c, wallet)
+                    except Exception as exc:
+                        print(f"[sibot-history:{c.slug}]", type(exc).__name__, exc)
                 refresh_all_rankings(app)
         except Exception as exc:
             print("[sibot-history]", type(exc).__name__, exc)
