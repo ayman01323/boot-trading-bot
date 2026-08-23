@@ -1,0 +1,43 @@
+name: Gemini Last Question Live Probe 2
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Build isolated sender environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/gemini-last-question-probe-2"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+      - name: Ask Gemini again for last user question
+        shell: bash
+        run: |
+          set -euo pipefail
+          message='Tell GPT what was the last question the user asked you directly in your own Gemini conversation/context before this message. Quote that question exactly if it is available to you. Do not infer or invent it. If no previous user question is available in your current context, reply exactly: NO_PREVIOUS_USER_QUESTION_AVAILABLE'
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message "$message" \
+            --timeout 180 | tee /tmp/gemini-last-question-probe-2.txt
+          grep -q '"status": "ACKNOWLEDGED"' /tmp/gemini-last-question-probe-2.txt
+          grep -q '"status": "REPLIED"' /tmp/gemini-last-question-probe-2.txt
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$VENV"
