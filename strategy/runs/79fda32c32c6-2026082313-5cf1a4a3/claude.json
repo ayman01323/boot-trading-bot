@@ -1,0 +1,124 @@
+{
+  "cycle_id": "79fda32c32c6-2026082313-5cf1a4a3",
+  "evidence_gaps": [
+    "No runtime/live P&L, execution-failure-rate, or realized-slippage data was supplied this cycle (evidence_status=MISSING_RUNTIME_FORENSICS) \u2014 none of the architecture findings above could be tied to durable net P&L impact.",
+    "No operational_efficiency_audit object or ai-reviews:engineering/ops/latest.json snapshot was available, so trade_latency and infrastructure economics could not be assessed chain-by-chain as required.",
+    "No visibility into current strategy_lab.py promotion state (which strategies are SHADOW vs PROMOTION_CANDIDATE vs ACTIVE) on either chain.",
+    "No data on actual frequency of stuck EVM nonces, RPC endpoint failures/latency, or EVM honeypot/unsellable-token rate \u2014 proposals P1/P3/P4 are architecture-inferred risks, not confirmed incidents.",
+    "No confirmation of how much realized trade volume currently flows through the shared cross_chain_strategy_signals.py evaluators versus pure copy-trade logic on each chain."
+  ],
+  "evidence_sha256": "5cf1a4a3f82e2d357566fe223e69c37a706ada6319268ceaee4f2b400835bf97",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "Add an EVM reverse-quote sellability/price-impact preflight before entry, mirroring the Solana round-trip check",
+      "chain_scope": [
+        "ethereum",
+        "bsc",
+        "arbitrum",
+        "base",
+        "polygon"
+      ],
+      "confidence": "medium",
+      "downside_risk": "Extra RPC/quote round-trip per candidate adds latency, which could reduce fill rate on fast-moving opportunities and increases quote-provider call volume/cost.",
+      "evidence": "learnerbot/live_executor.py has simulate_cycle() and a local eth_call prebroadcast gate but no reverse (sell-side) quote check; Solana has this via learnerbot/solana_entry_exit_liquidity_preflight_patch.py and solana_sibot.py:743-767 (validate_entry_with_exit_liquidity), which EVM has no equivalent of.",
+      "expected_effect": "Fewer catastrophic full-loss EVM entries into unsellable tokens, without loosening any existing safety gate.",
+      "id": "P1-evm-sellability-preflight",
+      "minimum_observation": "At least 30 EVM entries flagged high-risk by the new check, or 200 evaluated candidates, over a minimum 2-week window.",
+      "rationale": "A token can pass buy-side gas/profit simulation yet be effectively unsellable (transfer tax, blacklist, pulled liquidity), causing near-total loss on exit. Solana already treats this as important enough to fail-closed on; EVM currently does not check it at all.",
+      "shadow_test": "Run the new preflight in log-only (non-blocking) mode alongside the existing EVM gates; record what it would have rejected and compare realized outcomes of those same tokens under current logic.",
+      "strategy": "execution_risk_control",
+      "suggested_files": [
+        "learnerbot/live_executor.py",
+        "learnerbot/solana_entry_exit_liquidity_preflight_patch.py"
+      ]
+    },
+    {
+      "action": "Prioritize building the documented 'quote feature adapter' so Solana market features are real instead of hardcoded zero",
+      "chain_scope": [
+        "solana"
+      ],
+      "confidence": "medium",
+      "downside_risk": "A synthetic future-return proxy risks subtle look-ahead bias or latency/cost from an added quote data source if built carelessly.",
+      "evidence": "learnerbot/market_feature_adapter.py load_solana_market_features (lines ~269-329) explicitly forces gross_edge/liquidity_score/sellability_score to 0 with a needs_quote_feature_adapter flag, because stored leader events lack a contemporaneous executable future-return quote.",
+      "expected_effect": "Enables genuine, comparable cross-chain evaluation of the shared signal layer; without it, Solana promotion decisions for this layer rest on non-functional inputs.",
+      "id": "P2-solana-quote-feature-adapter",
+      "minimum_observation": "Reuse existing strategy_lab.py promotion thresholds (MIN_EVALUATION_WINDOWS=3, MIN_EVALUATION_TRADES=8, MIN_ELIGIBLE_OPPORTUNITIES=10) applied specifically to Solana-attributed shared-strategy outcomes.",
+      "rationale": "cross_chain_strategy_signals.py evaluators threshold directly on these fields (e.g. min_net_bps, liquidity_score cutoffs of 0.55/0.65/0.75). With them zeroed, the shared 7-evaluator strategy cannot meaningfully discriminate opportunities on Solana today, so any shadow/live track record attributed to that shared layer on Solana is not evidence of strategy quality \u2014 only the separate copy-trade position-management logic in solana_sibot.py is actually operative.",
+      "shadow_test": "Build the adapter SHADOW-only, feed live Solana data through it, and compare emitted MarketFeatures distributions against the working EVM adapter for sanity before counting any resulting signal toward promotion evaluation.",
+      "strategy": "signal_layer",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/cross_chain_strategy_signals.py"
+      ]
+    },
+    {
+      "action": "Add passive telemetry/alerting for aging pending EVM transactions before considering any replace-by-fee logic",
+      "chain_scope": [
+        "ethereum",
+        "bsc",
+        "arbitrum",
+        "base",
+        "polygon"
+      ],
+      "confidence": "low",
+      "downside_risk": "None for telemetry-only; note that any future auto-replace-by-fee implementation is safety-adjacent (execution-reconciliation) and must not be built without explicit review given the repo's own protections against weakening that control.",
+      "evidence": "learnerbot/live_executor.py:~304 fetches get_transaction_count(address, 'pending') fresh per transaction; no persistent nonce queue, replace-by-fee, or stuck-nonce recovery logic was found.",
+      "expected_effect": "Visibility into how often this failure mode actually occurs, without touching the signing/broadcast path.",
+      "id": "P3-nonce-stall-telemetry",
+      "minimum_observation": "14 days of telemetry per EVM chain, ideally spanning at least one gas-price spike period.",
+      "rationale": "A single underpriced/stuck pending transaction can block all subsequent nonces from the same wallet, silently halting new entries and exits \u2014 an infrastructure/execution failure mode that could be misread as a strategy or market problem if not separately instrumented.",
+      "shadow_test": "Log pending-tx age per EVM wallet/chain; no behavior change.",
+      "strategy": "execution_infrastructure",
+      "suggested_files": [
+        "learnerbot/live_executor.py"
+      ]
+    },
+    {
+      "action": "Add passive multi-RPC latency/error-rate logging for Solana (currently single endpoint) and confirm whether the EVM per-chain rpc_urls list has real failover or is decorative",
+      "chain_scope": [
+        "solana",
+        "ethereum",
+        "bsc",
+        "arbitrum",
+        "base",
+        "polygon"
+      ],
+      "confidence": "low",
+      "downside_risk": "None for telemetry; a naive failover implementation later could risk resubmitting already-broadcast signed transactions if not scoped strictly to read/quote calls.",
+      "evidence": "learnerbot/config.py loads a rpc_urls list per EVM chain but no automatic failover logic beyond a static list was found; learnerbot/solana_sibot.py:~30 uses a single rpc_url (env-overridable) with no multi-endpoint failover.",
+      "expected_effect": "Establishes a measured baseline of RPC reliability per chain before any infra decision is made \u2014 no infra migration is recommended here due to lack of data.",
+      "id": "P4-rpc-failover-telemetry",
+      "minimum_observation": "7-day rolling sample per chain with at least 500 logged RPC calls, per the missing operational_efficiency_audit/trade_latency evidence this cycle.",
+      "rationale": "RPC degradation without failover can stall quotes, entries, exits, and reconciliation. This is exactly the trade-latency/infrastructure question the repo's own engineering-audit requirement calls out, but this cycle's evidence packet has no ops snapshot or trade_latency data to assess actual impact.",
+      "shadow_test": "Passive logging only, no routing changes.",
+      "strategy": "execution_infrastructure",
+      "suggested_files": [
+        "learnerbot/config.py",
+        "learnerbot/solana_sibot.py",
+        "scripts/engineering_trade_latency_snapshot.py"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Loosen or remove the newly-fixed stuck-position systemic breaker (or the PF/reserve/stop-loss thresholds) to increase trade throughput",
+      "reason": "No runtime evidence in this cycle supports that these controls are costing net P&L, and CLAUDE.md explicitly forbids weakening stop-loss/circuit-breaker/capital-reserve controls without an explicit user request."
+    },
+    {
+      "idea": "Recommend a server/infrastructure region migration based on architecture alone",
+      "reason": "No trade_latency or infrastructure snapshot was available this cycle (evidence_status=MISSING_RUNTIME_FORENSICS); CLAUDE.md requires a cost-adjusted, chain-weighted trading case with measured latency evidence before any such recommendation, and none exists here."
+    },
+    {
+      "idea": "Promote Solana's shared-signal-layer strategies out of SHADOW immediately since the copy-trade position management around them looks mature",
+      "reason": "The underlying market features feeding that layer are documented as hardcoded zero pending the quote feature adapter (see P2); promoting on non-functional inputs would be unjustified regardless of copy-trade maturity."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "79fda32c32c6c8d782745831a296b9b98e8dca14",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review (no runtime forensics supplied). The system is a wallet-copy-trading + cross-venue arbitrage bot with a shared 7-evaluator signal layer (learnerbot/cross_chain_strategy_signals.py) feeding both EVM and Solana execution under a SHADOW->PROMOTION_CANDIDATE->ACTIVE evidence-gated pipeline (learnerbot/strategy_lab.py), not a historical-backtest engine. Risk controls are layered as sequential patch modules with a self-check asserting wrapper integrity at import; recent commits 3a8a640/b5057b5 closed a real bug where a healthy platform profit-factor previously bypassed the stuck-position systemic breaker entirely. Execution has fail-closed pre-trade gates on both chains (EVM: simulate_cycle + local eth_call prebroadcast; Solana: Jupiter round-trip preflight capping combined price-impact+slippage at 500bps, simulated reserve guard). Two structural gaps found: Solana's shared-signal market features (gross_edge, liquidity_score, sellability_score) are explicitly hardcoded to zero pending a documented 'quote feature adapter' gap, meaning the cross-chain signal layer cannot currently discriminate real opportunities on Solana; and EVM lacks Solana's reverse-quote sellability/honeypot preflight, with thin nonce management and no RPC failover on either chain. None of these can be tied to realized net P&L this cycle because no runtime/live evidence was supplied."
+}
