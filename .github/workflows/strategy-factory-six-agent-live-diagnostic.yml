@@ -1,128 +1,52 @@
-name: Strategy Factory Seven-Agent Live Diagnostic
+name: RPC WebSocket Production Audit
 
 on:
-  workflow_dispatch:
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
     paths:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
-      - 'learnerbot/ai_agent_ws_runtime_patch.py'
-      - 'learnerbot/kimi_provider.py'
-      - 'scripts/ai_agent_ws_worker.py'
-      - 'scripts/ai_agent_ws_send.py'
-      - 'scripts/strategy_factory_transport.py'
-      - 'learnerbot/grok_provider.py'
-      - 'learnerbot/strategy_room.py'
-      - 'learnerbot/ai_health_compact_report_patch.py'
 
 permissions:
   contents: read
 
 concurrency:
-  group: strategy-factory-seven-agent-live-${{ github.event.pull_request.number || github.ref }}
+  group: rpc-ws-production-audit
   cancel-in-progress: true
 
 jobs:
-  live-diagnostic:
+  audit:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Check out repository without persisted credentials
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
           persist-credentials: false
+          fetch-depth: 1
 
-      - name: Verify seven-agent Strategy Factory runtime
+      - name: Build sender environment
         shell: bash
         run: |
           set -euo pipefail
-          systemctl is-active --quiet learnerbot
-          test -s /var/tmp/boot/ai_agent_ws_status.json
-          python3 - <<'PY'
-          import json, time
-          p='/var/tmp/boot/ai_agent_ws_status.json'
-          d=json.load(open(p,encoding='utf-8'))
-          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d.get('state')
-          assert d.get('host') == '127.0.0.1'
-          assert int(d.get('port') or 0) == 8765
-          expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
-          assert set(d.get('workers') or []) == expected, d.get('workers')
-          age=int(time.time())-int(d.get('updated_epoch') or 0)
-          assert age < 86400, age
-          print('runtime_state='+str(d.get('state')))
-          print('workers='+','.join(d.get('workers') or []))
-          print('status_age_seconds='+str(age))
-          PY
-
-      - name: Build isolated diagnostic environment
-        shell: bash
-        run: |
-          set -euo pipefail
-          venv="$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic"
+          venv="$RUNNER_TEMP/rpc-ws-audit"
           rm -rf "$venv"
           python3 -m venv "$venv"
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Probe all seven providers strictly
+      - name: Execute live RPC and WebSocket probe inside learnerbot
         shell: bash
         run: |
           set -euo pipefail
-          probe() {
-            sender="$1"
-            target="$2"
-            mid="sf7-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
-            set +e
-            output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-              --from "$sender" \
-              --to "$target" \
-              --message-id "$mid" \
-              --timeout 90 \
-              --message 'Strategy Factory seven-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
-            sender_rc=$?
-            set -e
-            printf '%s\n' "$output"
-            if [[ $sender_rc -ne 0 ]]; then
-              echo "${target}_provider_health=FAILED sender_rc=${sender_rc}"
-              return 1
-            fi
-            final="$(printf '%s\n' "$output" | tail -n 1)"
-            TARGET="$target" FINAL="$final" python3 - <<'PY'
-          import json, os
-          target=os.environ['TARGET']
-          value=json.loads(os.environ['FINAL'])
-          assert value.get('status') == 'REPLIED', (target,value.get('status'))
-          assert value.get('delivered') is True, (target,value)
-          assert value.get('acknowledged') is True, (target,value)
-          assert not str(value.get('error') or ''), (target,value.get('error'))
-          assert str(value.get('body') or '').strip() == 'HEALTH_OK', (target,value.get('body'))
-          print(f'{target}_provider_health=HEALTH_OK')
-          PY
-          }
-          failures=0
-          probe gemini gpt || failures=$((failures+1))
-          probe gpt claude || failures=$((failures+1))
-          probe gpt gemini || failures=$((failures+1))
-          probe gpt deepseek || failures=$((failures+1))
-          probe gpt grok || failures=$((failures+1))
-          probe gpt kimi || failures=$((failures+1))
-          probe gpt copilot || failures=$((failures+1))
-          echo "provider_failures=$failures"
-          test "$failures" -eq 0
-
-      - name: Verify Kimi bounded deterministic server task
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
+          mid="rpc-health-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
             --from gpt \
             --to kimi \
-            --message-id "sf7-kimi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --timeout 90 \
-            --task-action GIT_STATUS \
-            --task-args-json '{}' \
-            --task-instruction 'Return bounded read-only git status evidence from the production server repository. Do not modify anything.')"
+            --message-id "$mid" \
+            --timeout 240 \
+            --task-action RUN_TESTS \
+            --task-args-json '{"targets":["tests/test_runtime_rpc_health_probe.py::test_runtime_rpc_health_probe"],"timeout_seconds":180}' \
+            --task-instruction 'Run the explicit read-only RPC/WSS health probe against production configuration. Do not modify trading, endpoints, services, wallets, risk or capital.')"
           printf '%s\n' "$output"
           final="$(printf '%s\n' "$output" | tail -n 1)"
           FINAL="$final" python3 - <<'PY'
@@ -134,204 +58,40 @@ jobs:
           assert not str(outer.get('error') or ''), outer
           result=json.loads(str(outer.get('body') or '{}'))
           assert result.get('status') == 'COMPLETED', result
-          assert result.get('action') == 'GIT_STATUS', result
-          evidence=result.get('evidence') or {}
-          assert int(evidence.get('returncode') or 0) == 0, result
-          print('kimi_bounded_server_task=COMPLETED')
-          print('kimi_git_status_chars='+str(len(str(evidence.get('stdout') or ''))))
+          assert result.get('action') == 'RUN_TESTS', result
+          print('RPC_HEALTH_TEST=COMPLETED')
           PY
 
-      - name: Remove isolated environment
-        if: always()
-        shell: bash
-        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic}"
-
-  rpc-ws-health:
-    name: Read-only production RPC and WebSocket health
-    runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 12
-    steps:
-      - name: Probe configured production endpoints without exposing credentials
-        env:
-          DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+      - name: Read sanitised health report through bounded task
         shell: bash
         run: |
           set -euo pipefail
-          python_bin="${DEPLOY_ROOT}/.venv/bin/python"
-          test -x "$python_bin"
-          PYTHONPATH="${DEPLOY_ROOT}:${PYTHONPATH:-}" "$python_bin" - <<'PY'
-          import csv, json, os, time
-          from pathlib import Path
-          from urllib.parse import urlsplit
-          import requests
-          from websockets.sync.client import connect as ws_connect
-          from learnerbot.config import AppSettings, load_chains
-
-          app=AppSettings.load()
-          chains=load_chains(app, enabled_only=False)
-          meta={int(c.chain_id): {'slug':str(c.slug),'name':str(c.name),'type':str(c.type).upper(),'enabled':bool(c.enabled)} for c in chains}
-          rpc_path=Path(app.csv_dir)/'rpc_endpoints.csv'
-          print('AUDIT_CONFIG csv_dir_readable='+str(os.access(app.csv_dir, os.R_OK)).lower()+' rpc_file_exists='+str(rpc_path.exists()).lower())
-
-          def provider(url):
-              host=(urlsplit(str(url or '')).hostname or '').lower()
-              mapping=[
-                  ('alchemy.com','Alchemy'),('helius-rpc.com','Helius'),('helius.xyz','Helius'),
-                  ('quiknode.pro','QuickNode'),('quicknode.com','QuickNode'),('infura.io','Infura'),
-                  ('ankr.com','Ankr'),('publicnode.com','PublicNode'),('drpc.org','dRPC'),
-                  ('chainstack.com','Chainstack'),('blastapi.io','Blast'),('llamarpc.com','LlamaRPC'),
-              ]
-              for needle,label in mapping:
-                  if needle in host: return label
-              return host or 'unknown'
-
-          def error_kind(exc):
-              name=type(exc).__name__
-              text=str(exc).lower()
-              if 'timed out' in text or 'timeout' in text: return 'TIMEOUT'
-              if 'ssl' in text or 'tls' in text or 'certificate' in text: return 'TLS'
-              if 'name or service' in text or 'resolve' in text or 'dns' in text: return 'DNS'
-              if '429' in text or 'rate' in text: return 'RATE_LIMIT'
-              if '401' in text or '403' in text or 'unauthor' in text or 'forbidden' in text: return 'AUTH'
-              return name[:80]
-
-          def emit(kind, row):
-              print(kind+' '+json.dumps(row, sort_keys=True, separators=(',',':')))
-
-          def http_probe(url, cid, ctype):
-              started=time.perf_counter()
-              try:
-                  if ctype=='SOLANA':
-                      payload={'jsonrpc':'2.0','id':1,'method':'getHealth'}
-                  else:
-                      payload={'jsonrpc':'2.0','id':1,'method':'eth_chainId','params':[]}
-                  r=requests.post(url,json=payload,timeout=8)
-                  ms=round((time.perf_counter()-started)*1000,2)
-                  if r.status_code != 200:
-                      return False,ms,'HTTP_'+str(r.status_code),None
-                  body=r.json()
-                  if body.get('error'):
-                      code=(body.get('error') or {}).get('code') if isinstance(body.get('error'),dict) else None
-                      return False,ms,'RPC_ERROR_'+str(code),None
-                  result=body.get('result')
-                  if ctype=='SOLANA':
-                      ok=(str(result).lower()=='ok')
-                      return ok,ms,'' if ok else 'UNEXPECTED_HEALTH',result
-                  try: actual=int(str(result),16)
-                  except Exception: return False,ms,'BAD_CHAIN_ID',result
-                  return actual==cid,ms,'' if actual==cid else 'WRONG_CHAIN',actual
-              except Exception as exc:
-                  return False,round((time.perf_counter()-started)*1000,2),error_kind(exc),None
-
-          def ws_probe(url, cid, ctype):
-              started=time.perf_counter()
-              try:
-                  with ws_connect(url,open_timeout=8,close_timeout=3,ping_interval=20,ping_timeout=10,max_size=1024*1024) as ws:
-                      if ctype=='SOLANA':
-                          ws.send(json.dumps({'jsonrpc':'2.0','id':1,'method':'slotSubscribe'}))
-                          deadline=time.monotonic()+8
-                          ack=None
-                          while time.monotonic()<deadline:
-                              msg=json.loads(ws.recv(timeout=max(.1,deadline-time.monotonic())))
-                              if msg.get('id')==1:
-                                  ack=msg; break
-                          ms=round((time.perf_counter()-started)*1000,2)
-                          ok=bool(ack and ack.get('result') is not None and not ack.get('error'))
-                          return ok,ms,'' if ok else 'SUBSCRIBE_FAILED',True if ok else None
-                      ws.send(json.dumps({'jsonrpc':'2.0','id':1,'method':'eth_chainId','params':[]}))
-                      deadline=time.monotonic()+8
-                      chain_reply=None
-                      while time.monotonic()<deadline:
-                          msg=json.loads(ws.recv(timeout=max(.1,deadline-time.monotonic())))
-                          if msg.get('id')==1:
-                              chain_reply=msg; break
-                      if not chain_reply or chain_reply.get('error'):
-                          return False,round((time.perf_counter()-started)*1000,2),'CHAIN_ID_FAILED',None
-                      try: actual=int(str(chain_reply.get('result')),16)
-                      except Exception: return False,round((time.perf_counter()-started)*1000,2),'BAD_CHAIN_ID',None
-                      if actual!=cid:
-                          return False,round((time.perf_counter()-started)*1000,2),'WRONG_CHAIN',actual
-                      ws.send(json.dumps({'jsonrpc':'2.0','id':2,'method':'eth_subscribe','params':['newHeads']}))
-                      deadline=time.monotonic()+8
-                      sub=None
-                      while time.monotonic()<deadline:
-                          msg=json.loads(ws.recv(timeout=max(.1,deadline-time.monotonic())))
-                          if msg.get('id')==2:
-                              sub=msg; break
-                      ms=round((time.perf_counter()-started)*1000,2)
-                      ok=bool(sub and sub.get('result') and not sub.get('error'))
-                      return ok,ms,'' if ok else 'SUBSCRIBE_FAILED',actual
-              except Exception as exc:
-                  return False,round((time.perf_counter()-started)*1000,2),error_kind(exc),None
-
-          rows=[]
-          if rpc_path.exists():
-              try:
-                  with rpc_path.open('r',encoding='utf-8-sig',newline='') as fh:
-                      rows=list(csv.DictReader(fh))
-              except Exception as exc:
-                  print('AUDIT_CONFIG_READ_ERROR '+error_kind(exc))
-
-          http_count=http_ok=ws_count=ws_ok=0
-          ws_seen_by_chain={}
-          for row in rows:
-              enabled=str(row.get('enabled') or 'true').strip().lower() in {'1','true','yes','on','y'}
-              if not enabled: continue
-              try: cid=int(str(row.get('chain_id') or '0').strip())
-              except Exception: continue
-              info=meta.get(cid,{'slug':str(cid),'name':str(cid),'type':'EVM','enabled':True})
-              pri=str(row.get('priority') or '999').strip()
-              url=str(row.get('url') or '').strip()
-              if url.startswith(('https://','http://')):
-                  http_count+=1
-                  ok,ms,err,actual=http_probe(url,cid,info['type'])
-                  http_ok+=int(ok)
-                  emit('RPC_RESULT',{'chain_id':cid,'chain':info['slug'],'provider':provider(url),'priority':pri,'status':'OK' if ok else 'FAIL','latency_ms':ms,'error':err,'reported_chain_id':actual})
-              ws_url=str(row.get('ws_url') or '').strip() or str(row.get('websocket_url') or '').strip()
-              if ws_url.startswith(('wss://','ws://')):
-                  ws_count+=1; ws_seen_by_chain[cid]=True
-                  ok,ms,err,actual=ws_probe(ws_url,cid,info['type'])
-                  ws_ok+=int(ok)
-                  emit('WS_RESULT',{'chain_id':cid,'chain':info['slug'],'provider':provider(ws_url),'priority':pri,'status':'OK' if ok else 'FAIL','latency_ms':ms,'error':err,'reported_chain_id':actual})
-
-          # Solana lives in solana_settings.csv rather than chains.csv/rpc_endpoints.csv.
-          sol_path=Path(app.csv_dir)/'solana_settings.csv'
-          sol_rpc=''
-          if sol_path.exists():
-              try:
-                  with sol_path.open('r',encoding='utf-8-sig',newline='') as fh:
-                      for row in csv.DictReader(fh):
-                          if str(row.get('setting') or '').strip()=='rpc_url':
-                              sol_rpc=str(row.get('value') or '').strip(); break
-              except Exception:
-                  pass
-          if sol_rpc.startswith(('https://','http://')):
-              http_count+=1
-              ok,ms,err,_=http_probe(sol_rpc,-101,'SOLANA')
-              http_ok+=int(ok)
-              emit('RPC_RESULT',{'chain_id':-101,'chain':'solana','provider':provider(sol_rpc),'priority':'configured','status':'OK' if ok else 'FAIL','latency_ms':ms,'error':err,'reported_chain_id':'solana-mainnet' if ok else None})
-              sol_ws=('wss://'+sol_rpc[len('https://'):]) if sol_rpc.startswith('https://') else ('ws://'+sol_rpc[len('http://'):])
-              ws_count+=1
-              ok,ms,err,_=ws_probe(sol_ws,-101,'SOLANA')
-              ws_ok+=int(ok)
-              emit('WS_RESULT',{'chain_id':-101,'chain':'solana','provider':provider(sol_ws),'priority':'derived-from-configured-rpc','status':'OK' if ok else 'FAIL','latency_ms':ms,'error':err,'reported_chain_id':'solana-subscription' if ok else None})
-
-          for cid,info in sorted(meta.items()):
-              if info.get('enabled') and cid in {137,42161,56,8453} and not ws_seen_by_chain.get(cid):
-                  emit('WS_RESULT',{'chain_id':cid,'chain':info['slug'],'provider':'none','priority':'n/a','status':'MISSING','latency_ms':None,'error':'NO_ENABLED_WS_URL_IN_RPC_ENDPOINTS_CSV','reported_chain_id':None})
-
-          emit('AUDIT_SUMMARY',{'http_tested':http_count,'http_ok':http_ok,'http_failed':http_count-http_ok,'ws_tested':ws_count,'ws_ok':ws_ok,'ws_failed':ws_count-ws_ok})
+          mid="rpc-health-read-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to kimi \
+            --message-id "$mid" \
+            --timeout 90 \
+            --task-action READ_FILE \
+            --task-args-json '{"path":"data/rpc_health_latest.json"}' \
+            --task-instruction 'Return the sanitised RPC/WSS health report only. Do not expose raw configuration, URLs, API keys, wallets or secrets.')"
+          printf '%s\n' "$output"
+          final="$(printf '%s\n' "$output" | tail -n 1)"
+          FINAL="$final" python3 - <<'PY'
+          import json,os
+          outer=json.loads(os.environ['FINAL'])
+          assert outer.get('status') == 'COMPLETED', outer
+          result=json.loads(str(outer.get('body') or '{}'))
+          assert result.get('status') == 'COMPLETED', result
+          evidence=result.get('evidence') or {}
+          content=str(evidence.get('content') or '')
+          assert content, result
+          print('RPC_HEALTH_REPORT_BEGIN')
+          print(content)
+          print('RPC_HEALTH_REPORT_END')
           PY
 
-      - name: Show recent application WebSocket state without URLs or secrets
+      - name: Cleanup
         if: always()
         shell: bash
-        run: |
-          set +e
-          echo 'APP_WS_LOG_BEGIN'
-          journalctl -u learnerbot --since '-20 minutes' --no-pager 2>/dev/null \
-            | grep -E '\[(evm-ws|solana-ws)' \
-            | tail -n 120 \
-            | sed -E 's#(https?|wss?)://[^ ]+#<redacted-url>#g'
-          echo 'APP_WS_LOG_END'
-          exit 0
+        run: rm -rf "${VENV:-$RUNNER_TEMP/rpc-ws-audit}"
