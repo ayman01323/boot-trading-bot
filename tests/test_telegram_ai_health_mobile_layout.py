@@ -37,7 +37,7 @@ def test_mobile_provider_layout_uses_short_lines(monkeypatch):
     text = mobile.provider_health_text(_health(), _health())
 
     assert "6 healthy</b> | 0 verify | 0 issues" in text
-    assert "GPT</b> — Connected" in text
+    assert " GPT — Connected" in text
     assert "↳ <i>API OK · 20m ago</i>" in text
     assert "Worker connected · API last OK" not in text
     assert "need verification" not in text
