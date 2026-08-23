@@ -18,7 +18,7 @@ jobs:
         with:
           ref: main
           persist-credentials: false
-      - name: Inspect embedded Kimi runtime and queue without secrets
+      - name: Inspect embedded Kimi runtime and queue
         shell: bash
         run: |
           set -euo pipefail
@@ -34,28 +34,23 @@ jobs:
           )"
           if [[ "$pid" != 0 ]]; then
             echo '=== EMBEDDED PROCESS ==='
-            sudo ps -p "$pid" -o pid=,etime=,stat=,cmd= || true
-            echo "exe=$(sudo readlink /proc/$pid/exe 2>/dev/null || true)"
-            echo "cwd=$(sudo readlink /proc/$pid/cwd 2>/dev/null || true)"
+            ps -p "$pid" -o pid=,etime=,stat=,cmd= || true
+            echo "exe=$(readlink /proc/$pid/exe 2>/dev/null || true)"
+            echo "cwd=$(readlink /proc/$pid/cwd 2>/dev/null || true)"
           fi
-          echo '=== REDACTED CREDENTIAL PRESENCE ==='
-          sudo python3 - <<'PY'
-          from pathlib import Path
-          for raw in ('/var/tmp/ai_council_runtime.env','/var/tmp/boot/ai_council_runtime.env'):
-              p=Path(raw); keys=set()
-              try:
-                  for line in p.read_text(errors='replace').splitlines():
-                      if '=' in line: keys.add(line.split('=',1)[0].strip())
-              except Exception:
-                  pass
-              print(raw, {'exists':p.exists(),'kimi_credential_present':bool({'KIMI_API_KEY','MOONSHOT_API_KEY'} & keys)})
-          PY
+          echo '=== RUNTIME BRIDGE METADATA ONLY ==='
+          for p in /var/tmp/ai_council_runtime.env /var/tmp/boot/ai_council_runtime.env; do
+            if [[ -e "$p" ]]; then ls -l "$p"; else echo "$p missing"; fi
+          done
           echo '=== LATEST KIMI QUEUE ==='
-          sudo python3 - <<'PY'
+          python3 - <<'PY'
           import sqlite3, json
           p='/var/tmp/boot/ai_agent_bus.sqlite3'
-          con=sqlite3.connect(f'file:{p}?mode=ro', uri=True)
-          con.row_factory=sqlite3.Row
-          rows=con.execute("""select message_id,sender,target,status,created_at,delivered_at,acknowledged_at,replied_at,substr(error,1,180) error from messages where target='kimi' order by created_at desc limit 20""").fetchall()
-          for r in rows: print(json.dumps(dict(r), sort_keys=True))
+          try:
+              con=sqlite3.connect(f'file:{p}?mode=ro', uri=True)
+              con.row_factory=sqlite3.Row
+              rows=con.execute("""select message_id,sender,target,status,created_at,delivered_at,acknowledged_at,replied_at,substr(error,1,180) error from messages where target='kimi' order by created_at desc limit 30""").fetchall()
+              for r in rows: print(json.dumps(dict(r), sort_keys=True))
+          except Exception as exc:
+              print('queue_read_error', type(exc).__name__, str(exc)[:200])
           PY
