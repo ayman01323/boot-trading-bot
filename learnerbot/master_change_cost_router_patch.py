@@ -8,6 +8,10 @@ from . import master_change_council as _base
 from .ai_cost_provider_patch import call_provider
 from scripts.ai_agent_ws_worker import _PROVIDER_CALL_LOCK
 
+# Grok is the fifth adviser. Cheap routes remain unchanged; only Level 4 full
+# council requests require all five advisers before GPT's final adjudication.
+_base.ADVISERS = tuple(dict.fromkeys((*_base.ADVISERS, "grok")))
+
 _MISSING = object()
 
 
@@ -132,13 +136,13 @@ def _process(app, request_id: str) -> None:
         state.setdefault("advisers", {})
         _base._write_state(app, state)
 
-        saved = max(0, 5 - int(route.get("model_calls_before_implementation") or 0))
+        saved = max(0, 6 - int(route.get("model_calls_before_implementation") or 0))
         _base._notify(
             app,
             state.get("requester_chat_id"),
             f"💰 AI COST ROUTE L{route.get('level')} — {request_id}\n"
             f"Agents: {', '.join(required) or 'none'} → GPT final.\n"
-            f"Planned model calls: {route.get('model_calls_before_implementation')} (saving {saved} vs old five-call council).\n"
+            f"Planned model calls: {route.get('model_calls_before_implementation')} (saving {saved} vs full six-agent council).\n"
             f"{route.get('reason')}",
         )
 
