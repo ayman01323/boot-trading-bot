@@ -1,10 +1,10 @@
 {
   "action": "inspect",
   "action_return_code": 0,
-  "deepseek_analysis": "0 selected=0` for polygon, base, ethereum, arbitrum, and bsc. Broad market scanning may not have been finding usable pools immediately before termination.\n3. **Solana execution rejection.** Last action log: `REJECT tid=5923828381 action=SELL` because quoted price impact `10000.00 bps` + slippage `50 bps` = `10050.00 bps`, which exceeds the configured `500 bps` limit. This is a protective rejection, but the magnitude is extreme and may indicate poor liquidity or bad quoting at that moment.\n4. **Version/deployment mismatch risk.** The inspection context shows `branch: main`, `sha: f1087a1...`, `version: 2.3.10`, but the service path/description references `v2.2` (`multichain-learning-bot-v2.2-fast-direct-market`). The requested GitHub source SHA `6bf53243...` does not appear in the supplied context. Confirm which deployment is actually running before acting on this inspection.\n5. **Resource peak is notable.** Nearly `800 MB` peak memory and high CPU usage over less than two hours should be monitored on restart to ensure the process is not resource-constrained.\n\n**Follow-up recommendations:**\n\n- Start/restart `learnerbot.service` through normal service management and confirm it reaches `active (running)`.\n- Re-run a bounded status check after startup to verify healthy operation.\n- Investigate why no pools were qualified across multiple chains before shutdown.\n- Review the Solana SELL rejection: `10050 bps` total impact is far above the `500 bps` guardrail; ensure order routing/liquidity sources are sane.\n- Verify that the running service version/path matches the intended deployment SHA before trusting the restart state.\n\nOverall: the inspection action succeeded, but the service is not healthy. It is stopped and needs operator attention before it can resume normal function.",
+  "deepseek_analysis": "istic return code was `0`. No VPS mutation was performed.\n\n**Service status:** `learnerbot.service` is **active (running)** and enabled. PID `1132054`, uptime ~55s, process tasks within limit (`23/5869`), CPU and memory activity observed. Before/after snapshots show no crash or restart; memory increased from `504.7M` to `519.3M` and CPU advanced normally.\n\n**Concrete warnings / findings:**\n- **Alchemy API rate limit:** `evm-router-probe` logged `HTTP 429; retries exhausted` for `alchemy_getAssetTransfers`. This indicates degraded EVM asset-transfer probing.\n- **Solana execution rejection:** `solana-exec-efficiency` rejected a SELL trade because quoted price impact `10000.00 bps` + slippage `50 bps` = `10050.00 bps`, far exceeding the `500 bps` limit. This is protective behaviour, but it may indicate illiquid quote data or stale routing.\n- **Low/zero qualified pools:** Multiple chains (`bsc`, `base`, `ethereum`, `arbitrum`, `polygon`) show `pool=0 qualified=0 selected=0`; Solana shows `broader_pool=46 qualified=0 selected=0`. This suggests no current opportunities passed filters, and the broader pool is empty on several chains.\n\n**Follow-up recommendations:**\n1. Investigate Alchemy 429 rate limiting: check configured request rates, backoff behaviour, and whether the Alchemy plan/endpoint quota needs adjustment.\n2. Review Solana price-impact rejection: verify price oracle/quote freshness and whether the 10000 bps impact is expected for that [REDACTED]\n3. Monitor memory trend: `519.3M` is below peak `604.5M`, but continued growth should be watched.\n4. Diagnose why qualified pools are `0` across chains \u2014 confirm market data feeds, pool discovery, and filtering thresholds are healthy.\n5. Re-run a bounded inspection after the above items are reviewed to confirm improvements.",
   "deepseek_analysis_available": true,
-  "deployed_sha": "f1087a1bb1556952594b1f60b1c9946ec0d62155",
-  "generated_epoch": 1787525187,
+  "deployed_sha": "fb37747ef970b8bb71b202cec2a95ae036dfae16",
+  "generated_epoch": 1787525549,
   "github_to_vps_link": true,
   "provider": "deepseek",
   "provider_return_code": 0,
@@ -19,9 +19,9 @@
     "wallet_or_private_key_access": false
   },
   "self_hosted_runner": true,
-  "service_active": false,
-  "source_commit": "6bf53243c8b6f2e8aeb3c2aae7e4a136fb915065",
+  "service_active": true,
+  "source_commit": "b5b0ef535aab2874bf2666890c2ba1e671c09568",
   "status": "SUCCESS",
-  "target_sha": "6bf53243c8b6f2e8aeb3c2aae7e4a136fb915065",
-  "workflow_run_id": 32671577904
+  "target_sha": "b5b0ef535aab2874bf2666890c2ba1e671c09568",
+  "workflow_run_id": 32671853054
 }
