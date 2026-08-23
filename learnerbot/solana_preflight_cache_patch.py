@@ -5,6 +5,10 @@ import time
 from decimal import Decimal
 
 from . import solana_sibot as _sol
+# Install the explicit reverse-exit liquidity gate before capturing the validator
+# that this cache wraps.  This keeps composition correct regardless of __main__
+# import order and reuses the same two Jupiter quotes rather than adding a third.
+from . import solana_entry_exit_liquidity_preflight_patch as _exit_liquidity  # noqa: F401
 
 _PREV_VALIDATE = _sol._validate_shadow_entry
 _LOCK = threading.Lock()
