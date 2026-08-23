@@ -8,9 +8,11 @@ on:
       - "Hourly Three-Agent Strategy Cycle"
       - "Claude Fourth Strategy Agent"
       - "DeepSeek Fifth Strategy Agent"
+      - "Grok Sixth Strategy Agent"
       - "Weekly Three-Agent Full-Bot Bug Audit"
       - "Claude Fourth Engineering Agent"
       - "DeepSeek Fifth Engineering Agent"
+      - "Grok Sixth Engineering Agent"
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -103,7 +105,7 @@ jobs:
           try: p=json.load(open(sys.argv[2]))
           except Exception: p={}
           master=str(p.get(lane+'_master') or 'auto').lower()
-          if master not in {'auto','gpt','claude','gemini','deepseek','copilot'}: master='auto'
+          if master not in {'auto','gpt','claude','gemini','deepseek','grok','copilot'}: master='auto'
           enabled=bool(p.get(lane+'_enabled',True))
           cycle=str(p.get(lane+'_cycle') or 'scheduled').lower()
           if cycle not in {'scheduled','manual'}: cycle='scheduled'
@@ -161,7 +163,7 @@ jobs:
             EVIDENCE=''
           fi
 
-          for provider in gpt gemini claude deepseek; do
+          for provider in gpt gemini claude deepseek grok; do
             get_ai_file "${root}/${provider}.json" ".selected_master/reports/${provider}.json" || rm -f ".selected_master/reports/${provider}.json"
           done
           if ! get_ai_file "${root}/copilot.json" .selected_master/reports/copilot.json; then
@@ -234,6 +236,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_MASTER_MODEL: ${{ vars.DEEPSEEK_MASTER_MODEL || 'deepseek-v4-flash' }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          XAI_MASTER_MODEL: ${{ vars.XAI_MASTER_MODEL || vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
           LANE: ${{ matrix.lane }}
