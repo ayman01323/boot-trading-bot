@@ -1,4 +1,4 @@
-name: Strategy Factory Six-Agent Live Diagnostic
+name: Strategy Factory Seven-Agent Live Diagnostic
 
 on:
   workflow_dispatch:
@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
       - 'learnerbot/ai_agent_ws_runtime_patch.py'
+      - 'learnerbot/kimi_provider.py'
       - 'scripts/ai_agent_ws_worker.py'
       - 'scripts/ai_agent_ws_send.py'
       - 'scripts/strategy_factory_transport.py'
@@ -17,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: strategy-factory-six-agent-live-${{ github.event.pull_request.number || github.ref }}
+  group: strategy-factory-seven-agent-live-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +32,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify six-agent Strategy Factory runtime
+      - name: Verify seven-agent Strategy Factory runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -44,7 +45,7 @@ jobs:
           assert d.get('state') in {'ACTIVE','EXTERNAL'}, d.get('state')
           assert d.get('host') == '127.0.0.1'
           assert int(d.get('port') or 0) == 8765
-          expected={'gpt','claude','gemini','deepseek','grok','copilot'}
+          expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
           assert set(d.get('workers') or []) == expected, d.get('workers')
           age=int(time.time())-int(d.get('updated_epoch') or 0)
           assert age < 86400, age
@@ -57,27 +58,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          venv="$RUNNER_TEMP/strategy-factory-six-agent-live-diagnostic"
+          venv="$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic"
           rm -rf "$venv"
           python3 -m venv "$venv"
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Probe all six providers strictly
+      - name: Probe all seven providers strictly
         shell: bash
         run: |
           set -euo pipefail
           probe() {
             sender="$1"
             target="$2"
-            mid="sf6-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
+            mid="sf7-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
             set +e
             output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
               --from "$sender" \
               --to "$target" \
               --message-id "$mid" \
               --timeout 90 \
-              --message 'Strategy Factory six-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
+              --message 'Strategy Factory seven-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
             sender_rc=$?
             set -e
             printf '%s\n' "$output"
@@ -104,23 +105,24 @@ jobs:
           probe gpt gemini || failures=$((failures+1))
           probe gpt deepseek || failures=$((failures+1))
           probe gpt grok || failures=$((failures+1))
+          probe gpt kimi || failures=$((failures+1))
           probe gpt copilot || failures=$((failures+1))
           echo "provider_failures=$failures"
           test "$failures" -eq 0
 
-      - name: Verify Grok bounded deterministic task executor
+      - name: Verify Kimi bounded deterministic server task
         if: always()
         shell: bash
         run: |
           set -euo pipefail
           output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
             --from gpt \
-            --to grok \
-            --message-id "sf6-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --to kimi \
+            --message-id "sf7-kimi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --timeout 90 \
             --task-action GIT_STATUS \
             --task-args-json '{}' \
-            --task-instruction 'Return bounded read-only git status evidence.')"
+            --task-instruction 'Return bounded read-only git status evidence from the production server repository. Do not modify anything.')"
           printf '%s\n' "$output"
           final="$(printf '%s\n' "$output" | tail -n 1)"
           FINAL="$final" python3 - <<'PY'
@@ -133,11 +135,13 @@ jobs:
           result=json.loads(str(outer.get('body') or '{}'))
           assert result.get('status') == 'COMPLETED', result
           assert result.get('action') == 'GIT_STATUS', result
-          assert int((result.get('evidence') or {}).get('returncode') or 0) == 0, result
-          print('grok_bounded_task_health=COMPLETED')
+          evidence=result.get('evidence') or {}
+          assert int(evidence.get('returncode') or 0) == 0, result
+          print('kimi_bounded_server_task=COMPLETED')
+          print('kimi_git_status_chars='+str(len(str(evidence.get('stdout') or ''))))
           PY
 
       - name: Remove isolated environment
         if: always()
         shell: bash
-        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-six-agent-live-diagnostic}"
+        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic}"
