@@ -10,7 +10,7 @@ The system has three distinct responsibilities:
 - **Strategy Monitor** asks whether each exact strategy/version/chain is producing durable money-weighted net results after recorded costs and whether the strategy is participating appropriately in genuinely eligible opportunities.
 - **Strategy Factory** receives structured problems/opportunities, challenges the diagnosis with independent agents, researches or designs a falsifiable SHADOW response, and sends protected changes to human approval.
 
-The monitors diagnose and escalate. They do not silently repair LIVE trading, loosen thresholds or increase capital.
+The monitors diagnose and escalate. They do not silently repair LIVE trading, loosen thresholds or increase capital. Protected LIVE/capital/risk changes require **explicit MASTER approval** through the existing authorised path.
 
 ## End-to-end process
 
