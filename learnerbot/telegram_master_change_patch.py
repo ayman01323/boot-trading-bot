@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import html
+import threading
+
+from scripts import strategy_factory_transport as _sf
 
 from . import ai_cost_router as _cost
 from . import ai_ops_status as _status
@@ -62,6 +66,52 @@ def _cost_status() -> str:
     return "<b>💰 AI Cost Router</b>\n\n" + _safe(body, 2500) + policy
 
 
+def _chat_usage() -> str:
+    agents = " | ".join(_sf.AGENTS)
+    return (
+        "<b>🧠 Strategy Factory Chat</b>\n\n"
+        "Use the persistent Strategy Factory identity instead of a separate vendor browser chat.\n"
+        f"Agents: <code>{_safe(agents,300)}</code>\n\n"
+        "Example: <code>/aichat gemini what did GPT ask you?</code>"
+    )
+
+
+def _chat_result_text(agent: str, result: dict) -> str:
+    status = str(result.get("status") or "UNKNOWN").upper()
+    acknowledged = bool(result.get("acknowledged"))
+    reply = str(result.get("body") or "").strip()
+    error = str(result.get("error") or "").strip()
+    lines = [
+        f"<b>🤖 {_safe(agent.title(),80)} — Strategy Factory</b>",
+        f"Delivery: <b>{'ACKNOWLEDGED' if acknowledged else status}</b>",
+    ]
+    if reply:
+        lines.extend(["", _safe(reply, 3500)])
+    elif error:
+        lines.extend(["", f"⚠️ {_safe(error,700)}"])
+    else:
+        lines.extend(["", f"⚠️ No agent reply. Final state: {_safe(status,80)}"])
+    return "\n".join(lines)
+
+
+def _master_chat_worker(app, tid, agent: str, body: str) -> None:
+    try:
+        result = asyncio.run(_sf.exchange("master", agent, body, timeout=180.0))
+        _ui._send(app, tid, _chat_result_text(agent, result))
+    except Exception as exc:
+        _ui._send(app, tid, f"⚠️ Strategy Factory chat failed: {_safe(exc,700)}")
+
+
+def _start_master_chat(app, tid, agent: str, body: str) -> None:
+    thread = threading.Thread(
+        target=_master_chat_worker,
+        args=(app, tid, agent, body),
+        name=f"strategy-factory-chat-{agent}",
+        daemon=True,
+    )
+    thread.start()
+
+
 def snapshot_with_master_change(repo_root):
     state = dict(_PREV_SNAPSHOT(repo_root) or {})
     state["master_change"] = _status.read_json(repo_root, "master-change/latest_result.json") or {}
@@ -106,6 +156,29 @@ def handle_update(app, update):
                 _ui._send(app, tid, f"⚠️ {_safe(exc,250)}")
                 return
             _ui._send(app, tid, _cost_status())
+            return
+
+        if cmd == "/aichat":
+            try:
+                _ui._require_master(app, tid)
+            except Exception as exc:
+                _ui._send(app, tid, f"⚠️ {_safe(exc,250)}")
+                return
+            chat_parts = arg.split(maxsplit=1) if arg else []
+            if len(chat_parts) != 2:
+                _ui._send(app, tid, _chat_usage())
+                return
+            agent = chat_parts[0].strip().lower()
+            body = chat_parts[1].strip()
+            if agent not in _sf.AGENTS or not body:
+                _ui._send(app, tid, _chat_usage())
+                return
+            _ui._send(
+                app,
+                tid,
+                f"📨 Sent to <b>{_safe(agent.title(),80)}</b> via the persistent Strategy Factory identity. Waiting for the correlated reply…",
+            )
+            _start_master_chat(app, tid, agent, body)
             return
 
         if cmd == "/aichange":
@@ -181,6 +254,10 @@ def install() -> None:
     if not any(cmd == "aicost" for cmd, _ in _tgops.AI_MASTER_COMMANDS):
         _tgops.AI_MASTER_COMMANDS = tuple(_tgops.AI_MASTER_COMMANDS) + (
             ("aicost", "MASTER AI spend, budgets and routing status"),
+        )
+    if not any(cmd == "aichat" for cmd, _ in _tgops.AI_MASTER_COMMANDS):
+        _tgops.AI_MASTER_COMMANDS = tuple(_tgops.AI_MASTER_COMMANDS) + (
+            ("aichat", "MASTER persistent chat with a Strategy Factory agent"),
         )
     _tgops.snapshot_for_display = snapshot_with_master_change
     _tgops.transition_messages = transitions_with_master_change

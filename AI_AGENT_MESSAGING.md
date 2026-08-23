@@ -55,6 +55,28 @@ The Council is a governance/orchestration layer, not a second transport. `learne
 
 The Cost Router still decides which advisers are required. Critical trading, security and deployment changes still use the full Council. GPT remains final adjudicator for repository changes. Existing protected policy/deployment gates remain unchanged.
 
+## Canonical user-to-agent chat identity
+
+The user-facing canonical identity is `MASTER`. `MASTER` is a sender/client identity only; it is not a seventh AI worker, cannot be targeted as an AI recipient, and is never included in Council fan-out.
+
+Use Telegram:
+
+```text
+/aichat gemini what did GPT ask you?
+/aichat claude review this idea
+/aichat grok summarise the latest Strategy Factory context you have
+```
+
+or the VPS CLI:
+
+```bash
+python scripts/strategy_factory_chat.py gemini 'what did GPT ask you?'
+```
+
+Both paths send `MASTER -> agent` through the same persistent Strategy Factory worker and store the turn in the same durable conversation history used by agent-to-agent messages. This means a later GPT -> Gemini message and a later MASTER -> Gemini message can both be recalled by that same Gemini worker subject to the bounded memory limits.
+
+A separate vendor browser conversation such as Gemini Web, Claude Web, Grok Web or another third-party chat is an **external/unlinked session** unless it is explicitly bridged into Strategy Factory. Do not describe an external browser tab as the Strategy Factory agent and do not expect it to know Strategy Factory messages automatically. The canonical interactive agent is the persistent Strategy Factory worker reached through `/aichat` or `scripts/strategy_factory_chat.py`.
+
 ## Delivery evidence
 
 For normal communication, use:
