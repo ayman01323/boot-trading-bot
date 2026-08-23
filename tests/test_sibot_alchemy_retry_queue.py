@@ -18,6 +18,27 @@ def test_legacy_etherscan_candidate_retries_immediately():
     assert patch._priority_retry_candidate(candidates, rows, now) == "0xtop"
 
 
+def test_invalid_etherscan_key_row_is_legacy_and_retries_immediately():
+    now = 1_000_000
+    rows = [
+        Row(wallet="0xtop", fetched_at=now, error="RuntimeError: Etherscan txlist: NOTOK Invalid API Key (#err2)")
+    ]
+    assert patch._legacy_etherscan_error(rows[0]["error"]) is True
+    assert patch._priority_retry_candidate(["0xtop"], rows, now) == "0xtop"
+
+
+def test_unsupported_free_etherscan_chain_row_is_legacy_and_retries_immediately():
+    now = 1_000_000
+    rows = [
+        Row(
+            wallet="0xtop",
+            fetched_at=now,
+            error="RuntimeError: Etherscan txlist: NOTOK Free API access is not supported for this chain. Please upgrade your api plan",
+        )
+    ]
+    assert patch._priority_retry_candidate(["0xtop"], rows, now) == "0xtop"
+
+
 def test_alchemy_429_candidate_retries_after_short_cooldown():
     now = 1_000_000
     rows = [

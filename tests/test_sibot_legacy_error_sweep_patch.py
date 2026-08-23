@@ -39,10 +39,24 @@ def test_oldest_legacy_error_is_selected_outside_ranked_queue(tmp_path, monkeypa
     app = _app(tmp_path)
     chain = _chain()
     monkeypatch.setattr(patch, "_sweep_seconds", lambda app, chain: 900)
-    _insert(app, chain, "0xbbb", 200, "RuntimeError: ETHERSCAN_API_KEY is not configured")
+    _insert(app, chain, "0xbbb", 200, "RuntimeError: Etherscan txlist: NOTOK Invalid API Key (#err2)")
     _insert(app, chain, "0xaaa", 100, "RuntimeError: ETHERSCAN_API_KEY is not configured")
 
     assert patch._next_legacy_error_wallet(app, chain, now_epoch=10_000) == "0xaaa"
+
+
+def test_free_plan_etherscan_error_is_swept_as_legacy(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    chain = _chain()
+    monkeypatch.setattr(patch, "_sweep_seconds", lambda app, chain: 900)
+    _insert(
+        app,
+        chain,
+        "0xfree",
+        100,
+        "RuntimeError: Etherscan txlist: NOTOK Free API access is not supported for this chain",
+    )
+    assert patch._next_legacy_error_wallet(app, chain, now_epoch=10_000) == "0xfree"
 
 
 def test_durable_per_chain_cooldown_blocks_next_old_row(tmp_path, monkeypatch):
@@ -50,7 +64,7 @@ def test_durable_per_chain_cooldown_blocks_next_old_row(tmp_path, monkeypatch):
     chain = _chain()
     monkeypatch.setattr(patch, "_sweep_seconds", lambda app, chain: 900)
     _insert(app, chain, "0xaaa", 100, "ETHERSCAN_API_KEY is not configured")
-    _insert(app, chain, "0xbbb", 200, "ETHERSCAN_API_KEY is not configured")
+    _insert(app, chain, "0xbbb", 200, "RuntimeError: Etherscan txlist: NOTOK Invalid API Key (#err2)")
 
     assert patch._next_legacy_error_wallet(app, chain, now_epoch=10_000) == "0xaaa"
     _clear_error(app, chain, "0xaaa")
@@ -64,7 +78,7 @@ def test_cooldown_is_scoped_per_chain(tmp_path, monkeypatch):
     base = _chain("base", 8453)
     monkeypatch.setattr(patch, "_sweep_seconds", lambda app, chain: 900)
     _insert(app, bsc, "0xbsc", 100, "ETHERSCAN_API_KEY is not configured")
-    _insert(app, base, "0xbase", 100, "ETHERSCAN_API_KEY is not configured")
+    _insert(app, base, "0xbase", 100, "RuntimeError: Etherscan txlist: NOTOK Invalid API Key (#err2)")
 
     assert patch._next_legacy_error_wallet(app, bsc, now_epoch=10_000) == "0xbsc"
     assert patch._next_legacy_error_wallet(app, base, now_epoch=10_000) == "0xbase"

@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
+import pytest
+
 from learnerbot import sibot
+from learnerbot import sibot_alchemy_trace_progress_patch as trace_progress
 from learnerbot import trade_blocker_alchemy_history_patch as patch
 
 
@@ -16,29 +19,30 @@ def _insert_status(app, chain_id, wallet, error):
         conn.commit()
 
 
-def test_provider_error_truth_separates_legacy_backlog_from_current_alchemy_errors(tmp_path):
+def test_provider_error_truth_separates_all_etherscan_backlog_from_current_alchemy_errors(tmp_path):
     app = SimpleNamespace(data_dir=tmp_path / "data", csv_dir=tmp_path / "CSVbot")
     chain = SimpleNamespace(chain_id=8453, slug="base", type="EVM")
-    _insert_status(
-        app,
-        8453,
-        "0x" + "1" * 40,
+    legacy_errors = [
         "RuntimeError: ETHERSCAN_API_KEY is not configured; SiBot cannot verify 60-day wallet histories",
-    )
+        "RuntimeError: Etherscan txlist: NOTOK Invalid API Key (#err2)",
+        "RuntimeError: Etherscan txlist: NOTOK Free API access is not supported for this chain. Please upgrade your api plan",
+    ]
+    for idx, error in enumerate(legacy_errors, 1):
+        _insert_status(app, 8453, "0x" + str(idx) * 40, error)
     _insert_status(
         app,
         8453,
-        "0x" + "2" * 40,
+        "0x" + "9" * 40,
         "AlchemyHistoryError: RuntimeError: Alchemy eth_getTransactionReceipt: HTTP 429; retries exhausted",
     )
     out = patch._provider_error_truth(app, chain)
-    assert out["legacy"] == 1
+    assert out["legacy"] == 3
     assert out["current"] == 1
     assert "Alchemy" in out["dominant"]
-    assert "ETHERSCAN_API_KEY" not in out["dominant"]
+    assert "Etherscan" not in out["dominant"]
 
 
-def test_snapshot_reports_legacy_rows_as_backlog_not_active_provider_failure(monkeypatch, tmp_path):
+def test_snapshot_reports_invalid_key_etherscan_row_as_backlog_not_active_provider_failure(monkeypatch, tmp_path):
     app = SimpleNamespace(
         data_dir=tmp_path / "data",
         csv_dir=tmp_path / "CSVbot",
@@ -49,7 +53,7 @@ def test_snapshot_reports_legacy_rows_as_backlog_not_active_provider_failure(mon
         app,
         8453,
         "0x" + "3" * 40,
-        "RuntimeError: ETHERSCAN_API_KEY is not configured; SiBot cannot verify 60-day wallet histories",
+        "RuntimeError: Etherscan txlist: NOTOK Invalid API Key (#err2)",
     )
     monkeypatch.setattr(
         patch,
@@ -64,3 +68,12 @@ def test_snapshot_reports_legacy_rows_as_backlog_not_active_provider_failure(mon
     assert row["current_provider_errors"] == 0
     assert row["legacy_errors"] == 1
     assert "legacy Etherscan history backlog" in row["dominant"]
+    assert "queued for Alchemy refresh" in row["dominant"]
+
+
+def test_runtime_invariant_pins_final_refresh_to_alchemy_trace_progress(monkeypatch):
+    assert sibot.refresh_wallet_history is trace_progress.refresh_wallet_history
+    patch._assert_alchemy_runtime()
+    monkeypatch.setattr(sibot, "refresh_wallet_history", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="final refresh is not the Alchemy"):
+        patch._assert_alchemy_runtime()

@@ -22,6 +22,7 @@ from . import sibot_wrapped_base_history_patch as _wrapped_base_history  # noqa:
 # Keep public Top-20 research unchanged while applying the strict leader gates to
 # a broader reconstructed pool before scarce LIVE leader slots are filled.
 from . import sibot_broader_qualified_leader_patch as _broader_leaders  # noqa: F401
+from . import sibot_alchemy_trace_progress_patch as _trace_progress
 from . import telegram_trade_blocker_health_patch as _health
 
 _PREV_SNAPSHOT = _health._snapshot
@@ -43,15 +44,31 @@ def _providers(app):
     return out
 
 
+def _assert_alchemy_runtime() -> None:
+    """Fail startup if the final history refresher ever falls back to legacy code."""
+    if _sibot.refresh_wallet_history is not _trace_progress.refresh_wallet_history:
+        active = getattr(_sibot.refresh_wallet_history, "__module__", "unknown")
+        raise RuntimeError(
+            "EVM history runtime invariant failed: final refresh is not the Alchemy "
+            f"trace/progressive wrapper (active={active})"
+        )
+
+
 def _provider_error_truth(app, chain) -> dict:
-    """Separate stale pre-Alchemy rows from current Alchemy/progress failures."""
+    """Separate every stale Etherscan-origin row from current Alchemy failures.
+
+    Pre-Alchemy history can contain several different Etherscan strings: missing
+    key, invalid key, NOTOK, or chain-plan access errors. None is a current provider
+    failure once the runtime is pinned to Alchemy. Keep those rows visible as
+    migration backlog while only non-Etherscan failures count as active errors.
+    """
     out = {"legacy": 0, "current": 0, "dominant": ""}
     try:
         with closing(_sibot.connect(app)) as conn:
             row = conn.execute(
                 """SELECT
-                       SUM(CASE WHEN error LIKE '%ETHERSCAN_API_KEY%' THEN 1 ELSE 0 END) legacy,
-                       SUM(CASE WHEN COALESCE(error,'')<>'' AND error NOT LIKE '%ETHERSCAN_API_KEY%' THEN 1 ELSE 0 END) current
+                       SUM(CASE WHEN lower(COALESCE(error,'')) LIKE '%etherscan%' THEN 1 ELSE 0 END) legacy,
+                       SUM(CASE WHEN COALESCE(error,'')<>'' AND lower(error) NOT LIKE '%etherscan%' THEN 1 ELSE 0 END) current
                    FROM wallet_history_status WHERE chain_id=?""",
                 (int(chain.chain_id),),
             ).fetchone()
@@ -62,7 +79,7 @@ def _provider_error_truth(app, chain) -> dict:
                 """SELECT error,COUNT(*) n FROM wallet_history_status
                    WHERE chain_id=?
                      AND COALESCE(error,'')<>''
-                     AND error NOT LIKE '%ETHERSCAN_API_KEY%'
+                     AND lower(error) NOT LIKE '%etherscan%'
                    GROUP BY error ORDER BY n DESC LIMIT 1""",
                 (int(chain.chain_id),),
             ).fetchone()
@@ -83,10 +100,6 @@ def _snapshot(app, tid):
     # evm_history_ready/evm_history_providers and is exclusively Alchemy-based.
     result["etherscan_configured"] = bool(str(getattr(app, "etherscan_api_key", "") or "").strip())
 
-    # The base report used to show the numerically dominant *historical* error,
-    # which made an active Alchemy system look as though it still depended on an
-    # Etherscan secret. Keep those rows visible as migration backlog, but only count
-    # current Alchemy/progress rows as active provider errors.
     try:
         for chain in _health.load_chains(app, enabled_only=True):
             if str(getattr(chain, "type", "EVM") or "EVM").upper() != "EVM":
@@ -103,7 +116,7 @@ def _snapshot(app, tid):
                 row["dominant"] = truth["dominant"]
             elif truth["legacy"]:
                 row["dominant"] = (
-                    f"legacy Etherscan history backlog: {truth['legacy']} wallet(s) awaiting Alchemy refresh"
+                    f"legacy Etherscan history backlog: {truth['legacy']} wallet(s) queued for Alchemy refresh"
                 )
             else:
                 row["dominant"] = ""
@@ -113,9 +126,6 @@ def _snapshot(app, tid):
 
 
 def build_report(app, tid) -> str:
-    # Preserve the historical helper contract used by isolated diagnostics/tests
-    # that intentionally pass a minimal app object and monkeypatch _health._snapshot.
-    # Real runtime AppSettings always has csv_dir and receives the Alchemy wording.
     if not hasattr(app, "csv_dir"):
         return _PREV_BUILD_REPORT(app, tid)
 
@@ -152,8 +162,6 @@ def _publish_startup_health(app):
         "evm_history_ready": ready,
         "evm_history_provider": "ALCHEMY" if ready else "MISSING",
         "evm_history_providers": providers,
-        # Compatibility-only redacted boolean; it is not used to select the
-        # history provider and never contains the credential value.
         "etherscan_configured": bool(str(getattr(app, "etherscan_api_key", "") or "").strip()),
         "polygon_focus": snapshot.get("polygon_focus"),
         "platform_auto": snapshot.get("platform_auto"),
@@ -194,10 +202,12 @@ def _publish_startup_health(app):
 def install():
     if getattr(_health, "_alchemy_history_health_patch_installed", False):
         return
+    _assert_alchemy_runtime()
     _health._snapshot = _snapshot
     _health.build_report = build_report
     _health._publish_startup_health = _publish_startup_health
     _health._alchemy_history_health_patch_installed = True
+    print("[sibot-alchemy-runtime] final_refresh=trace_progress legacy_etherscan_runtime=false")
 
 
 install()

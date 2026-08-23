@@ -13,6 +13,18 @@ _SERIAL_HISTORY_LOCK = threading.Lock()
 _TRANSIENT_RETRY_COOLDOWN_SECONDS = 60
 
 
+def _legacy_etherscan_error(error: str) -> bool:
+    """True for any pre-Alchemy Etherscan-origin failure string.
+
+    Older rows are not limited to the missing-key message. Depending on the key and
+    chain they can also say Invalid API Key, NOTOK, or free API access unsupported.
+    Once Alchemy is the configured history provider, all of those rows are migration
+    backlog and should be refreshed through Alchemy rather than waiting the normal
+    history_refresh_hours interval.
+    """
+    return "etherscan" in str(error or "").lower()
+
+
 def _retryable_alchemy_error(error: str) -> bool:
     text = str(error or "").lower()
     if "alchemyhistoryerror" not in text and "alchemy " not in text:
@@ -44,7 +56,7 @@ def _priority_retry_candidate(candidates, rows, now_epoch: int) -> str | None:
             continue
         error = str(row["error"] or "")
         fetched_at = _sibot._int(row["fetched_at"], 0)
-        if "ETHERSCAN_API_KEY" in error:
+        if _legacy_etherscan_error(error):
             return wallet
         if _retryable_alchemy_error(error) and fetched_at <= now_epoch - _TRANSIENT_RETRY_COOLDOWN_SECONDS:
             return wallet
@@ -54,9 +66,9 @@ def _priority_retry_candidate(candidates, rows, now_epoch: int) -> str | None:
 def _next_history_wallet(app, chain):
     """Retry priority candidate throttles without waiting the normal 12h age.
 
-    Legacy Etherscan rows remain immediately migratable. Alchemy 429 rows use a
-    short cooldown so the newly deployed bounded backoff logic gets another try,
-    while avoiding a tight 12-second failure loop if the account remains capped.
+    Any legacy Etherscan-origin row remains immediately migratable when an Alchemy
+    endpoint is configured. Alchemy 429 rows use a short cooldown so bounded backoff
+    gets another try without creating a tight provider-throttle loop.
     """
     if not _alchemy.alchemy_rpc_url(app, int(chain.chain_id)):
         return _PREV_NEXT_HISTORY_WALLET(app, chain)
