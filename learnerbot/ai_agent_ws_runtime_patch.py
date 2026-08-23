@@ -175,7 +175,11 @@ from . import solana_leader_edge_alignment_patch  # noqa: E402,F401
 # capacity. Owners receive explicit keep-retrying / force-exit / write-off choices.
 from . import solana_liquidity_stuck_nonblocking_patch  # noqa: E402,F401
 
-# Final V4 AI operations layer. This is observational/governance only: it
-# normalises alerts/reports into monitor/Factory cases, adds contribution scoring
-# and MASTER status commands, and cannot authorise protected trading changes.
+# Absolute final fail-closed composition gate. This runs after every late runtime
+# wrapper above and verifies both the capital-moving safety stack and the intended
+# EVM/Solana history/recovery/provenance wrapper chain. It never repairs/rebinds.
+from . import final_runtime_integrity_patch  # noqa: E402,F401
+
+# V4 AI operations is observational/governance-only and installs after the final
+# trading integrity gate. It cannot repair/rebind or authorise protected actions.
 from . import telegram_ai_ops_v4_patch  # noqa: E402,F401
