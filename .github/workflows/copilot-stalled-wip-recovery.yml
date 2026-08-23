@@ -1,0 +1,185 @@
+name: Copilot Stalled WIP Recovery
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/copilot-stalled-wip-recovery.yml'
+      - '.github/copilot-stalled-wip-recovery.trigger'
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: copilot-stalled-wip-recovery
+  cancel-in-progress: true
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
+    steps:
+      - name: Recycle only stale empty Copilot WIP tasks
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${COPILOT_ASSIGN_TOKEN:-}" ]]; then
+            echo 'COPILOT_ASSIGN_TOKEN is missing; cannot safely requeue Copilot.' >&2
+            exit 2
+          fi
+          export GH_TOKEN="$COPILOT_ASSIGN_TOKEN"
+
+          read_text() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" --jq '.content' 2>/dev/null \
+              | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n' || true
+          }
+
+          report_exists() {
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/contents/$1?ref=ai-reviews" >/dev/null 2>&1
+          }
+
+          is_copilot_assigned() {
+            gh issue view "$1" --json assignees \
+              --jq '[.assignees[].login | ascii_downcase] | any(. == "copilot" or . == "copilot-swe-agent[bot]")' \
+              | grep -q true
+          }
+
+          find_issue() {
+            local title="$1"
+            gh issue list --state open --search "${title} in:title" --limit 5 --json number,title \
+              --jq --arg t "$title" '.[] | select(.title == $t) | .number' | head -n1
+          }
+
+          find_empty_stale_pr() {
+            local needle="$1"
+            local now
+            now="$(date +%s)"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
+              --jq --arg n "$needle" '.[] | select((.user.login | ascii_downcase) == "copilot" and .draft == true and (.title | contains($n))) | .number' \
+            | while read -r pr; do
+                [[ "$pr" =~ ^[0-9]+$ ]] || continue
+                details="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/pulls/${pr}")"
+                changed="$(printf '%s' "$details" | python3 -c 'import json,sys; print(int(json.load(sys.stdin).get("changed_files") or 0))')"
+                updated="$(printf '%s' "$details" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("updated_at") or "")')"
+                age="$(python3 - "$updated" "$now" <<'PY'
+          from datetime import datetime
+          import sys
+          try:
+              updated=datetime.fromisoformat(sys.argv[1].replace('Z','+00:00'))
+              print(max(0, int(sys.argv[2])-int(updated.timestamp())))
+          except Exception:
+              print(0)
+          PY
+          )"
+                if [[ "$changed" -eq 0 && "$age" -ge 1800 ]]; then
+                  echo "$pr"
+                  return 0
+                fi
+              done
+          }
+
+          remove_copilot() {
+            local issue="$1"
+            payload='{"assignees":["copilot-swe-agent[bot]"]}'
+            gh api --method DELETE -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/issues/${issue}/assignees" --input - <<< "$payload" >/dev/null 2>&1 || true
+            if is_copilot_assigned "$issue"; then
+              payload='{"assignees":["Copilot"]}'
+              gh api --method DELETE -H 'Accept: application/vnd.github+json' \
+                "repos/${GITHUB_REPOSITORY}/issues/${issue}/assignees" --input - <<< "$payload" >/dev/null 2>&1 || true
+            fi
+          }
+
+          assign_copilot() {
+            local issue="$1" instructions="$2"
+            payload="$(python3 - "$GITHUB_REPOSITORY" "$instructions" <<'PY'
+          import json,sys
+          print(json.dumps({
+              'assignees':['copilot-swe-agent[bot]'],
+              'agent_assignment':{
+                  'target_repo':sys.argv[1],
+                  'base_branch':'main',
+                  'custom_instructions':sys.argv[2],
+                  'custom_agent':'',
+                  'model':''
+              }
+          }))
+          PY
+          )"
+            gh api --method POST -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "repos/${GITHUB_REPOSITORY}/issues/${issue}/assignees" --input - <<< "$payload" >/dev/null
+            for delay in 0 5 10 20; do
+              [[ "$delay" == 0 ]] || sleep "$delay"
+              is_copilot_assigned "$issue" && return 0
+            done
+            return 1
+          }
+
+          recover_task() {
+            local lane="$1" issue_title="$2" needle="$3" report_path="$4" instructions="$5"
+            local issue pr
+            if report_exists "$report_path"; then
+              echo "${lane}: report already exists; no recovery."
+              return 0
+            fi
+            issue="$(find_issue "$issue_title")"
+            if [[ ! "$issue" =~ ^[0-9]+$ ]]; then
+              echo "${lane}: no open Copilot issue found; existing reconciler will create/assign it."
+              return 0
+            fi
+            if ! is_copilot_assigned "$issue"; then
+              echo "${lane}: Copilot is not currently assigned; existing reconciler will handle assignment."
+              return 0
+            fi
+            pr="$(find_empty_stale_pr "$needle" | head -n1)"
+            if [[ ! "$pr" =~ ^[0-9]+$ ]]; then
+              echo "${lane}: no stale empty Copilot draft PR; leave active work untouched."
+              return 0
+            fi
+
+            echo "${lane}: recovering stalled Copilot issue #${issue}, empty draft PR #${pr}."
+            gh pr close "$pr" --comment "Automatic Copilot recovery: this draft remained empty for more than 30 minutes. Closing only the zero-file WIP so the report-only task can be safely requeued." >/dev/null
+            remove_copilot "$issue"
+            gh issue comment "$issue" --body "Automatic recovery: Copilot's prior draft PR #${pr} remained empty for more than 30 minutes. The empty WIP was closed and this same report-only task is being requeued. No trading, LIVE/risk/capital, wallet/signing, deployment, or functional-code change is authorised." >/dev/null
+
+            if assign_copilot "$issue" "$instructions"; then
+              echo "${lane}: Copilot requeue verified on issue #${issue}."
+            else
+              echo "${lane}: requeue request did not become visible; next scheduled recovery/reconciler will retry." >&2
+              return 1
+            fi
+          }
+
+          engineering_source="$(read_text weekly/latest_source_commit.txt)"
+          if [[ "$engineering_source" =~ ^[0-9a-f]{40}$ ]]; then
+            short="${engineering_source:0:12}"
+            recover_task \
+              ENGINEERING \
+              "Weekly Copilot full-bot bug audit ${short}" \
+              "weekly Copilot audit reports for ${short}" \
+              ".ai/weekly/copilot/${engineering_source}.json" \
+              "Complete the existing report-only engineering audit. Produce exactly the two .ai/weekly/copilot report files requested by the issue. Do not change functional code, deploy, trade, alter LIVE/risk/capital, or touch wallets/signing/secrets."
+          fi
+
+          strategy_cycle="$(read_text strategy/latest_cycle_id.txt)"
+          if [[ "$strategy_cycle" =~ ^[0-9a-f]{12}-[0-9]{10}-[0-9a-f]{8}$ ]]; then
+            recover_task \
+              STRATEGY \
+              "Copilot hourly strategy review ${strategy_cycle}" \
+              "Review hourly strategy lab for cycle ${strategy_cycle}" \
+              ".ai/strategy/copilot/${strategy_cycle}.json" \
+              "Complete the existing report-only Strategy Lab review. Produce exactly the two .ai/strategy/copilot report files requested by the issue. Do not implement code, deploy, trade, alter LIVE/risk/capital, or touch wallets/signing/secrets."
+          fi
+
+          echo 'Copilot stalled-WIP recovery completed. Only stale zero-file Copilot draft PRs are eligible for recycling.'
