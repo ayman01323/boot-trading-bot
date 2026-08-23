@@ -13,6 +13,7 @@ from typing import Any
 from websockets.asyncio.client import connect
 
 from learnerbot.ai_council_http_patch import call_provider
+from scripts.ai_agent_task_executor import TaskError, execute_task, parse_task_envelope
 
 AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
 DEFAULT_URL = "ws://127.0.0.1:8765"
@@ -23,9 +24,6 @@ CHEAP_MODELS = {
     "claude": ("ANTHROPIC_COUNCIL_MODEL", "claude-haiku-4-5"),
     "deepseek": ("DEEPSEEK_COUNCIL_MODEL", "deepseek-v4-flash"),
 }
-# Retired bus-model overrides can survive in the VPS environment long after the
-# repository default changes. Canonicalise only provider-declared retired aliases
-# so a stale environment variable cannot keep routine inter-agent delivery broken.
 _RETIRED_MODEL_ALIASES = {
     "gemini": {
         "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
@@ -34,6 +32,7 @@ _RETIRED_MODEL_ALIASES = {
 }
 _PROVIDER_CALL_LOCK = threading.Lock()
 _MISSING = object()
+MAX_REPLY_CHARS = 7600
 
 
 def low_cost_model(agent: str) -> str:
@@ -52,12 +51,12 @@ def build_prompt(agent: str, message: dict[str, Any]) -> str:
     body = str(message.get("body") or "")
     return f"""You are {agent.upper()}, a persistent recipient worker on the local AI-agent WebSocket bus.
 
-A new message has been delivered to you automatically. The bus has already acknowledged receipt before this model call.
+A new communication message has been delivered to you automatically. The bus has already acknowledged receipt before this model call.
 
 Sender: {sender}
 Message ID: {message_id}
 
-This channel is communication-only. Do not edit files, run shell/Git/GitHub commands, deploy, trade, change LIVE/ARMED/risk/capital settings, access wallets/signing material, reveal secrets, or claim actions you did not perform. Answer the message directly. Keep the response concise (normally no more than 180 words) to minimise API cost. Do not ask another agent unless the sender explicitly requested that.
+This message is communication-only. Do not edit files, run shell/Git/GitHub commands, deploy, trade, change LIVE/ARMED/risk/capital settings, access wallets/signing material, reveal secrets, or claim actions you did not perform. Safe deterministic execution is available only through a structured ws-bus-v2 task envelope handled outside the model. Answer this message directly. Keep the response concise (normally no more than 180 words) to minimise API cost. Do not ask another agent unless the sender explicitly requested that.
 
 MESSAGE:
 {body[:8000]}
@@ -72,10 +71,6 @@ def _restore_env(key: str, previous: object | str) -> None:
 
 
 def _call_provider_locked(agent: str, prompt: str) -> tuple[int, str, str]:
-    # Embedded workers share the learnerbot process with strategy/council logic.
-    # Never permanently change the council's model or process PATH. Apply the
-    # cheaper bus-specific setting only while this one provider call holds the
-    # lock, then restore exactly what the process had before the message arrived.
     with _PROVIDER_CALL_LOCK:
         if agent == "copilot":
             previous_path: object | str = os.environ.get("PATH", _MISSING)
@@ -106,11 +101,88 @@ async def send_json(ws, payload: dict[str, Any]) -> None:
     await ws.send(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
 
 
+def _compact_task_result(result: dict[str, Any]) -> str:
+    raw = json.dumps(result, separators=(",", ":"), ensure_ascii=False)
+    if len(raw) <= MAX_REPLY_CHARS:
+        return raw
+    evidence = result.get("evidence") or {}
+    compact: dict[str, Any] = {}
+    if isinstance(evidence, dict):
+        for key, value in evidence.items():
+            if isinstance(value, str):
+                compact[key] = value[-2200:]
+            elif isinstance(value, list):
+                compact[key] = value[:20]
+            else:
+                compact[key] = value
+    reduced = {**result, "evidence": compact, "truncated": True}
+    raw = json.dumps(reduced, separators=(",", ":"), ensure_ascii=False)
+    if len(raw) <= MAX_REPLY_CHARS:
+        return raw
+    reduced["evidence"] = {"truncated": True, "detail": raw[:4200]}
+    raw = json.dumps(reduced, separators=(",", ":"), ensure_ascii=False)
+    if len(raw) <= MAX_REPLY_CHARS:
+        return raw
+    fallback = {
+        "protocol": result.get("protocol", "ws-bus-v2"),
+        "kind": "task_result",
+        "status": result.get("status", "FAILED"),
+        "action": result.get("action", ""),
+        "summary": str(result.get("summary") or "")[:1000],
+        "evidence": {"truncated": True},
+        "error": str(result.get("error") or "")[:800],
+    }
+    return json.dumps(fallback, separators=(",", ":"), ensure_ascii=False)
+
+
+async def _handle_task(ws, message_id: str, task: dict[str, Any]) -> None:
+    await send_json(ws, {"type": "progress", "message_id": message_id, "status": "ACCEPTED"})
+    await send_json(ws, {"type": "progress", "message_id": message_id, "status": "EXECUTING"})
+    result = await asyncio.to_thread(execute_task, task)
+    status = str(result.get("status") or "FAILED").upper()
+    await send_json(ws, {
+        "type": "reply",
+        "message_id": message_id,
+        "status": status,
+        "body": _compact_task_result(result),
+        "error": str(result.get("error") or "")[:1200] if status != "COMPLETED" else "",
+        "provider_rc": 0,
+        "duration_ms": 0,
+    })
+
+
 async def handle_message(ws, agent: str, message: dict[str, Any]) -> None:
     message_id = str(message.get("message_id") or "")
     if str(message.get("to") or "").lower() != agent:
         return
     await send_json(ws, {"type": "ack", "message_id": message_id})
+
+    body = str(message.get("body") or "")
+    try:
+        task = parse_task_envelope(body)
+    except TaskError as exc:
+        result = {
+            "protocol": "ws-bus-v2",
+            "kind": "task_result",
+            "status": "REJECTED",
+            "action": "",
+            "summary": "Malformed task envelope was rejected.",
+            "evidence": {},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        await send_json(ws, {
+            "type": "reply",
+            "message_id": message_id,
+            "status": "REJECTED",
+            "body": _compact_task_result(result),
+            "error": result["error"][:1200],
+        })
+        return
+
+    if task is not None:
+        await _handle_task(ws, message_id, task)
+        return
+
     prompt = build_prompt(agent, message)
     started = time.monotonic()
     rc, out, err = await asyncio.to_thread(_call_provider_locked, agent, prompt)
@@ -124,7 +196,8 @@ async def handle_message(ws, agent: str, message: dict[str, Any]) -> None:
     await send_json(ws, {
         "type": "reply",
         "message_id": message_id,
-        "body": answer[:12000],
+        "status": "REPLIED",
+        "body": answer[:MAX_REPLY_CHARS],
         "error": error[:1200] if int(rc) != 0 else "",
         "provider_rc": int(rc),
         "duration_ms": elapsed_ms,
