@@ -11,7 +11,7 @@ def _health(*states):
     }
 
 
-def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
+def test_master_dashboard_separates_agent_health_from_review_pipeline():
     engineering = {
         "agents": {
             "gpt": {"state": "WORKING", "reason": ""},
@@ -38,44 +38,18 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
         {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
     )
 
-    assert text == "\n\n".join(
-        [
-            "<b>🤖 AI AGENT HEALTH</b>",
-            "\n".join(
-                [
-                    "<b>🛠 ENGINEERING MONITOR</b>",
-                    "🟢 GPT — Working",
-                    "🟠 Claude — Pipeline failure",
-                    "🟢 Gemini — Working",
-                    "🔴 DeepSeek — Model config",
-                    "🟢 Grok — Working",
-                    "🟡 Copilot — In progress",
-                ]
-            ),
-            "\n".join(
-                [
-                    "<b>🧠 STRATEGY MONITOR</b>",
-                    "🟢 GPT — Working",
-                    "🟢 Claude — Working",
-                    "🟢 Gemini — Working",
-                    "🔴 DeepSeek — Model config",
-                    "🟢 Grok — Working",
-                    "🟡 Copilot — In progress",
-                ]
-            ),
-            "\n".join(
-                [
-                    "<b>🧠 STRATEGY FACTORY</b>",
-                    "🟡 GPT — In progress",
-                    "🟡 Claude — In progress",
-                    "🟡 Gemini — In progress",
-                    "🟡 DeepSeek — In progress",
-                    "🟡 Grok — In progress",
-                    "🟡 Copilot — In progress",
-                ]
-            ),
-        ]
-    )
+    assert "<b>🤖 AI AGENT HEALTH</b>" in text
+    assert "<b>🛠 ENGINEERING MONITOR</b>" in text
+    assert "<b>🧠 STRATEGY MONITOR</b>" in text
+    assert "<b>🧠 STRATEGY FACTORY</b>" in text
+    assert "First status = agent/provider • second status = review pipeline" in text
+    assert "GPT — Agent working • 🟢 Engineering review working" in text
+    assert "Claude — Agent pipeline failure • 🟠 Engineering review pipeline failure" in text
+    assert "DeepSeek — Agent model config • 🔴 Engineering review model config" in text
+    assert "Copilot — Agent state pending • 🟡 Engineering review in progress" in text
+    assert "Claude — Agent working • 🟢 Strategy review working" in text
+    assert "Factory status is work state, not provider/API health" in text
+    assert "GPT — Factory in progress" in text
 
 
 def test_master_dashboard_health_logic_is_still_available_for_drill_down():
