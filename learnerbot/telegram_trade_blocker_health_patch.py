@@ -177,7 +177,7 @@ def build_report(app, tid) -> str:
             f"{icon} {html.escape(slug.upper())}: leaders <b>{row['leaders']}</b> • "
             f"history {row['status_wallets']} • errors {row['errors']} • newest {_age(row['newest'])} ago"
         )
-        if row["dominant"] and "ETHERSCAN_API_KEY" not in row["dominant"]:
+        if row["dominant"]:
             lines.append(f"   <code>{html.escape(row['dominant'][:150])}</code>")
 
     f = s["fast_market"]

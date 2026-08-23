@@ -54,6 +54,16 @@ def test_report_explains_each_major_no_trade_layer(monkeypatch):
     assert "🟢 Platform LIVE (signing): <b>ON</b>" in text
 
 
+def test_report_shows_dominant_error_even_for_legacy_etherscan_string(monkeypatch):
+    # wallet_history_status rows can still carry the pre-Alchemy-migration error
+    # string long after the switch; hiding it left every chain's near-100% error
+    # rate completely unexplained in the report. It must be shown per chain even
+    # though the top-level banner also explains the missing-key case separately.
+    monkeypatch.setattr(patch, "_snapshot", lambda app, tid: _sample_snapshot())
+    text = patch.build_report(SimpleNamespace(), "master")
+    assert "RuntimeError: ETHERSCAN_API_KEY is not configured" in text
+
+
 def test_report_shows_platform_live_off(monkeypatch):
     snap = _sample_snapshot()
     snap["platform_live"] = False
