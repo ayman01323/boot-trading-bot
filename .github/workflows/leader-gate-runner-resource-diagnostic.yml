@@ -1,0 +1,79 @@
+name: Leader Gate Runner Resource Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/leader-gate-runner-resource-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Collect non-sensitive runner resources
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "host=$(hostname)"
+            echo
+            echo '=== MEMORY ==='
+            free -m
+            echo
+            echo '=== DISK ==='
+            df -h / /tmp 2>&1
+            echo
+            echo '=== TOP RSS ==='
+            ps -eo pid,ppid,comm,rss,%mem --sort=-rss | head -n 20
+            echo
+            echo '=== LOAD ==='
+            uptime
+            echo
+            echo '=== KERNEL OOM INDICATORS ==='
+            (journalctl -k --since '90 minutes ago' --no-pager 2>/dev/null || dmesg 2>/dev/null || true) \
+              | grep -Ei 'out of memory|oom-kill|killed process|memory cgroup out of memory' \
+              | tail -n 40 || true
+          } > /tmp/leader-gate-runner-resource.txt
+
+      - name: Publish sanitised resource diagnostic
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/leader-gate-runner-resource.json
+          import json, pathlib, time
+          text = pathlib.Path('/tmp/leader-gate-runner-resource.txt').read_text(encoding='utf-8', errors='replace')
+          print(json.dumps({
+              'schema_version': 1,
+              'generated_epoch': int(time.time()),
+              'diagnostic': text[-12000:],
+          }, indent=2, sort_keys=True))
+          PY
+          api="repos/${GITHUB_REPOSITORY}/contents/github/leader-gate/runner-resource.json"
+          existing=''
+          set +e
+          gh api "$api?ref=ai-reviews" > /tmp/existing.json 2>/dev/null
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 ]]; then
+            existing="$(python3 - <<'PY'
+          import json
+          print(json.load(open('/tmp/existing.json')).get('sha') or '')
+          PY
+            )"
+          fi
+          encoded="$(base64 -w0 /tmp/leader-gate-runner-resource.json)"
+          python3 - "$encoded" "$existing" <<'PY' > /tmp/payload.json
+          import json,sys
+          out={'message':'Record leader-gate runner resource diagnostic','content':sys.argv[1],'branch':'ai-reviews'}
+          if sys.argv[2]: out['sha']=sys.argv[2]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/payload.json >/dev/null
