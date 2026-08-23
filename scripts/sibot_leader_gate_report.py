@@ -3,9 +3,9 @@
 
 This diagnostic intentionally does not import the learnerbot runtime patch chain.
 On the production 1 GiB VPS that import graph can materially increase RSS while the
-live bot is already memory constrained.  The report reads only the isolated SQLite
+live bot is already memory constrained. The report reads only the isolated SQLite
 snapshots prepared by /usr/local/sbin/run-sibot-leader-gate-report and the copied CSV
-settings.  It never calls Alchemy, Etherscan, Solana RPC, Telegram, signing or trading.
+settings. It never calls Alchemy, Etherscan, Solana RPC, Telegram, signing or trading.
 """
 from __future__ import annotations
 
@@ -345,6 +345,9 @@ def report_solana() -> None:
             MIN(fetched_at) oldest,MAX(fetched_at) newest,SUM(signatures) signatures,SUM(swaps) swaps,SUM(closed_trades) closes
             FROM history_status""")
         discovered = _one(conn, "SELECT COUNT(*) n,SUM(swap_events) events,MIN(first_seen) first_seen,MAX(last_seen) last_seen FROM candidates")
+        worker_last_run = _one(conn, "SELECT value FROM state WHERE key='worker:history:last_run'").get("value", 0)
+        worker_last_success = _one(conn, "SELECT value FROM state WHERE key='worker:history:last_success'").get("value", 0)
+        worker_last_error = _one(conn, "SELECT value FROM state WHERE key='worker:history:last_error'").get("value", "")
         tid_row = _one(conn, "SELECT telegram_id,COUNT(*) n FROM rankings GROUP BY telegram_id ORDER BY n DESC,telegram_id LIMIT 1")
         tid = str(tid_row.get("telegram_id") or "")
         eligible = _one(conn, "SELECT COUNT(*) n FROM rankings WHERE telegram_id=?", (tid,)) if tid else {"n": 0}
@@ -355,6 +358,11 @@ def report_solana() -> None:
             f"  history_store: candidates={_int(discovered.get('n'))} discovery_swap_events={_int(discovered.get('events'))} "
             f"status_wallets={_int(status.get('n'))} complete={_int(status.get('complete'))} errors={_int(status.get('errors'))} "
             f"newest_fetch={_iso(status.get('newest'))} signatures={_int(status.get('signatures'))} swaps={_int(status.get('swaps'))} closed_trades={_int(status.get('closes'))}"
+        )
+        print(
+            "  history worker marker: "
+            f"last_run={_iso(worker_last_run)} worker:history:last_success={_iso(worker_last_success)} "
+            f"last_error={_safe_error(worker_last_error)} retention=LATEST_ONLY"
         )
         for ranking in rankings:
             wallet = str(ranking.get("wallet") or "")
