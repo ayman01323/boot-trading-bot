@@ -50,4 +50,5 @@ def test_operating_model_keeps_profit_first_and_protected_boundaries():
     assert "bandwidth usage" in text.lower()
     assert "all seven agents" in text
     assert "draft PR only" in text
-    assert "explicit MASTER" in text
+    assert "MASTER CANARY APPROVAL" in text
+    assert "MASTER FULL-LIVE APPROVAL" in text
