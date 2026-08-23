@@ -5,6 +5,10 @@ import time
 from pathlib import Path
 
 from . import sibot as _sibot
+# Install the orphaned legacy-error fallback only after the Alchemy history,
+# retry and progressive-trace queue layers have composed their final selector.
+# Ranked/progress work therefore always has priority over backlog cleanup.
+from . import sibot_legacy_error_sweep_patch as _legacy_sweep  # noqa: F401
 from . import telegram_trade_blocker_health_patch as _health
 
 _PREV_SNAPSHOT = _health._snapshot
