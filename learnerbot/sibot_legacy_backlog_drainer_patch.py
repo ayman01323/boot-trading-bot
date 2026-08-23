@@ -13,16 +13,18 @@ from .config import load_chains
 
 """Bounded low-priority recovery for orphaned EVM history backlog.
 
-The normal SiBot history worker owns the ranked candidate window.  The existing
+The normal SiBot history worker owns the ranked candidate window. The existing
 legacy sweep guarantees old Etherscan rows eventually get a turn, but its
-15-minute-per-chain cadence is intentionally conservative.  A large inherited
+15-minute-per-chain cadence is intentionally conservative. A large inherited
 backlog can therefore keep wallet_trades and the leader pool empty for too long.
 
 This patch adds one separate recovery lane which:
 - selects only errored wallets outside the current ranked history window;
 - performs at most one extra reconstruction globally per pacing interval;
-- calls the existing final Alchemy refresher, which already serialises history
-  work across chains and contains bounded provider retries;
+- calls the existing final Alchemy refresher, which serialises history work and
+  contains bounded provider retries;
+- resumes progressive BSC/Arbitrum trace reconstruction instead of stranding a
+  wallet after its first AlchemyHistoryProgress yield;
 - yields after every completed attempt so normal ranked work gets priority;
 - applies account-wide exponential backoff after Alchemy rate-limit pressure;
 - gives a non-transient failure a chain-local cooldown so another chain can drain;
@@ -32,7 +34,7 @@ This patch adds one separate recovery lane which:
 """
 
 # Capture the fully composed worker/startup hooks that exist when this module is
-# imported by final_runtime_integrity_patch.  telegram_sibot_patch captured an
+# imported by final_runtime_integrity_patch. telegram_sibot_patch captured an
 # older start_workers symbol early in boot, so wrapping only _sibot.start_workers
 # would not reliably start this drainer on the real Telegram production path.
 _PREV_START_WORKERS = _sibot.start_workers
@@ -49,6 +51,7 @@ _DEFAULT_MAX_BACKOFF_SECONDS = 15 * 60
 _DEFAULT_NONTRANSIENT_BACKOFF_SECONDS = 5 * 60
 _DEFAULT_IDLE_POLL_SECONDS = 30
 _MIN_TRANSIENT_RETRY_AGE_SECONDS = 60
+_PROGRESS_RETRY_SECONDS = 180
 _SCAN_ROWS = 250
 
 _GLOBAL_NEXT_KEY = "legacy_backlog_drainer:global_next"
@@ -175,14 +178,18 @@ def _ranked_wallets(app, chain) -> set[str]:
         return set()
 
 
+def _progress_error(error: str) -> bool:
+    return str(error or "").strip().lower().startswith("alchemyhistoryprogress:")
+
+
 def _error_kind(error: str, fetched_at: int, now_epoch: int) -> str:
     text = str(error or "")
+    age = int(now_epoch) - int(fetched_at or 0)
+    if _progress_error(text) and age >= _PROGRESS_RETRY_SECONDS:
+        return "ALCHEMY_PROGRESS"
     if _retry._legacy_etherscan_error(text):
         return "LEGACY_ETHERSCAN"
-    if (
-        _retry._retryable_alchemy_error(text)
-        and int(fetched_at or 0) <= int(now_epoch) - _MIN_TRANSIENT_RETRY_AGE_SECONDS
-    ):
+    if _retry._retryable_alchemy_error(text) and age >= _MIN_TRANSIENT_RETRY_AGE_SECONDS:
         return "TRANSIENT_ALCHEMY"
     return ""
 
@@ -202,8 +209,9 @@ def _background_candidate(app, chain, now_epoch: int) -> tuple[str, str] | None:
     except Exception:
         return None
 
-    # Pre-Alchemy migration backlog is higher value than a recent transient retry.
-    for wanted_kind in ("LEGACY_ETHERSCAN", "TRANSIENT_ALCHEMY"):
+    # Finish an already-started progressive reconstruction before opening another
+    # orphan on that chain; otherwise trace-progress rows could accumulate forever.
+    for wanted_kind in ("ALCHEMY_PROGRESS", "LEGACY_ETHERSCAN", "TRANSIENT_ALCHEMY"):
         for row in rows:
             wallet = str(row["wallet"] or "").lower().strip()
             if not wallet or wallet in ranked:
@@ -320,6 +328,29 @@ def _drain_once(app, *, now_epoch: int | None = None, chains=None) -> dict:
             "next_epoch": next_epoch,
         }
 
+    if _progress_error(error):
+        progress_yields = _increment_state(app, _key(cid, "progress_yields"), 1)
+        chain_next = finished + _PROGRESS_RETRY_SECONDS
+        global_next = finished + interval
+        _write_state(
+            app,
+            {
+                _GLOBAL_NEXT_KEY: global_next,
+                _GLOBAL_PRESSURE_KEY: 0,
+                _key(cid, "next_epoch"): chain_next,
+                _key(cid, "last_result"): "PROGRESS",
+            },
+        )
+        return {
+            "status": "PROGRESS",
+            "chain": str(getattr(chain, "slug", cid)),
+            "chain_id": cid,
+            "wallet": wallet,
+            "kind": kind,
+            "progress_yields": progress_yields,
+            "next_epoch": chain_next,
+        }
+
     if _provider_pressure(error):
         pressure_count = _increment_state(app, _key(cid, "rate_limits"), 1)
         consecutive = _read_state_int(app, _GLOBAL_PRESSURE_KEY, 0) + 1
@@ -373,6 +404,7 @@ def status_for_chain(app, chain) -> dict:
     """Return sanitised recovery telemetry for diagnostics."""
     cid = int(chain.chain_id)
     legacy = 0
+    progress = 0
     transient = 0
     try:
         with _sibot._DB_LOCK, closing(_sibot.connect(app)) as conn:
@@ -383,7 +415,11 @@ def status_for_chain(app, chain) -> dict:
             ).fetchall()
         now = int(time.time())
         for row in rows:
-            kind = _error_kind(str(row["error"] or ""), int(row["fetched_at"] or 0), now)
+            raw_error = str(row["error"] or "")
+            if _progress_error(raw_error):
+                progress += 1
+                continue
+            kind = _error_kind(raw_error, int(row["fetched_at"] or 0), now)
             if kind == "LEGACY_ETHERSCAN":
                 legacy += 1
             elif kind == "TRANSIENT_ALCHEMY":
@@ -392,9 +428,11 @@ def status_for_chain(app, chain) -> dict:
         pass
     return {
         "legacy_backlog": legacy,
+        "progress_backlog": progress,
         "transient_backlog": transient,
         "attempts": _read_state_int(app, _key(cid, "attempts"), 0),
         "successes": _read_state_int(app, _key(cid, "successes"), 0),
+        "progress_yields": _read_state_int(app, _key(cid, "progress_yields"), 0),
         "failures": _read_state_int(app, _key(cid, "failures"), 0),
         "rate_limits": _read_state_int(app, _key(cid, "rate_limits"), 0),
         "last_attempt_epoch": _read_state_int(app, _key(cid, "last_attempt_epoch"), 0),
@@ -409,7 +447,7 @@ def _drainer_loop(app) -> None:
         try:
             outcome = _drain_once(app)
             status = str(outcome.get("status") or "")
-            if status in {"SUCCESS", "RATE_LIMIT", "FAILED"}:
+            if status in {"SUCCESS", "PROGRESS", "RATE_LIMIT", "FAILED"}:
                 print(
                     "[sibot-legacy-drainer] status=%s chain=%s kind=%s next_epoch=%s"
                     % (
@@ -453,8 +491,8 @@ def _ensure_drainer_started(app) -> bool:
         ).start()
     print(
         "[sibot-legacy-drainer] started global_interval=%ss provider_backoff=adaptive "
-        "ranked_queue_priority=true"
-        % _interval_seconds(app)
+        "ranked_queue_priority=true progressive_resume=%ss"
+        % (_interval_seconds(app), _PROGRESS_RETRY_SECONDS)
     )
     return True
 
