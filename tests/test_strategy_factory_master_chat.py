@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from learnerbot import telegram_master_change_patch as telegram_patch
 from scripts import ai_agent_ws_bus as base_bus
 from scripts import ai_agent_ws_bus_grok as broker_bridge
 from scripts import strategy_factory_transport as transport
@@ -55,16 +54,18 @@ def test_master_chat_frontends_delegate_to_shared_transport() -> None:
     assert 'if cmd == "/aichat"' in telegram
 
 
-def test_telegram_subject_syntax_is_optional_and_bounded() -> None:
-    assert telegram_patch._parse_chat_body("plain question") == ("", "plain question")
-    assert telegram_patch._parse_chat_body("[HOOD fraud] review the latest finding") == (
+def test_subject_syntax_is_optional_and_bounded_without_telegram_imports() -> None:
+    assert transport.split_subject_message("plain question") == ("", "plain question")
+    assert transport.split_subject_message("[HOOD fraud] review the latest finding") == (
         "HOOD fraud",
         "review the latest finding",
     )
-    assert telegram_patch._parse_chat_body("[Server latency] compare p95") == (
+    assert transport.split_subject_message("[Server latency] compare p95") == (
         "Server latency",
         "compare p95",
     )
+    with pytest.raises(ValueError):
+        transport.split_subject_message("[" + ("x" * 161) + "] message")
 
 
 def test_same_subject_reuses_same_thread_and_other_subject_is_isolated() -> None:
