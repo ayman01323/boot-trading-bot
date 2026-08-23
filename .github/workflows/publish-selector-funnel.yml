@@ -1,0 +1,108 @@
+name: Publish Lightweight Selector Funnel Truth
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-selector-funnel.yml'
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-selector-funnel-truth
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 3
+    steps:
+      - name: Read only sanitised selector bridge files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/selector-funnel.json
+          import json, pathlib, time
+
+          sources = {
+              'solana': pathlib.Path('/var/tmp/boot/solana_leader_selector.json'),
+              'evm': pathlib.Path('/var/tmp/boot/evm_leader_selector.json'),
+          }
+          out = {
+              'schema_version': 1,
+              'generated_epoch': int(time.time()),
+              'scope': 'SANITISED_SELECTOR_COUNTERS_ONLY',
+              'solana': {},
+              'evm': {},
+              'privacy': {
+                  'wallet_addresses_published': False,
+                  'database_files_read': False,
+                  'rpc_urls_published': False,
+                  'api_keys_published': False,
+                  'private_keys_read': False,
+              },
+          }
+
+          def load(path):
+              try:
+                  p=json.loads(path.read_text(encoding='utf-8'))
+                  return p if isinstance(p,dict) else {}
+              except Exception:
+                  return {}
+
+          sol=load(sources['solana'])
+          if sol:
+              out['solana']={
+                  'generated_epoch':int(sol.get('generated_epoch') or 0),
+                  'pool':int(sol.get('pool') or 0),
+                  'qualified':int(sol.get('qualified') or 0),
+                  'selected':int(sol.get('selected') or 0),
+                  'first_failure_counts':{
+                      str(k)[:100]:int(v or 0)
+                      for k,v in (sol.get('first_failure_counts') or {}).items()
+                  },
+                  'thresholds':sol.get('thresholds') or {},
+                  'thresholds_unchanged':bool(sol.get('thresholds_unchanged')),
+              }
+
+          evm=load(sources['evm'])
+          chains=evm.get('chains') or {} if isinstance(evm,dict) else {}
+          if isinstance(chains,dict):
+              for slug,row in chains.items():
+                  if not isinstance(row,dict): continue
+                  out['evm'][str(slug)[:32]]={
+                      'generated_epoch':int(row.get('generated_epoch') or 0),
+                      'pool':int(row.get('pool') or 0),
+                      'qualified':int(row.get('qualified') or 0),
+                      'selected':int(row.get('selected') or 0),
+                      'first_failure_counts':{
+                          str(k)[:100]:int(v or 0)
+                          for k,v in (row.get('first_failure_counts') or {}).items()
+                      },
+                      'thresholds_unchanged':bool(row.get('thresholds_unchanged')),
+                  }
+
+          # Hard privacy assertion: bridge schema must not publish candidate identities.
+          raw=json.dumps(out,sort_keys=True).lower()
+          if 'wallet_address' in raw.replace('wallet_addresses_published','') or 'leader_wallet' in raw:
+              raise SystemExit('unexpected wallet identity field in selector bridge')
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+          api="repos/${GITHUB_REPOSITORY}/contents/engineering/ops/selector-funnel.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "$api?ref=ai-reviews" --jq '.sha' 2>/dev/null || true)"
+          python3 - "$existing_sha" <<'PY' > /tmp/selector-put.json
+          import base64,json,sys
+          raw=open('/tmp/selector-funnel.json','rb').read()
+          p={'message':'Update sanitised selector funnel truth','content':base64.b64encode(raw).decode(),'branch':'ai-reviews'}
+          if sys.argv[1]: p['sha']=sys.argv[1]
+          print(json.dumps(p))
+          PY
+          gh api -X PUT "$api" --input /tmp/selector-put.json >/dev/null
+          cat /tmp/selector-funnel.json
