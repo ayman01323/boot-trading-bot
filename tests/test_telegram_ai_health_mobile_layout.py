@@ -1,5 +1,5 @@
 from learnerbot import telegram_ai_health_mobile_layout_patch as mobile
-from learnerbot import kimi_ai_health_roster_patch as kimi_health  # noqa: F401
+from learnerbot import kimi_ai_health_roster_patch as kimi_health
 
 
 def _health(state="WORKING", reason="ok"):
@@ -12,7 +12,15 @@ def _health(state="WORKING", reason="ok"):
     }
 
 
+def _ensure_kimi_roster():
+    kimi_health.install()
+    assert mobile._compact.PROVIDERS == (
+        "gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"
+    )
+
+
 def test_mobile_provider_layout_uses_single_compact_rows(monkeypatch):
+    _ensure_kimi_roster()
     monkeypatch.setattr(
         mobile._truth,
         "_fresh_preflight",
@@ -37,9 +45,6 @@ def test_mobile_provider_layout_uses_single_compact_rows(monkeypatch):
 
     text = mobile.provider_health_text(_health(), _health())
 
-    assert mobile._compact.PROVIDERS == (
-        "gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"
-    )
     assert "7 healthy</b> · 0 verify · 0 issues" in text
     assert " GPT — Online · API OK 20m" in text
     assert " Claude — Online · API OK 20m" in text
@@ -51,6 +56,7 @@ def test_mobile_provider_layout_uses_single_compact_rows(monkeypatch):
 
 
 def test_kimi_disconnect_is_visible_not_omitted(monkeypatch):
+    _ensure_kimi_roster()
     monkeypatch.setattr(
         mobile._truth,
         "_fresh_preflight",
@@ -70,6 +76,7 @@ def test_kimi_disconnect_is_visible_not_omitted(monkeypatch):
 
 
 def test_dashboard_uses_one_line_monitor_statuses(monkeypatch):
+    _ensure_kimi_roster()
     monkeypatch.setattr(mobile._truth, "_review_stale_reason", lambda lane, health: "old")
     monkeypatch.setattr(
         mobile,

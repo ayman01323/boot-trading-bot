@@ -151,10 +151,9 @@ def test_hourly_provider_preflight_checks_xai_grok() -> None:
     assert "'xai':one('xai')" in workflow
 
 
-def test_six_agent_live_diagnostic_probes_grok_and_all_other_agents() -> None:
+def test_seven_agent_live_diagnostic_probes_grok_kimi_and_all_other_agents() -> None:
     workflow = (ROOT / ".github" / "workflows" / "strategy-factory-six-agent-live-diagnostic.yml").read_text(encoding="utf-8")
-    assert "{'gpt','claude','gemini','deepseek','grok','copilot'}" in workflow
-    for provider in ("gpt", "claude", "gemini", "deepseek", "grok", "copilot"):
+    assert "{'gpt','claude','gemini','deepseek','grok','kimi','copilot'}" in workflow
+    for provider in ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"):
         assert f"probe gpt {provider}" in workflow or (provider == "gpt" and "probe gemini gpt" in workflow)
-    assert "--to grok" in workflow
-    assert "grok_bounded_task_health=COMPLETED" in workflow
+    assert "kimi_bounded_server_task=COMPLETED" in workflow
