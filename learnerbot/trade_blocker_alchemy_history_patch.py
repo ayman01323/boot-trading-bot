@@ -5,9 +5,14 @@ import time
 from pathlib import Path
 
 from . import sibot as _sibot
-# Install the orphaned legacy-error fallback only after the Alchemy history,
-# retry and progressive-trace queue layers have composed their final selector.
-# Ranked/progress work therefore always has priority over backlog cleanup.
+# Install whole-wallet transaction/receipt context fairness only after the base
+# Alchemy, rate-limit, internal-trace, retry and trace-progress layers exist.
+# This bounds the stage that previously let one high-activity BSC wallet occupy
+# the single history worker before later EVM chains received a turn.
+from . import sibot_alchemy_context_progress_patch as _context_progress  # noqa: F401
+# Install the orphaned legacy-error fallback only after every Alchemy progress
+# queue layer has composed its final selector. Ranked/progress work therefore
+# always has priority over backlog cleanup.
 from . import sibot_legacy_error_sweep_patch as _legacy_sweep  # noqa: F401
 from . import telegram_trade_blocker_health_patch as _health
 
