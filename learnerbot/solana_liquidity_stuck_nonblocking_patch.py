@@ -164,21 +164,25 @@ def open_live_count_without_verified_stuck(app, tid) -> int:
 
 def platform_amount_gate_without_stuck_freeze(app, cfg: dict):
     ok, reason, metrics, recovery = _PREV_PLATFORM_GATE(app, cfg)
-    if ok or not _enabled(cfg):
+    if not _enabled(cfg):
         return ok, reason, metrics, recovery
 
+    # The systemic breaker is independent of platform profitability. A healthy
+    # PF must never permit an unbounded pile-up of trapped positions.
     stuck, active, proven = _global_snapshot(app, cfg)
-    if not proven or not stuck or active:
-        return ok, reason, metrics, recovery
-
-    maximum = _max_quarantined(cfg)
-    if len(stuck) > maximum:
+    if proven and len(stuck) > _max_quarantined(cfg):
+        maximum = _max_quarantined(cfg)
         return (
             False,
             f"systemic liquidity safety breaker: {len(stuck)} verified LIQUIDITY_STUCK positions exceed hard concurrent limit {maximum}",
             metrics,
             False,
         )
+
+    if ok:
+        return ok, reason, metrics, recovery
+    if not proven or not stuck or active:
+        return ok, reason, metrics, recovery
 
     text = str(reason or "")
     if text != _RECOVERY_OPEN_BLOCK and not text.startswith(_RECOVERY_WAIT_PREFIX):
