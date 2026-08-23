@@ -1,0 +1,69 @@
+name: DeepSeek WebSocket v2 Live Test
+
+on:
+  push:
+    branches:
+      - 'gpt/deepseek-ws-v2-live-test'
+    paths:
+      - '.github/workflows/deepseek-ws-v2-live-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deepseek-live-test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build isolated probe environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          VENV="$RUNNER_TEMP/deepseek-ws-v2-live-test"
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "VENV=$VENV" >> "$GITHUB_ENV"
+
+      - name: Test GPT to DeepSeek alert and reply
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/deepseek-alert.jsonl"
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to deepseek \
+            --message 'Reply exactly: DEEPSEEK_WS_ALERT_OK' \
+            --message-id 'gpt-to-deepseek-live-alert-test' \
+            --timeout 120 | tee "$out"
+          grep -q 'ACKNOWLEDGED' "$out"
+          grep -q 'DEEPSEEK_WS_ALERT_OK' "$out"
+
+      - name: Test DeepSeek bounded v2 execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/deepseek-task.jsonl"
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to deepseek \
+            --task-action READ_FILE \
+            --task-args-json '{"path":"AI_AGENT_MESSAGING.md"}' \
+            --task-instruction 'Read this safe repository file and return execution evidence.' \
+            --message-id 'gpt-to-deepseek-live-task-test' \
+            --timeout 120 | tee "$out"
+          grep -q 'ACKNOWLEDGED' "$out"
+          grep -q 'ACCEPTED' "$out"
+          grep -q 'EXECUTING' "$out"
+          grep -q 'COMPLETED' "$out"
+          grep -q 'AI_AGENT_MESSAGING.md' "$out"
+
+      - name: Clean probe environment
+        if: always()
+        shell: bash
+        run: rm -rf "$VENV"
