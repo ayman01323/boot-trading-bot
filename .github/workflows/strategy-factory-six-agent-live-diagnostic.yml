@@ -17,7 +17,7 @@ concurrency:
 jobs:
   audit:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,83 +34,46 @@ jobs:
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Execute live RPC and WebSocket probe inside learnerbot
-        id: probe
+      - name: Read compact per-endpoint RPC matrix
         shell: bash
         run: |
-          set +e
-          mid="rpc-health-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          set -euo pipefail
           output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
             --from gpt \
             --to kimi \
-            --message-id "$mid" \
-            --timeout 240 \
-            --task-action RUN_TESTS \
-            --task-args-json '{"targets":["tests/test_runtime_rpc_health_probe.py::test_runtime_rpc_health_probe"],"timeout_seconds":180}' \
-            --task-instruction 'Run the explicit read-only RPC/WSS health probe against production configuration. Do not modify trading, endpoints, services, wallets, risk or capital.' 2>&1)"
-          rc=$?
-          printf '%s\n' "$output"
-          echo "sender_rc=$rc"
-          final="$(printf '%s\n' "$output" | tail -n 1)"
-          if [[ -n "$final" ]]; then
-            FINAL="$final" python3 - <<'PY'
-          import json,os
-          try:
-              outer=json.loads(os.environ['FINAL'])
-              print('probe_terminal_status='+str(outer.get('status')))
-              print('probe_delivered='+str(bool(outer.get('delivered'))).lower())
-              print('probe_acknowledged='+str(bool(outer.get('acknowledged'))).lower())
-              body=str(outer.get('body') or '')
-              if body:
-                  try:
-                      result=json.loads(body)
-                      print('probe_task_status='+str(result.get('status')))
-                      print('probe_task_error='+str(result.get('error') or '')[:500])
-                      evidence=result.get('evidence') or {}
-                      print('probe_stdout='+str(evidence.get('stdout') or '')[-3000:].replace('\n',' | '))
-                      print('probe_stderr='+str(evidence.get('stderr') or '')[-1600:].replace('\n',' | '))
-                  except Exception:
-                      print('probe_body_non_json='+body[:1000])
-          except Exception as exc:
-              print('probe_terminal_parse_error='+type(exc).__name__)
-          PY
-          fi
-          exit 0
-
-      - name: Read sanitised health report through bounded task
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          mid="rpc-health-read-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to kimi \
-            --message-id "$mid" \
+            --message-id "rpc-compact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --timeout 90 \
             --task-action READ_FILE \
-            --task-args-json '{"path":"data/rpc_health_latest.json"}' \
-            --task-instruction 'Return the sanitised RPC/WSS health report only. Do not expose raw configuration, URLs, API keys, wallets or secrets.' 2>&1)"
-          rc=$?
+            --task-args-json '{"path":"data/rpc_health_rpc_compact.json"}' \
+            --task-instruction 'Return the sanitized compact RPC health matrix only. Do not expose URLs, API keys, wallets or secrets.')"
           printf '%s\n' "$output"
-          echo "read_sender_rc=$rc"
           final="$(printf '%s\n' "$output" | tail -n 1)"
-          if [[ -n "$final" ]]; then
-            FINAL="$final" python3 - <<'PY'
+          FINAL="$final" python3 - <<'PY'
           import json,os
-          try:
-              outer=json.loads(os.environ['FINAL'])
-              result=json.loads(str(outer.get('body') or '{}'))
-              evidence=result.get('evidence') or {}
-              content=str(evidence.get('content') or '')
-              print('RPC_HEALTH_REPORT_BEGIN')
-              print(content)
-              print('RPC_HEALTH_REPORT_END')
-          except Exception as exc:
-              print('report_parse_error='+type(exc).__name__)
+          outer=json.loads(os.environ['FINAL'])
+          result=json.loads(str(outer.get('body') or '{}'))
+          content=str((result.get('evidence') or {}).get('content') or '')
+          print('RPC_COMPACT_BEGIN')
+          print(content)
+          print('RPC_COMPACT_END')
           PY
-          fi
-          exit 0
+
+      - name: Search Polygon WSS records in latest sanitized report
+        shell: bash
+        run: |
+          set -euo pipefail
+          for q in '"chain": "polygon"' '"provider": "Infura"' '"provider": "Alchemy"'; do
+            args="$(python3 -c 'import json,sys; print(json.dumps({"path":"data","query":sys.argv[1]}))' "$q")"
+            output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+              --from gpt \
+              --to kimi \
+              --message-id "rpc-search-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(echo "$q" | tr -cd '[:alnum:]' | head -c 16)" \
+              --timeout 90 \
+              --task-action SEARCH_CODE \
+              --task-args-json "$args" \
+              --task-instruction 'Search sanitized health telemetry only. Do not read or expose endpoint configuration or secrets.')"
+            printf '%s\n' "$output"
+          done
 
       - name: Cleanup
         if: always()
