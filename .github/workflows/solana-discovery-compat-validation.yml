@@ -29,7 +29,17 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Prepare isolated Python 3.11+ environment
+      - name: Provision Python 3.11
+        id: setup_python
+        if: always()
+        continue-on-error: true
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Prepare isolated Python 3.11 environment
         id: prepare
         if: always()
         shell: bash
@@ -37,26 +47,21 @@ jobs:
           set +e
           exec > >(tee /tmp/solana-compat-prepare.log) 2>&1
           checkout_outcome='${{ steps.checkout.outcome }}'
+          setup_outcome='${{ steps.setup_python.outcome }}'
           echo "checkout_outcome=$checkout_outcome"
+          echo "setup_python_outcome=$setup_outcome"
           echo "pwd=$(pwd)"
           echo "repo_present=$([[ -f requirements.txt ]] && echo yes || echo no)"
-
-          PYTHON_BIN=""
-          for candidate in python3.12 python3.11 /usr/local/bin/python3.12 /usr/local/bin/python3.11; do
-            resolved="$(command -v "$candidate" 2>/dev/null || true)"
-            if [[ -n "$resolved" ]]; then
-              if "$resolved" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' 2>/dev/null; then
-                PYTHON_BIN="$resolved"
-                break
-              fi
-            fi
-          done
-          echo "python_311_plus=${PYTHON_BIN:-missing}"
+          PYTHON_BIN="$(command -v python || true)"
+          echo "python=${PYTHON_BIN:-missing}"
           if [[ -n "$PYTHON_BIN" ]]; then "$PYTHON_BIN" --version; fi
 
           rc=0
-          if [[ "$checkout_outcome" != success || ! -f requirements.txt || -z "$PYTHON_BIN" ]]; then
-            echo "checkout/repository/Python 3.11+ preparation failed"
+          if [[ "$checkout_outcome" != success || "$setup_outcome" != success || ! -f requirements.txt || -z "$PYTHON_BIN" ]]; then
+            echo "checkout/repository/Python 3.11 provisioning failed"
+            rc=1
+          elif ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)'; then
+            echo "provisioned Python is below 3.11"
             rc=1
           else
             rm -rf "$CI_VENV"
@@ -153,6 +158,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          SETUP_OUTCOME: ${{ steps.setup_python.outcome }}
           PREPARE_RC: ${{ steps.prepare.outputs.rc }}
           COMPILE_RC: ${{ steps.compile.outputs.rc }}
           COMPAT_RC: ${{ steps.compat.outputs.rc }}
@@ -160,17 +166,19 @@ jobs:
         run: |
           set -euo pipefail
           checkout_outcome="${CHECKOUT_OUTCOME:-unknown}"
+          setup_outcome="${SETUP_OUTCOME:-unknown}"
           prepare_rc="${PREPARE_RC:-99}"
           compile_rc="${COMPILE_RC:-99}"
           compat_rc="${COMPAT_RC:-99}"
           safety_rc="${SAFETY_RC:-99}"
           overall=PASS
-          if [[ "$checkout_outcome" != success || "$prepare_rc" != 0 || "$compile_rc" != 0 || "$compat_rc" != 0 || "$safety_rc" != 0 ]]; then overall=FAIL; fi
+          if [[ "$checkout_outcome" != success || "$setup_outcome" != success || "$prepare_rc" != 0 || "$compile_rc" != 0 || "$compat_rc" != 0 || "$safety_rc" != 0 ]]; then overall=FAIL; fi
           {
             echo "## Solana discovery compatibility validation — ${overall}"
             echo
             echo "Validated commit: \`${GITHUB_SHA}\`"
             echo "- checkout: ${checkout_outcome}"
+            echo "- Python 3.11 provisioning: ${setup_outcome}"
             echo "- environment preparation: rc=${prepare_rc}"
             echo "- compile: rc=${compile_rc}"
             echo "- compatibility/import + SHADOW trade smoke: rc=${compat_rc}"
@@ -182,10 +190,10 @@ jobs:
               echo '<details><summary>Failure tail</summary>'
               echo
               echo '```text'
-              tail -n 75 /tmp/solana-compat-prepare.log 2>/dev/null || true
+              tail -n 85 /tmp/solana-compat-prepare.log 2>/dev/null || true
               tail -n 40 /tmp/solana-compat-compile.log 2>/dev/null || true
-              tail -n 90 /tmp/solana-compat-tests.log 2>/dev/null || true
-              tail -n 90 /tmp/solana-safety-tests.log 2>/dev/null || true
+              tail -n 100 /tmp/solana-compat-tests.log 2>/dev/null || true
+              tail -n 100 /tmp/solana-safety-tests.log 2>/dev/null || true
               echo '```'
               echo '</details>'
             fi
