@@ -8,10 +8,10 @@ from pathlib import Path
 from scripts import ai_agent_ws_bus as _base
 
 # Keep the audited broker implementation unchanged; extend the real recipient
-# set with Grok and add one non-worker client identity for the MASTER interactive
-# chat. MASTER may register and send to agents, but it is never an AI recipient
-# and is never included in Council/broadcast fan-out.
-_base.AGENTS = set(_base.AGENTS) | {"grok"}
+# set with Grok and Kimi and add one non-worker client identity for the MASTER
+# interactive chat. MASTER may register and send to agents, but it is never an
+# AI recipient and is never included in Council/broadcast fan-out.
+_base.AGENTS = set(_base.AGENTS) | {"grok", "kimi"}
 CLIENT_IDENTITIES = set(_base.AGENTS) | {"master"}
 _BASE_REGISTER = _base.Broker._register
 _BASE_REMOVE = _base.Broker._remove
