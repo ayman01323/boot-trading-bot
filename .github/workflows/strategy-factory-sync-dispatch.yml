@@ -1,0 +1,25 @@
+name: Dispatch Strategy Factory Credential Sync
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/strategy-factory-sync-dispatch.yml'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Dispatch approved runtime credential sync on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run ai-council-runtime-secrets.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo 'Dispatched Sync AI Council Runtime Credentials on main.'
