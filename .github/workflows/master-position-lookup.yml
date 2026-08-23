@@ -1,0 +1,128 @@
+name: MASTER Position Lookup
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lookup:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/master-position-lookup'
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Read bounded diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/status-boot-trading-bot > /tmp/master-position-status.txt 2>&1 || true
+          journalctl -u learnerbot.service --since '2026-08-18 00:00:00' -n 20000 --no-pager > /tmp/master-position-journal.txt 2>&1 || true
+          find /var/tmp/boot -maxdepth 2 -type f -size -2M -print 2>/dev/null | sort > /tmp/master-position-files.txt || true
+
+      - name: Build sanitised position report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+
+          TARGET = '5923828381'
+          KNOWN_POSITION = '07d9f95e7dbb77288b2d4abca53e3949'
+          SECRET_PATTERNS = [
+              re.compile(r'(?i)(api[_-]?key\s*[:=]\s*)[^\s,&]+'),
+              re.compile(r'(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"\']+'),
+              re.compile(r'\b(sk|gh[opusr]?|github_pat)_[A-Za-z0-9_-]{8,}\b'),
+          ]
+
+          def redact(s):
+              s = str(s).replace('\x00',' ')
+              for p in SECRET_PATTERNS:
+                  s = p.sub(lambda m: (m.group(1) if m.lastindex else '') + '<redacted>', s)
+              return s[:1400]
+
+          def context_matches(path, patterns, radius=4, max_blocks=80):
+              try:
+                  lines = Path(path).read_text(encoding='utf-8', errors='replace').splitlines()
+              except Exception:
+                  return []
+              hits=[]; seen=set()
+              for i,line in enumerate(lines):
+                  if any(p.lower() in line.lower() for p in patterns):
+                      lo=max(0,i-radius); hi=min(len(lines),i+radius+1)
+                      key=(lo,hi)
+                      if key in seen: continue
+                      seen.add(key)
+                      block='\n'.join(redact(x) for x in lines[lo:hi])
+                      hits.append(block)
+                      if len(hits)>=max_blocks: break
+              return hits
+
+          patterns=[TARGET,KNOWN_POSITION,'LIQUIDITY_STUCK','SOLANA LIVE BUY','SOLANA EMERGENCY EXIT','Mint:','position_id','HOOD']
+          status=context_matches('/tmp/master-position-status.txt', patterns, radius=3, max_blocks=40)
+          journal=context_matches('/tmp/master-position-journal.txt', patterns, radius=5, max_blocks=80)
+
+          bridge=[]
+          for raw in Path('/tmp/master-position-files.txt').read_text(errors='ignore').splitlines() if Path('/tmp/master-position-files.txt').exists() else []:
+              p=Path(raw.strip())
+              if not p.is_file(): continue
+              try:
+                  text=p.read_text(encoding='utf-8', errors='replace')
+              except Exception:
+                  continue
+              low=text.lower()
+              if TARGET in text or KNOWN_POSITION in text or ('solana' in p.name.lower() and any(k in low for k in ('position_id','mint','liquidity_stuck','open_live'))):
+                  snippets=[]
+                  lines=text.splitlines()
+                  for i,line in enumerate(lines):
+                      if TARGET in line or KNOWN_POSITION in line or any(k in line.lower() for k in ('position_id','"mint"','pool','liquidity_stuck','open_live')):
+                          snippets.append('\n'.join(redact(x) for x in lines[max(0,i-2):min(len(lines),i+3)]))
+                          if len(snippets)>=20: break
+                  if snippets:
+                      bridge.append((str(p), snippets))
+              if len(bridge)>=20: break
+
+          out=[]
+          out.append('## Read-only MASTER position lookup')
+          out.append('')
+          out.append(f'Target Telegram account: `{TARGET}`')
+          out.append('No wallet/private-key files were read; no trade/deploy/write action was performed.')
+          out.append('')
+          out.append('### Approved status-wrapper matches')
+          out.append('```text')
+          out.append('\n---\n'.join(status) if status else 'NO_MATCH')
+          out.append('```')
+          out.append('')
+          out.append('### Sanitised runtime-bridge matches')
+          if bridge:
+              for path,snips in bridge:
+                  out.append(f'#### `{path}`')
+                  out.append('```text')
+                  out.append('\n---\n'.join(snips))
+                  out.append('```')
+          else:
+              out.append('NO_MATCH')
+          out.append('')
+          out.append('### Learnerbot journal matches')
+          out.append('```text')
+          out.append('\n---\n'.join(journal) if journal else 'NO_MATCH')
+          out.append('```')
+          Path('/tmp/master-position-report.md').write_text('\n'.join(out), encoding='utf-8')
+          PY
+
+      - name: Publish lookup result
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --repo "$GITHUB_REPOSITORY" --body-file /tmp/master-position-report.md
