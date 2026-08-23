@@ -129,6 +129,8 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
         if not key:
             return 90, "", "DEEPSEEK_API_KEY missing"
         model = str(env.get("DEEPSEEK_MASTER_MODEL") or "deepseek-v4-flash").strip()
+        if model == "deepseek-v4-flash":
+            model = f"{model}[1m]"
         env.pop("ANTHROPIC_API_KEY", None)
         env["ANTHROPIC_BASE_URL"] = "https://api.deepseek.com/anthropic"
         env["ANTHROPIC_AUTH_TOKEN"] = key

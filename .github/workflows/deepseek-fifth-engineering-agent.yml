@@ -90,13 +90,16 @@ jobs:
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash' }}
+          DEEPSEEK_ENGINEERING_MODEL: ${{ vars.DEEPSEEK_ENGINEERING_MODEL || 'deepseek-v4-flash[1m]' }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
           DISABLE_AUTOUPDATER: '1'
         shell: bash
         run: |
           set -euo pipefail
           test -n "${DEEPSEEK_API_KEY:-}"
+          if [[ "$DEEPSEEK_ENGINEERING_MODEL" == "deepseek-v4-flash" ]]; then
+            DEEPSEEK_ENGINEERING_MODEL="${DEEPSEEK_ENGINEERING_MODEL}[1m]"
+          fi
           export ANTHROPIC_BASE_URL='https://api.deepseek.com/anthropic'
           export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
           export ANTHROPIC_MODEL="$DEEPSEEK_ENGINEERING_MODEL"
