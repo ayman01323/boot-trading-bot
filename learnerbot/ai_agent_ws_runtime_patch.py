@@ -174,3 +174,8 @@ from . import solana_leader_edge_alignment_patch  # noqa: E402,F401
 # keeps the same mint blocked, but no longer freezes all other Solana entry
 # capacity. Owners receive explicit keep-retrying / force-exit / write-off choices.
 from . import solana_liquidity_stuck_nonblocking_patch  # noqa: E402,F401
+
+# Final V4 AI operations layer. This is observational/governance only: it
+# normalises alerts/reports into monitor/Factory cases, adds contribution scoring
+# and MASTER status commands, and cannot authorise protected trading changes.
+from . import telegram_ai_ops_v4_patch  # noqa: E402,F401
