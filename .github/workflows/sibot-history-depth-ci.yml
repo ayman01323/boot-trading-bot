@@ -1,60 +1,42 @@
-name: SiBot Seven-Agent Trading Audit
+name: SiBot Final Read-Only Trading Blocker Check
 
 on:
   pull_request:
     paths:
       - '.github/workflows/sibot-history-depth-ci.yml'
-      - 'scripts/one_time_seven_agent_trading_audit.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  audit:
+  confirm:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 20
+    timeout-minutes: 8
     steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Verify deployed service and seven workers
+      - name: Verify exact deployed SHA and active service
         shell: bash
         run: |
           set -euo pipefail
           status="$(sudo /usr/local/sbin/status-boot-trading-bot)"
           printf '%s\n' "$status" | grep -q '^sha:    cabc5bff54b4ca52649ba38dcaca7800be494d57$'
           printf '%s\n' "$status" | grep -q 'Active: active (running)'
-          python3 - <<'PY'
-          import json
-          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
-          expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
-          assert set(d.get('workers') or []) == expected, d.get('workers')
-          print('strategy_factory_workers=7/7')
-          PY
+          printf '%s\n' "$status" | grep -E '^sha:|Active:|\[trade-blocker-health\]|\[sibot-broader-qualified:|\[solana-leader-edge-alignment\]|\[fast-market-scan\]' | tail -n 40 || true
 
-      - name: Prepare Strategy Factory client
+      - name: Run restricted low-memory read-only leader/history report
         shell: bash
         run: |
           set -euo pipefail
-          if python3 -c 'from websockets.asyncio.client import connect' >/dev/null 2>&1; then
-            echo 'AUDIT_PY=python3' >> "$GITHUB_ENV"
-          else
-            venv="$RUNNER_TEMP/sf-audit-${GITHUB_RUN_ID}"
-            rm -rf "$venv"
-            python3 -m venv "$venv"
-            "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
-            echo "AUDIT_PY=$venv/bin/python" >> "$GITHUB_ENV"
-            echo "AUDIT_VENV=$venv" >> "$GITHUB_ENV"
-          fi
-
-      - name: Run detailed seven-agent audit
-        shell: bash
-        run: "$AUDIT_PY scripts/one_time_seven_agent_trading_audit.py"
+          sudo /usr/local/sbin/run-sibot-leader-gate-report > /tmp/final-trading-blocker-report.txt
+          awk '
+            /^deployed_sha:/ || /^report_mode:/ || /^read_only:/ || /^provider_calls:/ {print; next}
+            /^\[BNB Smart Chain/ || /^\[Arbitrum One/ || /^=== Solana/ {section=1; print; next}
+            /^\[/ && $0 !~ /^\[BNB Smart Chain/ && $0 !~ /^\[Arbitrum One/ {if (section && $0 !~ /Solana/) section=0}
+            section && /eligible_candidates=|history_store:|dominant_history_error:|candidate #|BOUNDED_PROOF_RESULT=|history worker marker:/ {print}
+            /^Threshold decision:/ {print}
+          ' /tmp/final-trading-blocker-report.txt
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "${AUDIT_VENV:-$RUNNER_TEMP/sf-audit-${GITHUB_RUN_ID}}" 2>/dev/null || true
+        run: rm -f /tmp/final-trading-blocker-report.txt
