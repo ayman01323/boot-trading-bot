@@ -21,11 +21,27 @@ def test_strategy_factory_has_one_six_agent_transport() -> None:
     assert transport.DEFAULT_URL == "ws://127.0.0.1:8765"
 
 
+def test_subject_maps_to_stable_thread_across_agents() -> None:
+    one = transport.thread_id_for_subject("HOOD rug-pull investigation")
+    two = transport.thread_id_for_subject("  HOOD   rug-pull investigation  ")
+    other = transport.thread_id_for_subject("Infrastructure latency")
+    assert one == two
+    assert one.startswith("thr-hood-rug-pull-investigation-")
+    assert one != other
+    assert transport.resolve_thread(subject="HOOD rug-pull investigation") == (one, "HOOD rug-pull investigation")
+
+
+def test_explicit_thread_id_can_continue_named_subject() -> None:
+    assert transport.resolve_thread(thread_id="thr-existing", subject="Pool checks") == ("thr-existing", "Pool checks")
+
+
 def test_direct_cli_delegates_transport_instead_of_opening_own_socket() -> None:
     text = _text("scripts/ai_agent_ws_send.py")
     assert "strategy_factory_transport import AGENTS, exchange, new_message_id" in text
     assert "websockets.asyncio.client" not in text
     assert "await exchange(" in text
+    assert 'parser.add_argument("--subject"' in text
+    assert 'parser.add_argument("--thread-id"' in text
 
 
 def test_council_adapter_is_installed_on_same_transport() -> None:
