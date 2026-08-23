@@ -9,6 +9,7 @@ Supported agents are:
 - Gemini
 - DeepSeek
 - Grok
+- Kimi
 - Copilot
 
 The old GitHub `ai-mailbox` path is retained only as an audit/fallback handoff when the local bus is genuinely unavailable or a durable Git handoff is specifically required.
@@ -26,6 +27,7 @@ GPT -> Gemini
 Claude -> GPT
 Gemini -> Grok
 DeepSeek -> Claude
+GPT -> Kimi
 ```
 
 Example:
@@ -33,7 +35,7 @@ Example:
 ```bash
 python scripts/ai_agent_ws_send.py \
   --from gpt \
-  --to gemini \
+  --to kimi \
   --message 'Review this question.'
 ```
 
@@ -53,7 +55,7 @@ MASTER request
 
 The Council is a governance/orchestration layer, not a second transport. `learnerbot/strategy_factory_council_transport_patch.py` adapts Council adviser requests to the shared Strategy Factory client.
 
-The Cost Router still decides which advisers are required. Critical trading, security and deployment changes still use the full Council. GPT remains final adjudicator for repository changes. Existing protected policy/deployment gates remain unchanged.
+The Cost Router still decides which advisers are required. The staged Kimi integration does **not** yet make Kimi mandatory in protected MASTER-change adviser quorum or scheduled review completeness. That promotion is deliberately deferred until a real Kimi credential passes an end-to-end live diagnostic. GPT remains final adjudicator for repository changes and existing protected policy/deployment gates remain unchanged.
 
 ## Subject threads for parallel work
 
@@ -64,7 +66,7 @@ Example DIRECT messages:
 ```bash
 python scripts/ai_agent_ws_send.py \
   --from gpt \
-  --to gemini \
+  --to kimi \
   --subject 'HOOD fraud' \
   --message 'Review the pool manipulation evidence.'
 
@@ -72,7 +74,7 @@ python scripts/ai_agent_ws_send.py \
   --from gpt \
   --to claude \
   --subject 'HOOD fraud' \
-  --message 'Challenge Gemini’s conclusion.'
+  --message 'Challenge Kimi’s conclusion.'
 ```
 
 Both messages use the same subject thread even though the recipient is different. A separate subject such as `Server latency` receives a different thread and cannot enter the HOOD thread’s bounded memory.
@@ -85,14 +87,14 @@ Thread behaviour:
 - Supplying `--thread-id` allows an exact existing thread to be continued.
 - Replies, ACK/status events and durable SQLite records retain the thread metadata.
 - Thread memory is bounded exactly like existing memory, but reads **only that thread**.
-- Thread memory is shared across Strategy Factory agents participating in that subject, allowing GPT, Claude, Gemini, DeepSeek, Grok and Copilot to work from the same bounded topic history.
+- Thread memory is shared across Strategy Factory agents participating in that subject, allowing GPT, Claude, Gemini, DeepSeek, Grok, Kimi and Copilot to work from the same bounded topic history.
 - Legacy messages that omit both fields continue to use the older unthreaded per-agent memory behaviour.
 
 Telegram MASTER syntax uses `[subject]` immediately after the agent name:
 
 ```text
-/aichat gemini [HOOD fraud] review the latest finding
-/aichat claude [HOOD fraud] challenge Gemini's conclusion
+/aichat kimi [HOOD fraud] review the latest finding
+/aichat claude [HOOD fraud] challenge Kimi's conclusion
 /aichat grok [Server latency] compare p95 execution latency
 ```
 
@@ -100,12 +102,12 @@ This lets the Strategy Factory run several subjects in parallel without context 
 
 ## Canonical user-to-agent chat identity
 
-The user-facing canonical identity is `MASTER`. `MASTER` is a sender/client identity only; it is not a seventh AI worker, cannot be targeted as an AI recipient, and is never included in Council fan-out.
+The user-facing canonical identity is `MASTER`. `MASTER` is a sender/client identity only; it is not an eighth AI worker, cannot be targeted as an AI recipient, and is never included in Council fan-out.
 
 Use Telegram:
 
 ```text
-/aichat gemini what did GPT ask you?
+/aichat kimi what did GPT ask you?
 /aichat claude review this idea
 /aichat grok summarise the latest Strategy Factory context you have
 ```
@@ -113,13 +115,25 @@ Use Telegram:
 or the VPS CLI:
 
 ```bash
-python scripts/strategy_factory_chat.py gemini 'what did GPT ask you?'
-python scripts/strategy_factory_chat.py gemini 'review the latest finding' --subject 'HOOD fraud'
+python scripts/strategy_factory_chat.py kimi 'what did GPT ask you?'
+python scripts/strategy_factory_chat.py kimi 'review the latest finding' --subject 'HOOD fraud'
 ```
 
 Both paths send `MASTER -> agent` through the same persistent Strategy Factory worker and store the turn in the same durable conversation history used by agent-to-agent messages. Threaded messages recall only their subject thread; legacy unthreaded messages retain the existing bounded per-agent memory behaviour.
 
-A separate vendor browser conversation such as Gemini Web, Claude Web, Grok Web or another third-party chat is an **external/unlinked session** unless it is explicitly bridged into Strategy Factory. Do not describe an external browser tab as the Strategy Factory agent and do not expect it to know Strategy Factory messages automatically. The canonical interactive agent is the persistent Strategy Factory worker reached through `/aichat` or `scripts/strategy_factory_chat.py`.
+A separate vendor browser conversation such as Gemini Web, Claude Web, Grok Web, Kimi Web or another third-party chat is an **external/unlinked session** unless it is explicitly bridged into Strategy Factory. Do not describe an external browser tab as the Strategy Factory agent and do not expect it to know Strategy Factory messages automatically. The canonical interactive agent is the persistent Strategy Factory worker reached through `/aichat` or `scripts/strategy_factory_chat.py`.
+
+## Kimi provider configuration
+
+Kimi uses the OpenAI-compatible Moonshot/Kimi API rather than browser automation. The default provider configuration is:
+
+```text
+model: kimi-k2.6
+base URL: https://api.moonshot.ai/v1
+credential: KIMI_API_KEY (preferred) or MOONSHOT_API_KEY
+```
+
+`KIMI_COUNCIL_MODEL` can override the model without changing code. Routine worker traffic uses K2.6 with thinking disabled by default to limit latency and cost; `KIMI_THINKING=enabled` opts in where deeper reasoning is justified. A stronger Kimi model can be selected through configuration after its exact API model ID and cost policy are validated.
 
 ## Delivery evidence
 
@@ -175,7 +189,7 @@ Do not claim a Git mailbox commit itself proves recipient receipt. A mailbox com
 
 ## Runtime and protected deployment
 
-Production normally runs the embedded Strategy Factory bus inside `learnerbot.service` with six persistent workers. The optional `scripts/install_ai_agent_ws_bus.sh` installer remains available for a deliberately separate standalone/systemd deployment and installs the same shared transport client used by DIRECT mode.
+Production normally runs the embedded Strategy Factory bus inside `learnerbot.service` with seven persistent workers after Kimi activation. The optional `scripts/install_ai_agent_ws_bus.sh` installer remains available for a deliberately separate standalone/systemd deployment and installs the same shared transport client used by DIRECT mode.
 
 Production deployment remains outside the messaging transport. It uses the restricted wrapper `/usr/local/sbin/deploy-boot-trading-bot`, which runs the repository test gate and restarts the service only after that gate passes. DIRECT or COUNCIL messaging does not itself grant deployment authority.
 

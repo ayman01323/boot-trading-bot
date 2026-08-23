@@ -4,6 +4,7 @@ from pathlib import Path
 
 from learnerbot import ai_council as council
 from learnerbot import grok_provider
+from learnerbot import kimi_provider
 from learnerbot import ai_cost_provider_patch as cost_provider
 from scripts import ai_agent_bus
 from scripts import ai_agent_bus_provider_compat
@@ -11,14 +12,16 @@ from scripts import ai_agent_bus_provider_compat
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_grok_provider_is_sixth_council_member_and_leader() -> None:
+def test_grok_provider_remains_in_council_and_under_kimi_chain() -> None:
     grok_provider.install()
+    kimi_provider.install()
     assert "grok" in council.PROVIDERS
     assert "grok" in council.LEADERS
-    # The final public hook must remain budget-gated. Its saved underlying
-    # provider implementation is the Grok-aware adapter installed first.
+    # The final public hook remains budget-gated. Kimi is the newest adapter and
+    # delegates every non-Kimi request to the pre-existing Grok-aware adapter.
     assert council.call_provider is cost_provider.call_provider
-    assert cost_provider._ORIGINAL_CALL_PROVIDER is grok_provider.call_provider
+    assert cost_provider._ORIGINAL_CALL_PROVIDER is kimi_provider.call_provider
+    assert kimi_provider._BASE_HTTP_CALL is grok_provider.call_provider
 
 
 def test_grok_uses_bounded_xai_chat_completions(monkeypatch) -> None:
@@ -125,8 +128,8 @@ def test_selected_master_collects_and_can_call_grok() -> None:
 def test_grok_is_present_in_persistent_strategy_factory_runtime() -> None:
     runtime = (ROOT / "learnerbot" / "ai_agent_ws_runtime_patch.py").read_text(encoding="utf-8")
     worker = (ROOT / "scripts" / "ai_agent_ws_worker.py").read_text(encoding="utf-8")
-    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in runtime
-    assert '"grok", "copilot"' in worker
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in runtime
+    assert '"grok", "kimi", "copilot"' in worker
     assert '"grok": ("XAI_COUNCIL_MODEL", "grok-4.20-non-reasoning")' in worker
 
 

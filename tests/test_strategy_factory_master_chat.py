@@ -25,8 +25,8 @@ def _text(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_master_is_sender_only_and_not_seventh_agent() -> None:
-    expected = {"gpt", "claude", "gemini", "deepseek", "grok", "copilot"}
+def test_master_is_sender_only_and_not_eighth_agent() -> None:
+    expected = {"gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"}
     assert set(transport.AGENTS) == expected
     assert set(broker_bridge.AGENTS) == expected
     assert "master" in transport.SENDERS
@@ -81,5 +81,5 @@ def test_docs_make_browser_sessions_explicitly_external() -> None:
     text = _text("AI_AGENT_MESSAGING.md")
     assert "Canonical user-to-agent chat identity" in text
     assert "external/unlinked session" in text
-    assert "/aichat gemini" in text
-    assert "not a seventh AI worker" in text
+    assert "/aichat kimi" in text
+    assert "not an eighth AI worker" in text
