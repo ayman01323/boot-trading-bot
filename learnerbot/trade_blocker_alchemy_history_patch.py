@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import closing
 from pathlib import Path
 
 from . import sibot as _sibot
@@ -14,6 +15,13 @@ from . import sibot_alchemy_context_progress_patch as _context_progress  # noqa:
 # queue layer has composed its final selector. Ranked/progress work therefore
 # always has priority over backlog cleanup.
 from . import sibot_legacy_error_sweep_patch as _legacy_sweep  # noqa: F401
+# Modern EVM leader wallets frequently trade the canonical wrapped-native asset
+# rather than raw ETH/BNB/POL. Reconstruct those proven swaps as history evidence;
+# this changes evidence coverage only, never LIVE execution or quality floors.
+from . import sibot_wrapped_base_history_patch as _wrapped_base_history  # noqa: F401
+# Keep public Top-20 research unchanged while applying the strict leader gates to
+# a broader reconstructed pool before scarce LIVE leader slots are filled.
+from . import sibot_broader_qualified_leader_patch as _broader_leaders  # noqa: F401
 from . import telegram_trade_blocker_health_patch as _health
 
 _PREV_SNAPSHOT = _health._snapshot
@@ -35,6 +43,36 @@ def _providers(app):
     return out
 
 
+def _provider_error_truth(app, chain) -> dict:
+    """Separate stale pre-Alchemy rows from current Alchemy/progress failures."""
+    out = {"legacy": 0, "current": 0, "dominant": ""}
+    try:
+        with closing(_sibot.connect(app)) as conn:
+            row = conn.execute(
+                """SELECT
+                       SUM(CASE WHEN error LIKE '%ETHERSCAN_API_KEY%' THEN 1 ELSE 0 END) legacy,
+                       SUM(CASE WHEN COALESCE(error,'')<>'' AND error NOT LIKE '%ETHERSCAN_API_KEY%' THEN 1 ELSE 0 END) current
+                   FROM wallet_history_status WHERE chain_id=?""",
+                (int(chain.chain_id),),
+            ).fetchone()
+            if row:
+                out["legacy"] = int(row["legacy"] or 0)
+                out["current"] = int(row["current"] or 0)
+            dominant = conn.execute(
+                """SELECT error,COUNT(*) n FROM wallet_history_status
+                   WHERE chain_id=?
+                     AND COALESCE(error,'')<>''
+                     AND error NOT LIKE '%ETHERSCAN_API_KEY%'
+                   GROUP BY error ORDER BY n DESC LIMIT 1""",
+                (int(chain.chain_id),),
+            ).fetchone()
+            if dominant:
+                out["dominant"] = str(dominant["error"] or "")[:180]
+    except Exception as exc:
+        out["dominant"] = f"{type(exc).__name__}: {str(exc)[:130]}"
+    return out
+
+
 def _snapshot(app, tid):
     result = _PREV_SNAPSHOT(app, tid)
     providers = _providers(app)
@@ -44,6 +82,33 @@ def _snapshot(app, tid):
     # Legacy field retained for compatibility only. Runtime provider readiness is
     # evm_history_ready/evm_history_providers and is exclusively Alchemy-based.
     result["etherscan_configured"] = bool(str(getattr(app, "etherscan_api_key", "") or "").strip())
+
+    # The base report used to show the numerically dominant *historical* error,
+    # which made an active Alchemy system look as though it still depended on an
+    # Etherscan secret. Keep those rows visible as migration backlog, but only count
+    # current Alchemy/progress rows as active provider errors.
+    try:
+        for chain in _health.load_chains(app, enabled_only=True):
+            if str(getattr(chain, "type", "EVM") or "EVM").upper() != "EVM":
+                continue
+            slug = str(chain.slug)
+            row = (result.get("evm") or {}).get(slug)
+            if not isinstance(row, dict):
+                continue
+            truth = _provider_error_truth(app, chain)
+            row["legacy_errors"] = truth["legacy"]
+            row["current_provider_errors"] = truth["current"]
+            row["errors"] = truth["current"]
+            if truth["dominant"]:
+                row["dominant"] = truth["dominant"]
+            elif truth["legacy"]:
+                row["dominant"] = (
+                    f"legacy Etherscan history backlog: {truth['legacy']} wallet(s) awaiting Alchemy refresh"
+                )
+            else:
+                row["dominant"] = ""
+    except Exception:
+        pass
     return result
 
 
