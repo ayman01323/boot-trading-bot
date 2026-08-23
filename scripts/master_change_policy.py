@@ -9,6 +9,11 @@ from pathlib import Path
 from learnerbot import ai_cost_grok_patch as _grok_cost  # noqa: F401
 from learnerbot.ai_cost_router import ALL_ADVISERS, master_change_route
 
+# Schema-v1 evidence predates Grok. Keep those already-created requests bound to
+# the original four-adviser contract instead of retroactively requiring a fifth
+# adviser. Schema-v2 cost-routed requests use the current ALL_ADVISERS set.
+LEGACY_ADVISERS = ("claude", "gemini", "deepseek", "copilot")
+
 GOVERNANCE_FILES = frozenset({
     ".github/workflows/ai-cost-router-ci.yml",
     ".github/workflows/gpt-master-change-implement.yml",
@@ -50,7 +55,9 @@ def load_request(path: str | Path) -> dict:
 
 def _required_advisers(evidence: dict) -> tuple[str, ...]:
     schema = int(evidence.get("schema_version") or 1)
-    if schema < 2 or not evidence.get("cost_route"):
+    if schema < 2:
+        return LEGACY_ADVISERS
+    if not evidence.get("cost_route"):
         return tuple(ALL_ADVISERS)
 
     expected = master_change_route(
