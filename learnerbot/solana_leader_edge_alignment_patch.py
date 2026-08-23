@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 from . import solana_positive_edge_entry_gate_patch as _edge
 from . import solana_profit_guard_patch as _guard
 from . import solana_sibot as _sol
@@ -26,11 +28,11 @@ def historical_ok(metrics, cfg):
         return False
 
     historical_floor = max(
-        _sol.Decimal(0) if hasattr(_sol, "Decimal") else _sol._dec("0"),
+        Decimal(0),
         _sol._dec(cfg.get("live_min_leader_median_return_pct"), "5"),
     )
     recent_floor = max(
-        _sol.Decimal(0) if hasattr(_sol, "Decimal") else _sol._dec("0"),
+        Decimal(0),
         _sol._dec(cfg.get("live_min_leader_recent_median_return_pct"), "4"),
     )
     historical = _sol._dec(metrics.get("median_return_pct"), 0)
