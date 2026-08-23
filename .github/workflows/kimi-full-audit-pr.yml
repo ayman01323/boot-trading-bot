@@ -6,7 +6,6 @@ on:
     types: [opened, synchronize, reopened]
     paths:
       - '.github/workflows/kimi-full-audit-pr.yml'
-      - 'scripts/kimi_full_audit_once.py'
 
 permissions:
   contents: read
@@ -16,73 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  audit:
-    runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 45
+  retired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
     steps:
-      - name: Check out exact current main without persisted credentials
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 50
-          persist-credentials: false
-
-      - name: Check out PR audit helper separately
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: .audit-helper
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Copy audit runner from PR helper checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp .audit-helper/scripts/kimi_full_audit_once.py /tmp/kimi_full_audit_once.py
-          test -s /tmp/kimi_full_audit_once.py
-
-      - name: Prepare isolated Kimi transport environment
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .kimi_audit
-          venv="$RUNNER_TEMP/kimi-full-audit-visible"
-          rm -rf "$venv"
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
-          echo "VENV=$venv" >> "$GITHUB_ENV"
-
-      - name: Collect fresh production status through restricted wrapper
-        shell: bash
-        run: sudo /usr/local/sbin/status-boot-trading-bot > .kimi_audit/server_status.txt 2>&1 || true
-
-      - name: Compile current main without importing dependencies
-        shell: bash
-        run: |
-          set +e
-          "$VENV/bin/python" -m compileall -q learnerbot scripts > .kimi_audit/compile.txt 2>&1
-          compile_rc=$?
-          set -e
-          printf 'compile_rc=%s\npytest_rc=NOT_RUN_HERE_PRODUCTION_BOUNDED_AUDIT\n' "$compile_rc" > .kimi_audit/test_status.txt
-          : > .kimi_audit/pytest_tail.txt
-          cat .kimi_audit/test_status.txt
-
-      - name: Kimi audits source and production evidence
-        shell: bash
-        run: |
-          "$VENV/bin/python" /tmp/kimi_full_audit_once.py
-
-      - name: Print audit metadata
-        if: always()
-        shell: bash
-        run: |
-          echo '=== AUDIT METADATA ==='
-          git rev-parse HEAD
-          cat .kimi_audit/test_status.txt 2>/dev/null || true
-          cat .kimi_audit/source_manifest.json 2>/dev/null | head -40 || true
-
-      - name: Cleanup isolated environment
-        if: always()
-        shell: bash
-        run: rm -rf "${VENV:-$RUNNER_TEMP/kimi-full-audit-visible}"
+      - run: echo 'Temporary Kimi audit retired; repair moved to PR 531.'
