@@ -10,10 +10,11 @@ def _text(path=WORKFLOW):
     return Path(path).read_text(encoding='utf-8')
 
 
-def test_legacy_gpt_master_is_only_a_default_branch_compatibility_delegate():
+def test_legacy_gpt_master_is_only_a_manual_default_branch_compatibility_delegate():
     text = _text()
-    assert "cron: '*/10 * * * *'" in text
     assert 'workflow_dispatch:' in text
+    assert 'schedule:' not in text
+    assert 'cron:' not in text
     assert '\n  pull_request:' not in text
     assert 'selected-ai-master.yml' in text
     assert 'lane=strategy' in text
@@ -48,13 +49,14 @@ def test_selected_master_is_never_direct_live_trading_authority():
     assert 'wallet/signing' in runner
 
 
-def test_selected_master_uses_exact_requested_fallback_priority():
+def test_selected_master_uses_exact_requested_seven_agent_fallback_priority():
     text = _text(RUNNER)
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in text
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in text
     assert 'if preferred in _base.PROVIDERS' in text
     assert 'if provider not in out' in text
     assert '"--plan"' in text
     assert 'DEEPSEEK_API_KEY' in text
+    assert 'KIMI_API_KEY' in text
 
 
 def test_selected_master_collects_copilot_report_from_exact_cycle_pr_when_needed():
