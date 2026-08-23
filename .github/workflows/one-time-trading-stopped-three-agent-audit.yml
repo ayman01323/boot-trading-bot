@@ -15,7 +15,7 @@ concurrency:
 jobs:
   audit:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - name: Check out test branch without persisted credentials
         uses: actions/checkout@v4
@@ -29,147 +29,113 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/trading-stop-audit"
           OUT="$RUNNER_TEMP/trading-stop-audit"
-
           {
             echo "=== SOURCE ==="
             echo "checkout_sha=$(git rev-parse HEAD)"
             echo "base_main_sha=${{ github.event.pull_request.base.sha }}"
             echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo
-            echo "=== SERVICE ==="
+            echo "=== SERVICE / RESTRICTED STATUS ==="
             systemctl is-active learnerbot || true
             systemctl show learnerbot -p ActiveState -p SubState -p MainPID -p ExecMainStartTimestamp --no-pager || true
-            echo
-            echo "=== RESTRICTED STATUS WRAPPER ==="
             sudo /usr/local/sbin/status-boot-trading-bot || true
           } > "$OUT/live_status.txt" 2>&1
-
           {
             echo "=== STRATEGY FACTORY RUNTIME ==="
             cat /var/tmp/boot/ai_agent_ws_status.json 2>/dev/null || true
             echo
-            echo "=== READABLE /var/tmp/boot FILES ==="
+            echo "=== READABLE RUNTIME DIAGNOSTICS ==="
             find /var/tmp/boot -maxdepth 1 -type f -printf '%f %s bytes %TY-%Tm-%TdT%TH:%TM:%TS\n' 2>/dev/null | sort || true
-            echo
             for f in /var/tmp/boot/*trade* /var/tmp/boot/*health* /var/tmp/boot/*status*; do
               [[ -f "$f" && -r "$f" ]] || continue
               echo "--- $f ---"
-              head -c 12000 "$f" 2>/dev/null || true
+              head -c 10000 "$f" 2>/dev/null || true
               echo
             done
           } > "$OUT/runtime_files.txt" 2>&1
-
           {
-            echo "=== RECENT LEARNERBOT JOURNAL: TRADING/ERROR SIGNALS ==="
+            echo "=== RECENT TRADING/ERROR LOG SIGNALS ==="
             journalctl -u learnerbot --since '12 hours ago' --no-pager -n 1800 2>/dev/null \
               | grep -Eai 'trade|trading|auto|live|solana|evm|quote|swap|simulation|eligible|reject|skip|block|gate|error|exception|failed|timeout|liquidity|balance|jupiter|alchemy|etherscan|rpc|leader|circuit|quarantine' \
               | tail -n 700 || true
           } > "$OUT/journal_signals.txt" 2>&1
-
           {
             echo "=== RECENT TRADING-RELATED COMMITS ==="
-            git log --date=iso --pretty=format:'%h %ad %s' -80 -- \
-              learnerbot/auto_trader.py learnerbot/live_executor.py learnerbot/solana* learnerbot/*trade* learnerbot/*execution* learnerbot/*market* scripts/sibot_leader_gate_report.py || true
+            git log --date=iso --pretty=format:'%h %ad %s' -70 -- learnerbot/auto_trader.py learnerbot/live_executor.py learnerbot/solana* learnerbot/*trade* learnerbot/*execution* learnerbot/*market* scripts/sibot_leader_gate_report.py || true
             echo
             echo "=== CURRENT GATE / BLOCKER CODE SIGNALS ==="
-            grep -RInE --exclude-dir='.git' \
-              'auto_trading_enabled|trading_enabled|platform_auto|platform_live|eligible|simulation|REJECT|SKIP|quote|liquidity|loss_quarantine|circuit|leader|Jupiter|Alchemy|Etherscan|RPC' \
-              learnerbot scripts 2>/dev/null | head -n 650 || true
+            grep -RInE --exclude-dir='.git' 'auto_trading_enabled|trading_enabled|platform_auto|platform_live|eligible|simulation|REJECT|SKIP|quote|liquidity|loss_quarantine|circuit|leader|Jupiter|Alchemy|Etherscan|RPC' learnerbot scripts 2>/dev/null | head -n 500 || true
             echo
-            echo "=== COMPILE CHECK ==="
             python3 -m compileall -q learnerbot scripts && echo COMPILE_PASS || echo COMPILE_FAIL
           } > "$OUT/repo_signals.txt" 2>&1
-
           python3 - "$OUT" <<'PY'
           from pathlib import Path
           import sys
           root=Path(sys.argv[1])
-          parts=[]
-          limits={
-            'live_status.txt':9000,
-            'runtime_files.txt':6000,
-            'journal_signals.txt':7000,
-            'repo_signals.txt':7000,
-          }
-          for name,limit in limits.items():
+          chunks=[]
+          for name,limit in [('live_status.txt',5000),('runtime_files.txt',2500),('journal_signals.txt',3500),('repo_signals.txt',2500)]:
               p=root/name
-              text=p.read_text(encoding='utf-8',errors='replace') if p.exists() else ''
-              parts.append(f'\n===== {name} =====\n'+text[-limit:])
-          context=''.join(parts)
-          # Keep the Strategy Factory message safely below its 32 KiB frame limit.
-          context=context[-26000:]
+              t=p.read_text(encoding='utf-8',errors='replace') if p.exists() else ''
+              chunks.append(f'\n===== {name} =====\n'+t[-limit:])
+          context=''.join(chunks)[-11000:]
           (root/'context.txt').write_text(context,encoding='utf-8')
           print('audit_context_chars='+str(len(context)))
+          print(context)
           PY
 
-      - name: Ask Gemini, DeepSeek and Copilot independently
+      - name: Probe and ask Gemini, DeepSeek and Copilot independently
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           OUT="$RUNNER_TEMP/trading-stop-audit"
           context="$(cat "$OUT/context.txt")"
           agents=(gemini deepseek copilot)
+          failures=0
           for agent in "${agents[@]}"; do
-            subject="Trading stopped audit - ${agent} - ${GITHUB_RUN_ID}"
-            prompt="$(cat <<EOF
-          You are an INDEPENDENT engineering auditor of the live multi-chain trading bot. The user reports that trading has stopped although it worked before.
-
-          Perform a deep diagnostic audit from the evidence below. Focus on finding the actual stop point in the funnel and software/operational regressions, not on loosening legitimate safety/profit/liquidity controls. Do not recommend named-asset trades. REPORT ONLY: do not edit files, deploy, restart, trade, alter wallets/signing, capital, LIVE settings, risk limits, or secrets.
-
-          Required answer sections:
-          1. VERDICT — the most likely reason trading stopped.
-          2. PROVEN BLOCKERS — only facts directly supported by the evidence.
-          3. BUGS / REGRESSIONS — concrete code or operational defects, ranked P0-P3.
-          4. WHY IT WORKED BEFORE — identify the likely regression/change boundary where evidence permits.
-          5. FIX PLAN — exact bounded fixes, preserving safety gates.
-          6. VERIFICATION — tests/diagnostics that prove trading eligibility and execution plumbing are restored without forcing a trade.
-          7. UNKNOWNS — evidence still needed before claiming certainty.
-
-          Label each root-cause claim PROVEN, HIGH-CONFIDENCE, MEDIUM-CONFIDENCE, or HYPOTHESIS. Cite filenames/log/status evidence from the supplied pack whenever possible. If the evidence does not prove a single root cause, say that explicitly instead of inventing one.
-
-          EVIDENCE PACK:
-          ${context}
-          EOF
-          )"
-            echo "===== ASK ${agent} ====="
+            echo "===== HEALTH ${agent} ====="
             set +e
-            output="$(python3 scripts/ai_agent_ws_send.py \
-              --from gpt \
-              --to "$agent" \
-              --subject "$subject" \
-              --message "$prompt" \
-              --timeout 240 2>&1)"
+            health="$(python3 scripts/ai_agent_ws_send.py --from gpt --to "$agent" --message "Trading-stop audit health probe. Reply exactly HEALTH_OK." --timeout 35 2>&1)"
+            hrc=$?
+            set -e
+            printf '%s\n' "$health"
+            if [[ $hrc -ne 0 ]]; then
+              echo "${agent^^}_AUDIT=UNAVAILABLE health_rc=$hrc" | tee "$OUT/${agent}_reply.txt"
+              failures=$((failures+1))
+              continue
+            fi
+            prompt="You are an independent engineering auditor. The live multi-chain trading bot traded before and has now stopped. REPORT ONLY. From the evidence below, return: VERDICT; PROVEN BLOCKERS; BUGS/REGRESSIONS ranked P0-P3; WHY IT WORKED BEFORE; FIX PLAN preserving all safety/profit/liquidity gates; VERIFICATION without forcing a trade; UNKNOWNS. Label claims PROVEN/HIGH-CONFIDENCE/MEDIUM-CONFIDENCE/HYPOTHESIS and cite evidence. Do not edit, deploy, restart, trade, access wallets/secrets or alter LIVE/risk/capital settings.\n\nEVIDENCE:\n${context}"
+            echo "===== AUDIT ${agent} ====="
+            set +e
+            output="$(python3 scripts/ai_agent_ws_send.py --from gpt --to "$agent" --subject "Trading stopped audit - ${agent} - ${GITHUB_RUN_ID}" --message "$prompt" --timeout 150 2>&1)"
             rc=$?
             set -e
-            printf '%s\n' "$output" | tee "$OUT/${agent}_raw.txt"
+            printf '%s\n' "$output"
             final="$(printf '%s\n' "$output" | tail -n 1)"
             AGENT="$agent" FINAL="$final" python3 - "$OUT" <<'PY'
-          import json, os, pathlib, sys
+          import json,os,pathlib,sys
           out=pathlib.Path(sys.argv[1]); agent=os.environ['AGENT']
-          try:
-              value=json.loads(os.environ['FINAL'])
+          try: v=json.loads(os.environ['FINAL'])
           except Exception as exc:
-              (out/f'{agent}_reply.txt').write_text(f'PARSE_FAILED: {exc}\n',encoding='utf-8')
-              raise SystemExit(2)
-          if value.get('status') != 'REPLIED' or not value.get('acknowledged'):
-              (out/f'{agent}_reply.txt').write_text(json.dumps(value,indent=2),encoding='utf-8')
-              raise SystemExit(3)
-          body=str(value.get('body') or '').strip()
-          if not body:
-              raise SystemExit(4)
+              (out/f'{agent}_reply.txt').write_text(f'PARSE_FAILED: {exc}\n',encoding='utf-8'); raise SystemExit(2)
+          body=str(v.get('body') or '').strip()
+          if v.get('status')!='REPLIED' or not v.get('acknowledged') or not body:
+              (out/f'{agent}_reply.txt').write_text(json.dumps(v,indent=2)+'\n',encoding='utf-8'); raise SystemExit(3)
           (out/f'{agent}_reply.txt').write_text(body+'\n',encoding='utf-8')
           print(f'{agent.upper()}_AUDIT=PASS chars={len(body)}')
           PY
-            test "$rc" -eq 0
+            prc=$?
+            if [[ $rc -ne 0 || $prc -ne 0 ]]; then failures=$((failures+1)); fi
           done
+          echo "AGENT_AUDIT_FAILURES=$failures"
+          exit 0
 
       - name: Print consolidated replies
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
           OUT="$RUNNER_TEMP/trading-stop-audit"
           for agent in gemini deepseek copilot; do
             echo
             echo "================ ${agent^^} AUDIT ================"
-            cat "$OUT/${agent}_reply.txt"
+            cat "$OUT/${agent}_reply.txt" 2>/dev/null || echo "NO_REPLY_FILE"
           done
