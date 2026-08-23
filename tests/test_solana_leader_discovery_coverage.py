@@ -1,3 +1,4 @@
+# Full-CI probe for the non-deploying agent branch.
 from types import SimpleNamespace
 import time
 
