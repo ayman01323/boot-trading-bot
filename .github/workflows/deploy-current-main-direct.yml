@@ -58,8 +58,12 @@ jobs:
           PY
           chmod 600 "$tmp"
           mv -f "$tmp" "$target"
-          mkdir -p "$(dirname "$compat")"
-          install -m 600 "$target" "$compat"
+          test -r "$target"
+          if mkdir -p "$(dirname "$compat")" 2>/dev/null && install -m 600 "$target" "$compat" 2>/dev/null; then
+            echo 'strategy_factory_compat_runtime=refreshed'
+          else
+            echo 'strategy_factory_compat_runtime=existing-copy-not-writable; primary bridge remains active'
+          fi
           TARGET="$target" python3 - <<'PY'
           import os, pathlib, stat
           p = pathlib.Path(os.environ['TARGET'])
