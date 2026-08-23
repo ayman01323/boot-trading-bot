@@ -35,7 +35,7 @@ def _xai_text(body: Any) -> str:
 
 def call_grok(prompt: str, env: dict[str, str] | None = None) -> tuple[int, str, str]:
     """Call xAI through its OpenAI-compatible REST API in advisory text-only mode."""
-    env = dict(env or _http._runtime_env())
+    env = dict(_http._runtime_env() if env is None else env)
     key = str(env.get("XAI_API_KEY") or "").strip()
     if not key:
         return 90, "", "XAI_API_KEY missing from SiBot runtime"
