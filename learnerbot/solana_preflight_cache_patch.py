@@ -65,3 +65,10 @@ def install():
 
 
 install()
+
+# Install the HOOD-derived LIVE-only pool/mint gate only after the shared quote
+# cache is in place. The later first-day strategy composition captures the
+# already-protected live process, while SHADOW continues to use the normal cached
+# validator and is not disabled by RugCheck/DexScreener outages.
+from . import solana_pool_risk_gate as _pool_risk  # noqa: E402,F401
+_pool_risk.install()
