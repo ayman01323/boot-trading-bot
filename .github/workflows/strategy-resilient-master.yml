@@ -1,8 +1,8 @@
-name: Resilient Strategy Master
+name: Resilient Strategy Master (Compatibility)
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
+  # Legacy compatibility entrypoint only. Automatic reconciliation is now
+  # event-driven by Selected Resilient AI Master.
   workflow_dispatch:
 
 permissions:
@@ -18,10 +18,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Delegate to Telegram-selected resilient MASTER
+      - name: Delegate manual compatibility request to selected MASTER
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh workflow run selected-ai-master.yml --ref main -f lane=strategy
-          echo 'Legacy GPT-only strategy master is disabled; selected/fallback MASTER is authoritative.'
+          echo 'Legacy scheduled polling is disabled; selected/fallback MASTER is event-driven.'
