@@ -9,6 +9,9 @@ on:
       - 'learnerbot/solana_incident_forensics_patch.py'
       - 'tests/test_solana_incident_forensics.py'
       - 'learnerbot/__main__.py'
+      - 'learnerbot/sibot_legacy_backlog_drainer_patch.py'
+      - 'learnerbot/final_runtime_integrity_patch.py'
+      - 'tests/test_sibot_legacy_backlog_drainer_patch.py'
       - '.github/workflows/sibot-history-depth-ci.yml'
   workflow_dispatch:
 
@@ -18,7 +21,7 @@ permissions:
 jobs:
   focused-tests:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 8
+    timeout-minutes: 15
     env:
       VENV: /tmp/sibot-history-depth-ci-${{ github.run_id }}
     steps:
@@ -31,17 +34,33 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf "$VENV"
+          python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), sys.version'
           python3 -m venv "$VENV"
-          "$VENV/bin/python" -m pip install --disable-pip-version-check -q pytest requests
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
           "$VENV/bin/python" -m py_compile \
             scripts/sibot_leader_gate_report.py \
             learnerbot/solana_incident_forensics_patch.py \
+            learnerbot/sibot_legacy_backlog_drainer_patch.py \
+            learnerbot/final_runtime_integrity_patch.py \
             tests/test_sibot_leader_gate_readonly_wrapper.py \
-            tests/test_solana_incident_forensics.py
+            tests/test_solana_incident_forensics.py \
+            tests/test_sibot_legacy_backlog_drainer_patch.py
           bash -n scripts/install_sibot_leader_gate_wrapper.sh
-          "$VENV/bin/python" -m pytest -q \
+          "$VENV/bin/python" -m pytest -x -vv \
             tests/test_sibot_leader_gate_readonly_wrapper.py \
-            tests/test_solana_incident_forensics.py
+            tests/test_solana_incident_forensics.py \
+            tests/test_sibot_legacy_backlog_drainer_patch.py \
+            tests/test_sibot_legacy_error_sweep_patch.py \
+            tests/test_legacy_sweep_repopulates_broader_leader_pool.py \
+            tests/test_sibot_alchemy_retry_queue.py \
+            tests/test_sibot_alchemy_trace_progress.py \
+            tests/test_sibot_alchemy_context_progress.py \
+            tests/test_sibot_history_worker_isolation.py \
+            tests/test_sibot_evm_worker_reliability.py \
+            tests/test_imports.py \
+            tests/test_main_import_order.py \
+            tests/test_solana_runtime_composition.py
       - name: Verify diagnostic fields are read-only evidence only
         shell: bash
         run: |
@@ -56,6 +75,7 @@ jobs:
           grep -q 'git_sha' learnerbot/solana_incident_forensics_patch.py
           grep -q 'interpretation_guard' learnerbot/solana_incident_forensics_patch.py
           ! grep -Eq 'set_user_setting|live_enabled\s*=|stop_loss_pct.*=|take_profit_pct.*=' learnerbot/solana_incident_forensics_patch.py
+          ! grep -Eq 'live_trading_enabled|auto_trading_enabled|stop_loss_pct|take_profit_pct|allocation_pct|max_exposure_pct' learnerbot/sibot_legacy_backlog_drainer_patch.py
       - name: Cleanup
         if: always()
         shell: bash
