@@ -45,6 +45,7 @@ from . import solana_profit_guard_patch as _sol_guard
 from . import solana_quote_execution_consistency_patch as _quote
 from . import solana_simulated_reserve_guard_patch as _reserve
 from . import solana_sibot as _sol
+from . import telegram_ai_council_friendly_patch as _friendly
 from . import telegram_ui as _telegram_ui
 from . import transaction_audit_worker_patch as _audit_worker
 from . import trade_strategy_provenance_patch as _provenance
@@ -80,9 +81,9 @@ def composition_checks() -> dict[str, bool]:
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
         "evm_history_trace_to_retry": _trace._PREV_NEXT_HISTORY_WALLET is _retry._next_history_wallet,
-        # Background recovery is additive scheduling only. The old final Telegram
-        # startup chain (including the transaction audit worker) must remain its
-        # immediate inner function, and the dynamic SiBot worker path is also wrapped.
+        # Background recovery is additive scheduling only. It must be the final
+        # outer startup wrapper, while the AI Council recovery and transaction-audit
+        # startup chain underneath it remains exactly intact.
         "evm_history_background_worker_start": (
             _sibot.start_workers is _legacy_drainer.start_workers_with_legacy_backlog_drainer
         ),
@@ -91,7 +92,10 @@ def composition_checks() -> dict[str, bool]:
             is _legacy_drainer.start_menu_thread_with_legacy_backlog_drainer
         ),
         "evm_history_background_menu_inner": (
-            _legacy_drainer._PREV_START_MENU_THREAD
+            _legacy_drainer._PREV_START_MENU_THREAD is _friendly.start_menu_thread
+        ),
+        "evm_history_background_menu_audit_inner": (
+            _friendly._PREV_START_MENU_THREAD
             is _audit_worker.start_menu_thread_with_transaction_audit
         ),
         # WebSocket wake-up serialization is the intended outer wrapper. The
