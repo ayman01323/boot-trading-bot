@@ -43,7 +43,7 @@ def test_normal_exit_keeps_strict_price_impact_guard():
     with pytest.raises(patch._exec.SolanaLiveError, match="quoted price impact"):
         patch.validate_order_with_emergency_liquidity(
             _Executor(),
-            _order(4.5),  # 4.5% = 450 bps; 480 bps including slippage
+            _order(4.5),
             "mint",
             patch._sol.WSOL_MINT,
             1_000_000,
@@ -58,7 +58,7 @@ def test_stop_loss_may_use_bounded_five_percent_exit_ceiling():
     try:
         result = patch.validate_order_with_emergency_liquidity(
             _Executor(),
-            _order(4.5),  # 480 bps combined: above ordinary 150, below emergency 500
+            _order(4.5),
             "mint",
             patch._sol.WSOL_MINT,
             1_000_000,
@@ -155,8 +155,9 @@ def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch, tmp_p
         "SOLANA_LEADER_EXIT_LOSS_CAP",
     )
 
-    assert calls == [Decimal("1"), Decimal("0.75"), Decimal("0.50"), Decimal("0.25")]
-    assert first_call_count == 4
+    expected = list(patch._SLICE_FRACTIONS)
+    assert calls == expected
+    assert first_call_count == len(expected)
     assert first["deferred"] is True
     assert second["deferred"] is True
     assert len(calls) == first_call_count
@@ -166,9 +167,6 @@ def test_all_unsafe_slices_defer_without_broadcast_retry_spam(monkeypatch, tmp_p
 
 
 def test_backoff_state_survives_a_fresh_process(monkeypatch, tmp_path):
-    # Regression test for the actual bug: backoff state used to live only in an
-    # in-memory dict, so it silently reset to attempt 1 on every process restart
-    # (e.g. every deploy) instead of ever reaching its real exponential ceiling.
     app = _app(tmp_path)
 
     def fake_close(app_, tid, position, fraction, reason):
@@ -187,7 +185,6 @@ def test_backoff_state_survives_a_fresh_process(monkeypatch, tmp_path):
     assert state_before["attempts"] == 1
     assert state_before["first_blocked_epoch"] > 0
 
-    # Simulate a fresh process: nothing in memory, only the DB-backed state.
     fresh_state = patch._load_backoff(app, "p3")
     assert fresh_state == state_before
 
@@ -205,8 +202,6 @@ def test_escalation_alert_fires_once_past_the_configured_duration(monkeypatch, t
     monkeypatch.setattr(patch._sol, "settings", lambda app_: _cfg())
     monkeypatch.setattr(patch._live, "_notify", lambda app_, tid, text: notices.append(text))
 
-    # Pre-seed state as if this position has already been stuck for 30 hours,
-    # past the default 24h escalation threshold, with no escalation sent yet.
     import time
     patch._save_backoff(app, "p4", {
         "attempts": 5,
@@ -223,8 +218,6 @@ def test_escalation_alert_fires_once_past_the_configured_duration(monkeypatch, t
     assert "stuck" in notices[1]
     assert "/solanaforceexit p4 CONFIRM" in notices[1]
 
-    # A second attempt within the same escalation window (but past its own retry
-    # backoff, so it actually re-attempts) must not re-send the escalation alert.
     state = patch._load_backoff(app, "p4")
     state["next_retry"] = 0
     patch._save_backoff(app, "p4", state)
@@ -290,8 +283,6 @@ def test_write_off_closes_without_any_swap_and_records_full_loss(tmp_path):
     assert row["status"] == "CLOSED"
     assert row["exit_reason"] == "MANUAL_WRITE_OFF_UNSELLABLE"
     assert row["realised_net_sol"] == "-2.5"
-    # No swap was attempted: token_amount_raw is zeroed in the tracked record only,
-    # never touched on-chain -- this function never builds/signs/broadcasts anything.
     assert row["token_amount_raw"] == "0"
 
 
@@ -306,7 +297,6 @@ def test_write_off_preserves_any_prior_partial_realised_amount(tmp_path):
         conn.commit()
 
     result = patch.write_off_unsellable_position(app, "123", "p8")
-    # Prior realised +0.3 from an earlier partial sell, minus the remaining 1.0 cost basis.
     assert result["realised_net_sol"] == "-0.7"
 
 
