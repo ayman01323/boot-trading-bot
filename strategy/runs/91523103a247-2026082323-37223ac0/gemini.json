@@ -1,0 +1,137 @@
+{
+  "cycle_id": "91523103a247-2026082323-37223ac0",
+  "evidence_gaps": [
+    "Stale or completely missing runtime forensics (evidence.json reports MISSING_RUNTIME_FORENSICS).",
+    "Missing real-time, executable Solana quote and trade simulation outcome data (which are currently hardcoded to zero/fail-closed in market_feature_adapter.py).",
+    "Failure to fully allocate execution failure costs (reverted EVM transaction gas, priority fees for failed Solana landing attempts) to the money-weighted Net P&L metrics in the Canary and Strategy Lab databases.",
+    "No per-chain/per-route stratified results, which could hide a highly unprofitable segment under an aggregated positive average.",
+    "Incomplete out-of-sample forward testing datasets for newly proposed AI strategies."
+  ],
+  "evidence_sha256": "37223ac0990d7013c8815906e6275835b4d03bf593bf10edaad3a627930a716a",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "More conservative rankings and potentially slower progression of strategies from SHADOW to PROMOTION_CANDIDATE when trading fees and slippage are high.",
+      "evidence": [
+        {
+          "detail": "The existing profit factor is computed as gross_profit / gross_loss (excluding fees and slippage), meaning a strategy can rack up high costs and be net unprofitable but still pass the MIN_PROFIT_FACTOR floor.",
+          "path": "learnerbot/strategy_lab.py:strategy_metrics"
+        }
+      ],
+      "expected_effect": "Ensures that high-cost or low-edge strategies are correctly identified as unprofitable and filtered out, preventing false positive promotions.",
+      "id": "net-pf-cost-allocation-v2",
+      "minimum_observation": "At least 3 evaluation windows and 30 closed trades per strategy-chain pair, with at least 5 outcomes exhibiting high fees/slippage.",
+      "rationale": "Profit factor must be money-weighted and account for all costs including fees and slippage in the denominator (i.e. gross_profit / (gross_loss + fees + slippage)) to represent true economic feasibility.",
+      "shadow_test": "Recalculate profit factor for all historical windows including fees and slippage in the denominator. Verify that the new Net Profit Factor is strictly less than 1.10 for any strategy that has high transactional friction, and confirm that only truly net-profitable strategies with net PF >= 1.10 are promoted.",
+      "strategy": "Strategy Lab evaluation accounting",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_lab.py"
+      ]
+    },
+    {
+      "action": "NEW_SHADOW",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.93,
+      "downside_risk": "Requires maintaining a real-time Solana price/quote streaming adapter which might suffer from API rate limits or RPC delays.",
+      "evidence": [
+        {
+          "detail": "Solana market features explicitly set liquidity_score, sellability_score, gross_edge_bps, fees_bps, and slippage_bps to zero, making them fail eligibility checks and unable to be evaluated.",
+          "path": "learnerbot/market_feature_adapter.py:load_solana_market_features"
+        }
+      ],
+      "expected_effect": "Creates a realistic shadow data pipeline for Solana strategies to assess expected and counterfactual exit net P&L before requesting canary promotion.",
+      "id": "solana-executable-shadow-v2",
+      "minimum_observation": "At least 100 quoted signals across 10 distinct UTC days and 30 closed outcomes with verified liquidity.",
+      "rationale": "Solana copy trading cannot be evaluated in shadow or promoted without contemporaneous executable Jupiter quote simulation data (both entry buy quote and exit sell quote) to prove net edge after fees, priority fees, and slippage.",
+      "shadow_test": "For each Solana leader BUY signal, query Jupiter API for a real-time executable quote for the same notional. Record the quote and estimated fee. At a pre-defined holding time or exit signal, query a simulated SELL quote. Fail the shadow test if the quote failure rate exceeds 15% or if timestamps cannot be precisely matched.",
+      "strategy": "Solana executable-edge outcome adapter",
+      "suggested_files": [
+        "learnerbot/market_feature_adapter.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_market_feature_shadow_executor.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.94,
+      "downside_risk": "Sparsity of data on less active chains may result in persistent INSUFFICIENT DATA classifications, keeping strategies in SHADOW longer.",
+      "evidence": [
+        {
+          "detail": "Evaluation is aggregated by strategy across all chains/modes without chain-specific stratification, and execution failures are counted but do not block PROMOTION_CANDIDATE status.",
+          "path": "learnerbot/strategy_lab.py:strategy_metrics"
+        }
+      ],
+      "expected_effect": "Ensures strategies are promoted only on chains where they are verified to be both profitable and technically stable, isolating execution failures to the respective infrastructure layers.",
+      "id": "chain-failure-stratification-v2",
+      "minimum_observation": "At least 3 windows and 30 outcomes per individual chain slug, plus at least 15 executed attempts.",
+      "rationale": "Solana and EVM chains have radically different finality, fee structures, and failure modes. Aggregating them hides chain-specific losses and risks, and failing to block promotion on high execution failures poses severe capital risk.",
+      "shadow_test": "Stratify the metrics generator by chain_slug. Prohibit PROMOTION_CANDIDATE status if any specific chain slug has a net P&L <= 0, net PF < 1.10, or an execution failure rate exceeding 2% of total attempts.",
+      "strategy": "Chain-specific lifecycle evaluation and failure attribution",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_strategy_lab.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.92,
+      "downside_risk": "Requires the execution pipeline to reliably report and record the actual transaction fees paid for failed/reverted attempts.",
+      "evidence": [
+        {
+          "detail": "When execution_failure is True, failures are incremented, but no actual cost (like lost gas or priority fees) is deducted from net_profit, GP, or GL, leading to an artificially inflated net profit.",
+          "path": "learnerbot/strategy_canary.py:record_canary_result"
+        }
+      ],
+      "expected_effect": "Fully accounts for the economic drag of technical execution failures on net returns, preventing the promotion of strategies that are 'profitable on paper' but lose money due to high failure rates.",
+      "id": "canary-execution-failure-costing-v1",
+      "minimum_observation": "At least 10 executed canary attempts with at least 2 execution failures to evaluate cost impact.",
+      "rationale": "Failed transactions on EVM (reverts) and Solana (failed landing/expired blocks) still incur transaction fees (gas, priority fees). Ignoring these real-money losses in the net P&L overstates profitability and can lead to premature promotion of high-failure strategies.",
+      "shadow_test": "For every marked execution failure, apply a flat fee penalty (or actual paid gas/priority fee) to the strategy's GL and net_profit. Compare the adjusted net P&L with the unadjusted one. Fail the strategy if the adjusted net P&L is <= 0 or if the adjusted net PF is < 1.10.",
+      "strategy": "Canary and Strategy Lab execution failure costing",
+      "suggested_files": [
+        "learnerbot/strategy_canary.py",
+        "learnerbot/strategy_lab.py",
+        "tests/test_strategy_canary.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote Solana strategies to CANARY or LIVE based on historic leader wallet performance.",
+      "reason": "Historic leader performance does not translate to follower-executable net edge. Without live Jupiter quote simulation and execution tracking, copy trading cannot guarantee a positive money-weighted net P&L after costs."
+    },
+    {
+      "idea": "Bypass the 2.5 second quote age limit or ease slippage/liquidity thresholds to force more trades.",
+      "reason": "Our primary objective is durable, money-weighted net returns, not raw trade frequency. Trading with stale quotes or in low-liquidity pools increases adverse selection and slippage, turning active scanning into a loss-generating activity."
+    },
+    {
+      "idea": "Evaluate EVM and Solana strategies under a unified profit factor metric without chain-specific stratification.",
+      "reason": "Solana priority fees/congestion and EVM gas/builder fees are highly distinct. Aggregating them under a single average hides chain-specific losses and underrepresents execution failure costs."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "91523103a2477b0e407f66bfd55a668539d64546",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. Stale or missing runtime forensics were detected, which strictly prohibits claiming any strategy is profitable, canary-ready, or live-ready. We find that the repository's Strategy Lab and Canary execution structures are highly robust, utilizing multi-stage gating and strict fail-closed criteria. However, several critical architectural enhancements are proposed: (1) fully allocating all fees, slippage, and execution failure costs to the profit factor denominator to prevent false-positive promotions, (2) implementing a contemporaneous Solana quote-streaming adapter to replace current fail-closed zero values with true executable shadow outcomes, (3) separating lifecycle evaluation by specific blockchain networks to prevent cross-chain subsidy, and (4) properly factoring the economic costs of reverted or failed landing transactions into Canary and Strategy Lab money-weighted Net P&L. These changes will elevate the precision of the bot's risk-reward profile and protect capital from execution drag."
+}
