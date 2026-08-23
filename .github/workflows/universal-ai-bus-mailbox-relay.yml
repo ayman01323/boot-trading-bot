@@ -13,7 +13,7 @@ on:
         required: false
         default: all
         type: choice
-        options: [all, gpt, claude, gemini, deepseek, copilot]
+        options: [all, gpt, claude, gemini, deepseek, grok, copilot]
   push:
     branches: [main]
     paths:
@@ -47,7 +47,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        sender: [gpt, claude, gemini, deepseek, copilot]
+        sender: [gpt, claude, gemini, deepseek, grok, copilot]
     env:
       BUS_VENV: /tmp/universal-ai-bus-${{ matrix.sender }}-${{ github.run_id }}
       PYTHONPATH: ${{ github.workspace }}
@@ -157,6 +157,9 @@ jobs:
           GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.7-flash' }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          XAI_COUNCIL_MODEL: ${{ vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           AI_COUNCIL_RUNTIME_ENV: /tmp/universal-ai-bus-no-runtime.env
         shell: bash
