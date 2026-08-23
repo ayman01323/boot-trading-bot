@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import re
+
 from learnerbot import ai_council_http_patch as _http
+from learnerbot import grok_provider as _grok
 
 
 def _call_claude_without_deprecated_temperature(prompt: str) -> tuple[int, str, str]:
@@ -37,11 +40,16 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
     provider = str(provider or "").strip().lower()
     if provider == "claude":
         return _call_claude_without_deprecated_temperature(prompt)
-    return _http.call_provider(provider, prompt)
+    return _grok.call_provider(provider, prompt)
 
 
 def install() -> None:
-    """Install compatibility only inside the current AI-bus process."""
+    """Install provider compatibility only inside the current AI-bus process."""
     from scripts import ai_agent_bus
 
+    ai_agent_bus.AGENTS = tuple(dict.fromkeys((*ai_agent_bus.AGENTS, "grok")))
+    ai_agent_bus._AGENT_SET = set(ai_agent_bus.AGENTS)
+    ai_agent_bus._SECRET_ENV_KEYS = tuple(dict.fromkeys((*ai_agent_bus._SECRET_ENV_KEYS, "XAI_API_KEY")))
+    if not any(getattr(pattern, "pattern", "").startswith("xai-") for pattern in ai_agent_bus._SECRET_PATTERNS):
+        ai_agent_bus._SECRET_PATTERNS = (*ai_agent_bus._SECRET_PATTERNS, re.compile(r"xai-[A-Za-z0-9_-]{12,}"))
     ai_agent_bus.call_provider = call_provider
