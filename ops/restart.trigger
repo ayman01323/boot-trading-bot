@@ -1,1 +1,1 @@
-2026-08-23T22:52:00Z deploy current main with corrected observability tests and failure-safe learnerbot restoration; preserve Solana 5% automatic exit ceiling
+2026-08-23T23:00:00Z deploy current main to apply owner-authorised zero-recovery accounting write-off for Solana mint 8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV; no SELL/burn/transfer; preserve 5% automatic exit ceiling
