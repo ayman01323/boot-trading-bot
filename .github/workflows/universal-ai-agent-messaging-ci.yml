@@ -9,6 +9,7 @@ on:
       - 'GEMINI.md'
       - 'DEEPSEEK.md'
       - 'learnerbot/telegram_master_change_patch.py'
+      - 'learnerbot/strategy_factory_council_transport_patch.py'
       - 'scripts/universal_agent_git_mailbox_bridge.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
@@ -26,6 +27,7 @@ on:
       - 'tests/test_ai_agent_task_executor.py'
       - 'tests/test_ai_agent_ws_memory.py'
       - 'tests/test_strategy_factory_master_chat.py'
+      - 'tests/test_strategy_factory_transport.py'
       - '.github/workflows/universal-ai-bus-mailbox-signal.yml'
       - '.github/workflows/universal-ai-bus-mailbox-relay.yml'
       - '.github/workflows/universal-ai-agent-messaging-ci.yml'
@@ -50,7 +52,7 @@ jobs:
           venv="$RUNNER_TEMP/universal-ai-agent-messaging-ci"
           rm -rf "$venv"
           python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv 'websockets>=15,<16'
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv requests 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
       - name: Compile messaging bridge, persistent memory and WebSocket v2 task layer
         shell: bash
@@ -68,11 +70,13 @@ jobs:
             scripts/ai_agent_task_executor.py \
             scripts/strategy_factory_transport.py \
             scripts/strategy_factory_chat.py \
+            learnerbot/strategy_factory_council_transport_patch.py \
             learnerbot/telegram_master_change_patch.py \
             tests/test_universal_agent_git_mailbox_bridge.py \
             tests/test_ai_agent_task_executor.py \
             tests/test_ai_agent_ws_memory.py \
-            tests/test_strategy_factory_master_chat.py
+            tests/test_strategy_factory_master_chat.py \
+            tests/test_strategy_factory_transport.py
       - name: Run focused universal messaging tests
         shell: bash
         run: |
@@ -82,7 +86,8 @@ jobs:
             tests/test_ai_agent_bus.py \
             tests/test_ai_agent_task_executor.py \
             tests/test_ai_agent_ws_memory.py \
-            tests/test_strategy_factory_master_chat.py
+            tests/test_strategy_factory_master_chat.py \
+            tests/test_strategy_factory_transport.py
       - name: Remove isolated environment
         if: always()
         shell: bash
