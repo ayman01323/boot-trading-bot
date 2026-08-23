@@ -17,30 +17,34 @@ permissions:
 
 jobs:
   mcp-bridge-tests:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          persist-credentials: false
+          fetch-depth: 1
 
       - name: Run dependency-light bridge safety tests
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check -q 'pytest>=8,<9' 'websockets>=15,<16'
-          python -m py_compile scripts/strategy_factory_mcp_core.py scripts/strategy_factory_mcp_bridge.py
-          pytest -q tests/test_strategy_factory_mcp_bridge.py
+          unit="$RUNNER_TEMP/mcp-bridge-unit-venv"
+          rm -rf "$unit"
+          python3 -m venv "$unit"
+          "$unit/bin/python" -m pip install --disable-pip-version-check -q 'pytest>=8,<9' 'websockets>=15,<16'
+          "$unit/bin/python" -m py_compile scripts/strategy_factory_mcp_core.py scripts/strategy_factory_mcp_bridge.py
+          "$unit/bin/python" -m pytest -q tests/test_strategy_factory_mcp_bridge.py
 
       - name: Verify real MCP v2 server imports in isolated environment
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv "$RUNNER_TEMP/mcp-bridge-venv"
-          "$RUNNER_TEMP/mcp-bridge-venv/bin/python" -m pip install --disable-pip-version-check -q -r requirements-mcp-bridge.txt
-          "$RUNNER_TEMP/mcp-bridge-venv/bin/python" - <<'PY'
+          bridge="$RUNNER_TEMP/mcp-bridge-real-venv"
+          rm -rf "$bridge"
+          python3 -m venv "$bridge"
+          "$bridge/bin/python" -m pip install --disable-pip-version-check -q -r requirements-mcp-bridge.txt
+          "$bridge/bin/python" - <<'PY'
           import os
           from scripts import strategy_factory_mcp_bridge as bridge
 
@@ -55,3 +59,9 @@ jobs:
           print('mcp_bridge_import=PASS')
           print('public_bind_guard=PASS')
           PY
+
+      - name: Remove isolated MCP test environments
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/mcp-bridge-unit-venv" "$RUNNER_TEMP/mcp-bridge-real-venv"
