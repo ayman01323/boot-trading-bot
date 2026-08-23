@@ -1,0 +1,160 @@
+name: Monitor and Strategy Factory Operations
+
+on:
+  schedule:
+    # Deterministic Engineering telemetry/health scan.
+    - cron: '*/15 * * * *'
+    # Deterministic Strategy Monitor scorecard/economics scan.
+    - cron: '7 * * * *'
+    # Review up to three newly queued Problem/Opportunity Packages.
+    - cron: '17 * * * *'
+    # One different rotating AI Engineering reviewer each day.
+    - cron: '11 6 * * *'
+    # All seven agents jointly challenge the monitor/factory design each week.
+    - cron: '41 7 * * 1'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Operating cycle to run'
+        required: true
+        type: choice
+        options:
+          - observe-engineering
+          - observe-strategy
+          - factory-hourly
+          - engineering-daily
+          - weekly-joint
+          - status
+      limit:
+        description: 'Maximum Factory packages for an hourly review (1-5)'
+        required: false
+        default: '3'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitor-factory-operations
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 55
+    env:
+      DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+      DATA_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/data
+      CSV_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot
+      AI_AGENT_BUS_URL: ws://127.0.0.1:8765
+
+    steps:
+      - name: Resolve operating mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_LIMIT: ${{ inputs.limit }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == 'workflow_dispatch' ]]; then
+            mode="$INPUT_MODE"
+            limit="${INPUT_LIMIT:-3}"
+          else
+            case "$EVENT_SCHEDULE" in
+              '*/15 * * * *') mode='observe-engineering' ;;
+              '7 * * * *') mode='observe-strategy' ;;
+              '17 * * * *') mode='factory-hourly' ;;
+              '11 6 * * *') mode='engineering-daily' ;;
+              '41 7 * * 1') mode='weekly-joint' ;;
+              *) echo "Unknown schedule: $EVENT_SCHEDULE" >&2; exit 2 ;;
+            esac
+            limit='3'
+          fi
+          [[ "$limit" =~ ^[1-5]$ ]] || limit='3'
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "limit=$limit" >> "$GITHUB_OUTPUT"
+          echo "Resolved monitor/factory mode=$mode limit=$limit"
+
+      - name: Check out exact current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify production runtime and local agent bus for AI modes
+        if: steps.mode.outputs.mode == 'factory-hourly' || steps.mode.outputs.mode == 'engineering-daily' || steps.mode.outputs.mode == 'weekly-joint'
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet learnerbot
+          test -s /var/tmp/boot/ai_agent_ws_status.json
+          python3 - <<'PY'
+          import json,socket,time
+          p=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
+          assert p.get('state') in {'ACTIVE','EXTERNAL'}, p
+          assert set(p.get('workers') or []) == {'gpt','claude','gemini','deepseek','grok','kimi','copilot'}, p
+          age=int(time.time())-int(p.get('updated_epoch') or 0)
+          assert age < 86400, age
+          with socket.create_connection(('127.0.0.1',8765),timeout=2): pass
+          print('seven_agent_bus=ready')
+          PY
+
+      - name: Run bounded monitor/factory cycle against production data
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          LIMIT: ${{ steps.mode.outputs.limit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin="$DEPLOY_ROOT/.venv/bin/python"
+          [[ -x "$python_bin" ]] || python_bin="$(command -v python3)"
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          "$python_bin" scripts/monitor_factory_operations.py "$MODE" --limit "$LIMIT" \
+            > /tmp/monitor-factory-result.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/monitor-factory-result.json',encoding='utf-8'))
+          print('mode='+str(p.get('mode') or p.get('lane') or 'STATUS'))
+          print('generated_epoch='+str(p.get('generated_epoch') or ''))
+          if 'packages_considered' in p: print('packages_considered='+str(p['packages_considered']))
+          if 'reviewer' in p: print('daily_reviewer='+str(p['reviewer']))
+          if 'findings' in p: print('findings='+str(len(p.get('findings') or [])))
+          PY
+
+      - name: Assert the cycle did not mutate the checked-out repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Monitor/Factory cycle unexpectedly changed the checkout:' >&2
+            git status --short >&2
+            exit 3
+          fi
+
+      - name: Write concise job summary
+        if: always()
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        shell: bash
+        run: |
+          {
+            echo "### Monitor / Strategy Factory"
+            echo "- Mode: \`${MODE}\`"
+            echo "- Production data directory: \`${DATA_DIR}\`"
+            echo "- Trading/LIVE/capital/wallet authority: **none**"
+            echo "- Strategy implementation authority: **draft PR only, SHADOW allow-list, >=3 reviews**"
+            if [[ -s /tmp/monitor-factory-result.json ]]; then
+              echo
+              echo '<details><summary>Result</summary>'
+              echo
+              echo '```json'
+              head -c 12000 /tmp/monitor-factory-result.json
+              echo
+              echo '```'
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
