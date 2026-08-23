@@ -1,8 +1,11 @@
 name: Hourly Three-Agent Strategy Cycle
 
 on:
+  # Compatibility name retained because downstream reviewer workflows subscribe
+  # to it. The non-urgent paid base review now runs once daily, while the cheap
+  # deterministic Strategy Monitor continues hourly.
   schedule:
-    - cron: '17 */4 * * *'
+    - cron: '17 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -227,7 +230,7 @@ jobs:
           OPENAI_STRATEGY_AUDIT_MODEL: ${{ vars.OPENAI_STRATEGY_AUDIT_MODEL }}
           CYCLE_ID: ${{ steps.meta.outputs.cycle_id }}
           SOURCE_SHA: ${{ steps.meta.outputs.source_sha }}
-          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha }}
+          EVIDENCE_SHA: ${{ steps.meta.outputs.evidence_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
