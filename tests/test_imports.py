@@ -6,12 +6,16 @@ import sys
 import learnerbot
 
 
-# __main__ starts the application. trading_runtime_invariant_patch is deliberately
-# imported only after the audited runtime patch stack has been composed, so an
-# alphabetical standalone import of that final guard is not a meaningful module
-# import test. Its actual final composition is covered by
+# __main__ starts the application. These runtime-integrity guards are deliberately
+# imported only after the audited production patch stack has been composed, so an
+# alphabetical standalone import is not meaningful. Their actual final composition
+# is exercised by the real `python -m learnerbot --help` startup test below and by
 # tests/test_solana_runtime_composition.py.
-_IMPORT_SWEEP_EXCLUDES = {"__main__", "trading_runtime_invariant_patch"}
+_IMPORT_SWEEP_EXCLUDES = {
+    "__main__",
+    "trading_runtime_invariant_patch",
+    "final_runtime_integrity_patch",
+}
 
 
 def test_all_learnerbot_modules_import():
@@ -39,3 +43,5 @@ def test_python_m_learnerbot_real_startup_stack_reaches_cli_help():
     combined = (result.stdout or "") + "\n" + (result.stderr or "")
     assert result.returncode == 0, combined
     assert "Audited trading runtime invariant failed" not in combined
+    assert "Final runtime integrity failed" not in combined
+    assert "[final-runtime-integrity] OK" in combined
