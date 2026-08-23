@@ -6,7 +6,7 @@ import re
 import tempfile
 from pathlib import Path
 
-from learnerbot.ai_council_http_patch import call_provider
+from learnerbot.ai_cost_provider_patch import call_provider
 
 _ALLOWED_PROVIDERS = {"deepseek", "gemini", "copilot"}
 _MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
@@ -99,6 +99,10 @@ def relay(provider: str, message_id: str, source_sha: str, incoming: str) -> str
 
     prompt = _build_prompt(provider, source_sha, incoming)
 
+    old_kind = os.environ.get("AI_COST_TASK_KIND")
+    old_level = os.environ.get("AI_COST_ROUTE_LEVEL")
+    os.environ["AI_COST_TASK_KIND"] = "git-mailbox-relay"
+    os.environ["AI_COST_ROUTE_LEVEL"] = "1"
     # Copilot is authenticated through its existing bounded CLI harness. Run it
     # from an empty directory so repository files are not ambient prompt context.
     old_cwd = os.getcwd()
@@ -111,6 +115,14 @@ def relay(provider: str, message_id: str, source_sha: str, incoming: str) -> str
             rc, out, err = call_provider(provider, prompt)
     finally:
         os.chdir(old_cwd)
+        if old_kind is None:
+            os.environ.pop("AI_COST_TASK_KIND", None)
+        else:
+            os.environ["AI_COST_TASK_KIND"] = old_kind
+        if old_level is None:
+            os.environ.pop("AI_COST_ROUTE_LEVEL", None)
+        else:
+            os.environ["AI_COST_ROUTE_LEVEL"] = old_level
 
     rc = int(rc)
     answer = _redact(str(out or "").strip())

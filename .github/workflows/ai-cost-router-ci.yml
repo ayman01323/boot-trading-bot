@@ -1,0 +1,76 @@
+name: AI Cost Router CI
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/ai-cost-router-ci.yml'
+      - '.github/workflows/master-change-council-protected-deploy.yml'
+      - 'learnerbot/ai_cost_router.py'
+      - 'learnerbot/ai_cost_provider_patch.py'
+      - 'learnerbot/master_change_cost_router_patch.py'
+      - 'learnerbot/master_change_council.py'
+      - 'learnerbot/telegram_master_change_patch.py'
+      - 'learnerbot/telegram_ai_ops_verification_patch.py'
+      - 'scripts/ai_agent_ws_worker.py'
+      - 'scripts/ai_mailbox_provider_relay.py'
+      - 'scripts/master_change_policy.py'
+      - 'tests/test_ai_cost_router.py'
+      - 'tests/test_master_change_council.py'
+      - 'docs/MASTER_TELEGRAM_CHANGE_COUNCIL.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cost-router-tests:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build isolated test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/ai-cost-router-ci"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q pytest pyyaml python-dotenv 'websockets>=15,<16' requests
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Compile cost and council controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VENV/bin/python" -m py_compile \
+            learnerbot/ai_cost_router.py \
+            learnerbot/ai_cost_provider_patch.py \
+            learnerbot/master_change_cost_router_patch.py \
+            learnerbot/master_change_council.py \
+            learnerbot/telegram_master_change_patch.py \
+            learnerbot/telegram_ai_ops_verification_patch.py \
+            scripts/ai_agent_ws_worker.py \
+            scripts/ai_mailbox_provider_relay.py \
+            scripts/master_change_policy.py \
+            tests/test_ai_cost_router.py \
+            tests/test_master_change_council.py
+
+      - name: Run cost router and MASTER council regression tests
+        env:
+          AI_COST_TELEGRAM_ALERTS: '0'
+          AI_COST_BUDGET_ENFORCE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$VENV/bin/python" -m pytest -q \
+            tests/test_ai_cost_router.py \
+            tests/test_master_change_council.py
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$VENV"

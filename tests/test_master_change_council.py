@@ -15,7 +15,10 @@ def _text(path: str) -> str:
 
 
 def _evidence(**overrides):
+    # schema_version=1 deliberately represents legacy evidence. The deterministic
+    # policy keeps requiring all four advisers for those already-created requests.
     value = {
+        "schema_version": 1,
         "request_id": "mc-20260822T100000Z-abcdef",
         "implementation_nonce": 1,
         "implementation_allowed": True,
@@ -66,23 +69,25 @@ def test_gpt_decision_paths_are_exact_and_bounded() -> None:
     assert decision["allowed_files"] == ["learnerbot/telegram_x.py"]
 
 
-def test_telegram_command_is_master_only_and_uses_five_agent_flow() -> None:
+def test_telegram_command_is_master_only_and_exposes_cost_router() -> None:
     text = _text("learnerbot/telegram_master_change_patch.py")
     assert 'cmd == "/aichange"' in text
+    assert 'cmd == "/aicost"' in text
     assert "_require_master(app, tid)" in text
-    assert "Claude + Gemini + DeepSeek + Copilot" in text
-    assert "GPT then makes the final decision" in text
-    assert "retry" in text
+    assert "Cost Router" in text
+    assert "Critical trading/security/deployment requests still use the full council" in text
+    assert "Successful adviser replies will be reused" in text
 
 
-def test_local_council_requires_every_adviser_before_gpt_implementation() -> None:
-    text = _text("learnerbot/master_change_council.py")
-    for agent in ("claude", "gemini", "deepseek", "copilot"):
-        assert f'"{agent}"' in text
-    assert "all_advisers_replied" in text
-    assert "if not all_ok" in text
-    assert "implementation_allowed" in text
+def test_local_council_uses_required_advisers_and_keeps_gpt_final() -> None:
+    text = _text("learnerbot/master_change_cost_router_patch.py")
+    assert "master_change_route" in text
+    assert "required_advisers" in text
     assert "_call_final_gpt" in text
+    assert "reused" in text
+    assert "implementation_allowed" in text
+    for agent in ("claude", "gemini", "deepseek", "copilot"):
+        assert agent in _text("learnerbot/ai_cost_router.py")
 
 
 def test_existing_telegram_publisher_carries_change_council_without_second_polling_job() -> None:
@@ -135,6 +140,9 @@ def test_policy_rejects_council_self_modification_before_gpt_code_call() -> None
         ".github/workflows/publish-ai-master-control.yml",
         ".github/workflows/master-change-council-protected-deploy.yml",
         "learnerbot/master_change_council.py",
+        "learnerbot/master_change_cost_router_patch.py",
+        "learnerbot/ai_cost_router.py",
+        "learnerbot/ai_cost_provider_patch.py",
         "learnerbot/telegram_master_change_patch.py",
         "learnerbot/ai_agent_ws_runtime_patch.py",
         "scripts/ai_agent_ws_bus.py",
@@ -142,6 +150,7 @@ def test_policy_rejects_council_self_modification_before_gpt_code_call() -> None
         "scripts/ai_agent_ws_send.py",
         "scripts/master_change_policy.py",
         "tests/test_master_change_council.py",
+        "tests/test_ai_cost_router.py",
     ):
         assert path in policy.GOVERNANCE_FILES
 
@@ -151,7 +160,14 @@ def test_policy_rejects_stale_or_incomplete_evidence() -> None:
     with pytest.raises(ValueError, match="stale council evidence"):
         policy.validate_request(evidence, request_id=evidence["request_id"], nonce=1, current_sha="b" * 40)
     evidence = _evidence(all_advisers_replied=False)
-    with pytest.raises(ValueError, match="all adviser replies"):
+    with pytest.raises(ValueError, match="all required adviser replies"):
+        policy.validate_request(evidence, request_id=evidence["request_id"], nonce=1, current_sha="a" * 40)
+
+
+def test_legacy_evidence_still_requires_every_adviser() -> None:
+    evidence = _evidence()
+    del evidence["advisers"]["gemini"]
+    with pytest.raises(ValueError, match="gemini required adviser"):
         policy.validate_request(evidence, request_id=evidence["request_id"], nonce=1, current_sha="a" * 40)
 
 

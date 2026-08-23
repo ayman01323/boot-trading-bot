@@ -6,11 +6,17 @@ import pathlib
 import subprocess
 from pathlib import Path
 
+from learnerbot.ai_cost_router import ALL_ADVISERS, master_change_route
+
 GOVERNANCE_FILES = frozenset({
+    ".github/workflows/ai-cost-router-ci.yml",
     ".github/workflows/gpt-master-change-implement.yml",
     ".github/workflows/publish-ai-master-control.yml",
     ".github/workflows/master-change-council-protected-deploy.yml",
     "learnerbot/master_change_council.py",
+    "learnerbot/master_change_cost_router_patch.py",
+    "learnerbot/ai_cost_router.py",
+    "learnerbot/ai_cost_provider_patch.py",
     "learnerbot/telegram_master_change_patch.py",
     "learnerbot/ai_agent_ws_runtime_patch.py",
     "scripts/ai_agent_ws_bus.py",
@@ -18,6 +24,7 @@ GOVERNANCE_FILES = frozenset({
     "scripts/ai_agent_ws_send.py",
     "scripts/master_change_policy.py",
     "tests/test_master_change_council.py",
+    "tests/test_ai_cost_router.py",
 })
 
 
@@ -35,6 +42,32 @@ def load_request(path: str | Path) -> dict:
     return value
 
 
+def _required_advisers(evidence: dict) -> tuple[str, ...]:
+    schema = int(evidence.get("schema_version") or 1)
+    if schema < 2 or not evidence.get("cost_route"):
+        return tuple(ALL_ADVISERS)
+
+    expected = master_change_route(
+        str(evidence.get("request") or ""),
+        hard_protected_reasons=list(evidence.get("hard_protected_reasons") or []),
+        protected_reasons=list(evidence.get("protected_reasons") or []),
+    )
+    supplied = evidence.get("cost_route") or {}
+    supplied_level = int(supplied.get("level") if supplied.get("level") is not None else -1)
+    if supplied_level != int(expected["level"]):
+        raise ValueError(f"cost route level mismatch: supplied={supplied_level} expected={expected['level']}")
+
+    required = tuple(str(x) for x in (evidence.get("required_advisers") or supplied.get("advisers") or []))
+    expected_required = tuple(str(x) for x in expected.get("advisers") or [])
+    if required != expected_required:
+        raise ValueError(
+            "cost route adviser mismatch: supplied=" + ",".join(required) + " expected=" + ",".join(expected_required)
+        )
+    if any(name not in ALL_ADVISERS for name in required):
+        raise ValueError("cost route contains an unsupported adviser")
+    return required
+
+
 def validate_request(evidence: dict, *, request_id: str, nonce: int, current_sha: str) -> list[str]:
     if evidence.get("request_id") != request_id:
         raise ValueError("request_id mismatch")
@@ -45,14 +78,17 @@ def validate_request(evidence: dict, *, request_id: str, nonce: int, current_sha
     if evidence.get("hard_protected_reasons"):
         raise ValueError("hard-protected request cannot be implemented by this lane")
     if not evidence.get("all_advisers_replied"):
-        raise ValueError("all adviser replies are required")
+        raise ValueError("all required adviser replies are required")
 
+    required = _required_advisers(evidence)
+    if not required:
+        raise ValueError("repository change must have at least one required adviser")
     advisers = evidence.get("advisers") or {}
-    for name in ("claude", "gemini", "deepseek", "copilot"):
+    for name in required:
         row = advisers.get(name) or {}
         rc = int(row.get("provider_rc") if row.get("provider_rc") is not None else 1)
         if not row.get("acknowledged") or rc != 0 or not str(row.get("reply") or "").strip():
-            raise ValueError(f"{name} adviser did not complete successfully")
+            raise ValueError(f"{name} required adviser did not complete successfully")
 
     decision = evidence.get("gpt_decision") or {}
     if str(decision.get("action") or "").upper() != "IMPLEMENT":
