@@ -42,8 +42,6 @@ def _solana_ws_url(app) -> str:
     if helius_key:
         return f"wss://mainnet.helius-rpc.com/?api-key={helius_key}"
 
-    # Reuse the configured Solana RPC provider if it exposes the standard
-    # matching WebSocket endpoint.  Dedicated Helius is preferred in production.
     try:
         rpc_url = str(_sol.settings(app).get("rpc_url") or "").strip()
     except Exception:
@@ -62,9 +60,18 @@ def _selected_leaders(app) -> list[str]:
         return []
 
 
+def _mark_ws_healthy() -> None:
+    # The periodic leader worker reads this monotonic deadline. Keeping it fresh
+    # while the socket is connected lets the safety fallback poll less often
+    # without changing the immediate WSS-triggered path.
+    _sol._leader_ws_healthy_until = time.monotonic() + 6.0
+
+
+def _mark_ws_unhealthy() -> None:
+    _sol._leader_ws_healthy_until = 0.0
+
+
 def monitor_leaders_locked(app):
-    # The periodic Solana polling worker remains active as a reliability fallback.
-    # This lock prevents it racing a WSS-triggered leader pass.
     with _MONITOR_LOCK:
         return _ORIGINAL_MONITOR_LEADERS(app)
 
@@ -101,9 +108,6 @@ def _subscribe_leaders(ws, leaders: list[str]) -> dict[str, str]:
         message = json.loads(raw)
         msg_id = message.get("id")
         if msg_id not in pending:
-            # A notification can arrive while other subscription acknowledgements
-            # are pending.  The normal 5-second polling fallback covers this tiny
-            # startup window, so no durable cursor is advanced here.
             continue
         wallet = pending.pop(msg_id)
         if message.get("error"):
@@ -126,6 +130,7 @@ def _solana_ws_worker(app) -> None:
         url = _solana_ws_url(app)
         leaders = _selected_leaders(app)
         if not url or not leaders:
+            _mark_ws_unhealthy()
             time.sleep(5)
             continue
 
@@ -140,17 +145,15 @@ def _solana_ws_worker(app) -> None:
             ) as ws:
                 subscriptions = _subscribe_leaders(ws, leaders)
                 subscribed_set = set(leaders)
+                _mark_ws_healthy()
                 print(
                     f"[solana-ws] connected logsSubscribe=true leaders={len(subscriptions)} "
-                    "commitment=confirmed fallback_poll=true"
+                    "commitment=confirmed adaptive_fallback_poll=true"
                 )
                 backoff = 1.0
                 last_refresh = time.monotonic()
 
                 while True:
-                    # Reconnect to refresh the subscription set when the Strategy
-                    # engine changes selected leaders.  This avoids stale wallet
-                    # streams without adding subscription mutation complexity.
                     if time.monotonic() - last_refresh >= 10.0:
                         current = set(_selected_leaders(app))
                         if current != subscribed_set:
@@ -160,7 +163,9 @@ def _solana_ws_worker(app) -> None:
                     try:
                         raw = ws.recv(timeout=2.0)
                     except TimeoutError:
+                        _mark_ws_healthy()
                         continue
+                    _mark_ws_healthy()
                     try:
                         message = json.loads(raw)
                     except Exception:
@@ -173,10 +178,6 @@ def _solana_ws_worker(app) -> None:
                     if value.get("err") is not None:
                         continue
 
-                    # A leader produced a confirmed on-chain transaction.  Wake
-                    # the existing cursor-safe leader monitor immediately; it
-                    # still fetches/classifies the transaction through the proven
-                    # HTTP RPC path and preserves every freshness/preflight gate.
                     try:
                         monitor_leaders_locked(app)
                     except Exception as exc:
@@ -186,6 +187,7 @@ def _solana_ws_worker(app) -> None:
                             str(exc)[:180],
                         )
         except Exception as exc:
+            _mark_ws_unhealthy()
             # Provider URLs often include API keys; never print the URL.
             print("[solana-ws]", type(exc).__name__, str(exc)[:180])
             time.sleep(backoff)
@@ -215,9 +217,10 @@ def start_workers_with_solana_ws(app):
 def install() -> None:
     _sol.monitor_leaders = monitor_leaders_locked
     _sol.start_workers = start_workers_with_solana_ws
+    _mark_ws_unhealthy()
     print(
         "[solana-ws] installed subscription=logsSubscribe commitment=confirmed "
-        "fallback_poll=true"
+        "adaptive_fallback_poll=true"
     )
 
 
