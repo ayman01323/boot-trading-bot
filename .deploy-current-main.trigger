@@ -1,2 +1,2 @@
 Purpose: retrigger the restricted exact-SHA VPS deployment for the current main commit when needed.
-Last requested for: final Claude legacy-sweep starvation fix deployment after runner release at 2026-08-23T15:47Z.
+Last requested for: AI health live WebSocket worker truth and stale-review presentation fix at 2026-08-23T15:57Z.
