@@ -63,7 +63,7 @@ jobs:
           probe() {
             sender="$1"
             target="$2"
-            mid="sf-live-${GITHUB_RUN_ID}-${target}"
+            mid="sf-live-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
             output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
               --from "$sender" \
               --to "$target" \
@@ -96,7 +96,7 @@ jobs:
           output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
             --from gpt \
             --to gemini \
-            --message-id "sf-task-${GITHUB_RUN_ID}" \
+            --message-id "sf-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --timeout 90 \
             --task-action GIT_STATUS \
             --task-args-json '{}' \
