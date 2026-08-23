@@ -132,6 +132,29 @@ jobs:
           print('grok_bounded_task_health=COMPLETED')
           PY
 
+      - name: Gemini asks GPT for Tokyo time
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+            --from gemini \
+            --to gpt \
+            --message-id "gemini-tokyo-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --timeout 90 \
+            --message 'What is the current time in Tokyo? Reply with the time and timezone only. Communication only; do not modify files, services, trading, wallets, risk, capital, or secrets.')"
+          printf '%s\n' "$output"
+          final="$(printf '%s\n' "$output" | tail -n 1)"
+          FINAL="$final" python3 - <<'PY'
+          import json,os
+          value=json.loads(os.environ['FINAL'])
+          assert value.get('type') == 'reply', value
+          assert value.get('status') == 'REPLIED', value
+          assert int(value.get('provider_rc') or 0) == 0, value
+          body=str(value.get('body') or '').strip()
+          assert body, value
+          print('gemini_to_gpt_tokyo_reply='+body)
+          PY
+
       - name: Remove isolated environment
         if: always()
         shell: bash
