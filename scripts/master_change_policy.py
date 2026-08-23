@@ -19,6 +19,8 @@ GOVERNANCE_FILES = frozenset({
     ".github/workflows/gpt-master-change-implement.yml",
     ".github/workflows/publish-ai-master-control.yml",
     ".github/workflows/master-change-council-protected-deploy.yml",
+    "AI_AGENT_MESSAGING.md",
+    "CLAUDE.md",
     "learnerbot/master_change_council.py",
     "learnerbot/master_change_cost_router_patch.py",
     "learnerbot/strategy_factory_council_transport_patch.py",
@@ -33,12 +35,14 @@ GOVERNANCE_FILES = frozenset({
     "scripts/ai_agent_ws_bus_grok.py",
     "scripts/ai_agent_ws_worker.py",
     "scripts/ai_agent_ws_send.py",
+    "scripts/claude_division.py",
     "scripts/strategy_factory_transport.py",
     "scripts/master_change_policy.py",
     "tests/test_master_change_council.py",
     "tests/test_ai_cost_router.py",
     "tests/test_grok_sixth_agent.py",
     "tests/test_strategy_factory_transport.py",
+    "tests/test_strategy_factory_master_chat.py",
 })
 
 
