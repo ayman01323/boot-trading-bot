@@ -1,1 +1,1 @@
-2026-08-23T23:00:00Z deploy current main to apply owner-authorised zero-recovery accounting write-off for Solana mint 8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV; no SELL/burn/transfer; preserve 5% automatic exit ceiling
+2026-08-23T23:09:00Z stable current-main deploy for owner-authorised zero-recovery accounting write-off of Solana mint 8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV; no further main mutations until attested; no SELL/burn/transfer; preserve 5% automatic exit ceiling
