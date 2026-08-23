@@ -1,8 +1,8 @@
-name: GPT Master Cycle Dispatcher
+name: GPT Master Cycle Dispatcher (Legacy Manual)
 
 on:
-  schedule:
-    - cron: '3-59/5 * * * *'
+  # The seven-agent selected MASTER is now authoritative. Keep this exact-cycle
+  # GPT path only for manual compatibility/forensics; do not poll every 5 minutes.
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Find an unresolved exact Copilot report pair and dispatch GPT Master
+      - name: Find an unresolved exact Copilot report pair and dispatch legacy GPT Master
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -64,11 +64,11 @@ jobs:
           done < <(gh pr list --state open --limit 100 --json number --jq '.[].number')
 
           if [[ -z "$pr" ]]; then
-            echo "No unresolved PR with an exact Copilot report pair is ready; retry on next dispatcher tick."
+            echo 'No unresolved exact Copilot report pair is ready.'
             exit 0
           fi
 
-          echo "Dispatching GPT Master for cycle=${cycle} copilot_pr=${pr}"
+          echo "Dispatching legacy GPT Master for cycle=${cycle} copilot_pr=${pr}"
           gh workflow run gpt-master-strategy-action.yml \
             --ref main \
             -f copilot_pr_number="$pr" \
