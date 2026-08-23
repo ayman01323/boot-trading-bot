@@ -4,8 +4,7 @@ from __future__ import annotations
 
 This module is imported *last* by learnerbot.__main__, after the late Alchemy,
 recovery, leader-alignment, provenance and AI-runtime patches have composed.
-It is intentionally verification-only except for explicitly owner-authorised,
-idempotent one-time runtime migrations invoked only after verification succeeds.
+It is intentionally verification-only: it does not repair/rebind any hook.
 """
 
 # Operator-facing health must reflect the same seven persistent workers that the
@@ -83,6 +82,9 @@ def composition_checks() -> dict[str, bool]:
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
         "evm_history_trace_to_retry": _trace._PREV_NEXT_HISTORY_WALLET is _retry._next_history_wallet,
+        # Background recovery is additive scheduling only. It must be the final
+        # outer startup wrapper, while the AI Council recovery and transaction-audit
+        # startup chain underneath it remains exactly intact.
         "evm_history_background_worker_start": (
             _sibot.start_workers is _legacy_drainer.start_workers_with_legacy_backlog_drainer
         ),
@@ -97,13 +99,15 @@ def composition_checks() -> dict[str, bool]:
             _friendly._PREV_START_MENU_THREAD
             is _audit_worker.start_menu_thread_with_transaction_audit
         ),
+        # WebSocket wake-up serialization is the intended outer wrapper. The
+        # retry-safe/no-skip cursor remains authoritative immediately inside it.
         "evm_leader_cursor_ws_outer": _sibot.poll_leader_blocks is _evm_ws.poll_leader_blocks_locked,
         "evm_leader_cursor_reliable_inner": _evm_ws._ORIGINAL_POLL is _evm_reliability.poll_leader_blocks_reliable,
         "evm_quality_hard_floor": _sibot.user_settings is _evm_quality.user_settings_with_quality_floor,
         "evm_native_transfer_destination": _evm_live.LiveTrader.transfer_native is _evm_transfer.transfer_native_with_destination,
         "evm_pool_rug_manual_buy": _evm_live.LiveTrader.buy is _evm_rug.buy_with_pool_rug_gate,
         "evm_pool_rug_v2_prebroadcast": _evm_live.LiveTrader._prebroadcast_cycle is _evm_rug.prebroadcast_cycle_with_pool_rug_gate,
-        "evm_pool_rug_v3_prebroadcast": _evm_live.LiveTrader._prebroadcast_v3_cycle is _evm_rug.prebroadcast_cycle_with_pool_rug_gate if False else _evm_live.LiveTrader._prebroadcast_v3_cycle is _evm_rug.prebroadcast_v3_cycle_with_pool_rug_gate,
+        "evm_pool_rug_v3_prebroadcast": _evm_live.LiveTrader._prebroadcast_v3_cycle is _evm_rug.prebroadcast_v3_cycle_with_pool_rug_gate,
         "evm_provenance_connect": _sibot.connect is _provenance._evm_connect_with_provenance,
         "solana_provenance_connect": _sol.connect is _provenance._sol_connect_with_provenance,
         "auto_provenance_append": _auto._append is _provenance._auto_append_with_provenance,
