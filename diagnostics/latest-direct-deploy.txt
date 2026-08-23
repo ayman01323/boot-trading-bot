@@ -1,14 +1,14 @@
-requested_sha=c7f467636365547424545fb0b580b0637aa3f9f9
-deploy_outcome=skipped
+requested_sha=05fc3f01c046a1ceffc12b75099be624e999a94b
+deploy_outcome=cancelled
 deploy_exit=unknown
-run_id=32657355417
-utc=2026-08-23T18:13:41Z
+run_id=32657358318
+utc=2026-08-23T18:14:24Z
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-23T18:13:41Z
+UTC: 2026-08-23T18:14:24Z
 branch: main
-sha:    f10d45081a730ba38ddb1cec738fda049f503a70
+sha:    05fc3f01c046a1ceffc12b75099be624e999a94b
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -17,16 +17,14 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Sun 2026-08-23 18:23:58 BST; 49min ago
+     Active: active (running) since Sun 2026-08-23 18:23:58 BST; 50min ago
    Main PID: 1056515 (python)
       Tasks: 24 (limit: 5869)
-     Memory: 555.9M (peak: 800.4M)
-        CPU: 33min 33.100s
+     Memory: 431.0M (peak: 800.4M)
+        CPU: 33min 58.728s
      CGroup: /system.slice/learnerbot.service
              └─1056515 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 23 19:13:10 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:polygon] pool=0 qualified=0 selected=0 thresholds=unchanged
-Aug 23 19:13:12 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:bsc] pool=0 qualified=0 selected=0 thresholds=unchanged
 Aug 23 19:13:12 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:bsc] pool=0 qualified=0 selected=0 thresholds=unchanged
 Aug 23 19:13:15 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:base] pool=0 qualified=0 selected=0 thresholds=unchanged
 Aug 23 19:13:16 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:ethereum] pool=0 qualified=0 selected=0 thresholds=unchanged
@@ -35,125 +33,45 @@ Aug 23 19:13:17 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:a
 Aug 23 19:13:17 mint.yesgoodwill.com python[1056515]: [sibot-broader-qualified:polygon] pool=0 qualified=0 selected=0 thresholds=unchanged
 Aug 23 19:13:33 mint.yesgoodwill.com python[1056515]: [learn:base] patterns=583
 Aug 23 19:13:39 mint.yesgoodwill.com python[1056515]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=57.389
+Aug 23 19:13:55 mint.yesgoodwill.com python[1056515]: [solana-ws] connected logsSubscribe=true leaders=2 commitment=confirmed fallback_poll=true
+Aug 23 19:14:03 mint.yesgoodwill.com python[1056515]: [solana-leader-edge-alignment] broader_pool=46 qualified=0 selected=0 thresholds=unchanged
 
 === DEPLOY OUTPUT (tail) ===
-        monkeypatch.setattr(
-            truth,
-            "_runtime_connections",
-            lambda: {
-                "available": True,
-                "connected_agents": set(truth._compact.PROVIDERS),
-                "updated_epoch": 1,
-            },
-        )
-        monkeypatch.setattr(
-            truth,
-            "_fresh_preflight",
-            lambda: {
-                "_truth_stale": True,
-                "_truth_age_seconds": 50 * 60,
-                "openai": {"state": "WORKING"},
-                "anthropic": {"state": "WORKING"},
-                "deepseek": {"state": "WORKING"},
-                "xai": {"state": "WORKING"},
-            },
-        )
-    
-        broken = {
-            provider: ("NOT_WORKING", "old pipeline failure")
-            for provider in truth._compact.PROVIDERS
-        }
-        engineering = _health(broken)
-        strategy = _health(broken)
-    
-        text = truth.provider_health_text(engineering, strategy)
-    
->       assert "🟢 <b>6 healthy</b> · 0 need verification · 0 problems" in text
-E       AssertionError: assert '🟢 <b>6 healthy</b> · 0 need verification · 0 problems' in '<b>🤖 AI AGENT HEALTH</b>\n🟢 <b>7 healthy</b> · 0 need verification · 0 problems\n🟢 GPT — Worker connected · API last ...t OK 50m ago\n🟢 Grok — Worker connected · API last OK 50m ago\n🟢 Kimi — Worker connected\n🟢 Copilot — Worker connected'
+2026-08-23T18:13:55Z BEGIN current=f10d45081a730ba38ddb1cec738fda049f503a70 requested=05fc3f01c046a1ceffc12b75099be624e999a94b
+From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
+ * branch            main       -> FETCH_HEAD
+   6db42ef..05fc3f0  main       -> origin/main
+Updating f10d450..05fc3f0
+Fast-forward
+ .deploy-current-main.trigger                       |   2 +-
+ .../strategy-factory-six-agent-live-diagnostic.yml |  34 +-
+ docs/AI_AGENT_TARGET_SCORE_V4.md                   |  99 +++++
+ learnerbot/ai_agent_score_capture_patch.py         |  71 ++++
+ learnerbot/ai_agent_target_score.py                | 445 +++++++++++++++++++++
+ learnerbot/final_runtime_integrity_patch.py        |   9 +
+ learnerbot/kimi_ai_health_roster_patch.py          |  34 ++
+ learnerbot/telegram_ai_target_score_patch.py       | 147 +++++++
+ scripts/ai_agent_target_score.py                   | 126 ++++++
+ tests/test_ai_agent_target_score.py                | 141 +++++++
+ tests/test_ai_health_compact_report.py             |  27 +-
+ tests/test_ai_health_runtime_truth.py              |  17 +-
+ tests/test_grok_sixth_agent.py                     |   9 +-
+ tests/test_telegram_ai_health_mobile_layout.py     |  35 +-
+ 14 files changed, 1162 insertions(+), 34 deletions(-)
+ create mode 100644 docs/AI_AGENT_TARGET_SCORE_V4.md
+ create mode 100644 learnerbot/ai_agent_score_capture_patch.py
+ create mode 100644 learnerbot/ai_agent_target_score.py
+ create mode 100644 learnerbot/kimi_ai_health_roster_patch.py
+ create mode 100644 learnerbot/telegram_ai_target_score_patch.py
+ create mode 100644 scripts/ai_agent_target_score.py
+ create mode 100644 tests/test_ai_agent_target_score.py
 
-tests/test_ai_health_runtime_truth.py:50: AssertionError
-_______ test_six_agent_live_diagnostic_probes_grok_and_all_other_agents ________
-
-    def test_six_agent_live_diagnostic_probes_grok_and_all_other_agents() -> None:
-        workflow = (ROOT / ".github" / "workflows" / "strategy-factory-six-agent-live-diagnostic.yml").read_text(encoding="utf-8")
->       assert "{'gpt','claude','gemini','deepseek','grok','copilot'}" in workflow
-E       assert "{'gpt','claude','gemini','deepseek','grok','copilot'}" in 'name: Strategy Factory Seven-Agent Live Diagnostic\n\non:\n  workflow_dispatch:\n  pull_request:\n    paths:\n      -...ays()\n        shell: bash\n        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic}"\n'
-
-tests/test_grok_sixth_agent.py:156: AssertionError
-_____________ test_mobile_provider_layout_uses_single_compact_rows _____________
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa19ca7fc10>
-
-    def test_mobile_provider_layout_uses_single_compact_rows(monkeypatch):
-        monkeypatch.setattr(
-            mobile._truth,
-            "_fresh_preflight",
-            lambda: {
-                "openai": {"state": "WORKING"},
-                "anthropic": {"state": "WORKING"},
-                "deepseek": {"state": "WORKING"},
-                "xai": {"state": "WORKING"},
-                "_truth_stale": True,
-                "_truth_age_seconds": 20 * 60,
-            },
-        )
-        monkeypatch.setattr(
-            mobile._truth,
-            "_runtime_connections",
-            lambda: {
-                "available": True,
-                "connected_agents": set(mobile._compact.PROVIDERS),
-                "updated_epoch": 1,
-            },
-        )
-    
-        text = mobile.provider_health_text(_health(), _health())
-    
->       assert mobile._compact.PROVIDERS == (
-            "gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"
-        )
-E       AssertionError: assert ('gpt', 'clau...k', 'copilot') == ('gpt', 'clau..., 'kimi', ...)
-E         
-E         At index 5 diff: 'copilot' != 'kimi'
-E         Right contains one more item: 'copilot'
-E         Use -v to get more diff
-
-tests/test_telegram_ai_health_mobile_layout.py:40: AssertionError
-_________________ test_kimi_disconnect_is_visible_not_omitted __________________
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7fa19ca7eb50>
-
-    def test_kimi_disconnect_is_visible_not_omitted(monkeypatch):
-        monkeypatch.setattr(
-            mobile._truth,
-            "_fresh_preflight",
-            lambda: {"_truth_stale": True, "_truth_age_seconds": 0},
-        )
-        connected = set(mobile._compact.PROVIDERS) - {"kimi"}
-        monkeypatch.setattr(
-            mobile._truth,
-            "_runtime_connections",
-            lambda: {"available": True, "connected_agents": connected, "updated_epoch": 1},
-        )
-    
-        text = mobile.provider_health_text(_health(), _health())
-    
->       assert "6 healthy</b> · 0 verify · 1 issues" in text
-E       AssertionError: assert '6 healthy</b> · 0 verify · 1 issues' in '<b>🤖 AI AGENT HEALTH</b>\n🟢 <b>6 healthy</b> · 0 verify · 0 issues\n\n🟢 GPT — Online\n🟢 Claude — Online\n🟢 Gemini — Online\n🟢 DeepSeek — Online\n🟢 Grok — Online\n🟢 Copilot — Online'
-
-tests/test_telegram_ai_health_mobile_layout.py:68: AssertionError
-=============================== warnings summary ===============================
-.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
-  /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
-    warnings.warn(  # deprecated in 14.0 - 2024-11-09
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-FAILED tests/test_ai_health_compact_report.py::test_master_dashboard_keeps_sections_but_does_not_repeat_every_agent_per_lane
-FAILED tests/test_ai_health_runtime_truth.py::test_connected_workers_override_stale_review_failures
-FAILED tests/test_grok_sixth_agent.py::test_six_agent_live_diagnostic_probes_grok_and_all_other_agents
-FAILED tests/test_telegram_ai_health_mobile_layout.py::test_mobile_provider_layout_uses_single_compact_rows
-FAILED tests/test_telegram_ai_health_mobile_layout.py::test_kimi_disconnect_is_visible_not_omitted
-5 failed, 983 passed, 1 warning in 56.43s
-2026-08-23T18:06:15Z TESTS FAILED; service remains on old running process
-HEAD is now at f10d450 Fix credential sync permission in direct deploy
+[notice] A new release of pip available: 22.3.1 -> 26.2.1
+[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
+........................................................................ [  7%]
+........................................................................ [ 14%]
+........................................................................ [ 21%]
+........................................................................ [ 28%]
+........................................................................ [ 36%]
+........................................................................ [ 43%]
+..........................................
