@@ -57,7 +57,7 @@ The Cost Router still decides which advisers are required. Critical trading, sec
 
 ## Canonical user-to-agent chat identity
 
-The user-facing canonical identity is `MASTER`. `MASTER` is a sender/client identity only; it is **not** a seventh AI worker, cannot be targeted as an AI recipient, and is never included in Council fan-out.
+The user-facing canonical identity is `MASTER`. `MASTER` is a sender/client identity only; it is not a seventh AI worker, cannot be targeted as an AI recipient, and is never included in Council fan-out.
 
 Use Telegram:
 
