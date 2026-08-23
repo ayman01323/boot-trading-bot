@@ -33,11 +33,29 @@ jobs:
               done
           done
 
-      - name: Dispatch restricted current-main deployment
+      - name: Cancel queued stale deployment jobs
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          for workflow in deploy-current-main-direct.yml deploy-current-main-pr-isolated.yml server-ops.yml; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                [[ -n "$run_id" ]] || continue
+                echo "Cancelling queued stale ${workflow} run ${run_id}"
+                gh api --method POST -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+              done
+          done
+
+      - name: Dispatch one restricted current-main deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+          echo "Dispatching restricted deploy_main for current main ${latest}"
           gh workflow run server-ops.yml --ref main -f operation=deploy_main
-          echo 'Restricted deploy_main dispatched to BOOT VPS runner.'
