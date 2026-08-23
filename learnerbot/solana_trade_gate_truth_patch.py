@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import html
+from contextlib import closing
 from decimal import Decimal
 
 from . import solana_live_patch as _live
+from . import solana_position_wallet_binding_patch as _binding
 from . import solana_positive_edge_entry_gate_patch as _edge
 from . import solana_sibot as _sol
 from . import telegram_trade_blocker_health_patch as _trade
@@ -42,6 +44,62 @@ def _wallet_truth(app, tid: str, cfg: dict) -> dict:
     except Exception as exc:
         result["reason"] = f"{type(exc).__name__}: {str(exc)[:160]}"
     return result
+
+
+def _open_live_truth(app, tid: str) -> list[dict]:
+    """Read-only proof of the LIVE rows that can block recovery exclusivity."""
+    try:
+        with closing(_sol.connect(app)) as conn:
+            rows = [dict(row) for row in conn.execute(
+                """SELECT position_id,mint,token_amount_raw,entry_ts,updated_at,exit_reason
+                   FROM positions
+                   WHERE telegram_id=? AND status='OPEN' AND mode='LIVE'
+                   ORDER BY entry_ts""",
+                (str(tid),),
+            ).fetchall()]
+    except Exception:
+        return []
+    if not rows:
+        return []
+
+    addresses: list[str] = []
+    try:
+        store = SolanaWalletStore(app.csv_dir, app.data_dir)
+        seen = set()
+        for wallet in store.list_wallets(tid, enabled_only=False):
+            address = str(wallet.get("address") or "").strip()
+            if address and address not in seen:
+                seen.add(address)
+                addresses.append(address)
+    except Exception:
+        addresses = []
+
+    out = []
+    for row in rows:
+        mint = str(row.get("mint") or "").strip()
+        verified = bool(addresses and mint)
+        total_raw = 0
+        checked = 0
+        if verified:
+            for address in addresses:
+                try:
+                    total_raw += int(_binding._token_balance_for_address(app, address, mint))
+                    checked += 1
+                except Exception:
+                    verified = False
+                    break
+        out.append({
+            "position_id": str(row.get("position_id") or ""),
+            "mint": mint,
+            "recorded_raw": str(row.get("token_amount_raw") or "0"),
+            "verified": verified,
+            "verified_balance_raw": str(total_raw) if verified else "",
+            "wallets_checked": checked if verified else 0,
+            "entry_ts": int(row.get("entry_ts") or 0),
+            "updated_at": int(row.get("updated_at") or 0),
+            "exit_reason": str(row.get("exit_reason") or ""),
+        })
+    return out
 
 
 def gate_snapshot(app, tid: str) -> dict:
@@ -85,6 +143,7 @@ def gate_snapshot(app, tid: str) -> dict:
         "platform_reason": str(platform_reason or ""),
         "platform_metrics": platform_metrics or {},
         "recovery_canary": bool(recovery),
+        "open_live_positions": _open_live_truth(app, str(tid)),
         "leaders": leaders,
     }
 
@@ -127,6 +186,19 @@ def build_report_with_gate_truth(app, tid) -> str:
     lines.append(f"   <code>{html.escape(truth['platform_reason'][:200])}</code>")
     if truth.get("recovery_canary"):
         lines.append("   🟡 Recovery mode: one canary BUY may proceed if every other safety check passes.")
+
+    for position in (truth.get("open_live_positions") or [])[:3]:
+        pid = html.escape(position.get("position_id") or "")
+        mint = html.escape(position.get("mint") or "")
+        recorded = html.escape(position.get("recorded_raw") or "0")
+        if position.get("verified"):
+            verified = html.escape(position.get("verified_balance_raw") or "0")
+            balance_text = f"verified wallet raw <b>{verified}</b> across {int(position.get('wallets_checked') or 0)} wallet(s)"
+        else:
+            balance_text = "verified wallet raw <b>UNKNOWN</b> (RPC/wallet proof incomplete)"
+        lines.append(f"🔴 Open LIVE position: <code>{pid}</code>")
+        lines.append(f"   Mint: <code>{mint}</code>")
+        lines.append(f"   Recorded raw <b>{recorded}</b> • {balance_text}")
 
     leaders = truth.get("leaders") or []
     if not leaders:
