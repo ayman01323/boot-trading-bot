@@ -147,3 +147,47 @@ jobs:
             tests/test_three_agent_strategy_contract.py \
             tests/test_strategy_canary.py \
             tests/test_vps_deploy_attestation.py
+
+  research-worker-self-hosted:
+    name: Research worker isolated VPS validation
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      CI_VENV: /tmp/boot-research-worker-ci-${{ github.run_id }}
+    steps:
+      - name: Check out tested ref without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Prepare isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$CI_VENV"
+          python3 -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+      - name: Compile research boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m py_compile \
+            learnerbot/strategy_external_research.py \
+            learnerbot/strategy_research_worker.py \
+            learnerbot/strategy_research_ingestion.py \
+            learnerbot/strategy_source_extension.py \
+            tests/test_strategy_external_research.py \
+            tests/test_strategy_research_worker.py
+      - name: Run isolated research and compatibility tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m pytest -x -vv \
+            tests/test_strategy_external_research.py \
+            tests/test_strategy_research_worker.py \
+            tests/test_strategy_lab_cross_chain_research.py
+      - name: Clean isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$CI_VENV"
