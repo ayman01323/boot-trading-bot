@@ -105,7 +105,7 @@ The executor does not accept arbitrary shell commands. Repository mutation, depl
 
 The GitHub mailbox is **not** a second normal messaging system. It is fallback/audit only.
 
-A mailbox commit proves only that a handoff was written to Git. It does not prove recipient receipt. Correlated delivery evidence is still required before reporting receipt.
+Do not claim a Git mailbox commit itself proves recipient receipt. A mailbox commit proves only that a handoff was written to Git; correlated delivery evidence is still required before reporting receipt.
 
 ## Runtime
 
