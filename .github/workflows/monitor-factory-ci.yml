@@ -1,0 +1,66 @@
+name: Monitor Factory CI
+
+on:
+  pull_request:
+    paths:
+      - 'learnerbot/monitor_factory_pipeline.py'
+      - 'scripts/monitor_factory_operations.py'
+      - 'tests/test_monitor_factory_pipeline.py'
+      - 'tests/test_monitor_factory_operations_contract.py'
+      - '.github/workflows/monitor-factory-operations.yml'
+      - '.github/workflows/monitor-factory-ci.yml'
+      - 'docs/MONITOR_FACTORY_*.md'
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/monitor_factory_pipeline.py'
+      - 'scripts/monitor_factory_operations.py'
+      - 'tests/test_monitor_factory_pipeline.py'
+      - 'tests/test_monitor_factory_operations_contract.py'
+      - '.github/workflows/monitor-factory-operations.yml'
+      - '.github/workflows/monitor-factory-ci.yml'
+      - 'docs/MONITOR_FACTORY_*.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: monitor-factory-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-tests:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    env:
+      VENV: /tmp/monitor-factory-ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build isolated test environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+
+      - name: Compile new control-plane modules
+        run: "$VENV/bin/python" -m py_compile learnerbot/monitor_factory_pipeline.py scripts/monitor_factory_operations.py
+
+      - name: Run focused safety and contract tests
+        run: "$VENV/bin/python" -m pytest -q tests/test_monitor_factory_pipeline.py tests/test_monitor_factory_operations_contract.py
+
+      - name: Ensure tests did not mutate tracked files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain)"
+
+      - name: Clean isolated environment
+        if: always()
+        run: rm -rf "$VENV"
