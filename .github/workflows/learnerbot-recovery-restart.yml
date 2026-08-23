@@ -1,0 +1,26 @@
+name: Learnerbot Recovery Restart
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/learnerbot-recovery-restart.trigger'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: learnerbot-recovery-restart
+  cancel-in-progress: false
+
+jobs:
+  restart:
+    name: Restart learnerbot through restricted wrapper
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Restart learnerbot
+        run: sudo /usr/local/sbin/restart-boot-trading-bot
+
+      - name: Verify learnerbot status
+        run: sudo /usr/local/sbin/status-boot-trading-bot
