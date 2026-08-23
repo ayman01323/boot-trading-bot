@@ -1,0 +1,56 @@
+name: One-Time Gemini CLI to GPT Live Test
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-gemini-cli-to-gpt.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  gemini-cli-to-gpt:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Check out test snapshot without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify live Strategy Factory without changing services
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet learnerbot
+          test -s /var/tmp/boot/ai_agent_ws_status.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json', encoding='utf-8'))
+          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d
+          assert 'gemini' in (d.get('workers') or []), d
+          assert 'gpt' in (d.get('workers') or []), d
+          print('strategy_factory_gemini_gpt_workers=READY')
+          PY
+
+      - name: Gemini CLI reads instructions and messages GPT
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/local/lib/node-v24/bin:$PATH"
+          test -x /usr/local/lib/node-v24/bin/gemini
+          test -r /root/.gemini/.env
+          set -a
+          source /root/.gemini/.env
+          set +a
+          export GEMINI_CLI_TRUST_WORKSPACE=true
+          utc_now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          prompt="Read GEMINI.md and AI_AGENT_MESSAGING.md from this checkout. You are the Strategy Factory Gemini agent on the VPS. Use the local Strategy Factory sender command to message GPT from Gemini. Ask GPT exactly: The VPS current UTC timestamp is ${utc_now}. What is the corresponding current time in Tokyo? Reply with the time and JST only. Wait for the correlated GPT reply, then print only a short line beginning GPT_REPLY=. Do not edit files, deploy, restart services, trade, change LIVE/ARMED, risk or capital, access wallets/signing, use sudo, or reveal secrets."
+          gemini --approval-mode=default -p "$prompt"
+
+      - name: Safety summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'One-time communication-only test. No deploy/restart/trading/wallet/risk/capital action is authorised.'
