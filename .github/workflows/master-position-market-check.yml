@@ -9,10 +9,14 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: master-position-market-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   market:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/master-position-lookup'
-    runs-on: [self-hosted, linux, x64, boot-vps]
+    runs-on: ubuntu-latest
     timeout-minutes: 8
     env:
       JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
@@ -49,7 +53,6 @@ jobs:
           out.append(f'- Historical BUY signature: `{BUY_SIG}`')
           out.append(f'- Historical amount received: **{BOUGHT_UI:.6f} tokens**')
 
-          # Token decimals from public Solana RPC.
           decimals=None
           try:
               supply, err=rpc('getTokenSupply',[MINT,{'commitment':'confirmed'}])
@@ -61,7 +64,6 @@ jobs:
           except Exception as e:
               out.append(f'- Token decimals RPC error: `{type(e).__name__}: {str(e)[:240]}`')
 
-          # DEX Screener current pools.
           pairs=[]
           try:
               _, data=get_json('https://api.dexscreener.com/token-pairs/v1/solana/'+MINT)
@@ -86,29 +88,20 @@ jobs:
               if p.get('url'):
                   out.append(f"  - {p.get('url')}")
 
-          # Fetch original buy transaction programmes/accounts (public data only).
           try:
               tx, err=rpc('getTransaction',[BUY_SIG,{'encoding':'jsonParsed','maxSupportedTransactionVersion':0,'commitment':'confirmed'}])
               if err:
                   out.append(f'- BUY transaction RPC error: `{str(err)[:300]}`')
               elif tx:
-                  keys=[]
-                  for x in (((tx.get('transaction') or {}).get('message') or {}).get('accountKeys') or []):
-                      keys.append(str(x.get('pubkey')) if isinstance(x,dict) else str(x))
                   logs=((tx.get('meta') or {}).get('logMessages') or [])
-                  programmes=[]
-                  for line in logs:
-                      if 'Program ' in str(line):
-                          programmes.append(str(line)[:220])
+                  programmes=[str(line)[:220] for line in logs if 'Program ' in str(line)]
                   out.append('')
                   out.append('### Original BUY route evidence')
-                  out.append(f'- Account keys in transaction: **{len(keys)}**')
                   for line in programmes[:20]:
                       out.append(f'  - `{line}`')
           except Exception as e:
               out.append(f'- BUY transaction lookup error: `{type(e).__name__}: {str(e)[:240]}`')
 
-          # Use exactly the bot's quote-only Jupiter Swap V2 endpoint and safe slices.
           out.append('')
           out.append('### Current Jupiter exit quotes')
           api_key=os.getenv('JUPITER_API_KEY','').strip()
@@ -138,7 +131,7 @@ jobs:
                       out.append(f'- **{pct}%** raw `{amount}` → `{type(e).__name__}: {str(e)[:240]}`')
 
           out.append('')
-          out.append('_Read-only: public RPC/DEX/Jupiter quote calls only. No transaction was built, signed or broadcast._')
+          out.append('_Read-only public RPC/DEX/Jupiter quote calls only. No transaction was built, signed or broadcast._')
           Path('/tmp/master-position-market.md').write_text('\n'.join(out),encoding='utf-8')
           PY
 
