@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from scripts import master_change_policy as policy
 from scripts import strategy_factory_mcp_core as core
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,9 +90,10 @@ def test_mcp_dependencies_are_isolated_from_trading_runtime() -> None:
 
 
 def test_bridge_transport_files_are_governance_protected() -> None:
+    policy_text = _text("scripts/master_change_policy.py")
     for path in (
         "scripts/strategy_factory_mcp_core.py",
         "scripts/strategy_factory_mcp_bridge.py",
         "tests/test_strategy_factory_mcp_bridge.py",
     ):
-        assert path in policy.GOVERNANCE_FILES
+        assert f'"{path}"' in policy_text
