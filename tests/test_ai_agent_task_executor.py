@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,3 +90,17 @@ def test_store_tracks_task_progress_and_terminal_result(tmp_path: Path) -> None:
 
     pending = store.pending_replies_for_sender("gpt")
     assert [item["message_id"] for item in pending] == ["gpt-to-claude-1"]
+
+
+def test_ws_sender_direct_cli_imports_from_repo_root() -> None:
+    repo = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, "scripts/ai_agent_ws_send.py", "--help"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "WebSocket bus" in proc.stdout
