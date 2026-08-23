@@ -11,6 +11,7 @@ on:
       - 'learnerbot/grok_provider.py'
       - 'learnerbot/master_change_cost_router_patch.py'
       - 'learnerbot/master_change_council.py'
+      - 'learnerbot/strategy_factory_council_transport_patch.py'
       - 'learnerbot/telegram_grok_council_patch.py'
       - 'learnerbot/telegram_master_change_patch.py'
       - 'learnerbot/telegram_ai_ops_verification_patch.py'
@@ -28,6 +29,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ai-cost-router-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   cost-router-tests:
