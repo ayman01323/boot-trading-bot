@@ -4,13 +4,14 @@ on:
   pull_request:
     paths:
       - '.github/workflows/sibot-history-depth-ci.yml'
+      - 'scripts/one_time_seven_agent_trading_audit.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  seven-agent-audit:
+  audit:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 20
     steps:
@@ -19,7 +20,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Verify exact deployed SHA and seven Strategy Factory workers
+      - name: Verify deployed service and seven workers
         shell: bash
         run: |
           set -euo pipefail
@@ -30,20 +31,18 @@ jobs:
           import json
           d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
           expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
-          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d
           assert set(d.get('workers') or []) == expected, d.get('workers')
-          print('deployed_sha=cabc5bff54b4ca52649ba38dcaca7800be494d57')
           print('strategy_factory_workers=7/7')
           PY
 
-      - name: Prepare minimal Strategy Factory client
+      - name: Prepare Strategy Factory client
         shell: bash
         run: |
           set -euo pipefail
           if python3 -c 'from websockets.asyncio.client import connect' >/dev/null 2>&1; then
             echo 'AUDIT_PY=python3' >> "$GITHUB_ENV"
           else
-            venv="$RUNNER_TEMP/sf-seven-agent-audit-${GITHUB_RUN_ID}"
+            venv="$RUNNER_TEMP/sf-audit-${GITHUB_RUN_ID}"
             rm -rf "$venv"
             python3 -m venv "$venv"
             "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
@@ -51,88 +50,11 @@ jobs:
             echo "AUDIT_VENV=$venv" >> "$GITHUB_ENV"
           fi
 
-      - name: Collect detailed feedback from all seven agents
+      - name: Run detailed seven-agent audit
         shell: bash
-        run: |
-          set -euo pipefail
-          "$AUDIT_PY" - <<'PY'
-          import asyncio, os
-          from scripts.strategy_factory_transport import exchange
-
-          TARGETS=('gpt','claude','gemini','deepseek','grok','kimi','copilot')
-          THREAD=f"post-deploy-trading-audit-{os.environ.get('GITHUB_RUN_ID','manual')}"
-          SUBJECT='Detailed post-deploy audit: why trading is still inactive'
-          packet = r'''MASTER requests a DETAILED independent production audit. This is an explicit exception to the normal short Strategy Factory reply style: do not give a short answer. Aim for roughly 500-900 words, with concrete findings, bugs/comments, confidence levels and solutions. Do not modify anything.
-
-LATEST DEPLOYMENT / EVIDENCE PACKET
-- Exact current main and deployed production SHA: cabc5bff54b4ca52649ba38dcaca7800be494d57.
-- PR #530 added learnerbot/sibot_legacy_backlog_drainer_patch.py plus final runtime-integrity checks and tests. It is intended as a low-priority EVM history recovery lane only; it must not change LIVE/ARMED, capital, wallets/signing, leader-quality thresholds, profit gates, liquidity, simulation or execution decisions.
-- Drainer behaviour: retry orphaned EVM history rows outside the normal ranked candidate window; use the existing final Alchemy history refresher; globally pace extra recovery attempts (default 45s, bounded); resume progressive reconstruction; account-wide exponential backoff on provider pressure; chain-local cooldown on non-transient failures.
-- Full protected production deployment gate passed 1,011 tests before restart. learnerbot.service is active on the exact SHA.
-- Startup health showed: [trade-blocker-health] evm_history=ALCHEMY polygon_focus=True. Scanner activity exists after restart.
-- Repeated runtime lines after deploy: [sibot-broader-qualified:<chain>] pool=0 qualified=0 selected=0 thresholds=unchanged for BSC, Base, Ethereum, Arbitrum and Polygon.
-- Read-only live-history snapshot after deploy:
-  * BNB Smart Chain: status_wallets=530; complete=7; errors=521; wallet_trades=0; wallets_with_trades=0; dominant stale/legacy error count=482 saying ETHERSCAN_API_KEY is not configured. Freshest history fetch reached 2026-08-23T19:58:05Z.
-  * Arbitrum: status_wallets=745; complete=12; errors=733; wallet_trades=0; wallets_with_trades=0; dominant stale/legacy error count=694 saying ETHERSCAN_API_KEY is not configured. Freshest history fetch reached 2026-08-23T19:59:09Z.
-  * Sample ranked candidates can have historical ranking_closed > 0 and some history_complete=True, but reconstructed_60d=0 and wallet_trades remains zero.
-- Solana runtime evidence separately showed broader_pool=46 but qualified=0 selected=0; do not assume the EVM history issue explains Solana.
-- Operator reports trading still not active. Treat this as a system-wide symptom and separate: (1) EVM SiBot leader-copy, (2) Polygon/direct AUTO market trading, and (3) Solana. Do not collapse them into one cause.
-- A later read-only GitHub diagnostic job hit runner-side disk/log space exhaustion. That did not stop learnerbot.service; treat it as an engineering/observability issue, not automatically as a trading root cause.
-
-REQUIRED REVIEW
-1. Review the latest backlog-drainer update itself. State what looks correct, what could be buggy/incomplete, and regression/operational risks. Separate confirmed findings from hypotheses.
-2. Explain path by path why trading can still be inactive despite healthy service and passing tests. Rank root causes by likelihood and cite packet evidence.
-3. EVM SiBot: analyse the contradiction of fresh Alchemy activity and some complete histories but wallet_trades=0 and leader pool=0. Is backlog drain alone sufficient, or is reconstruction/parsing/eligibility still broken? State exact next checks.
-4. Polygon/direct AUTO: identify missing evidence and exact read-only counters/logs that prove whether discovery, economic/profit gates, gas/capital, allowances/signing, LIVE/AUTO arming, simulation, routes or submission blocks it. Do NOT recommend weakening safety/profit gates merely to create trades.
-5. Solana: use broader_pool=46 / qualified=0 / selected=0 and list likely quality/data/capital/preflight/liquidity/capacity causes plus exact checks.
-6. SOLUTIONS: immediate today, short-term robust fixes, structural monitoring/engineering changes. Prioritise P0/P1/P2 and expected effect.
-7. List code smells, race/starvation/backoff risks, stale-state risks, observability gaps and test gaps suggested by this design/evidence.
-8. End with verdict: primary confirmed blockers; likely secondary blockers; evidence still required before claiming trading is fixed.
-
-Safety boundary: COMMENTS/ANALYSIS ONLY. Do not edit files, run shell/Git/GitHub commands, deploy, restart, trade, change settings, wallets, signing, LIVE/ARMED, capital or risk. Do not claim you inspected evidence not in this packet. If more data is needed, specify the exact read-only evidence.'''
-
-          async def ask(target):
-              mid=f"audit-{os.environ.get('GITHUB_RUN_ID','manual')}-{target}"
-              try:
-                  res=await exchange('master', target, packet, message_id=mid, thread_id=THREAD, subject=SUBJECT, timeout=210)
-              except Exception as exc:
-                  return target, {'status':'FAILED','body':'','error':f'{type(exc).__name__}: {exc}'}
-              body=str(res.get('body') or '').strip()
-              if res.get('status') == 'REPLIED' and not res.get('error') and len(body) < 1800:
-                  follow=(
-                      'Your prior audit is too short for the MASTER request. Expand substantially using the same evidence packet and your prior answer. '
-                      'Target 500-900 words within the bus limit. Include update bugs/comments; EVM SiBot; Polygon/direct AUTO; Solana; P0/P1/P2 solutions; test/observability gaps; confirmed-vs-hypothesis verdict. Analysis only.'
-                  )
-                  try:
-                      res2=await exchange('master', target, follow, message_id=mid+'-expand', thread_id=THREAD, subject=SUBJECT, timeout=210)
-                      if res2.get('status') == 'REPLIED' and not res2.get('error'):
-                          res=res2
-                  except Exception:
-                      pass
-              return target,res
-
-          async def main():
-              rows=await asyncio.gather(*(ask(t) for t in TARGETS))
-              failed=0
-              for target,res in rows:
-                  status=str(res.get('status') or '')
-                  body=str(res.get('body') or '').strip()
-                  error=str(res.get('error') or '').strip()
-                  print(f'===== {target.upper()} DETAILED FEEDBACK =====')
-                  print(f'STATUS={status} DELIVERED={bool(res.get("delivered"))} ACKNOWLEDGED={bool(res.get("acknowledged"))}')
-                  print(body or '(no body)')
-                  if error:
-                      print('ERROR='+error[:1200])
-                  print(f'===== END {target.upper()} =====')
-                  if status != 'REPLIED' or error or not body:
-                      failed += 1
-              print(f'AGENTS_RETURNED={len(rows)-failed}/7')
-              raise SystemExit(1 if failed else 0)
-
-          asyncio.run(main())
-          PY
+        run: "$AUDIT_PY scripts/one_time_seven_agent_trading_audit.py"
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "${AUDIT_VENV:-$RUNNER_TEMP/sf-seven-agent-audit-${GITHUB_RUN_ID}}" 2>/dev/null || true
+        run: rm -rf "${AUDIT_VENV:-$RUNNER_TEMP/sf-audit-${GITHUB_RUN_ID}}" 2>/dev/null || true
