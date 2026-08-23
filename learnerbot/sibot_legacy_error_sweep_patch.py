@@ -9,8 +9,11 @@ from . import sibot as _sibot
 _PREV_NEXT_HISTORY_WALLET = _sibot._next_history_wallet
 
 # Conservative default: at most one otherwise-orphaned legacy Etherscan wallet per
-# chain every 15 minutes, and only when the normal ranked/progress queue has nothing
-# to do. Ranked candidate rows are migrated faster by sibot_alchemy_retry_queue_patch.
+# chain every 15 minutes. The durable cooldown, rather than primary-queue idleness,
+# bounds this migration work. This matters because a ranked/progress queue can stay
+# permanently busy; if legacy migration is fallback-only, old rows outside the
+# candidate window can be starved forever. Ranked candidate Etherscan rows are still
+# migrated faster by sibot_alchemy_retry_queue_patch.
 _DEFAULT_SWEEP_SECONDS = 15 * 60
 _MIN_SWEEP_SECONDS = 5 * 60
 _MAX_SWEEP_SECONDS = 60 * 60
@@ -27,10 +30,10 @@ def _next_legacy_error_wallet(app, chain, now_epoch: int | None = None) -> str |
     """Return one otherwise-orphaned pre-Alchemy Etherscan error row.
 
     This is deliberately independent of the top history_candidate_wallets window.
-    It never preempts ranked candidates because callers invoke it only after the
-    fully patched primary queue returns None. All Etherscan-origin errors are
-    migration backlog once the Alchemy provider stack is installed, including
-    missing/invalid keys and chain-plan NOTOK responses.
+    All Etherscan-origin errors are migration backlog once the Alchemy provider
+    stack is installed, including missing/invalid keys and chain-plan NOTOK
+    responses. The per-chain timestamp is persisted before the wallet is handed to
+    the refresher, so restarts or refresh exceptions cannot create a tight loop.
     """
     now = int(time.time()) if now_epoch is None else int(now_epoch)
     key = f"{_STATE_PREFIX}:{int(chain.chain_id)}"
@@ -56,10 +59,15 @@ def _next_legacy_error_wallet(app, chain, now_epoch: int | None = None) -> str |
 
 
 def _next_history_wallet(app, chain):
-    primary = _PREV_NEXT_HISTORY_WALLET(app, chain)
-    if primary:
-        return primary
-    return _next_legacy_error_wallet(app, chain)
+    # Check the cooldown-gated legacy sweep before the ranked/progress queue.
+    # On almost every worker pass the durable cooldown returns None immediately
+    # and the primary queue proceeds unchanged. When the sweep is due, allowing
+    # one legacy row to win prevents indefinite starvation behind a queue that
+    # may never become idle.
+    legacy = _next_legacy_error_wallet(app, chain)
+    if legacy:
+        return legacy
+    return _PREV_NEXT_HISTORY_WALLET(app, chain)
 
 
 def install() -> None:
@@ -68,7 +76,7 @@ def install() -> None:
     _sibot._next_history_wallet = _next_history_wallet
     _sibot._legacy_error_sweep_patch_installed = True
     print(
-        "[sibot-legacy-error-sweep] fallback_only=true per_chain_cooldown=15m "
+        "[sibot-legacy-error-sweep] checked_first=true per_chain_cooldown=15m "
         "all_etherscan_origin_errors=true"
     )
 
