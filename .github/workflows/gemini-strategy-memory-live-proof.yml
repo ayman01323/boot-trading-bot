@@ -1,0 +1,63 @@
+name: Gemini Strategy Factory Memory Live Proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/gemini-strategy-memory-live-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Build isolated sender environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/gemini-strategy-memory-proof"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Seed one unique GPT to Gemini exchange
+        shell: bash
+        run: |
+          set -euo pipefail
+          seed='STRATEGY_MEMORY_SEED_20260823_1055. Reply only: STRATEGY_MEMORY_SEED_ACK_20260823_1055'
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message "$seed" \
+            --timeout 180 | tee /tmp/gemini-memory-seed.txt
+          grep -q '"status": "ACKNOWLEDGED"' /tmp/gemini-memory-seed.txt
+          grep -q '"status": "REPLIED"' /tmp/gemini-memory-seed.txt
+          grep -q 'STRATEGY_MEMORY_SEED_ACK_20260823_1055' /tmp/gemini-memory-seed.txt
+
+      - name: Prove Gemini recalls the immediately prior GPT message
+        shell: bash
+        run: |
+          set -euo pipefail
+          question='Using only your Strategy Factory conversation memory, quote the exact immediately previous message GPT sent you before this message. Do not infer or invent it.'
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message "$question" \
+            --timeout 180 | tee /tmp/gemini-memory-recall.txt
+          grep -q '"status": "ACKNOWLEDGED"' /tmp/gemini-memory-recall.txt
+          grep -q '"status": "REPLIED"' /tmp/gemini-memory-recall.txt
+          grep -q 'STRATEGY_MEMORY_SEED_20260823_1055' /tmp/gemini-memory-recall.txt
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$VENV"
