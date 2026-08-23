@@ -27,13 +27,20 @@ jobs:
           fetch-depth: 50
           persist-credentials: false
 
-      - name: Copy audit runner from PR head only
+      - name: Check out PR audit helper separately
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: .audit-helper
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Copy audit runner from PR helper checkout
         shell: bash
-        env:
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          git show "${HEAD_SHA}:scripts/kimi_full_audit_once.py" > /tmp/kimi_full_audit_once.py
+          cp .audit-helper/scripts/kimi_full_audit_once.py /tmp/kimi_full_audit_once.py
+          test -s /tmp/kimi_full_audit_once.py
 
       - name: Prepare isolated Python environment
         shell: bash
