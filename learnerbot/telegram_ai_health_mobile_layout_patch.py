@@ -11,52 +11,54 @@ from . import cli as _cli
 from .ai_ops_status import master_chat_ids
 
 _PREV_APP = _cli._app
-_SEND_MARKER = ".ai_health_mobile_layout_v2_sent"
+_SEND_MARKER = ".ai_health_mobile_layout_v3_sent"
 _SEND_LOCK = threading.Lock()
 _SEND_STARTED = False
 
 
 def _short_status(status: str) -> tuple[str, str]:
-    """Turn diagnostic health wording into mobile-width primary/secondary lines."""
+    """Turn diagnostic health wording into compact Telegram-friendly text."""
     text = str(status or "").strip()
 
     if text == "Worker connected":
-        return "Connected", ""
+        return "Online", ""
     if text == "Worker disconnected":
-        return "Disconnected", ""
+        return "Offline", ""
     if text == "Worker connected · API working":
-        return "Connected", "API OK now"
+        return "Online", "API OK"
     if text == "Worker connected · API/provider problem":
-        return "Connected", "API problem"
+        return "Online", "API problem"
     if text.startswith("Worker connected · API last OK ") and text.endswith(" ago"):
         age = text[len("Worker connected · API last OK ") : -len(" ago")]
-        return "Connected", f"API OK · {age} ago"
+        return "Online", f"API OK {age}"
     if text.startswith("Worker connected · API last problem ") and text.endswith(" ago"):
         age = text[len("Worker connected · API last problem ") : -len(" ago")]
-        return "Connected", f"API problem · {age} ago"
+        return "Online", f"API problem {age}"
 
     if text == "API working":
         return "API OK", ""
     if text == "API/provider problem":
         return "API problem", ""
     if text == "API status unavailable":
-        return "Needs verification", "API status unavailable"
+        return "Verify", "API unavailable"
     if text.startswith("API not checked for "):
         detail = text[len("API not checked for ") :]
         age, _, last = detail.partition(" · ")
-        return "Needs verification", f"{last or 'API stale'} · {age} ago"
+        last = "last OK" if "OK" in last else (last or "API stale")
+        return "Verify", f"{last} {age}"
     if text.startswith("API unverified for "):
         detail = text[len("API unverified for ") :]
         age, _, last = detail.partition(" · ")
-        return "API unverified", f"{last or 'No fresh check'} · {age}"
+        last = "last OK" if "OK" in last else (last or "unverified")
+        return "API unverified", f"{last} {age}"
 
     replacements = {
         "Agent working": "Working",
         "Agent partly verified": "Partly verified",
-        "Agent state mixed": "Mixed state",
-        "Agent problem": "Agent problem",
+        "Agent state mixed": "Mixed",
+        "Agent problem": "Problem",
         "Agent state pending": "Pending",
-        "Assigned": "Connected",
+        "Assigned": "Online",
         "Assignment pending": "Assignment pending",
         "Assignment/auth problem": "Assignment/auth problem",
     }
@@ -64,7 +66,7 @@ def _short_status(status: str) -> tuple[str, str]:
 
 
 def provider_health_text(engineering: dict, strategy: dict) -> str:
-    """Mobile-width agent health: short primary line plus optional API sub-line."""
+    """One compact row per agent; no italic sub-lines or wasted vertical space."""
     preflight = _truth._fresh_preflight()
     runtime = _truth._runtime_connections()
     rows: list[tuple[str, str, str, str]] = []
@@ -80,13 +82,12 @@ def provider_health_text(engineering: dict, strategy: dict) -> str:
 
     lines = [
         _compact._AI_HEALTH_HEADING,
-        f"{overall} <b>{healthy} healthy</b> | {verify} verify | {issues} issues",
+        f"{overall} <b>{healthy} healthy</b> · {verify} verify · {issues} issues",
         "",
     ]
     for provider, icon, primary, secondary in rows:
-        lines.append(f"{icon} {_compact._LABELS[provider]} — {primary}")
-        if secondary:
-            lines.append(f"↳ <i>{secondary}</i>")
+        tail = f" · {secondary}" if secondary else ""
+        lines.append(f"{icon} {_compact._LABELS[provider]} — {primary}{tail}")
     return "\n".join(lines)
 
 
@@ -96,9 +97,7 @@ def lane_summary_text(lane: str, health: dict) -> str:
     if stale:
         return "\n".join([
             heading,
-            "",
-            "🟡 <b>Snapshot stale</b>",
-            "↳ Refresh needed",
+            "🟡 <b>Snapshot stale</b> · refresh needed",
         ])
 
     rows = _truth._classified_rows(lane, health)
@@ -108,7 +107,6 @@ def lane_summary_text(lane: str, health: dict) -> str:
     issues = len(rows) - working - pending
     lines = [
         heading,
-        "",
         f"{overall} <b>{working} working · {pending} in progress · {issues} issues</b>",
     ]
     for provider, icon, status in rows:
@@ -130,9 +128,7 @@ def factory_summary_text(health: dict) -> str:
     if idle:
         return "\n".join([
             _compact._STRATEGY_FACTORY_HEADING,
-            "",
-            "⚪ <b>Idle</b>",
-            "↳ No active request",
+            "⚪ <b>Idle</b> · no active request",
         ])
 
     rows = _truth._classified_rows("strategy_room", health)
@@ -142,7 +138,6 @@ def factory_summary_text(health: dict) -> str:
     issues = len(rows) - working - pending
     lines = [
         _compact._STRATEGY_FACTORY_HEADING,
-        "",
         f"{overall} <b>{working} working · {pending} in progress · {issues} issues</b>",
     ]
     for provider, icon, status in rows:
@@ -152,14 +147,14 @@ def factory_summary_text(health: dict) -> str:
 
 
 def lane_text(lane: str, health: dict | None = None) -> str:
-    """Dedicated drill-down with spacing; provider/API health stays out of this lane."""
+    """Dedicated drill-down: compact typography while retaining all agent detail."""
     health = health if health is not None else _compact._lane_health(lane)
     heading = _compact._ENGINEERING_HEADING if lane == "engineering" else _compact._STRATEGY_HEADING
     rows = _truth._classified_rows(lane, health)
-    lines = [heading, ""]
+    lines = [heading]
     stale = _truth._review_stale_reason(lane, health)
     if stale:
-        lines += ["🟡 <b>Snapshot stale</b>", "↳ Historical detail below", ""]
+        lines.append("🟡 Snapshot stale · historical detail")
     for provider, icon, status in rows:
         lines.append(f"{icon} {_compact._LABELS[provider]} — {status}")
     return "\n".join(lines)
@@ -168,7 +163,7 @@ def lane_text(lane: str, health: dict | None = None) -> str:
 def strategy_room_text(health: dict | None = None) -> str:
     health = health if health is not None else _compact._strategy_room_health()
     rows = _truth._classified_rows("strategy_room", health)
-    lines = [_compact._STRATEGY_FACTORY_HEADING, ""]
+    lines = [_compact._STRATEGY_FACTORY_HEADING]
     for provider, icon, status in rows:
         lines.append(f"{icon} {_compact._LABELS[provider]} — {status}")
     return "\n".join(lines)
@@ -195,8 +190,6 @@ def _send_mobile_dashboard_once(app) -> None:
     if marker.exists() or not getattr(app, "telegram_bot_token", ""):
         return
 
-    # Wait until the broker has registered the production workers so the message
-    # cannot regress to stale review/API fallbacks just because startup is still racing.
     deadline = time.time() + 10
     while time.time() < deadline:
         runtime = _truth._runtime_connections()
@@ -210,16 +203,15 @@ def _send_mobile_dashboard_once(app) -> None:
         print("[ai-health-mobile] no MASTER chat available; update not sent")
         return
 
-    text = dashboard_text()
     _tg.send_to_chats(
         app.telegram_bot_token,
         chats,
-        text,
+        dashboard_text(),
         disable_notification=False,
     )
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(str(int(time.time())), encoding="utf-8")
-    print(f"[ai-health-mobile] sent updated dashboard to {len(chats)} MASTER chat(s)")
+    print(f"[ai-health-mobile] sent typography v3 dashboard to {len(chats)} MASTER chat(s)")
 
 
 def _start_one_shot_sender(app) -> None:
