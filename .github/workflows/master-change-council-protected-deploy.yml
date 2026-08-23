@@ -48,19 +48,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          found=false
+          telegram_ready=false
           for _ in 1 2 3 4 5 6; do
             sudo /usr/local/sbin/status-boot-trading-bot > /tmp/master-change-status.txt 2>&1 || true
             if grep -q '\[telegram-ai-ops-commands\] verified=true' /tmp/master-change-status.txt \
-               && grep -Eq 'expected=[^[:space:]]*aichange[^[:space:]]*aicost' /tmp/master-change-status.txt \
-               && grep -q '\[ai-agent-ws\] embedded broker active' /tmp/master-change-status.txt; then
-              found=true
+               && grep -Eq 'expected=[^[:space:]]*aichange[^[:space:]]*aicost' /tmp/master-change-status.txt; then
+              telegram_ready=true
               break
             fi
             sleep 3
           done
           cat /tmp/master-change-status.txt
-          [[ "$found" == true ]]
+          [[ "$telegram_ready" == true ]]
+
+          # Verify the current WebSocket runtime directly. Do not depend on a
+          # historical journal marker being present in the bounded status tail.
           python3 - <<'PY'
           import json,socket
           with socket.create_connection(('127.0.0.1',8765),timeout=2):
@@ -72,9 +74,16 @@ jobs:
           if p.get('state') not in {'ACTIVE','EXTERNAL'}:
               raise SystemExit(f'WebSocket not active: {p}')
           required={'gpt','claude','gemini','deepseek','copilot'}
-          if not required.issubset(set(p.get('workers') or [])):
+          workers=set(p.get('workers') or [])
+          if not required.issubset(workers):
               raise SystemExit(f'missing WebSocket workers: {p}')
-          print(json.dumps(p,sort_keys=True))
+          print(json.dumps({
+              'websocket_verified': True,
+              'state': p.get('state'),
+              'host': p.get('host'),
+              'port': p.get('port'),
+              'workers': sorted(workers),
+          },sort_keys=True))
           PY
 
       - name: Publish deployment result
@@ -99,6 +108,7 @@ jobs:
               'full_repo_test_gate':'deploy-boot-trading-bot',
               'telegram_master_commands':['aichange','aicost'],
               'websocket_endpoint':'ws://127.0.0.1:8765',
+              'websocket_verification':'direct_socket_and_runtime_status',
               'cost_router_levels':[0,1,2,3,4],
               'cost_budget_enforced_by_default':True,
               'routing_model_calls':0,
