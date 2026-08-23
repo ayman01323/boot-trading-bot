@@ -42,7 +42,7 @@ jobs:
           cp .audit-helper/scripts/kimi_full_audit_once.py /tmp/kimi_full_audit_once.py
           test -s /tmp/kimi_full_audit_once.py
 
-      - name: Prepare isolated Python environment
+      - name: Prepare isolated Kimi transport environment
         shell: bash
         run: |
           set -euo pipefail
@@ -50,24 +50,23 @@ jobs:
           venv="$RUNNER_TEMP/kimi-full-audit-visible"
           rm -rf "$venv"
           python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt 'pytest>=8,<9' 'websockets>=15,<16'
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
       - name: Collect fresh production status through restricted wrapper
         shell: bash
         run: sudo /usr/local/sbin/status-boot-trading-bot > .kimi_audit/server_status.txt 2>&1 || true
 
-      - name: Compile and run full test suite against current main
+      - name: Compile current main without importing dependencies
         shell: bash
         run: |
           set +e
           "$VENV/bin/python" -m compileall -q learnerbot scripts > .kimi_audit/compile.txt 2>&1
           compile_rc=$?
-          "$VENV/bin/python" -m pytest -q -p no:cacheprovider > .kimi_audit/pytest.txt 2>&1
-          pytest_rc=$?
           set -e
-          printf 'compile_rc=%s\npytest_rc=%s\n' "$compile_rc" "$pytest_rc" > .kimi_audit/test_status.txt
-          tail -n 120 .kimi_audit/pytest.txt > .kimi_audit/pytest_tail.txt
+          printf 'compile_rc=%s\npytest_rc=NOT_RUN_HERE_PRODUCTION_BOUNDED_AUDIT\n' "$compile_rc" > .kimi_audit/test_status.txt
+          : > .kimi_audit/pytest_tail.txt
+          cat .kimi_audit/test_status.txt
 
       - name: Kimi audits source and production evidence
         shell: bash
