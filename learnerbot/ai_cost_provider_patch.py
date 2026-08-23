@@ -5,6 +5,11 @@ import os
 from . import ai_cost_router as _cost
 from . import ai_council_http_patch as _base
 
+# Preserve the already-installed HTTP provider implementation before replacing
+# the public hook with the budget gate. The wrapper normally calls this saved
+# implementation, never itself.
+_ORIGINAL_CALL_PROVIDER = _base.call_provider
+
 
 def _model(provider: str) -> str:
     provider = str(provider or "").lower().strip()
@@ -46,6 +51,16 @@ def _estimated_output_tokens(provider: str) -> int:
         return 2400
 
 
+def _underlying_provider_call(provider: str, prompt: str) -> tuple[int, str, str]:
+    # Unit tests and diagnostics historically monkeypatch
+    # ai_council_http_patch.call_provider. Honour such an explicit replacement,
+    # while avoiding recursion during normal runtime where the public hook is us.
+    current = _base.call_provider
+    if current is not call_provider:
+        return current(provider, prompt)
+    return _ORIGINAL_CALL_PROVIDER(provider, prompt)
+
+
 def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
     """Budget-gated wrapper around the existing provider implementation.
 
@@ -73,7 +88,7 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
         return 95, "", f"AI Cost Router blocked provider call: {ticket.reason}"
 
     try:
-        rc, out, err = _base.call_provider(provider, prompt)
+        rc, out, err = _underlying_provider_call(provider, prompt)
     except Exception as exc:
         _cost.finish_call(ticket, success=False, error=f"{type(exc).__name__}: {exc}")
         raise
@@ -84,9 +99,11 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
 
 
 def install() -> None:
-    # Keep modules that resolve learnerbot.ai_council.call_provider dynamically on
-    # the same budget-gated path. Modules with direct imports use this wrapper
-    # explicitly (WebSocket worker and MASTER change council).
+    # Keep the historical invariant required by the existing provider-patch
+    # regression: ai_council.call_provider and ai_council_http_patch.call_provider
+    # must be the same public function object. The actual HTTP implementation is
+    # retained privately in _ORIGINAL_CALL_PROVIDER above.
+    _base.call_provider = call_provider
     _base._council.call_provider = call_provider
 
 

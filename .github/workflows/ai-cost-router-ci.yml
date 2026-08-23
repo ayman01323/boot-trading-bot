@@ -16,6 +16,7 @@ on:
       - 'scripts/master_change_policy.py'
       - 'tests/test_ai_cost_router.py'
       - 'tests/test_master_change_council.py'
+      - 'tests/test_ai_council_http_patch.py'
       - 'docs/MASTER_TELEGRAM_CHANGE_COUNCIL.md'
   workflow_dispatch:
 
@@ -57,9 +58,10 @@ jobs:
             scripts/ai_mailbox_provider_relay.py \
             scripts/master_change_policy.py \
             tests/test_ai_cost_router.py \
-            tests/test_master_change_council.py
+            tests/test_master_change_council.py \
+            tests/test_ai_council_http_patch.py
 
-      - name: Run cost router and MASTER council regression tests
+      - name: Run cost router and provider compatibility regression tests
         env:
           AI_COST_TELEGRAM_ALERTS: '0'
           AI_COST_BUDGET_ENFORCE: '1'
@@ -68,7 +70,8 @@ jobs:
           set -euo pipefail
           "$VENV/bin/python" -m pytest -q \
             tests/test_ai_cost_router.py \
-            tests/test_master_change_council.py
+            tests/test_master_change_council.py \
+            tests/test_ai_council_http_patch.py
 
       - name: Remove isolated environment
         if: always()
