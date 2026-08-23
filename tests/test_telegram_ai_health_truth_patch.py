@@ -159,15 +159,18 @@ def test_master_operational_sections_are_compact_and_only_expand_issues(monkeypa
     factory_summary = truth.factory_summary_text(factory)
     dashboard = truth.dashboard_text(engineering, strategy, factory)
 
-    assert "🟡 <b>0 working · 6 in progress · 0 issues</b>" in engineering_summary
+    provider_count = len(truth._compact.PROVIDERS)
+    assert f"🟡 <b>0 working · {provider_count} in progress · 0 issues</b>" in engineering_summary
     assert engineering_summary.count(" — ") == 0
 
-    assert "🔴 <b>3 working · 1 in progress · 2 issues</b>" in strategy_summary
+    # The explicit strategy fixture contains one WAITING agent and omits Kimi,
+    # which is correctly represented as another in-progress provider.
+    assert "🔴 <b>3 working · 2 in progress · 2 issues</b>" in strategy_summary
     assert "🔴 DeepSeek — Model config" in strategy_summary
     assert "🟠 Grok — Pipeline failure" in strategy_summary
     assert strategy_summary.count(" — ") == 2
 
-    assert "🟡 <b>0 working · 6 in progress · 0 issues</b>" in factory_summary
+    assert f"🟡 <b>0 working · {provider_count} in progress · 0 issues</b>" in factory_summary
     assert factory_summary.count(" — ") == 0
 
     assert "First status = agent/provider" not in dashboard
