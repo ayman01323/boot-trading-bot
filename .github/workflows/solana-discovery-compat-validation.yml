@@ -1,0 +1,116 @@
+name: Solana Discovery Compatibility Validation
+
+on:
+  push:
+    branches:
+      - agent/solana-discovery-compat-ci
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    env:
+      CI_VENV: /tmp/solana-discovery-compat-${{ github.run_id }}
+      PYTHON_BIN: /bin/python3.12
+    steps:
+      - name: Checkout tested ref
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare isolated Python 3.12 environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$PYTHON_BIN" -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11)'
+          rm -rf "$CI_VENV"
+          "$PYTHON_BIN" -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+
+      - name: Compile runtime and tests
+        run: "$CI_VENV/bin/python" -m compileall -q learnerbot scripts tests
+
+      - name: Compatibility plus SHADOW trade proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m pytest -q \
+            tests/test_imports.py \
+            tests/test_main_import_order.py \
+            tests/test_telegram_trade_blocker_health.py \
+            tests/test_solana_leader_discovery_coverage.py \
+            tests/test_solana_shadow_trade_smoke.py
+
+      - name: Solana safety regression subset
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m pytest -q \
+            tests/test_solana_profit_guard.py \
+            tests/test_solana_live_canary.py \
+            tests/test_solana_execution_safety.py \
+            tests/test_solana_execution_validation.py \
+            tests/test_solana_worker_reliability.py \
+            tests/test_solana_runtime_composition.py \
+            tests/test_solana_positive_edge_entry_gate.py \
+            tests/test_solana_liquidity_fail_closed.py \
+            tests/test_solana_profit_first_live_correction.py
+
+      - name: Full Python suite
+        id: full_suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m pytest -q 2>&1 | tee /tmp/solana-full-suite.log
+
+      - name: Publish PASS result
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          summary="$(tail -n 5 /tmp/solana-full-suite.log | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+          gh pr comment 549 --repo "$GITHUB_REPOSITORY" --body "## Solana discovery compatibility validation — PASS
+
+Validated commit: \`${GITHUB_SHA}\`
+- Python: 3.12 isolated /tmp venv
+- compile: PASS
+- compatibility/import tests: PASS
+- deterministic SHADOW BUY proof: PASS (no signing/funds)
+- Solana safety subset: PASS
+- full pytest suite: PASS
+- summary: \`${summary}\`
+- no sudo, production write, wallet/signing or deploy step"
+
+      - name: Publish failure tail
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Solana discovery compatibility validation — FAIL"
+            echo
+            echo "Validated commit: \`${GITHUB_SHA}\`"
+            echo "A real test/provisioning step failed; production was not touched."
+            echo
+            echo '```text'
+            tail -n 120 /tmp/solana-full-suite.log 2>/dev/null || true
+            echo '```'
+          } > /tmp/validation-result.md
+          gh pr comment 549 --repo "$GITHUB_REPOSITORY" --body-file /tmp/validation-result.md
+
+      - name: Clean isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "$CI_VENV"

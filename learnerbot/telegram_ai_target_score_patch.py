@@ -154,3 +154,10 @@ install()
 # audited MASTER sender; it does not broaden broker recipients or permissions.
 from . import trading_pipeline_observability_patch as _trading_pipeline  # noqa: E402,F401
 from . import strategy_factory_service_sender_patch as _strategy_factory_sender  # noqa: E402,F401
+
+# Compatibility is loaded after observability so the new MASTER funnel remains the
+# production report while older `_snapshot` extension hooks and startup-health
+# fields continue to work.  Solana discovery coverage changes candidate discovery
+# only; all selector/LIVE safety thresholds and execution hooks remain untouched.
+from . import trading_pipeline_observability_compat_patch as _trading_pipeline_compat  # noqa: E402,F401
+from . import solana_leader_discovery_coverage_patch as _solana_discovery_coverage  # noqa: E402,F401
