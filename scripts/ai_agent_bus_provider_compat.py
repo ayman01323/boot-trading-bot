@@ -52,4 +52,14 @@ def install() -> None:
     ai_agent_bus._SECRET_ENV_KEYS = tuple(dict.fromkeys((*ai_agent_bus._SECRET_ENV_KEYS, "XAI_API_KEY")))
     if not any(getattr(pattern, "pattern", "").startswith("xai-") for pattern in ai_agent_bus._SECRET_PATTERNS):
         ai_agent_bus._SECRET_PATTERNS = (*ai_agent_bus._SECRET_PATTERNS, re.compile(r"xai-[A-Za-z0-9_-]{12,}"))
+
+    base_prompt = ai_agent_bus._prompt
+
+    def prompt_with_grok(**kwargs):
+        return base_prompt(**kwargs).replace(
+            "<GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT>",
+            "<GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK>",
+        )
+
+    ai_agent_bus._prompt = prompt_with_grok
     ai_agent_bus.call_provider = call_provider
