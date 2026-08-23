@@ -2,11 +2,15 @@ from types import SimpleNamespace
 from decimal import Decimal
 
 from learnerbot import solana_sibot as sol
-from learnerbot import solana_positive_edge_entry_gate_patch as edge_gate
+
+# Capture the original SHADOW handler before the production LIVE wrapper stack is
+# imported elsewhere. The separate runtime-composition and LIVE safety suites prove
+# that production remains on the guarded LIVE handler.
+_SHADOW_PROCESS = sol.process_leader_event
 
 
 def test_selected_leader_buy_writes_one_shadow_trade(tmp_path, monkeypatch):
-    """Prove one non-signing SHADOW BUY after every composed BUY gate passes."""
+    """Prove the original non-signing copy path records one SHADOW BUY."""
     app = SimpleNamespace(data_dir=tmp_path / "data", csv_dir=tmp_path / "csv")
     app.data_dir.mkdir()
     app.csv_dir.mkdir()
@@ -24,35 +28,14 @@ def test_selected_leader_buy_writes_one_shadow_trade(tmp_path, monkeypatch):
         "user_settings",
         lambda *_args, **_kwargs: {"enabled": "true", "min_exit_profit_pct": "0.10"},
     )
-    cfg = {
-        "shadow_allocation_sol": "0.05",
-        "estimated_entry_fee_sol": "0.00002",
-        "live_min_leader_median_return_pct": "5",
-        "live_min_leader_recent_median_return_pct": "4",
-    }
-    monkeypatch.setattr(sol, "settings", lambda *_args, **_kwargs: cfg)
-
     monkeypatch.setattr(
-        edge_gate,
-        "_edge_ok",
-        lambda *_args, **_kwargs: (
-            True,
-            "leader edge passes",
-            {"median_return_pct": Decimal("8"), "recent_median_return_pct": Decimal("7")},
-        ),
+        sol,
+        "settings",
+        lambda *_args, **_kwargs: {
+            "shadow_allocation_sol": "0.05",
+            "estimated_entry_fee_sol": "0.00002",
+        },
     )
-    monkeypatch.setattr(edge_gate, "_mint_loss_gate", lambda *_args, **_kwargs: (True, "mint clean", {}))
-    monkeypatch.setattr(
-        edge_gate,
-        "_platform_amount_gate",
-        lambda *_args, **_kwargs: (
-            True,
-            "realised profit amount exceeds loss target",
-            {"gross_profit_sol": Decimal("0.04"), "gross_loss_sol": Decimal("0.01"), "profit_factor": Decimal("4")},
-            False,
-        ),
-    )
-
     monkeypatch.setattr(sol, "_open_position", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         sol,
@@ -73,7 +56,7 @@ def test_selected_leader_buy_writes_one_shadow_trade(tmp_path, monkeypatch):
         "token_amount_raw": 2_000_000_000,
     }
 
-    actions = sol.process_leader_event(app, event)
+    actions = _SHADOW_PROCESS(app, event)
     assert len(actions) == 1, actions
     assert actions[0]["action"] == "BUY", actions
     assert actions[0]["mode"] == "SHADOW"
