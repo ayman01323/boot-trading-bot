@@ -94,7 +94,7 @@ def test_hard_budget_blocks_before_provider_spend(monkeypatch: pytest.MonkeyPatc
 
 def test_warning_threshold_is_one_shot(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _clean_cost_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("AI_COST_DAILY_BUDGET_USD", "0.001")
+    monkeypatch.setenv("AI_COST_DAILY_BUDGET_USD", "0.0009")
     monkeypatch.setenv("AI_COST_MONTHLY_BUDGET_USD", "10")
     monkeypatch.setenv("AI_COST_WARNING_PERCENT", "80")
     ticket = cost.reserve_call(
