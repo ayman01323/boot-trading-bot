@@ -3,62 +3,32 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
-import secrets
-import time
-
-from websockets.asyncio.client import connect
 
 try:
     from scripts.ai_agent_task_executor import build_task_envelope
+    from scripts.strategy_factory_transport import AGENTS, exchange, new_message_id
 except ModuleNotFoundError as exc:
     if exc.name != "scripts":
         raise
     from ai_agent_task_executor import build_task_envelope
-
-AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
-DEFAULT_URL = "ws://127.0.0.1:8765"
+    from strategy_factory_transport import AGENTS, exchange, new_message_id
 
 
-def new_message_id(sender: str, target: str) -> str:
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    return f"{sender}-to-{target}-{stamp}-{secrets.token_hex(2)}"
+def _print_event(data: dict) -> None:
+    print(json.dumps(data, ensure_ascii=False))
 
 
 async def send_and_wait(sender: str, target: str, body: str, message_id: str, timeout: float) -> int:
-    url = os.environ.get("AI_AGENT_BUS_URL", DEFAULT_URL)
-    token = os.environ.get("AI_AGENT_BUS_TOKEN", "")
-    async with connect(url, ping_interval=20, ping_timeout=20, max_size=32_768) as ws:
-        await ws.send(json.dumps({"type": "register", "agent": sender, "token": token}, separators=(",", ":")))
-        registered = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
-        if registered.get("type") != "registered":
-            raise RuntimeError(f"registration failed: {registered}")
-        await ws.send(json.dumps({
-            "type": "send",
-            "message_id": message_id,
-            "from": sender,
-            "to": target,
-            "body": body,
-        }, separators=(",", ":"), ensure_ascii=False))
-        deadline = asyncio.get_running_loop().time() + timeout
-        while True:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                print(json.dumps({"message_id": message_id, "status": "TIMEOUT"}))
-                return 2
-            data = json.loads(await asyncio.wait_for(ws.recv(), timeout=remaining))
-            if data.get("message_id") != message_id:
-                continue
-            kind = data.get("type")
-            if kind in {"accepted", "status"}:
-                print(json.dumps(data, ensure_ascii=False))
-                continue
-            if kind == "reply":
-                print(json.dumps(data, ensure_ascii=False))
-                return 0 if str(data.get("status") or "").upper() in {"REPLIED", "COMPLETED"} else 1
-            if kind == "error":
-                print(json.dumps(data, ensure_ascii=False))
-                return 1
+    result = await exchange(
+        sender,
+        target,
+        body,
+        message_id=message_id,
+        timeout=timeout,
+        on_event=_print_event,
+    )
+    status = str(result.get("status") or "").upper()
+    return 0 if status in {"REPLIED", "COMPLETED"} and not str(result.get("error") or "") else (2 if status == "TIMEOUT" else 1)
 
 
 def _task_body(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str:
@@ -76,7 +46,7 @@ def _task_body(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send one direct message or bounded task over the local AI-agent WebSocket bus")
+    parser = argparse.ArgumentParser(description="Send one DIRECT Strategy Factory message or bounded task over the shared WebSocket bus")
     parser.add_argument("--from", dest="sender", required=True, choices=sorted(AGENTS))
     parser.add_argument("--to", dest="target", required=True, choices=sorted(AGENTS))
     parser.add_argument("--message", default="")
