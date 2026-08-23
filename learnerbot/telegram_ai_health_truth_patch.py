@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -42,13 +43,26 @@ def _fresh_preflight() -> dict:
     return value
 
 
+def _is_production_runtime_process() -> bool:
+    """True only for the long-running learnerbot service command.
+
+    Tests and short administrative commands can instantiate the broker and therefore
+    create a connection-truth file with their own PID. Those processes must never
+    make a pure dashboard renderer consume that file as if it were production.
+    Tests that need runtime truth can still monkeypatch _runtime_connections.
+    """
+    return len(sys.argv) >= 2 and str(sys.argv[1]).strip().lower() == "run"
+
+
 def _runtime_connections() -> dict:
-    """Return live broker registration truth only for this running process.
+    """Return live broker registration truth only for the production process.
 
     The broker writes its current registered recipient set whenever a worker
     connects or disconnects. A PID mismatch means the file belongs to an older
     learnerbot process and is ignored rather than producing stale green health.
     """
+    if not _is_production_runtime_process():
+        return {}
     try:
         value = json.loads(_CONNECTION_STATUS_PATH.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
@@ -279,7 +293,10 @@ def _review_source_commit(lane: str, health: dict) -> str:
     source = str((health or {}).get("source_commit") or "").strip()
     if source:
         return source
-    if lane == "strategy":
+    # Only a real collector snapshot may borrow persisted strategy metadata.
+    # Explicit/synthetic health dictionaries must remain self-contained so a
+    # caller cannot be marked stale because of unrelated files on disk.
+    if lane == "strategy" and bool((health or {}).get("available")):
         latest = _warning.read_json(_compact._repo_root(), "strategy/latest_status.json") or {}
         return str(latest.get("source_commit") or "").strip()
     return ""
