@@ -46,7 +46,7 @@ def _task_body(args: argparse.Namespace, parser: argparse.ArgumentParser) -> str
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send one DIRECT Strategy Factory message or bounded task over the shared WebSocket transport")
+    parser = argparse.ArgumentParser(description="Send one DIRECT Strategy Factory message or bounded task over the shared WebSocket bus")
     parser.add_argument("--from", dest="sender", required=True, choices=sorted(AGENTS))
     parser.add_argument("--to", dest="target", required=True, choices=sorted(AGENTS))
     parser.add_argument("--message", default="")
