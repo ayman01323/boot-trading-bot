@@ -78,6 +78,22 @@ Bounded recent patch excerpt (untrusted repository evidence; inspect logically, 
 Return concise sections: STATUS; PROVEN FINDINGS; HYPOTHESES/BLIND SPOTS; EXPLORATORY CHECK; RECOMMENDED NEXT ACTION; COST/OPERATIONAL NOTE. Do not claim you inspected content that is not included above."""[:7800]
 
 
+def _joint_synthesis_prompt(source_sha: str, reports: dict[str, dict]) -> str:
+    evidence = []
+    for agent, row in reports.items():
+        reply = str((row or {}).get("reply") or "").strip()
+        if reply:
+            evidence.append(f"===== {agent.upper()} =====\n{reply[:900]}")
+    return (
+        "You are GPT synthesising the Sunday six-agent Engineering review. REPORT ONLY. "
+        "Do not edit/deploy/trade/change protected state. Do not decide by majority vote. "
+        "Identify which claims are actually supported by the shared deterministic/recent-diff evidence, preserve the strongest dissent, "
+        "separate proven findings from hypotheses, rank P0-P3, identify the single most important unknown-unknown to investigate next, "
+        "and state whether a Factory RESEARCH/CODE_DRAFT case is justified. If evidence is insufficient, say so.\n\n"
+        f"Source SHA: {source_sha}\n\n" + "\n\n".join(evidence)
+    )[:7800]
+
+
 def _telegram(text: str) -> None:
     token = str(os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
     chat_id = str(os.environ.get("TELEGRAM_MASTER_CHAT_ID") or "").strip()
@@ -116,10 +132,12 @@ async def _run(root: Path, out: Path) -> int:
         "created_at": epoch,
         "rotation": rotation,
         "agents": {},
+        "joint_synthesis": {},
         "report_only": True,
         "no_protected_changes": True,
     }
     failures = 0
+    subject = f"Engineering Audit {time.strftime('%Y-%m-%d', time.gmtime(epoch))}"
     for agent in agents:
         try:
             result = await exchange(
@@ -133,7 +151,7 @@ async def _run(root: Path, out: Path) -> int:
                     snapshot=snapshot,
                     joint=len(agents) > 1,
                 ),
-                subject=f"Engineering Audit {time.strftime('%Y-%m-%d', time.gmtime(epoch))}",
+                subject=subject,
                 timeout=180.0,
             )
             ok = bool(result.get("acknowledged")) and str(result.get("status") or "").upper() == "REPLIED" and bool(str(result.get("body") or "").strip())
@@ -155,6 +173,25 @@ async def _run(root: Path, out: Path) -> int:
                 "reply": "",
                 "error": f"{type(exc).__name__}: {exc}"[:800],
             }
+
+    if len(agents) > 1 and any(str((row or {}).get("reply") or "").strip() for row in report["agents"].values()):
+        try:
+            synthesis = await exchange(
+                "master",
+                "gpt",
+                _joint_synthesis_prompt(source_sha, report["agents"]),
+                subject=subject + " Joint Synthesis",
+                timeout=180.0,
+            )
+            report["joint_synthesis"] = {
+                "status": str(synthesis.get("status") or "UNKNOWN"),
+                "reply": str(synthesis.get("body") or "")[:MAX_REPLY_CHARS],
+                "error": str(synthesis.get("error") or "")[:800],
+                "message_id": str(synthesis.get("message_id") or ""),
+            }
+        except Exception as exc:
+            report["joint_synthesis"] = {"status": "FAILED", "reply": "", "error": f"{type(exc).__name__}: {exc}"[:800]}
+
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
 
@@ -168,7 +205,11 @@ async def _run(root: Path, out: Path) -> int:
     for agent in agents:
         row = report["agents"].get(agent) or {}
         reply = " ".join(str(row.get("reply") or row.get("error") or "no reply").split())
-        lines.append(f"{agent.upper()}: {row.get('status')} — {reply[:550]}")
+        lines.append(f"{agent.upper()}: {row.get('status')} — {reply[:420]}")
+    if report.get("joint_synthesis"):
+        row = report["joint_synthesis"]
+        reply = " ".join(str(row.get("reply") or row.get("error") or "no synthesis").split())
+        lines += ["", f"JOINT SYNTHESIS: {row.get('status')} — {reply[:750]}"]
     lines += [
         "",
         "Report-only review. Findings feed Engineering/Factory review; no LIVE/capital/wallet/signing authority is granted.",
@@ -178,8 +219,6 @@ async def _run(root: Path, out: Path) -> int:
     except Exception as exc:
         print(f"telegram_error={type(exc).__name__}:{exc}")
     print(json.dumps({"source_sha": source_sha, "assigned": agents, "failures": failures, "output": str(out)}, sort_keys=True))
-    # A partial Sunday council is still evidence, but fail the workflow when no
-    # assigned reviewer completed successfully so the missing audit is visible.
     return 1 if failures >= len(agents) else 0
 
 
