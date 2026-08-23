@@ -24,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
+      GH_TOKEN: ${{ github.token }}
       COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
     steps:
       - name: Recycle only stale empty Copilot WIP tasks
@@ -34,7 +35,6 @@ jobs:
             echo 'COPILOT_ASSIGN_TOKEN is missing; cannot safely requeue Copilot.' >&2
             exit 2
           fi
-          export GH_TOKEN="$COPILOT_ASSIGN_TOKEN"
 
           read_text() {
             gh api -H 'Accept: application/vnd.github+json' \
@@ -116,7 +116,7 @@ jobs:
           }))
           PY
           )"
-            gh api --method POST -H 'Accept: application/vnd.github+json' \
+            GH_TOKEN="$COPILOT_ASSIGN_TOKEN" gh api --method POST -H 'Accept: application/vnd.github+json' \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
               "repos/${GITHUB_REPOSITORY}/issues/${issue}/assignees" --input - <<< "$payload" >/dev/null
             for delay in 0 5 10 20; do
