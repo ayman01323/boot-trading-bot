@@ -45,7 +45,7 @@ jobs:
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
           exit 0
 
-      - name: Import order and compatibility regressions
+      - name: Import order, compatibility and SHADOW trade regressions
         id: compat
         shell: bash
         run: |
@@ -55,6 +55,7 @@ jobs:
             tests/test_main_import_order.py \
             tests/test_telegram_trade_blocker_health.py \
             tests/test_solana_leader_discovery_coverage.py \
+            tests/test_solana_shadow_trade_smoke.py \
             2>&1 | tee /tmp/solana-compat-tests.log
           rc=${PIPESTATUS[0]}
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -100,8 +101,9 @@ jobs:
             echo
             echo "Validated commit: \`${GITHUB_SHA}\`"
             echo "- compile: rc=${compile_rc}"
-            echo "- compatibility/import tests: rc=${compat_rc}"
+            echo "- compatibility/import + SHADOW trade smoke: rc=${compat_rc}"
             echo "- Solana safety subset: rc=${safety_rc}"
+            echo "- SHADOW proof does not sign or spend funds"
             echo "- runner isolation: /tmp venv only; no sudo, production write, wallet/signing or deploy step"
             if [[ "$overall" == FAIL ]]; then
               echo
@@ -109,8 +111,8 @@ jobs:
               echo
               echo '```text'
               tail -n 35 /tmp/solana-compat-compile.log 2>/dev/null || true
-              tail -n 55 /tmp/solana-compat-tests.log 2>/dev/null || true
-              tail -n 55 /tmp/solana-safety-tests.log 2>/dev/null || true
+              tail -n 60 /tmp/solana-compat-tests.log 2>/dev/null || true
+              tail -n 60 /tmp/solana-safety-tests.log 2>/dev/null || true
               echo '```'
               echo '</details>'
             fi
