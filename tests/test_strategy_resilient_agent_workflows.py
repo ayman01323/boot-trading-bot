@@ -41,8 +41,8 @@ def test_single_agent_strategy_cycle_is_stricter_but_not_stopped():
     assert '"live_trading_depends_on_ai_health": False' in runner
 
 
-def test_selected_master_fallback_order_is_selected_then_gpt_claude_gemini_deepseek_other():
+def test_selected_master_fallback_order_is_selected_then_gpt_claude_gemini_deepseek_grok_copilot():
     wrapper = _text("scripts/resilient_selected_master_v2.py")
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")' in wrapper
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in wrapper
     assert 'if preferred in _base.PROVIDERS' in wrapper
     assert 'if provider not in out' in wrapper

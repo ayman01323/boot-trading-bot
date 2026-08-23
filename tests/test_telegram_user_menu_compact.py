@@ -111,7 +111,7 @@ def test_ai_council_failed_agent_does_not_block_others(tmp_path, monkeypatch):
     completed = ai_council.run_independent_answers(app, session["session_id"])
 
     assert completed["answers"]["copilot"]["status"] == "FAILED"
-    assert sum(row["status"] == "DONE" for row in completed["answers"].values()) == 4
+    assert sum(row["status"] == "DONE" for row in completed["answers"].values()) == len(ai_council.PROVIDERS) - 1
 
 
 def test_ai_council_question_length_is_bounded(tmp_path):

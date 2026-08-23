@@ -31,7 +31,7 @@ def test_legacy_four_agent_master_delegates_to_selected_resilient_master() -> No
     assert "matrix:" in selected and "strategy, engineering" in selected
     assert 'if [[ "$count" == 0 ]]' in selected
     assert '"minimum_valid_reports_to_continue": 1' in runner
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")' in fallback
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in fallback
     assert '"live_auto_deploy": False' in runner
 
 
