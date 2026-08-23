@@ -55,9 +55,12 @@ def _copied_metrics_corrected(app, tid, wallet):
                 """SELECT p.realised_net_sol,p.closed_at FROM positions p
                    WHERE p.telegram_id=? AND p.leader_wallet=? AND p.status='CLOSED' AND p.mode='LIVE'
                      AND p.closed_at>=?
-                     AND NOT EXISTS(
-                       SELECT 1 FROM live_position_created_token_accounts a
-                       WHERE a.position_id=p.position_id AND a.closed_at IS NULL
+                     AND (
+                       p.exit_reason LIKE 'OPERATOR_WRITE_OFF_ZERO_RECOVERY:%'
+                       OR NOT EXISTS(
+                         SELECT 1 FROM live_position_created_token_accounts a
+                         WHERE a.position_id=p.position_id AND a.closed_at IS NULL
+                       )
                      )
                    ORDER BY p.closed_at DESC LIMIT 50""",
                 (str(tid), str(wallet), int(cutoff)),
@@ -117,7 +120,7 @@ def install():
     _guard._corrected_accounting_epoch_installed = True
     print(
         "[solana-profit-epoch] corrected_pnl_only=true historical_rows_preserved=true "
-        "pending_rent_excluded=true amount_fields_preserved=true"
+        "pending_rent_excluded=true operator_writeoffs_included=true amount_fields_preserved=true"
     )
 
 
