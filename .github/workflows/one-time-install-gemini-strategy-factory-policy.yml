@@ -1,0 +1,73 @@
+name: One-Time Install Gemini Strategy Factory Policy
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-install-gemini-strategy-factory-policy.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  install-and-test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: 'true'
+    steps:
+      - name: Check out test snapshot without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install narrow Gemini sender policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" -eq 0
+          install -d -m 700 /root/.gemini/policies
+          cat > /root/.gemini/policies/strategy-factory-messaging.toml <<'EOF'
+          [[rule]]
+          toolName = "run_shell_command"
+          commandPrefix = [
+            "python scripts/ai_agent_ws_send.py",
+            "python3 scripts/ai_agent_ws_send.py",
+            "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python scripts/ai_agent_ws_send.py"
+          ]
+          decision = "allow"
+          priority = 100
+          modes = ["default"]
+          EOF
+          chmod 600 /root/.gemini/policies/strategy-factory-messaging.toml
+          test "$(stat -c '%a' /root/.gemini/policies/strategy-factory-messaging.toml)" = 600
+          grep -F 'python scripts/ai_agent_ws_send.py' /root/.gemini/policies/strategy-factory-messaging.toml >/dev/null
+          echo 'gemini_strategy_factory_policy=INSTALLED'
+
+      - name: Build isolated sender environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/gemini-strategy-factory-policy-test"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "TEST_VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Gemini executes allowed Strategy Factory sender
+        shell: bash
+        env:
+          HOME: /root
+        run: |
+          set -euo pipefail
+          test -n "${GEMINI_API_KEY:-}"
+          export PATH="$TEST_VENV/bin:/usr/local/lib/node-v24/bin:$PATH"
+          test -x /usr/local/lib/node-v24/bin/gemini
+          prompt="Use the run_shell_command tool to execute exactly this command and no other shell command: python scripts/ai_agent_ws_send.py --from gemini --to gpt --message 'Reply exactly: GEMINI_TO_GPT_OK'. Wait for the correlated Strategy Factory reply. Do not edit files, deploy, restart services, trade, change LIVE/ARMED, risk or capital, access wallets/signing, or reveal secrets. Your final response must include TEST_RESULT=PASS only if GPT actually replies GEMINI_TO_GPT_OK."
+          /usr/local/lib/node-v24/bin/gemini --approval-mode=default -p "$prompt"
+
+      - name: Remove isolated sender environment
+        if: always()
+        shell: bash
+        run: rm -rf "${TEST_VENV:-$RUNNER_TEMP/gemini-strategy-factory-policy-test}"
