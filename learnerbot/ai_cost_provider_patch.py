@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 
 from . import ai_cost_router as _cost
+from . import grok_provider as _grok  # installs raw xAI-compatible routing first
+from . import ai_cost_grok_patch as _grok_cost  # noqa: F401
 from . import ai_council_http_patch as _base
 
 
@@ -29,6 +31,13 @@ def _model(provider: str) -> str:
             os.environ.get("DEEPSEEK_COUNCIL_MODEL")
             or os.environ.get("DEEPSEEK_MASTER_MODEL")
             or "deepseek-v4-flash"
+        ).strip()
+    if provider == "grok":
+        return str(
+            os.environ.get("XAI_COUNCIL_MODEL")
+            or os.environ.get("GROK_COUNCIL_MODEL")
+            or os.environ.get("XAI_MASTER_MODEL")
+            or "grok-4.20-non-reasoning"
         ).strip()
     if provider == "copilot":
         return "github-copilot-subscription"
@@ -73,6 +82,9 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
         return 95, "", f"AI Cost Router blocked provider call: {ticket.reason}"
 
     try:
+        # ai_council_http_patch.call_provider has already been extended by
+        # grok_provider, so Grok stays on the same budget-gated entry point as
+        # every other paid provider rather than bypassing the ledger.
         rc, out, err = _base.call_provider(provider, prompt)
     except Exception as exc:
         _cost.finish_call(ticket, success=False, error=f"{type(exc).__name__}: {exc}")
@@ -85,8 +97,8 @@ def call_provider(provider: str, prompt: str) -> tuple[int, str, str]:
 
 def install() -> None:
     # Keep modules that resolve learnerbot.ai_council.call_provider dynamically on
-    # the same budget-gated path. Modules with direct imports use this wrapper
-    # explicitly (WebSocket worker and MASTER change council).
+    # the same budget-gated path. grok_provider is imported above first so the raw
+    # HTTP route supports xAI before this wrapper becomes authoritative.
     _base._council.call_provider = call_provider
 
 
