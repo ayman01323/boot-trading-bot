@@ -158,10 +158,12 @@ def build_worker_payload(
     routing = classify_research_question(question)
     findings = []
     errors = []
+    # The existing collector already compacts/bounds every source. Preserve those rows
+    # for legacy Strategy Lab consumers, but keep them inert and inside the worker payload;
+    # the new decision path consumes `findings`, not these compatibility snapshots.
+    source_snapshots = [dict(row) for row in (external_pack or {}).get("sources") or [] if isinstance(row, dict)]
     if external_pack:
-        for source in external_pack.get("sources") or []:
-            if not isinstance(source, dict):
-                continue
+        for source in source_snapshots:
             try:
                 findings.append(
                     _finding(
@@ -188,6 +190,7 @@ def build_worker_payload(
         "ttl_seconds": int(routing["ttl_seconds"]),
         "cache_expires_epoch": now + int(routing["ttl_seconds"]),
         "findings": findings,
+        "source_snapshots": source_snapshots,
         "errors": errors,
         "raw_evidence_sha256": str((external_pack or {}).get("evidence_sha256") or ""),
         "research_only": True,
