@@ -34,45 +34,32 @@ jobs:
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Read compact per-endpoint RPC matrix
+      - name: Extract sanitized endpoint fields from latest report
         shell: bash
         run: |
           set -euo pipefail
-          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to kimi \
-            --message-id "rpc-compact-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --timeout 90 \
-            --task-action READ_FILE \
-            --task-args-json '{"path":"data/rpc_health_rpc_compact.json"}' \
-            --task-instruction 'Return the sanitized compact RPC health matrix only. Do not expose URLs, API keys, wallets or secrets.')"
-          printf '%s\n' "$output"
-          final="$(printf '%s\n' "$output" | tail -n 1)"
-          FINAL="$final" python3 - <<'PY'
-          import json,os
-          outer=json.loads(os.environ['FINAL'])
-          result=json.loads(str(outer.get('body') or '{}'))
-          content=str((result.get('evidence') or {}).get('content') or '')
-          print('RPC_COMPACT_BEGIN')
-          print(content)
-          print('RPC_COMPACT_END')
-          PY
-
-      - name: Search Polygon WSS records in latest sanitized report
-        shell: bash
-        run: |
-          set -euo pipefail
-          for q in '"chain": "polygon"' '"provider": "Infura"' '"provider": "Alchemy"'; do
+          i=0
+          for q in '"chain":' '"endpoint_index":' '"kind":' '"provider":' '"priority":' '"status":' '"error":' '"latency_ms":' '"reported_chain_id":'; do
+            i=$((i+1))
             args="$(python3 -c 'import json,sys; print(json.dumps({"path":"data","query":sys.argv[1]}))' "$q")"
             output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
               --from gpt \
               --to kimi \
-              --message-id "rpc-search-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(echo "$q" | tr -cd '[:alnum:]' | head -c 16)" \
+              --message-id "rpc-fields-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${i}" \
               --timeout 90 \
               --task-action SEARCH_CODE \
               --task-args-json "$args" \
-              --task-instruction 'Search sanitized health telemetry only. Do not read or expose endpoint configuration or secrets.')"
-            printf '%s\n' "$output"
+              --task-instruction 'Search sanitized RPC health telemetry only. Do not expose endpoint URLs, API keys, wallets or secrets.')"
+            final="$(printf '%s\n' "$output" | tail -n 1)"
+            FIELD="$q" FINAL="$final" python3 - <<'PY'
+          import json,os
+          outer=json.loads(os.environ['FINAL'])
+          result=json.loads(str(outer.get('body') or '{}'))
+          matches=(result.get('evidence') or {}).get('matches') or []
+          for m in matches:
+              if m.get('path') == 'data/rpc_health_latest.json':
+                  print('FIELD', os.environ['FIELD'], m.get('line'), m.get('text'))
+          PY
           done
 
       - name: Cleanup
