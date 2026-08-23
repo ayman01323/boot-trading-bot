@@ -5,12 +5,19 @@ on:
     branches: [gpt/cost-effective-seven-agent-monitoring]
     paths:
       - '.github/workflows/temp-cost-effective-schedule-patch.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/temp-cost-effective-schedule-patch.yml'
 
 permissions:
   contents: write
 
 jobs:
   patch:
+    # This temporary helper is branch-local and exists only to apply precise
+    # schedule-only edits without rewriting large workflow files by hand.
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'gpt/cost-effective-seven-agent-monitoring'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
