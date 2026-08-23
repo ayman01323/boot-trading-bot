@@ -15,7 +15,7 @@ from scripts.claude_git_mailbox_bridge import (
     _token_from_env,
 )
 
-AGENTS = ("gpt", "claude", "gemini", "deepseek", "copilot")
+AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
 _AGENT_SET = set(AGENTS)
 INCOMING_PATHS = {agent: f".github/ai-mailbox/bus-from-{agent}.md" for agent in AGENTS}
 OUTGOING_PATHS = {agent: f".github/ai-mailbox/bus-to-{agent}.md" for agent in AGENTS}
@@ -25,7 +25,7 @@ _ALLOWED_PATHS = set(INCOMING_PATHS.values()) | set(OUTGOING_PATHS.values())
 def _validate_sender(sender: str) -> str:
     value = str(sender or "").strip().lower()
     if value not in _AGENT_SET:
-        raise ValueError("sender must be GPT, CLAUDE, GEMINI, DEEPSEEK or COPILOT")
+        raise ValueError("sender must be GPT, CLAUDE, GEMINI, DEEPSEEK, GROK or COPILOT")
     return value
 
 
@@ -151,7 +151,7 @@ def publish_reply(repo: str, *, token: str, sender: str, message_id: str, bus_re
         if "HTTP 404" not in str(exc):
             raise
     payload: dict[str, Any] = {
-        "message": f"AI bus reply to {sender} mailbox {message_id}",
+        "message": f"AI bus reply to {sender} Strategy Factory fallback {message_id}",
         "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
         "branch": MAILBOX_BRANCH,
     }
@@ -161,7 +161,7 @@ def publish_reply(repo: str, *, token: str, sender: str, message_id: str, bus_re
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Bridge fixed per-agent git mailboxes to the bounded AI bus.")
+    parser = argparse.ArgumentParser(description="Bridge fixed per-agent Strategy Factory fallback files to the bounded AI bus.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     select = sub.add_parser("select-live")
