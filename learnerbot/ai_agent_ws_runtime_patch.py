@@ -130,6 +130,11 @@ from . import sibot_alchemy_internal_trace_patch  # noqa: E402,F401
 # across EVM chains so multiple workers do not burst the same Alchemy account.
 from . import sibot_alchemy_retry_queue_patch  # noqa: E402,F401
 
+# LIVE execution must not trust only rpc_urls[0]. Probe enabled priority endpoints
+# and move the first reachable, correct-chain RPC to the front while preserving
+# every wallet/signing/LIVE/risk/simulation safety gate in LiveTrader.
+from . import live_executor_rpc_failover_patch  # noqa: E402,F401
+
 # Final operational truth layer: expose the exact reason no trade is occurring
 # without changing LIVE scope, thresholds, capital, signing or any safety gate.
 from . import telegram_trade_blocker_health_patch  # noqa: E402,F401
