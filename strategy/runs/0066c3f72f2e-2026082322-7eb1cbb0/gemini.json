@@ -1,0 +1,96 @@
+{
+  "cycle_id": "0066c3f72f2e-2026082322-7eb1cbb0",
+  "evidence_gaps": [
+    "No current sanitized runtime forensics are available (evidence_status: MISSING_RUNTIME_FORENSICS).",
+    "Missing historical win rates, net profit factors, and execution failure stats for EVM copy trading.",
+    "Missing Solana transaction logs, latency metrics, and execution slippage rates.",
+    "Missing Strategy Lab shadow performance logs for the six seeded non-leader families."
+  ],
+  "evidence_sha256": "7eb1cbb000b7909f3d50c0f874cfa431937c9c339af1aa10502082dc940ef008",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Requires robust connection drop detection and a graceful reconnection fallback to block-level polling if WebSocket connections are unstable.",
+      "evidence": [
+        {
+          "detail": "Lines 817-854: poll_leader_blocks loops through block numbers to scan all transaction objects. This approach is costly, slow, and resource-heavy under high-frequency RPC block generation.",
+          "path": "learnerbot/sibot.py"
+        }
+      ],
+      "expected_effect": "Dramatically reduces RPC resource consumption and limits the data payload per block cycle, resulting in faster signal trigger times and a minor reduction in execution latency.",
+      "id": "evm-leader-polling-optimize",
+      "minimum_observation": "24 hours",
+      "rationale": "Rather than polling entire blocks sequentially, we should upgrade the polling loop to subscribe directly to target leader address transactions via RPC WebSockets (or address filters) or leverage webhooks to minimize CPU/network overhead and latency.",
+      "shadow_test": "Simulate a side-by-side comparison on a test node for 24 hours comparing bandwidth. Falsified if WebSocket misses any confirmed leader transactions or fails to reconnect within 15 seconds of a network disruption.",
+      "strategy": "SiBot / SiMo Copy Trading",
+      "suggested_files": [
+        "learnerbot/sibot.py"
+      ]
+    },
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.95,
+      "downside_risk": "High-frequency leader activity can result in dense signature streams, requiring robust pagination and rate-limit compliance.",
+      "evidence": [
+        {
+          "detail": "Lines 419-470: discover_recent_blocks fetches full parsed blocks via Solana's getBlock method, which results in huge network traffic payloads.",
+          "path": "learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Lowers server network usage by up to multiple gigabytes per hour and eliminates potential JSON-RPC payload limit/throttling errors.",
+      "id": "solana-block-discovery-refactor",
+      "minimum_observation": "7 days",
+      "rationale": "Fetching full Solana blocks containing thousands of irrelevant transactions consumes excessive server memory and API credits. Reworking the discovery engine to target leaders directly via getSignaturesForAddress or WebSocket subscriptions for leader accounts isolates the parsing logic exclusively to target leaders.",
+      "shadow_test": "Run both methods in shadow mode and assert that signature polling retrieves 100% of verified leader transactions while using less than 5% of the original block-download network volume.",
+      "strategy": "Solana SiBot",
+      "suggested_files": [
+        "learnerbot/solana_sibot.py"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 1.0,
+      "downside_risk": "No active contribution to P&L during the shadow phase, which is acceptable and expected under standard capital preservation policies.",
+      "evidence": [
+        {
+          "detail": "Lines 226-289: Seeding broad, asset-neutral research hypotheses (Cross Venue Net Arbitrage, Liquidity Confirmed Momentum, etc.).",
+          "path": "learnerbot/strategy_lab.py"
+        }
+      ],
+      "expected_effect": "Protects platform capital from unproven and uncalibrated directional models while still allowing full simulation and analysis in the Strategy Lab.",
+      "id": "strategy-lab-seed-shadow",
+      "minimum_observation": "14 days",
+      "rationale": "Keeping these strategies strictly in SHADOW mode is mandatory and appropriate because there are no runtime forensics. This prevents premature exposure of real assets to unverified strategies.",
+      "shadow_test": "Track simulated trades over a 14-day observation window, requiring a simulated net profit factor >= 1.10 and at least 30 simulated trades before considering candidate promotion.",
+      "strategy": "Strategy Lab non-leader families",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py"
+      ]
+    }
+  ],
+  "provider": "gemini",
+  "rejected_ideas": [
+    {
+      "idea": "Promote EVM or Solana copy trading strategies to CANARY or LIVE status immediately.",
+      "reason": "Rejected because evidence.json contains MISSING_RUNTIME_FORENSICS. Promoting any strategy without positive net performance verification violates established safety and risk management protocols."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "0066c3f72f2e071a8e5d8d4956e8598d59c6b352",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Completed a comprehensive architecture-only strategy review of the copy-trading engines (EVM and Solana) and the Strategy Lab. Due to the lack of runtime forensics (MISSING_RUNTIME_FORENSICS), we maintain all strategies in SHADOW/Research mode and focus on addressing critical infrastructure and network efficiency bottlenecks in block polling on EVM and block parsing on Solana."
+}
