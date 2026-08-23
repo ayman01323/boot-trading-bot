@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from learnerbot import auto_trader
+from learnerbot import strategy_factory_service_sender_patch as sender_patch
 from learnerbot import trading_pipeline_observability_patch as obs
 
 
@@ -53,6 +56,33 @@ def _wrapped_round_trip(destination):
         _transfer(sell, WBNB, destination, WALLET, amount + amount // 10, "WBNB"),
     ]
     return normal, token, []
+
+
+@pytest.mark.parametrize(
+    ("router_kind", "destination"),
+    [
+        ("V2", "0x2222222222222222222222222222222222222222"),
+        ("V3", "0x2626262626262626262626262626262626262626"),
+        ("UNIVERSAL_ROUTER", "0x2727272727272727272727272727272727272727"),
+    ],
+)
+def test_recognised_v2_v3_and_universal_router_round_trips_reconstruct(router_kind, destination):
+    normal, token, internal = _wrapped_round_trip(destination)
+    row = obs.reconstruction_diagnostic(
+        WALLET,
+        {destination},
+        normal,
+        token,
+        internal,
+        56,
+        "bsc",
+    )
+    assert router_kind in {"V2", "V3", "UNIVERSAL_ROUTER"}
+    assert row["router_txs"] == 2
+    assert row["buys"] == 1
+    assert row["sells"] == 1
+    assert row["matched_closed"] == 1
+    assert row["shadow_extra_matched_closed"] == 0
 
 
 def test_known_router_reconstructs_live_history_pattern_without_shadow_extra():
@@ -122,6 +152,22 @@ def test_observability_patch_does_not_replace_polygon_execution_function():
     # The patch may read auto_trader state/logs, but it must never interpose on the
     # capital-moving execution function merely to collect telemetry.
     assert auto_trader.execute_best_live_opportunity is obs._auto.execute_best_live_opportunity
+
+
+def test_strategy_factory_service_sender_maps_only_to_master(monkeypatch):
+    seen = {}
+
+    async def fake(sender, target, body, **kwargs):
+        seen.update(sender=sender, target=target, body=body, kwargs=kwargs)
+        return {"status": "REPLIED"}
+
+    monkeypatch.setattr(sender_patch, "_PREV_EXCHANGE", fake)
+    import asyncio
+
+    result = asyncio.run(sender_patch.exchange("strategy-factory", "gpt", "research", timeout=2))
+    assert result["status"] == "REPLIED"
+    assert seen["sender"] == "master"
+    assert seen["target"] == "gpt"
 
 
 def test_sol_selector_streak_is_monitoring_only(monkeypatch, tmp_path):
