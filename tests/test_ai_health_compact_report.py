@@ -2,7 +2,7 @@ from learnerbot import ai_health_compact_report_patch as compact
 
 
 def _health(*states):
-    providers = ("gpt", "claude", "gemini", "deepseek", "copilot")
+    providers = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
     return {
         "agents": {
             provider: {"state": state, "reason": state}
@@ -18,6 +18,7 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
             "claude": {"state": "NOT_WORKING", "reason": "pipeline failed"},
             "gemini": {"state": "WORKING", "reason": ""},
             "deepseek": {"state": "NOT_WORKING", "reason": "unsupported model config"},
+            "grok": {"state": "WORKING", "reason": ""},
             "copilot": {"state": "WAITING", "reason": "in progress"},
         }
     }
@@ -27,10 +28,11 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
             "claude": {"state": "WORKING", "reason": ""},
             "gemini": {"state": "WORKING", "reason": ""},
             "deepseek": {"state": "NOT_WORKING", "reason": "unsupported model config"},
+            "grok": {"state": "WORKING", "reason": ""},
             "copilot": {"state": "WAITING", "reason": "in progress"},
         }
     }
-    strategy_room = _health("WAITING", "WAITING", "WAITING", "WAITING", "WAITING")
+    strategy_room = _health("WAITING", "WAITING", "WAITING", "WAITING", "WAITING", "WAITING")
 
     text = compact.warning_message(
         {"engineering": engineering, "strategy": strategy, "strategy_room": strategy_room}
@@ -46,6 +48,7 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
                     "🟠 Claude — Pipeline failure",
                     "🟢 Gemini — Working",
                     "🔴 DeepSeek — Model config",
+                    "🟢 Grok — Working",
                     "🟡 Copilot — In progress",
                 ]
             ),
@@ -56,6 +59,7 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
                     "🟢 Claude — Working",
                     "🟢 Gemini — Working",
                     "🔴 DeepSeek — Model config",
+                    "🟢 Grok — Working",
                     "🟡 Copilot — In progress",
                 ]
             ),
@@ -66,6 +70,7 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
                     "🟡 Claude — In progress",
                     "🟡 Gemini — In progress",
                     "🟡 DeepSeek — In progress",
+                    "🟡 Grok — In progress",
                     "🟡 Copilot — In progress",
                 ]
             ),
@@ -74,17 +79,18 @@ def test_master_dashboard_keeps_original_rows_and_only_renames_sections():
 
 
 def test_master_dashboard_health_logic_is_still_available_for_drill_down():
-    engineering = _health("WORKING", "WORKING", "WORKING", "FAILED", "WORKING")
+    engineering = _health("WORKING", "WORKING", "WORKING", "FAILED", "WORKING", "WORKING")
     assert compact._overall_icon(engineering) == "🔴"
 
 
 def test_master_dashboard_waiting_health_logic_is_still_available():
-    strategy = _health("WORKING", "WORKING", "WAITING", "WORKING", "WORKING")
+    strategy = _health("WORKING", "WORKING", "WAITING", "WORKING", "WORKING", "WORKING")
     assert compact._overall_icon(strategy) == "🟡"
 
 
 def test_health_classification_uses_real_state_and_reason():
     assert compact.classify_health("engineering", "gemini", {"state": "WORKING"}) == ("🟢", "Working")
+    assert compact.classify_health("strategy", "grok", {"state": "WORKING"}) == ("🟢", "Working")
     assert compact.classify_health("strategy", "copilot", {"state": "WAITING"}) == ("🟡", "In progress")
     assert compact.classify_health(
         "engineering", "copilot", {"state": "NOT_WORKING", "reason": "authentication failed"}
