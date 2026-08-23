@@ -1,9 +1,9 @@
 name: Kimi Full Audit Trading Stop
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - 'gpt/kimi-full-audit-trading-stop'
     paths:
       - '.github/workflows/kimi-full-audit-trading-stop.yml'
 
@@ -60,63 +60,43 @@ jobs:
           set -euo pipefail
           "$VENV/bin/python" - <<'PY'
           import json, os, pathlib, re, subprocess
-          root=pathlib.Path('.kimi_audit')
-          venv=os.environ['VENV']
-          run_id=os.environ['GITHUB_RUN_ID']
-          counter=0
-
+          root=pathlib.Path('.kimi_audit'); venv=os.environ['VENV']; run_id=os.environ['GITHUB_RUN_ID']; counter=0
           def send_task(action,args):
               global counter
               counter += 1
-              cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi',
-                   '--task-action',action,'--task-args-json',json.dumps(args,separators=(',',':')),
-                   '--task-instruction','Read-only production diagnosis for why trading stopped. Do not modify anything.',
+              cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--task-action',action,
+                   '--task-args-json',json.dumps(args,separators=(',',':')),'--task-instruction','Read-only production diagnosis for why trading stopped. Do not modify anything.',
                    '--message-id',f'kimi-audit-task-{run_id}-{counter}','--timeout','90']
               p=subprocess.run(cmd,text=True,capture_output=True,timeout=110)
-              lines=[x for x in p.stdout.splitlines() if x.strip()]
-              final={}
+              lines=[x for x in p.stdout.splitlines() if x.strip()]; final={}
               if lines:
                   try: final=json.loads(lines[-1])
                   except Exception: final={'status':'PARSE_ERROR','body':lines[-1][-4000:]}
-              body=final.get('body','')
-              nested={}
+              body=final.get('body',''); nested={}
               if isinstance(body,str) and body.strip().startswith('{'):
                   try: nested=json.loads(body)
                   except Exception: nested={'raw':body[:12000]}
               return {'action':action,'args':args,'returncode':p.returncode,'final':final,'result':nested,'stderr':p.stderr[-1200:]}
-
           results=[]
-          for action,args in [
-              ('GIT_STATUS',{}),
-              ('GIT_DIFF',{}),
-              ('LIST_FILES',{'path':'data'}),
-              ('LIST_FILES',{'path':'CSVbot'}),
-          ]:
+          for action,args in [('GIT_STATUS',{}),('GIT_DIFF',{}),('LIST_FILES',{'path':'data'}),('LIST_FILES',{'path':'CSVbot'})]:
               try: results.append(send_task(action,args))
               except Exception as e: results.append({'action':action,'args':args,'error':repr(e)})
-
           files=[]
           for item in results:
               ev=(item.get('result') or {}).get('evidence') or {}
-              for f in ev.get('files') or []:
-                  if isinstance(f,str): files.append(f)
+              files.extend(f for f in (ev.get('files') or []) if isinstance(f,str))
           pat=re.compile(r'(?i)(trade|decision|signal|position|order|execution|profit|loss|live|state|health|metric|history|ledger|journal|shadow|block|reason|candidate)')
           candidates=[]
-          for f in sorted(set(files), reverse=True):
-              if pat.search(f) and not re.search(r'(?i)(secret|credential|private|mnemonic|seed|\.env)',f):
-                  candidates.append(f)
+          for f in sorted(set(files),reverse=True):
+              if pat.search(f) and not re.search(r'(?i)(secret|credential|private|mnemonic|seed|\.env)',f): candidates.append(f)
               if len(candidates)>=12: break
           for f in candidates:
               try: results.append(send_task('READ_FILE',{'path':f}))
               except Exception as e: results.append({'action':'READ_FILE','args':{'path':f},'error':repr(e)})
-
-          def redact(s):
-              s=str(s)
-              s=re.sub(r'(?i)(api[_ -]?key|private[_ -]?key|mnemonic|seed phrase|password|authorization|bearer|secret|token)\s*[:=]\s*\S+',r'\1=<redacted>',s)
-              s=re.sub(r'(?i)(sk|ghp|github_pat)_[A-Za-z0-9_-]{8,}','<redacted>',s)
-              return s
-          safe=json.loads(redact(json.dumps(results,ensure_ascii=False)))
-          (root/'production_tasks.json').write_text(json.dumps(safe,indent=2,ensure_ascii=False)[:120000],encoding='utf-8')
+          raw=json.dumps(results,ensure_ascii=False)
+          raw=re.sub(r'(?i)(api[_ -]?key|private[_ -]?key|mnemonic|seed phrase|password|authorization|bearer|secret|token)\s*[:=]\s*\S+',r'\1=<redacted>',raw)
+          raw=re.sub(r'(?i)(sk|ghp|github_pat)_[A-Za-z0-9_-]{8,}','<redacted>',raw)
+          root.joinpath('production_tasks.json').write_text(raw[:120000],encoding='utf-8')
           print('bounded_task_count',len(results),'runtime_candidate_reads',len(candidates))
           PY
 
@@ -138,45 +118,28 @@ jobs:
           set -euo pipefail
           "$VENV/bin/python" - <<'PY'
           import pathlib, subprocess, json
-          tracked=subprocess.check_output(['git','ls-files'],text=True).splitlines()
-          exts={'.py','.sh','.toml','.ini','.cfg','.json','.yaml','.yml'}
-          files=[]
+          tracked=subprocess.check_output(['git','ls-files'],text=True).splitlines(); exts={'.py','.sh','.toml','.ini','.cfg','.json','.yaml','.yml'}; files=[]
           for name in tracked:
               p=pathlib.Path(name)
               if p.suffix.lower() not in exts and name not in {'requirements.txt','pyproject.toml'}: continue
               if name.startswith(('tests/','.github/','docs/','data/','CSVbot/','.git/')): continue
-              include=False
-              if name.startswith('learnerbot/'):
-                  include=True
-              elif len(p.parts)==1:
-                  include=True
-              elif name.startswith('scripts/'):
-                  low=name.lower()
-                  include=any(k in low for k in ('trade','bot','strategy','execution','wallet','runtime','health','monitor','forensic','solana','evm','polygon','arbit','copy','signal','position','loss','profit','server','rpc'))
-              elif name.startswith(('strategy/','config/')):
-                  include=True
+              include=name.startswith('learnerbot/') or len(p.parts)==1 or name.startswith(('strategy/','config/'))
+              if name.startswith('scripts/'):
+                  low=name.lower(); include=any(k in low for k in ('trade','bot','strategy','execution','wallet','runtime','health','monitor','forensic','solana','evm','polygon','arbit','copy','signal','position','loss','profit','server','rpc'))
               if include and p.is_file(): files.append(name)
-          files=sorted(set(files),key=lambda x:(0 if x.startswith('learnerbot/') else 1,x))
-          max_chars=18000
-          chunks=[]; current=''; covered=[]
+          files=sorted(set(files),key=lambda x:(0 if x.startswith('learnerbot/') else 1,x)); max_chars=18000; chunks=[]; current=''; covered=[]
           for name in files:
-              text=pathlib.Path(name).read_text(encoding='utf-8',errors='replace')
-              block=f'\n===== FILE: {name} =====\n'+text+'\n'
-              covered.append({'path':name,'chars':len(text)})
+              text=pathlib.Path(name).read_text(encoding='utf-8',errors='replace'); block=f'\n===== FILE: {name} =====\n'+text+'\n'; covered.append({'path':name,'chars':len(text)})
               while len(block)>max_chars:
                   room=max_chars-len(current)
-                  if room<1000:
-                      chunks.append(current); current=''; room=max_chars
-                  current += block[:room]
-                  block='\n===== CONTINUED =====\n'+block[room:]
-                  if len(current)>=max_chars:
-                      chunks.append(current); current=''
-              if len(current)+len(block)>max_chars and current:
-                  chunks.append(current); current=''
+                  if room<1000: chunks.append(current); current=''; room=max_chars
+                  current += block[:room]; block='\n===== CONTINUED =====\n'+block[room:]
+                  if len(current)>=max_chars: chunks.append(current); current=''
+              if current and len(current)+len(block)>max_chars: chunks.append(current); current=''
               current += block
           if current: chunks.append(current)
           out=pathlib.Path('.kimi_audit/chunks'); out.mkdir(parents=True,exist_ok=True)
-          for i,c in enumerate(chunks,1): (out/f'{i:03d}.txt').write_text(c,encoding='utf-8')
+          for i,c in enumerate(chunks,1): out.joinpath(f'{i:03d}.txt').write_text(c,encoding='utf-8')
           pathlib.Path('.kimi_audit/source_manifest.json').write_text(json.dumps({'files':covered,'file_count':len(covered),'chunk_count':len(chunks),'total_chars':sum(x['chars'] for x in covered)},indent=2),encoding='utf-8')
           print('source_files',len(covered),'chunks',len(chunks),'chars',sum(x['chars'] for x in covered))
           PY
@@ -187,30 +150,19 @@ jobs:
           set -euo pipefail
           "$VENV/bin/python" - <<'PY'
           import json, os, pathlib, subprocess
-          venv=os.environ['VENV']; run_id=os.environ['GITHUB_RUN_ID']
-          chunks=sorted(pathlib.Path('.kimi_audit/chunks').glob('*.txt'))
-          outdir=pathlib.Path('.kimi_audit/replies'); outdir.mkdir(exist_ok=True)
-          main_sha=pathlib.Path('.kimi_audit/main_sha.txt').read_text().strip()
+          venv=os.environ['VENV']; run_id=os.environ['GITHUB_RUN_ID']; chunks=sorted(pathlib.Path('.kimi_audit/chunks').glob('*.txt')); outdir=pathlib.Path('.kimi_audit/replies'); main_sha=pathlib.Path('.kimi_audit/main_sha.txt').read_text().strip()
           for idx,p in enumerate(chunks,1):
               code=p.read_text(encoding='utf-8',errors='replace')
-              prompt=(f'You are Kimi performing a read-only code audit of trading bot main SHA {main_sha}. '
-                      f'This is source chunk {idx}/{len(chunks)}. Find concrete bugs, regressions, race/state errors, bad defaults, '
-                      'exceptions, gating logic or execution conditions that can stop LIVE trading after it previously worked. '
+              prompt=(f'You are Kimi performing a read-only code audit of trading bot main SHA {main_sha}. This is source chunk {idx}/{len(chunks)}. '
+                      'Find concrete bugs, regressions, race/state errors, bad defaults, exceptions, gating logic or execution conditions that can stop LIVE trading after it previously worked. '
                       'Also flag security/correctness bugs. Do NOT recommend bypassing safety/liquidity/simulation/risk controls merely to force trades. '
-                      'Return only high-signal findings, maximum 1100 characters. Cite FILE and approximate line/function where possible. '
-                      'If no concrete issue in this chunk, say NO_CONCRETE_BUG.\n\n'+code)
-              cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,
-                   '--subject',f'Kimi code audit chunk {run_id}-{idx}','--message-id',f'kimi-code-audit-{run_id}-{idx}','--timeout','120']
+                      'Return only high-signal findings, maximum 1100 characters. Cite FILE and approximate line/function where possible. If no concrete issue in this chunk, say NO_CONCRETE_BUG.\n\n'+code)
+              cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,'--subject',f'Kimi code audit chunk {run_id}-{idx}','--message-id',f'kimi-code-audit-{run_id}-{idx}','--timeout','120']
               try:
-                  r=subprocess.run(cmd,text=True,capture_output=True,timeout=140)
-                  lines=[x for x in r.stdout.splitlines() if x.strip()]
-                  final=json.loads(lines[-1]) if lines else {}
-                  body=str(final.get('body') or '').strip()
+                  r=subprocess.run(cmd,text=True,capture_output=True,timeout=140); lines=[x for x in r.stdout.splitlines() if x.strip()]; final=json.loads(lines[-1]) if lines else {}; body=str(final.get('body') or '').strip()
                   if not body: body=f'CHUNK_FAILED rc={r.returncode} error={str(final.get("error") or r.stderr[-500:])}'
-              except Exception as e:
-                  body=f'CHUNK_FAILED {e!r}'
-              (outdir/f'{idx:03d}.txt').write_text(body[:1400],encoding='utf-8')
-              print(f'chunk {idx}/{len(chunks)}: {body[:180].replace(chr(10)," ")}')
+              except Exception as e: body=f'CHUNK_FAILED {e!r}'
+              outdir.joinpath(f'{idx:03d}.txt').write_text(body[:1400],encoding='utf-8'); print(f'chunk {idx}/{len(chunks)}: {body[:180].replace(chr(10)," ")}')
           PY
 
       - name: Kimi diagnoses production runtime evidence
@@ -220,30 +172,13 @@ jobs:
           "$VENV/bin/python" - <<'PY'
           import json, os, pathlib, subprocess
           def read(path,limit):
-              p=pathlib.Path(path)
-              return p.read_text(encoding='utf-8',errors='replace')[:limit] if p.exists() else ''
-          context='\n\n'.join([
-              '=== FRESH SERVER STATUS ===\n'+read('.kimi_audit/server_status.txt',7000),
-              '=== DEPLOYED VS MAIN ===\n'+read('.kimi_audit/deployed_vs_main.txt',5000),
-              '=== COMMITS SINCE DEPLOY ===\n'+read('.kimi_audit/commits_since_deploy.txt',4000),
-              '=== TEST STATUS ===\n'+read('.kimi_audit/test_status.txt',1000)+'\n'+read('.kimi_audit/pytest_tail.txt',5000),
-              '=== KIMI BOUNDED PRODUCTION TASK EVIDENCE ===\n'+read('.kimi_audit/production_tasks.json',11000),
-          ])[:28000]
-          prompt=('You are Kimi diagnosing why this production multi-chain trading bot STOPPED TRADING after previously trading. '
-                  'Use only the fresh production status, exact deployed-vs-main comparison, tests, and your bounded production task evidence below. '
-                  'Rank likely root causes by confidence. Distinguish confirmed evidence from hypotheses. Identify the exact next read-only checks and safe code/config fixes. '
-                  'Do not tell us to disable risk/liquidity/simulation/sellability protections just to make trades happen. '
-                  'Return a detailed but concise runtime diagnosis under 3500 characters.\n\n'+context)
-          venv=os.environ['VENV']; rid=os.environ['GITHUB_RUN_ID']
-          cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,
-               '--subject',f'Kimi runtime trading-stop diagnosis {rid}','--message-id',f'kimi-runtime-diagnosis-{rid}','--timeout','150']
-          r=subprocess.run(cmd,text=True,capture_output=True,timeout=170)
-          lines=[x for x in r.stdout.splitlines() if x.strip()]
-          final=json.loads(lines[-1]) if lines else {}
-          body=str(final.get('body') or '').strip()
+              p=pathlib.Path(path); return p.read_text(encoding='utf-8',errors='replace')[:limit] if p.exists() else ''
+          context='\n\n'.join(['=== FRESH SERVER STATUS ===\n'+read('.kimi_audit/server_status.txt',7000),'=== DEPLOYED VS MAIN ===\n'+read('.kimi_audit/deployed_vs_main.txt',5000),'=== COMMITS SINCE DEPLOY ===\n'+read('.kimi_audit/commits_since_deploy.txt',4000),'=== TEST STATUS ===\n'+read('.kimi_audit/test_status.txt',1000)+'\n'+read('.kimi_audit/pytest_tail.txt',5000),'=== KIMI BOUNDED PRODUCTION TASK EVIDENCE ===\n'+read('.kimi_audit/production_tasks.json',11000)])[:28000]
+          prompt=('You are Kimi diagnosing why this production multi-chain trading bot STOPPED TRADING after previously trading. Use only the fresh production status, exact deployed-vs-main comparison, tests, and your bounded production task evidence below. Rank likely root causes by confidence. Distinguish confirmed evidence from hypotheses. Identify exact next read-only checks and safe code/config fixes. Do not tell us to disable risk/liquidity/simulation/sellability protections just to make trades happen. Return a detailed runtime diagnosis under 3500 characters.\n\n'+context)
+          venv=os.environ['VENV']; rid=os.environ['GITHUB_RUN_ID']; cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,'--subject',f'Kimi runtime trading-stop diagnosis {rid}','--message-id',f'kimi-runtime-diagnosis-{rid}','--timeout','150']
+          r=subprocess.run(cmd,text=True,capture_output=True,timeout=170); lines=[x for x in r.stdout.splitlines() if x.strip()]; final=json.loads(lines[-1]) if lines else {}; body=str(final.get('body') or '').strip()
           if not body: body=f'RUNTIME_DIAGNOSIS_FAILED rc={r.returncode} error={final.get("error") or r.stderr[-800:]}'
-          pathlib.Path('.kimi_audit/runtime_diagnosis.txt').write_text(body,encoding='utf-8')
-          print('RUNTIME_DIAGNOSIS_PREVIEW='+body[:500].replace('\n',' '))
+          pathlib.Path('.kimi_audit/runtime_diagnosis.txt').write_text(body,encoding='utf-8'); print('RUNTIME_DIAGNOSIS_PREVIEW='+body[:500].replace('\n',' '))
           PY
 
       - name: Compress Kimi chunk findings into buckets
@@ -252,28 +187,17 @@ jobs:
           set -euo pipefail
           "$VENV/bin/python" - <<'PY'
           import json, os, pathlib, subprocess
-          replies=sorted(pathlib.Path('.kimi_audit/replies').glob('*.txt'))
-          blocks=[f'[{p.stem}] '+p.read_text(encoding='utf-8',errors='replace') for p in replies]
-          groups=[]; cur=''
+          replies=sorted(pathlib.Path('.kimi_audit/replies').glob('*.txt')); blocks=[f'[{p.stem}] '+p.read_text(encoding='utf-8',errors='replace') for p in replies]; groups=[]; cur=''
           for b in blocks:
-              if cur and len(cur)+len(b)+2>17000:
-                  groups.append(cur); cur=''
+              if cur and len(cur)+len(b)+2>17000: groups.append(cur); cur=''
               cur += b+'\n\n'
           if cur: groups.append(cur)
           out=[]; venv=os.environ['VENV']; rid=os.environ['GITHUB_RUN_ID']
           for i,g in enumerate(groups,1):
-              prompt=('You are Kimi consolidating your own code-audit chunk findings. Remove duplicates and weak speculation. '
-                      'Preserve concrete FILE/function references and bugs that could explain a bot stopping trades. '
-                      'Return <=2500 characters, ranked by severity/confidence.\n\n'+g)
-              cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,
-                   '--subject',f'Kimi audit consolidation {rid}-{i}','--message-id',f'kimi-audit-consolidate-{rid}-{i}','--timeout','150']
-              r=subprocess.run(cmd,text=True,capture_output=True,timeout=170)
-              lines=[x for x in r.stdout.splitlines() if x.strip()]
-              final=json.loads(lines[-1]) if lines else {}
-              body=str(final.get('body') or '').strip() or f'CONSOLIDATION_FAILED {final.get("error") or r.stderr[-500:]}'
-              out.append(f'=== CODE AUDIT BUCKET {i}/{len(groups)} ===\n{body[:3000]}')
-          pathlib.Path('.kimi_audit/code_findings.txt').write_text('\n\n'.join(out),encoding='utf-8')
-          print('consolidation_buckets',len(groups))
+              prompt=('You are Kimi consolidating your own code-audit chunk findings. Remove duplicates and weak speculation. Preserve concrete FILE/function references and bugs that could explain a bot stopping trades. Return <=2500 characters, ranked by severity/confidence.\n\n'+g)
+              cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,'--subject',f'Kimi audit consolidation {rid}-{i}','--message-id',f'kimi-audit-consolidate-{rid}-{i}','--timeout','150']
+              r=subprocess.run(cmd,text=True,capture_output=True,timeout=170); lines=[x for x in r.stdout.splitlines() if x.strip()]; final=json.loads(lines[-1]) if lines else {}; body=str(final.get('body') or '').strip() or f'CONSOLIDATION_FAILED {final.get("error") or r.stderr[-500:]}'; out.append(f'=== CODE AUDIT BUCKET {i}/{len(groups)} ===\n{body[:3000]}')
+          pathlib.Path('.kimi_audit/code_findings.txt').write_text('\n\n'.join(out),encoding='utf-8'); print('consolidation_buckets',len(groups))
           PY
 
       - name: Ask Kimi for final full audit and solution
@@ -284,61 +208,18 @@ jobs:
           import json, os, pathlib, subprocess
           def read(p,n):
               q=pathlib.Path(p); return q.read_text(encoding='utf-8',errors='replace')[:n] if q.exists() else ''
-          manifest=read('.kimi_audit/source_manifest.json',3500)
-          code=read('.kimi_audit/code_findings.txt',17000)
-          runtime=read('.kimi_audit/runtime_diagnosis.txt',5000)
-          status=read('.kimi_audit/server_status.txt',3500)
-          diff=read('.kimi_audit/deployed_vs_main.txt',2500)
-          tests=read('.kimi_audit/test_status.txt',1000)+'\n'+read('.kimi_audit/pytest_tail.txt',2500)
-          main_sha=read('.kimi_audit/main_sha.txt',100).strip(); server_sha=read('.kimi_audit/server_sha.txt',100).strip()
+          manifest=read('.kimi_audit/source_manifest.json',3500); code=read('.kimi_audit/code_findings.txt',17000); runtime=read('.kimi_audit/runtime_diagnosis.txt',5000); status=read('.kimi_audit/server_status.txt',3500); diff=read('.kimi_audit/deployed_vs_main.txt',2500); tests=read('.kimi_audit/test_status.txt',1000)+'\n'+read('.kimi_audit/pytest_tail.txt',2500); main_sha=read('.kimi_audit/main_sha.txt',100).strip(); server_sha=read('.kimi_audit/server_sha.txt',100).strip()
           prompt=f'''You are Kimi. Produce the FINAL full read-only audit requested by the owner of this trading bot.
-
-GOALS:
-1. Explain why the bot has stopped trading although it traded before.
-2. Audit the current application code for concrete bugs/regressions that can suppress or break trades.
-3. Separate CONFIRMED root causes from HIGH/MEDIUM/LOW confidence hypotheses.
-4. Give a safe, ordered fix plan with exact files/functions/settings to inspect or change.
-5. State what must be verified before any LIVE restart/change. Do not weaken safety, sellability, liquidity, simulation, wallet, signing, risk or capital controls simply to force trades.
-6. Mention if the deployed production SHA differs from current GitHub main and whether that difference is relevant.
-7. Include test evidence and any remaining evidence gaps.
-
+GOALS: explain why trading stopped after it previously worked; audit current application code for concrete bugs/regressions; separate confirmed causes from confidence-ranked hypotheses; give a safe ordered fix plan with exact files/functions/settings; state what must be verified before any LIVE restart/change; do not weaken safety/sellability/liquidity/simulation/wallet/signing/risk/capital controls just to force trades; mention deployed-vs-main mismatch relevance; include test evidence and remaining evidence gaps.
 Exact current main SHA: {main_sha}
 Production server SHA: {server_sha}
-
-SOURCE AUDIT COVERAGE:
-{manifest}
-
-YOUR CONSOLIDATED CODE FINDINGS:
-{code}
-
-YOUR FRESH RUNTIME DIAGNOSIS:
-{runtime}
-
-FRESH SERVER STATUS EXCERPT:
-{status}
-
-DEPLOYED VS MAIN FILES:
-{diff}
-
-TEST EVIDENCE:
-{tests}
-
+SOURCE AUDIT COVERAGE:\n{manifest}\nYOUR CONSOLIDATED CODE FINDINGS:\n{code}\nYOUR FRESH RUNTIME DIAGNOSIS:\n{runtime}\nFRESH SERVER STATUS EXCERPT:\n{status}\nDEPLOYED VS MAIN FILES:\n{diff}\nTEST EVIDENCE:\n{tests}
 Write a substantial actionable report with headings: Executive conclusion; Confirmed findings; Why trading stopped; Code bugs; Fix plan; Verification plan; Remaining unknowns. Be precise and do not invent evidence.'''
           if len(prompt)>31500: prompt=prompt[:31500]
-          venv=os.environ['VENV']; rid=os.environ['GITHUB_RUN_ID']
-          cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,
-               '--subject',f'Kimi final full trading audit {rid}','--message-id',f'kimi-final-full-audit-{rid}','--timeout','180']
-          r=subprocess.run(cmd,text=True,capture_output=True,timeout=200)
-          pathlib.Path('.kimi_audit/final_exchange.log').write_text(r.stdout+'\nSTDERR\n'+r.stderr,encoding='utf-8')
-          lines=[x for x in r.stdout.splitlines() if x.strip()]
-          final=json.loads(lines[-1]) if lines else {}
-          body=str(final.get('body') or '').strip()
+          venv=os.environ['VENV']; rid=os.environ['GITHUB_RUN_ID']; cmd=[f'{venv}/bin/python','scripts/ai_agent_ws_send.py','--from','gpt','--to','kimi','--message',prompt,'--subject',f'Kimi final full trading audit {rid}','--message-id',f'kimi-final-full-audit-{rid}','--timeout','180']
+          r=subprocess.run(cmd,text=True,capture_output=True,timeout=200); pathlib.Path('.kimi_audit/final_exchange.log').write_text(r.stdout+'\nSTDERR\n'+r.stderr,encoding='utf-8'); lines=[x for x in r.stdout.splitlines() if x.strip()]; final=json.loads(lines[-1]) if lines else {}; body=str(final.get('body') or '').strip()
           if not body: raise SystemExit(f'Kimi final reply missing: rc={r.returncode} error={final.get("error") or r.stderr[-1200:]}')
-          pathlib.Path('.kimi_audit/final_reply.txt').write_text(body,encoding='utf-8')
-          print('KIMI_FINAL_REPLY_BEGIN')
-          print(body)
-          print('KIMI_FINAL_REPLY_END')
-          print(json.dumps({'delivered':final.get('delivered'),'acknowledged':final.get('acknowledged'),'status':final.get('status'),'error':final.get('error')},ensure_ascii=False))
+          pathlib.Path('.kimi_audit/final_reply.txt').write_text(body,encoding='utf-8'); print('KIMI_FINAL_REPLY_BEGIN'); print(body); print('KIMI_FINAL_REPLY_END'); print(json.dumps({'delivered':final.get('delivered'),'acknowledged':final.get('acknowledged'),'status':final.get('status'),'error':final.get('error')},ensure_ascii=False))
           PY
 
       - name: Cleanup isolated environment
