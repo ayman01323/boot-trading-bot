@@ -169,3 +169,8 @@ from . import solana_platform_recovery_reconcile_patch  # noqa: E402,F401
 # so a leader that can never pass preflight does not consume a scarce leader slot.
 # This changes selection only; the configured 5%/4% edge floors are not relaxed.
 from . import solana_leader_edge_alignment_patch  # noqa: E402,F401
+
+# A verified, durably LIQUIDITY_STUCK OPEN position remains real exposure and
+# keeps the same mint blocked, but no longer freezes all other Solana entry
+# capacity. Owners receive explicit keep-retrying / force-exit / write-off choices.
+from . import solana_liquidity_stuck_nonblocking_patch  # noqa: E402,F401
