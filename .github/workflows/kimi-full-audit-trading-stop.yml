@@ -8,11 +8,11 @@ on:
       - '.github/workflows/kimi-full-audit-trading-stop.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: kimi-full-audit-trading-stop
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   audit:
@@ -221,6 +221,34 @@ Write a substantial actionable report with headings: Executive conclusion; Confi
           if not body: raise SystemExit(f'Kimi final reply missing: rc={r.returncode} error={final.get("error") or r.stderr[-1200:]}')
           pathlib.Path('.kimi_audit/final_reply.txt').write_text(body,encoding='utf-8'); print('KIMI_FINAL_REPLY_BEGIN'); print(body); print('KIMI_FINAL_REPLY_END'); print(json.dumps({'delivered':final.get('delivered'),'acknowledged':final.get('acknowledged'),'status':final.get('status'),'error':final.get('error')},ensure_ascii=False))
           PY
+
+      - name: Publish redacted Kimi result to isolated branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUDIT_BRANCH: gpt/kimi-full-audit-trading-stop
+        run: |
+          set -euo pipefail
+          result=.kimi_audit/final_reply.txt
+          test -s "$result"
+          main_sha="$(cat .kimi_audit/main_sha.txt)"
+          server_sha="$(cat .kimi_audit/server_sha.txt)"
+          test_status="$(cat .kimi_audit/test_status.txt)"
+          {
+            echo "KIMI FULL AUDIT RESULT"
+            echo "main_sha=$main_sha"
+            echo "server_sha=$server_sha"
+            echo "$test_status"
+            echo
+            cat "$result"
+          } > /tmp/kimi-full-audit-result.txt
+          content="$(base64 -w0 /tmp/kimi-full-audit-result.txt)"
+          path='.github/kimi-full-audit-result.txt'
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/contents/${path}?ref=${AUDIT_BRANCH}" --jq '.sha' 2>/dev/null || true)"
+          args=(--method PUT -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/contents/${path}" -f message='Publish redacted Kimi full audit result' -f content="$content" -f branch="$AUDIT_BRANCH")
+          if [[ -n "$existing_sha" ]]; then args+=(-f sha="$existing_sha"); fi
+          gh api "${args[@]}" >/dev/null
+          echo 'Published Kimi result to isolated audit branch.'
 
       - name: Cleanup isolated environment
         if: always()
