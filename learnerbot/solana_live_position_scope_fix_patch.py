@@ -22,12 +22,23 @@ _PREV_STATUS_PAGE = _ui.status_page
 
 
 def _open_live_position(app, tid, mint):
-    """Return only an OPEN LIVE position for the user+mint duplicate guard."""
+    """Return a LIVE duplicate blocker for the user+mint.
+
+    Normal duplicate protection is OPEN-LIVE only. An explicit operator write-off
+    is the one deliberate exception: the accounting position is CLOSED, but the
+    unsold token remains on-chain, so the same mint must stay permanently blocked
+    from fresh LIVE entry rather than being mistaken for available capacity.
+    """
     with closing(_sol.connect(app)) as conn:
         row = conn.execute(
             """SELECT * FROM positions
-               WHERE telegram_id=? AND mint=? AND status='OPEN' AND mode='LIVE'
-               ORDER BY entry_ts LIMIT 1""",
+               WHERE telegram_id=? AND mint=? AND mode='LIVE'
+                 AND (
+                   status='OPEN'
+                   OR (status='CLOSED' AND exit_reason LIKE 'OPERATOR_WRITE_OFF_ZERO_RECOVERY:%')
+                 )
+               ORDER BY CASE WHEN status='OPEN' THEN 0 ELSE 1 END, entry_ts
+               LIMIT 1""",
             (str(tid), str(mint)),
         ).fetchone()
         return dict(row) if row else None
@@ -67,7 +78,7 @@ def install():
     _sol.status = status
     _ui.status_page = status_page
     print(
-        "[solana-live-position-scope-fix] duplicate_guard=LIVE_only "
+        "[solana-live-position-scope-fix] duplicate_guard=LIVE_only+operator_writeoff "
         "global_open_positions=LIVE_only risk_cap=unchanged"
     )
 
