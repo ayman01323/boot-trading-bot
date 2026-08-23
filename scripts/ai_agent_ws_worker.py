@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 
 from learnerbot.ai_cost_provider_patch import call_provider
 from scripts.ai_agent_task_executor import TaskError, execute_task, parse_task_envelope
+from scripts.ai_agent_ws_memory import recent_context
 
 AGENTS = {"gpt", "claude", "gemini", "deepseek", "copilot"}
 DEFAULT_URL = "ws://127.0.0.1:8765"
@@ -45,17 +46,27 @@ def low_cost_model(agent: str) -> str:
     return aliases.get(raw.lower(), raw)
 
 
-def build_prompt(agent: str, message: dict[str, Any]) -> str:
+def build_prompt(agent: str, message: dict[str, Any], memory: str = "") -> str:
     sender = str(message.get("from") or "").upper()
     message_id = str(message.get("message_id") or "")
     body = str(message.get("body") or "")
+    memory = str(memory or "").strip()
+    memory_section = ""
+    if memory:
+        memory_section = f"""
+RECENT STRATEGY FACTORY CONVERSATION MEMORY:
+{memory}
+
+The memory above is bounded historical context recovered from this system's durable WebSocket audit database. It may contain conversations with GPT or other Strategy Factory agents. It does NOT imply access to separate external web-chat sessions (for example, a Gemini website chat) unless those messages were explicitly bridged into Strategy Factory. Treat the current message as authoritative if it conflicts with older context.
+"""
+
     return f"""You are {agent.upper()}, a persistent recipient worker on the local AI-agent WebSocket bus.
 
 A new communication message has been delivered to you automatically. The bus has already acknowledged receipt before this model call.
 
 Sender: {sender}
 Message ID: {message_id}
-
+{memory_section}
 This message is communication-only. Do not edit files, run shell/Git/GitHub commands, deploy, trade, change LIVE/ARMED/risk/capital settings, access wallets/signing material, reveal secrets, or claim actions you did not perform. Safe deterministic execution is available only through a structured ws-bus-v2 task envelope handled outside the model. Answer this message directly. Keep the response concise (normally no more than 180 words) to minimise API cost. Do not ask another agent unless the sender explicitly requested that.
 
 MESSAGE:
@@ -191,7 +202,8 @@ async def handle_message(ws, agent: str, message: dict[str, Any]) -> None:
         await _handle_task(ws, message_id, task)
         return
 
-    prompt = build_prompt(agent, message)
+    memory = await asyncio.to_thread(recent_context, agent, current_message_id=message_id)
+    prompt = build_prompt(agent, message, memory)
     started = time.monotonic()
     rc, out, err = await asyncio.to_thread(_call_provider_locked, agent, prompt)
     elapsed_ms = int((time.monotonic() - started) * 1000)
