@@ -52,13 +52,23 @@ def test_council_adapter_is_installed_on_same_transport() -> None:
     assert '"transport": "strategy-factory-websocket"' in text
 
 
-def test_council_adapter_correlates_ack_and_reply(monkeypatch) -> None:
+def test_council_adapter_correlates_ack_reply_and_request_thread(monkeypatch) -> None:
     seen = {}
 
-    async def fake_exchange(sender, target, body, *, message_id, timeout):
-        seen.update(sender=sender, target=target, body=body, message_id=message_id, timeout=timeout)
+    async def fake_exchange(sender, target, body, *, message_id, thread_id, subject, timeout):
+        seen.update(
+            sender=sender,
+            target=target,
+            body=body,
+            message_id=message_id,
+            thread_id=thread_id,
+            subject=subject,
+            timeout=timeout,
+        )
         return {
             "message_id": message_id,
+            "thread_id": thread_id,
+            "subject": subject,
             "acknowledged": True,
             "status": "REPLIED",
             "body": "APPROVE: bounded change",
@@ -70,10 +80,13 @@ def test_council_adapter_correlates_ack_and_reply(monkeypatch) -> None:
     assert seen["sender"] == "gpt"
     assert seen["target"] == "gemini"
     assert seen["body"] == "review this"
+    assert seen["thread_id"] == "council-mc-test"
+    assert seen["subject"] == "MASTER change mc-test"
     assert seen["timeout"] == 9
     assert row["acknowledged"] is True
     assert row["provider_rc"] == 0
     assert row["reply"] == "APPROVE: bounded change"
+    assert row["thread_id"] == "council-mc-test"
     assert row["routing_mode"] == "COUNCIL"
 
 
