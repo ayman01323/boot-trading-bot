@@ -12,12 +12,13 @@ from . import telegram_ai_ops_patch as _ai_ops
 from . import telegram_ai_reports_menu_patch as _menu
 from .config import AppSettings
 
-PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "copilot")
+PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")
 _LABELS = {
     "gpt": "GPT",
     "claude": "Claude",
     "gemini": "Gemini",
     "deepseek": "DeepSeek",
+    "grok": "Grok",
     "copilot": "Copilot",
 }
 _AI_HEALTH_HEADING = "<b>🤖 AI AGENT HEALTH</b>"
@@ -26,7 +27,7 @@ _STRATEGY_HEADING = "<b>🧠 STRATEGY MONITOR</b>"
 _STRATEGY_FACTORY_HEADING = "<b>🧠 STRATEGY FACTORY</b>"
 _ORIGINAL_SEND_TO_CHATS = _health_warning._tg.send_to_chats
 
-# Keep the five-agent health collectors aligned with the compact display order.
+# Keep the six-agent health collectors aligned with the compact display order.
 _health5.PROVIDERS = PROVIDERS
 
 
