@@ -51,14 +51,18 @@ def test_selected_master_collects_and_can_fallback_to_deepseek() -> None:
     runner = _text("scripts/resilient_selected_master_v2.py")
     assert '"DeepSeek Fifth Strategy Agent"' in workflow
     assert '"DeepSeek Fifth Engineering Agent"' in workflow
-    assert "gpt gemini claude deepseek" in workflow
+    assert '"Grok Sixth Strategy Agent"' in workflow
+    assert '"Grok Sixth Engineering Agent"' in workflow
+    assert "gpt gemini claude deepseek grok" in workflow
     assert "secrets.DEEPSEEK_API_KEY" in workflow
-    assert "'auto','gpt','claude','gemini','deepseek','copilot'" in workflow
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "copilot")' in runner
+    assert "secrets.XAI_API_KEY" in workflow
+    assert "'auto','gpt','claude','gemini','deepseek','grok','copilot'" in workflow
+    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in runner
     assert 'DEEPSEEK_API_KEY' in runner
     assert 'ANTHROPIC_AUTH_TOKEN' in runner
     assert 'env.pop("ANTHROPIC_API_KEY", None)' in runner
-    assert 'failed_agent_count"] = max(0, 5 - len(valid_reports))' in runner
+    assert 'XAI_API_KEY' in runner
+    assert 'failed_agent_count"] = max(0, 6 - len(valid_reports))' in runner
 
 
 def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
