@@ -79,25 +79,58 @@ def test_non_legacy_alchemy_errors_are_not_swept(tmp_path, monkeypatch):
     assert patch._next_legacy_error_wallet(app, chain, now_epoch=10_000) is None
 
 
-def test_primary_queue_always_preempts_legacy_sweep(monkeypatch):
+def test_legacy_sweep_wins_when_its_cooldown_is_due(monkeypatch):
+    # The cooldown inside _next_legacy_error_wallet is what bounds how often
+    # this can preempt a ranked candidate, not queue idleness -- so when the
+    # sweep is due, it must win even though the ranked queue has something.
     chain = _chain()
     app = SimpleNamespace()
     monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: "0xranked")
-    called = []
-    monkeypatch.setattr(
-        patch,
-        "_next_legacy_error_wallet",
-        lambda app, chain: called.append(True) or "0xlegacy",
-    )
-
-    assert patch._next_history_wallet(app, chain) == "0xranked"
-    assert called == []
-
-
-def test_fallback_runs_only_when_primary_queue_is_empty(monkeypatch):
-    chain = _chain()
-    app = SimpleNamespace()
-    monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: None)
     monkeypatch.setattr(patch, "_next_legacy_error_wallet", lambda app, chain: "0xlegacy")
 
     assert patch._next_history_wallet(app, chain) == "0xlegacy"
+
+
+def test_ranked_queue_used_when_legacy_sweep_not_due(monkeypatch):
+    # On every pass within the cooldown window, _next_legacy_error_wallet
+    # returns None immediately (cheap, no wallet claimed) and the ranked
+    # queue proceeds completely unaffected -- this is the common case.
+    chain = _chain()
+    app = SimpleNamespace()
+    monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: "0xranked")
+    monkeypatch.setattr(patch, "_next_legacy_error_wallet", lambda app, chain: None)
+
+    assert patch._next_history_wallet(app, chain) == "0xranked"
+
+
+def test_legacy_sweep_is_not_starved_by_a_ranked_queue_that_never_goes_idle(tmp_path, monkeypatch):
+    # Regression test for the confirmed live bug: a ranked/progress queue that
+    # always finds *something* to retry (e.g. a large, actively-refreshing
+    # candidate window) must not permanently prevent the legacy backlog from
+    # ever being swept. Simulate the ranked queue always returning a wallet
+    # -- never idle -- across many passes, and confirm the sweep still fires
+    # once its cooldown elapses, exercising the real call path
+    # _history_worker uses (no now_epoch override).
+    app = _app(tmp_path)
+    chain = _chain()
+    monkeypatch.setattr(patch, "_sweep_seconds", lambda app, chain: 900)
+    monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: "0xranked")
+    _insert(app, chain, "0xstale", 100, "ETHERSCAN_API_KEY is not configured")
+
+    # First-ever call has no recorded cooldown state, so it sweeps
+    # immediately (correct: don't wait 15 minutes after a fresh install
+    # before the very first sweep). This consumes the cooldown for t=100.
+    monkeypatch.setattr(patch.time, "time", lambda: 100)
+    assert patch._next_history_wallet(app, chain) == "0xstale"
+
+    # Many passes within that cooldown window: the never-idle ranked queue
+    # wins every time, exactly matching normal (non-bursty) pacing.
+    for now in (150, 500, 999):
+        monkeypatch.setattr(patch.time, "time", lambda now=now: now)
+        assert patch._next_history_wallet(app, chain) == "0xranked"
+
+    # Once the cooldown elapses, the sweep activates again despite the
+    # ranked queue still always having a candidate -- proving it is not
+    # permanently starved by a queue that never returns None.
+    monkeypatch.setattr(patch.time, "time", lambda: 1_001)
+    assert patch._next_history_wallet(app, chain) == "0xstale"
