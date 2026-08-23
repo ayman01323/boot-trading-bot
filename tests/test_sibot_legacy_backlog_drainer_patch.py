@@ -150,6 +150,53 @@ def test_transient_alchemy_orphan_is_recovered_after_retry_age(tmp_path, monkeyp
     assert result["kind"] == "TRANSIENT_ALCHEMY"
 
 
+def test_progressive_trace_wallet_is_resumed_until_success(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    chain = _chain("bsc", 56)
+    wallet = "0xprogress"
+    _insert(app, chain, wallet, 100, "RuntimeError: Etherscan txlist: NOTOK Invalid API Key")
+
+    monkeypatch.setattr(patch, "_ranked_wallets", lambda app, chain: set())
+    monkeypatch.setattr(patch._alchemy, "alchemy_rpc_url", lambda app, chain_id: "https://alchemy.invalid/redacted")
+    calls = []
+
+    def refresh(app, chain, selected):
+        calls.append(selected)
+        if len(calls) == 1:
+            error = "AlchemyHistoryProgress: trace progress pending 4/8; worker yielded for cross-chain fairness"
+            with closing(sibot.connect(app)) as conn:
+                conn.execute(
+                    "UPDATE wallet_history_status SET fetched_at=?,error=? WHERE chain_id=? AND wallet=?",
+                    (1_000, error, chain.chain_id, selected),
+                )
+                conn.commit()
+            return {"wallet": selected, "complete": False, "error": error}
+        with closing(sibot.connect(app)) as conn:
+            conn.execute(
+                "UPDATE wallet_history_status SET fetched_at=?,history_complete=1,error='' WHERE chain_id=? AND wallet=?",
+                (1_180, chain.chain_id, selected),
+            )
+            conn.commit()
+        return {"wallet": selected, "complete": True, "trades": 3}
+
+    monkeypatch.setattr(patch._sibot, "refresh_wallet_history", refresh)
+
+    first = patch._drain_once(app, now_epoch=1_000, chains=[chain])
+    assert first["status"] == "PROGRESS"
+    assert first["next_epoch"] == 1_180
+    assert patch.status_for_chain(app, chain)["progress_backlog"] == 1
+
+    # Global pacing is over, but this chain is deliberately held until the same
+    # 180-second progressive retry age used by the trace worker.
+    assert patch._drain_once(app, now_epoch=1_100, chains=[chain]) == {"status": "IDLE"}
+
+    second = patch._drain_once(app, now_epoch=1_180, chains=[chain])
+    assert second["status"] == "SUCCESS"
+    assert second["wallet"] == wallet
+    assert calls == [wallet, wallet]
+    assert patch.status_for_chain(app, chain)["progress_backlog"] == 0
+
+
 def test_nontransient_failure_backs_off_only_that_chain(tmp_path, monkeypatch):
     app = _app(tmp_path)
     bsc = _chain("bsc", 56)
