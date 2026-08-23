@@ -20,3 +20,8 @@ def install() -> None:
 
 
 install()
+
+# Final mobile presentation: shorter lines, deliberate section spacing, and one
+# deployment-time MASTER refresh message. Presentation only; health/trading truth
+# collectors remain unchanged.
+from . import telegram_ai_health_mobile_layout_patch as _mobile_health_layout  # noqa: E402,F401
