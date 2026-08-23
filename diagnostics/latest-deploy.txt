@@ -1,74 +1,115 @@
-requested_sha=a5ad3a805ead910a6245d7e2daac1afb1dfce51a
+requested_sha=4f90e9384927818106238721c200d63d2bbba1f9
 deploy_outcome=failure
 deploy_exit=10
-run_id=32486014961
-utc=2026-08-21T13:18:19Z
+run_id=32671643455
+utc=2026-08-23T22:48:42Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-21T13:17:04Z BEGIN current=89061556be74c3e786de8eb999e96d03f330fb39 requested=a5ad3a805ead910a6245d7e2daac1afb1dfce51a
-From github.com:ayman01323/boot-trading-bot
- * branch            main       -> FETCH_HEAD
-   1ae2c7f..a5ad3a8  main       -> origin/main
-Updating 8906155..a5ad3a8
-Fast-forward
- .../workflows/deepseek-github-controlled-ops.yml   | 238 +++++++++++++++++++
- .github/workflows/deepseek-vps-controlled-ops.yml  | 251 +++++++++++++++++++++
- .github/workflows/engineering-agent-retry.yml      |   3 +-
- tests/test_deepseek_controlled_access.py           |  69 ++++++
- 4 files changed, 560 insertions(+), 1 deletion(-)
- create mode 100644 .github/workflows/deepseek-github-controlled-ops.yml
- create mode 100644 .github/workflows/deepseek-vps-controlled-ops.yml
- create mode 100644 tests/test_deepseek_controlled_access.py
+tests/test_telegram_trade_blocker_health.py:47: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+learnerbot/trading_pipeline_observability_patch.py:585: in build_report
+    s = snapshot(app, tid)
+        ^^^^^^^^^^^^^^^^^^
+learnerbot/trading_pipeline_observability_patch.py:560: in snapshot
+    "polygon_auto": _polygon_summary(app),
+                    ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-[notice] A new release of pip available: 22.3.1 -> 26.2.1
-[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-...................................................F.................... [ 13%]
-........................................................................ [ 27%]
-........................................................................ [ 41%]
-........................................................................ [ 55%]
-........................................................................ [ 68%]
-........................................................................ [ 82%]
-........................................................................ [ 96%]
-..................                                                       [100%]
-=================================== FAILURES ===================================
-_____ test_deepseek_vps_access_is_manual_restricted_and_current_main_only ______
+app = namespace()
 
-    def test_deepseek_vps_access_is_manual_restricted_and_current_main_only() -> None:
-        text = _text(".github/workflows/deepseek-vps-controlled-ops.yml")
-        assert "DeepSeek VPS Controlled Operations" in text
-        assert "workflow_dispatch:" in text
-        assert "schedule:" not in text
-        assert "runs-on: [self-hosted, linux, x64, boot-vps]" in text
-        assert "options: [inspect, test, deploy]" in text
-        assert "sudo /usr/local/sbin/status-boot-trading-bot" in text
-        assert 'sudo /usr/local/sbin/deploy-boot-trading-bot "$target"' in text
-        assert "checkout is not exact current origin/main" in text
-        assert "secrets.DEEPSEEK_API_KEY" in text
-        assert "https://api.deepseek.com/anthropic" in text
-        assert "--permission-mode plan" in text
-        assert "provider':'deepseek'" in text
-        assert "root_shell':False" in text
-        assert "arbitrary_sudo':False" in text
-        assert "wallet_or_private_key_access':False" in text
-        assert "arbitrary_deploy_sha':False" in text
-        assert "deploy_current_main_via_restricted_wrapper_only':True" in text
-        assert "vps/deepseek/latest.json" in text
-        assert "AGENT: DEEPSEEK" in text
-        assert "AI-Agent: DEEPSEEK" in text
-        for forbidden in ("sudo bash", "sudo sh", "sudo -i", "PRIVATE_KEY", "mnemonic", "seed phrase"):
->           assert forbidden not in text
-E           assert 'mnemonic' not in 'name: DeepS...P_SUMMARY"\n'
-E             
-E             'mnemonic' is contained here:
-E               [_ -]?key|mnemonic|seed phrase|password|authorization:|bearer |secret=|token=)',line):
-E             ?           ++++++++
-E                                     kept.append('[REDACTED SENSITIVE LINE]')
-E                                 else:
-E                                     line=re.sub(r'sk-[A-Za-z0-9_-]{12,}','<redacted-key>',line)...
-E             
-E             ...Full output truncated (131 lines hidden), use '-vv' to show
+    def _polygon_summary(app) -> dict:
+        now = int(time.time())
+>       status_rows = _rows(Path(app.csv_dir) / "auto" / "fast_market_status.csv")
+                                 ^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute 'csv_dir'
 
-tests/test_deepseek_controlled_access.py:59: AssertionError
+learnerbot/trading_pipeline_observability_patch.py:392: AttributeError
+______ test_report_shows_dominant_error_even_for_legacy_etherscan_string _______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2067495b10>
+
+    def test_report_shows_dominant_error_even_for_legacy_etherscan_string(monkeypatch):
+        # wallet_history_status rows can still carry the pre-Alchemy-migration error
+        # string long after the switch; hiding it left every chain's near-100% error
+        # rate completely unexplained in the report. It must be shown per chain even
+        # though the top-level banner also explains the missing-key case separately.
+        monkeypatch.setattr(patch, "_snapshot", lambda app, tid: _sample_snapshot())
+>       text = patch.build_report(SimpleNamespace(), "master")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_telegram_trade_blocker_health.py:63: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+learnerbot/trading_pipeline_observability_patch.py:585: in build_report
+    s = snapshot(app, tid)
+        ^^^^^^^^^^^^^^^^^^
+learnerbot/trading_pipeline_observability_patch.py:560: in snapshot
+    "polygon_auto": _polygon_summary(app),
+                    ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+app = namespace()
+
+    def _polygon_summary(app) -> dict:
+        now = int(time.time())
+>       status_rows = _rows(Path(app.csv_dir) / "auto" / "fast_market_status.csv")
+                                 ^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute 'csv_dir'
+
+learnerbot/trading_pipeline_observability_patch.py:392: AttributeError
+_____________________ test_report_shows_platform_live_off ______________________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2067495790>
+
+    def test_report_shows_platform_live_off(monkeypatch):
+        snap = _sample_snapshot()
+        snap["platform_live"] = False
+        monkeypatch.setattr(patch, "_snapshot", lambda app, tid: snap)
+>       text = patch.build_report(SimpleNamespace(), "master")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_telegram_trade_blocker_health.py:71: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+learnerbot/trading_pipeline_observability_patch.py:585: in build_report
+    s = snapshot(app, tid)
+        ^^^^^^^^^^^^^^^^^^
+learnerbot/trading_pipeline_observability_patch.py:560: in snapshot
+    "polygon_auto": _polygon_summary(app),
+                    ^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+app = namespace()
+
+    def _polygon_summary(app) -> dict:
+        now = int(time.time())
+>       status_rows = _rows(Path(app.csv_dir) / "auto" / "fast_market_status.csv")
+                                 ^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute 'csv_dir'
+
+learnerbot/trading_pipeline_observability_patch.py:392: AttributeError
+________________ test_startup_health_never_writes_secret_value _________________
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-523/test_startup_health_never_writ0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2067552110>
+
+    def test_startup_health_never_writes_secret_value(tmp_path, monkeypatch):
+        app = SimpleNamespace(
+            csv_dir=tmp_path / "csv",
+            data_dir=tmp_path / "data",
+            etherscan_api_key="do-not-write-this-secret",
+            telegram_bot_token="",
+        )
+        app.csv_dir.mkdir()
+        monkeypatch.setattr(patch, "all_users", lambda *args, **kwargs: [])
+        monkeypatch.setattr(patch._polygon, "focus_enabled", lambda app: False)
+        patch._publish_startup_health(app)
+        raw = (app.data_dir / "trade_blocker_health.json").read_text(encoding="utf-8")
+        assert "do-not-write-this-secret" not in raw
+>       assert '"etherscan_configured": true' in raw
+E       assert '"etherscan_configured": true' in '{\n  "evm_sibot": {\n    "chains": {},\n    "first_zero_stage": ""\n  },\n  "generated_epoch": 1787525297,\n  "polygo...\n    "reconstructed": 0,\n    "research_needed": false,\n    "selected": 0,\n    "zero_qualified_streak": 0\n  }\n}\n'
+
+tests/test_telegram_trade_blocker_health.py:97: AssertionError
+----------------------------- Captured stdout call -----------------------------
+[trading-funnel-observability] master_bridge=ready etherscan_dependency_claim=removed
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -76,41 +117,41 @@ tests/test_deepseek_controlled_access.py:59: AssertionError
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
-FAILED tests/test_deepseek_controlled_access.py::test_deepseek_vps_access_is_manual_restricted_and_current_main_only
-1 failed, 521 passed, 1 warning in 43.74s
-2026-08-21T13:17:57Z TESTS FAILED; service remains on old running process
-HEAD is now at 8906155 Use Gemini 3.7 Flash for hourly strategy reviews
+SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
+FAILED tests/test_telegram_trade_blocker_health.py::test_report_explains_each_major_no_trade_layer
+FAILED tests/test_telegram_trade_blocker_health.py::test_report_shows_dominant_error_even_for_legacy_etherscan_string
+FAILED tests/test_telegram_trade_blocker_health.py::test_report_shows_platform_live_off
+FAILED tests/test_telegram_trade_blocker_health.py::test_startup_health_never_writes_secret_value
+4 failed, 1031 passed, 1 skipped, 1 warning in 27.70s
+2026-08-23T22:48:22Z TESTS FAILED; service remains on old running process
+HEAD is now at f1087a1 Redeploy Monitor Factory after promotion-gate test fix
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-21T13:18:14Z
+UTC: 2026-08-23T22:48:38Z
 branch: main
-sha:    89061556be74c3e786de8eb999e96d03f330fb39
-origin: git@github.com:ayman01323/boot-trading-bot.git
+sha:    f1087a1bb1556952594b1f60b1c9946ec0d62155
+origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
 version: 2.3.10
 
 tracked changes:
 
 service:
-● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
+○ learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-21 13:51:05 BST; 27min ago
-   Main PID: 377581 (python)
-      Tasks: 22 (limit: 5869)
-     Memory: 674.8M (peak: 771.0M)
-        CPU: 20min 37.944s
-     CGroup: /system.slice/learnerbot.service
-             ├─377581 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             ├─381691 git -C /root/multichain-learning-bot-v2.2-fast-direct-market fetch --quiet origin ai-reviews:refs/remotes/origin/ai-reviews
-             └─381692 /usr/bin/ssh -o SendEnv=GIT_PROTOCOL git@github.com "git-upload-pack 'ayman01323/boot-trading-bot.git'"
+     Active: inactive (dead) since Sun 2026-08-23 23:45:33 BST; 3min 4s ago
+   Duration: 1h 50min 53.131s
+    Process: 1102816 ExecStart=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run (code=killed, signal=TERM)
+   Main PID: 1102816 (code=killed, signal=TERM)
+        CPU: 1h 12min 3.259s
 
-Aug 21 14:12:31 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 14:12:35 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 14:12:38 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 14:12:42 mint.yesgoodwill.com python[377581]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
-Aug 21 14:12:57 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=44.827
-Aug 21 14:12:57 mint.yesgoodwill.com python[377581]: [power-discovery] v2-added=23 v3-pools=194 products=7955 auto-products=951 rejected=0 seconds=432.480
-Aug 21 14:13:44 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=45.825
-Aug 21 14:14:44 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=58.844
-Aug 21 14:16:03 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=76.350
-Aug 21 14:17:24 mint.yesgoodwill.com python[377581]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=80.077
+Aug 23 23:45:30 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:polygon] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 23:45:30 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:base] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 23:45:31 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:ethereum] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 23:45:32 mint.yesgoodwill.com python[1102816]: [solana-exec-efficiency] REJECT tid=5923828381 action=SELL reason=quoted price impact 10000.00 bps + slippage 50 bps = 10050.00 bps exceeds 500 bps
+Aug 23 23:45:32 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:arbitrum] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 23:45:32 mint.yesgoodwill.com python[1102816]: [sibot-broader-qualified:bsc] pool=0 qualified=0 selected=0 thresholds=unchanged
+Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: Stopping Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner...
+Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: learnerbot.service: Deactivated successfully.
+Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: Stopped Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner.
+Aug 23 23:45:33 mint.yesgoodwill.com systemd[1]: learnerbot.service: Consumed 1h 12min 3.259s CPU time, 796.8M memory peak.
