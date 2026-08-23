@@ -12,39 +12,58 @@ permissions:
 jobs:
   proof:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 8
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Inspect deployed runtime and local memory source
+      - name: Deploy exact current main through restricted wrapper
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deployed=''
+          for attempt in 1 2 3 4 5; do
+            target="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+            echo "deploy_attempt=${attempt} target=${target}"
+            set +e
+            sudo /usr/local/sbin/deploy-boot-trading-bot "$target" 2>&1 | tee /tmp/gemini-memory-deploy.txt
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [[ "$rc" -eq 0 ]]; then
+              deployed="$target"
+              break
+            fi
+            if [[ "$rc" -ne 6 ]]; then
+              exit "$rc"
+            fi
+            sleep 1
+          done
+          test -n "$deployed"
+          echo "DEPLOYED_SHA=$deployed" >> "$GITHUB_ENV"
+
+      - name: Verify running production SHA and six-agent runtime
         shell: bash
         run: |
           set -euo pipefail
           sudo /usr/local/sbin/status-boot-trading-bot 2>&1 | tee /tmp/gemini-memory-runtime-status.txt
-          echo '=== WS STATUS ==='
-          cat /var/tmp/boot/ai_agent_ws_status.json || true
-          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
-          test -f "$repo/scripts/ai_agent_ws_worker.py"
-          if grep -q 'from scripts.ai_agent_ws_memory import recent_context' "$repo/scripts/ai_agent_ws_worker.py"; then
-            echo 'runtime_worker_memory_import=true'
-          else
-            echo 'runtime_worker_memory_import=false'
-          fi
-          if [[ -f "$repo/scripts/ai_agent_ws_memory.py" ]]; then
-            echo 'runtime_memory_helper=true'
-            PYTHONPATH="$repo" "$repo/.venv/bin/python" - <<'PY'
-          from scripts.ai_agent_ws_memory import recent_context
-          text=recent_context('gemini', max_exchanges=12, max_chars=8000)
-          print('memory_reader_chars=' + str(len(text)))
-          print('memory_reader_has_seed=' + str('STRATEGY_MEMORY_SEED_20260823_1055' in text).lower())
-          print(text[-2500:])
+          running="$(sed -n 's/^sha:[[:space:]]*//p' /tmp/gemini-memory-runtime-status.txt | head -n1 | tr -d '[:space:]')"
+          echo "running_sha=$running"
+          echo "expected_sha=$DEPLOYED_SHA"
+          test "$running" = "$DEPLOYED_SHA"
+          python3 - <<'PY'
+          import json
+          p='/var/tmp/boot/ai_agent_ws_status.json'
+          d=json.load(open(p,encoding='utf-8'))
+          print(json.dumps(d,sort_keys=True))
+          assert d.get('state') == 'ACTIVE', d
+          workers=set(d.get('workers') or [])
+          expected={'gpt','claude','gemini','deepseek','grok','copilot'}
+          assert expected.issubset(workers), (workers, expected)
           PY
-          else
-            echo 'runtime_memory_helper=false'
-          fi
 
       - name: Build isolated sender environment
         shell: bash
@@ -56,11 +75,26 @@ jobs:
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Ask Gemini to recall the earlier seed
+      - name: Seed unique GPT to Gemini production exchange
         shell: bash
         run: |
           set -euo pipefail
-          question='Using only your Strategy Factory conversation memory, quote the exact message GPT sent containing STRATEGY_MEMORY_SEED_20260823_1055. Do not infer or invent it.'
+          seed="PRODUCTION_MEMORY_PROOF_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          echo "MEMORY_SEED=$seed" >> "$GITHUB_ENV"
+          "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message "$seed. Reply only: ${seed}_ACK" \
+            --timeout 180 | tee /tmp/gemini-memory-seed.txt
+          grep -q '"status": "ACKNOWLEDGED"' /tmp/gemini-memory-seed.txt
+          grep -q '"status": "REPLIED"' /tmp/gemini-memory-seed.txt
+          grep -q "${seed}_ACK" /tmp/gemini-memory-seed.txt
+
+      - name: Prove Gemini recalls immediately previous GPT message
+        shell: bash
+        run: |
+          set -euo pipefail
+          question='Using only your Strategy Factory conversation memory, quote the exact immediately previous message GPT sent you. Do not infer or invent it.'
           "$VENV/bin/python" scripts/ai_agent_ws_send.py \
             --from gpt \
             --to gemini \
@@ -68,7 +102,7 @@ jobs:
             --timeout 180 | tee /tmp/gemini-memory-recall.txt
           grep -q '"status": "ACKNOWLEDGED"' /tmp/gemini-memory-recall.txt
           grep -q '"status": "REPLIED"' /tmp/gemini-memory-recall.txt
-          grep -q 'STRATEGY_MEMORY_SEED_20260823_1055' /tmp/gemini-memory-recall.txt
+          grep -q "$MEMORY_SEED" /tmp/gemini-memory-recall.txt
 
       - name: Remove isolated environment
         if: always()
