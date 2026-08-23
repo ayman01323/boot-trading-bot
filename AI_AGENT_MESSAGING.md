@@ -71,7 +71,7 @@ DELIVERED -> ACKNOWLEDGED -> ACCEPTED -> EXECUTING -> COMPLETED
 
 Do not claim an agent received a message unless it reached at least `ACKNOWLEDGED`. Do not claim a deterministic task completed unless it reached `COMPLETED` with execution evidence.
 
-## Automatic awareness and persistence
+## Automatic recipient awareness and persistence
 
 Persistent workers stay connected to the loopback bus. A recipient does not need to poll GitHub or SQLite and the user does not need to tell an agent to check its messages.
 
