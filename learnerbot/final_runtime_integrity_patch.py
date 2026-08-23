@@ -7,6 +7,10 @@ recovery, leader-alignment, provenance and AI-runtime patches have composed.
 It is intentionally verification-only: it does not repair/rebind any hook.
 """
 
+# Operator-facing health must reflect the same seven persistent workers that the
+# runtime already starts. Presentation/health bookkeeping only; no trading hooks.
+from . import kimi_ai_health_roster_patch as _kimi_health  # noqa: F401
+
 from . import auto_trader as _auto
 from . import evm_transfer_native_hotfix_patch as _evm_transfer
 from . import live_executor as _evm_live

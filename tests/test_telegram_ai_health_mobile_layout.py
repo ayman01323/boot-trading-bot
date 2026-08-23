@@ -1,4 +1,5 @@
 from learnerbot import telegram_ai_health_mobile_layout_patch as mobile
+from learnerbot import kimi_ai_health_roster_patch as kimi_health  # noqa: F401
 
 
 def _health(state="WORKING", reason="ok"):
@@ -36,13 +37,36 @@ def test_mobile_provider_layout_uses_single_compact_rows(monkeypatch):
 
     text = mobile.provider_health_text(_health(), _health())
 
-    assert "6 healthy</b> · 0 verify · 0 issues" in text
+    assert mobile._compact.PROVIDERS == (
+        "gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot"
+    )
+    assert "7 healthy</b> · 0 verify · 0 issues" in text
     assert " GPT — Online · API OK 20m" in text
     assert " Claude — Online · API OK 20m" in text
     assert " Gemini — Online" in text
+    assert " Kimi — Online" in text
     assert "↳" not in text
     assert "<i>" not in text
     assert "Worker connected · API last OK" not in text
+
+
+def test_kimi_disconnect_is_visible_not_omitted(monkeypatch):
+    monkeypatch.setattr(
+        mobile._truth,
+        "_fresh_preflight",
+        lambda: {"_truth_stale": True, "_truth_age_seconds": 0},
+    )
+    connected = set(mobile._compact.PROVIDERS) - {"kimi"}
+    monkeypatch.setattr(
+        mobile._truth,
+        "_runtime_connections",
+        lambda: {"available": True, "connected_agents": connected, "updated_epoch": 1},
+    )
+
+    text = mobile.provider_health_text(_health(), _health())
+
+    assert "6 healthy</b> · 0 verify · 1 issues" in text
+    assert "🔴 Kimi — Offline" in text
 
 
 def test_dashboard_uses_one_line_monitor_statuses(monkeypatch):
@@ -50,7 +74,7 @@ def test_dashboard_uses_one_line_monitor_statuses(monkeypatch):
     monkeypatch.setattr(
         mobile,
         "provider_health_text",
-        lambda engineering, strategy: "<b>🤖 AI AGENT HEALTH</b>\n🟢 <b>6 healthy</b> · 0 verify · 0 issues",
+        lambda engineering, strategy: "<b>🤖 AI AGENT HEALTH</b>\n🟢 <b>7 healthy</b> · 0 verify · 0 issues",
     )
     room = _health(state="WAITING", reason="no strategy room request")
 
