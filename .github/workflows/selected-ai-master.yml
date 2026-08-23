@@ -1,18 +1,13 @@
 name: Selected Resilient AI Master
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  # Cost-effective final-stage reconciliation: run once after the seventh agent
+  # completes rather than polling every five minutes or re-adjudicating after
+  # each intermediate agent report.
   workflow_run:
     workflows:
-      - "Hourly Three-Agent Strategy Cycle"
-      - "Claude Fourth Strategy Agent"
-      - "DeepSeek Fifth Strategy Agent"
-      - "Grok Sixth Strategy Agent"
-      - "Weekly Three-Agent Full-Bot Bug Audit"
-      - "Claude Fourth Engineering Agent"
-      - "DeepSeek Fifth Engineering Agent"
-      - "Grok Sixth Engineering Agent"
+      - "Kimi Seventh Strategy Agent"
+      - "Kimi Seventh Engineering Agent"
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -48,35 +43,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-
-      - name: Install all selectable MASTER CLIs
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
-          npm install -g @openai/codex@latest @google/gemini-cli@latest @anthropic-ai/claude-code@latest @github/copilot@latest
-          codex --version
-          gemini --version
-          claude --version
-          copilot --version
-
       - name: Respect requested lane
         id: lane
         env:
           MATRIX_LANE: ${{ matrix.lane }}
           INPUT_LANE: ${{ inputs.lane }}
+          EVENT_NAME: ${{ github.event_name }}
+          UPSTREAM: ${{ github.event.workflow_run.name }}
         shell: bash
         run: |
           wanted="${INPUT_LANE:-both}"
+          # workflow_run events are already lane-specific; skip the other matrix
+          # lane before installing any paid/provider tooling.
+          if [[ "$EVENT_NAME" == workflow_run ]]; then
+            case "$UPSTREAM" in
+              'Kimi Seventh Strategy Agent') wanted='strategy' ;;
+              'Kimi Seventh Engineering Agent') wanted='engineering' ;;
+            esac
+          fi
           if [[ "$wanted" != both && "$wanted" != "$MATRIX_LANE" ]]; then
             echo 'run=false' >> "$GITHUB_OUTPUT"
           else
@@ -105,7 +89,7 @@ jobs:
           try: p=json.load(open(sys.argv[2]))
           except Exception: p={}
           master=str(p.get(lane+'_master') or 'auto').lower()
-          if master not in {'auto','gpt','claude','gemini','deepseek','grok','copilot'}: master='auto'
+          if master not in {'auto','gpt','claude','gemini','deepseek','grok','kimi','copilot'}: master='auto'
           enabled=bool(p.get(lane+'_enabled',True))
           cycle=str(p.get(lane+'_cycle') or 'scheduled').lower()
           if cycle not in {'scheduled','manual'}: cycle='scheduled'
@@ -163,7 +147,7 @@ jobs:
             EVIDENCE=''
           fi
 
-          for provider in gpt gemini claude deepseek grok; do
+          for provider in gpt gemini claude deepseek grok kimi; do
             get_ai_file "${root}/${provider}.json" ".selected_master/reports/${provider}.json" || rm -f ".selected_master/reports/${provider}.json"
           done
           if ! get_ai_file "${root}/copilot.json" .selected_master/reports/copilot.json; then
@@ -228,7 +212,31 @@ jobs:
           echo "value=$needed" >> "$GITHUB_OUTPUT"
           echo "signature=$signature" >> "$GITHUB_OUTPUT"
 
-      - name: Run selected MASTER with fixed fallback sequence
+      - uses: actions/setup-python@v5
+        if: steps.cycle.outputs.found == 'true' && steps.needed.outputs.value == 'true'
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        if: steps.cycle.outputs.found == 'true' && steps.needed.outputs.value == 'true'
+        with:
+          node-version: '22'
+
+      - name: Install selectable MASTER CLIs only when adjudication is needed
+        if: steps.cycle.outputs.found == 'true' && steps.needed.outputs.value == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+          npm install -g @openai/codex@latest @google/gemini-cli@latest @anthropic-ai/claude-code@latest @github/copilot@latest
+          codex --version
+          gemini --version
+          claude --version
+          copilot --version
+
+      - name: Run selected MASTER with fixed seven-agent fallback sequence
         if: steps.cycle.outputs.found == 'true' && steps.needed.outputs.value == 'true'
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -238,6 +246,9 @@ jobs:
           DEEPSEEK_MASTER_MODEL: ${{ vars.DEEPSEEK_MASTER_MODEL || 'deepseek-v4-flash' }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           XAI_MASTER_MODEL: ${{ vars.XAI_MASTER_MODEL || vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          KIMI_MASTER_MODEL: ${{ vars.KIMI_MASTER_MODEL || vars.KIMI_COUNCIL_MODEL || 'kimi-k2.6' }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           GITHUB_TOKEN: ${{ github.token }}
           LANE: ${{ matrix.lane }}
