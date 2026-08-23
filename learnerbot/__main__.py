@@ -177,5 +177,11 @@ from . import ai_agent_ws_runtime_patch  # noqa: F401
 # Absolute final fail-closed composition gate after every late runtime wrapper.
 # Verification only: never repairs/rebinds a hook or changes trading settings.
 from . import final_runtime_integrity_patch  # noqa: F401
+# Explicit owner-authorised one-time accounting write-off for the permanently
+# unsellable 8fip position. Run only after the final hook-integrity gate passes.
+# Idempotent: no SELL, burn or transfer; it closes accounting, records the loss,
+# stops automatic exit retries and preserves the on-chain token balance/audit trail.
+from . import solana_operator_writeoff_8fip_migration as _solana_operator_writeoff_8fip_migration
+_solana_operator_writeoff_8fip_migration.apply()
 from .cli import main
 raise SystemExit(main())
