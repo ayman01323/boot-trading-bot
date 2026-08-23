@@ -2,6 +2,7 @@ import json
 import os
 
 from learnerbot import telegram_ai_health_truth_patch as truth
+from learnerbot import kimi_ai_health_roster_patch as kimi_health
 
 
 def _health(states, **extra):
@@ -15,7 +16,12 @@ def _health(states, **extra):
     return value
 
 
+def _ensure_kimi_roster():
+    kimi_health.install()
+
+
 def test_connected_workers_override_stale_review_failures(monkeypatch):
+    _ensure_kimi_roster()
     monkeypatch.setattr(
         truth,
         "_runtime_connections",
@@ -47,12 +53,13 @@ def test_connected_workers_override_stale_review_failures(monkeypatch):
 
     text = truth.provider_health_text(engineering, strategy)
 
-    assert "🟢 <b>6 healthy</b> · 0 need verification · 0 problems" in text
+    assert "🟢 <b>7 healthy</b> · 0 need verification · 0 problems" in text
     assert "🟢 GPT — Worker connected · API last OK 50m ago" in text
     assert "🟢 Claude — Worker connected · API last OK 50m ago" in text
     assert "🟢 Gemini — Worker connected" in text
     assert "🟢 DeepSeek — Worker connected · API last OK 50m ago" in text
     assert "🟢 Grok — Worker connected · API last OK 50m ago" in text
+    assert "🟢 Kimi — Worker connected" in text
     assert "🟢 Copilot — Worker connected" in text
     assert "Agent problem" not in text
 
@@ -79,6 +86,7 @@ def test_fresh_provider_failure_still_beats_connected_worker(monkeypatch):
 
 
 def test_runtime_connection_file_is_ignored_outside_production_run(tmp_path, monkeypatch):
+    _ensure_kimi_roster()
     status = tmp_path / "connections.json"
     status.write_text(
         json.dumps(
@@ -109,6 +117,7 @@ def test_explicit_strategy_snapshot_does_not_borrow_persisted_source_commit(monk
 
 
 def test_stale_review_snapshot_is_not_presented_as_current_failure(monkeypatch):
+    _ensure_kimi_roster()
     health = _health(
         {
             "gpt": ("WORKING", "HEALTHY"),
@@ -116,6 +125,7 @@ def test_stale_review_snapshot_is_not_presented_as_current_failure(monkeypatch):
             "gemini": ("NOT_WORKING", "pipeline failed"),
             "deepseek": ("NOT_WORKING", "model config"),
             "grok": ("NOT_WORKING", "pipeline failed"),
+            "kimi": ("NOT_WORKING", "pipeline failed"),
             "copilot": ("NOT_WORKING", "pipeline failed"),
         },
         source_commit="old",
@@ -128,10 +138,11 @@ def test_stale_review_snapshot_is_not_presented_as_current_failure(monkeypatch):
     assert "🟡 <b>Review snapshot predates current code · refresh needed</b>" in text
     assert "Pipeline failure" not in text
     assert "Model config" not in text
-    assert "1 working · 0 in progress · 5 issues" not in text
+    assert "1 working · 0 in progress · 6 issues" not in text
 
 
 def test_factory_waiting_without_request_is_idle():
+    _ensure_kimi_roster()
     factory = _health(
         {
             provider: ("WAITING", "No Strategy Room request recorded")
@@ -142,4 +153,4 @@ def test_factory_waiting_without_request_is_idle():
     text = truth.factory_summary_text(factory)
 
     assert "⚪ <b>Idle · no active factory request</b>" in text
-    assert "0 working · 6 in progress" not in text
+    assert "0 working · 7 in progress" not in text
