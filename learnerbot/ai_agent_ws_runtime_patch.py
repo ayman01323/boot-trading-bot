@@ -159,3 +159,8 @@ from . import solana_live_position_scope_fix_patch  # noqa: E402,F401
 # reconciliation as the LIVE capacity guard, so a proven-empty stale LIVE row
 # cannot block the one permitted recovery canary. RPC uncertainty still fails closed.
 from . import solana_platform_recovery_reconcile_patch  # noqa: E402,F401
+
+# Leader selection must use the same median-return edge evidence as LIVE entry,
+# so a leader that can never pass preflight does not consume a scarce leader slot.
+# This changes selection only; the configured 5%/4% edge floors are not relaxed.
+from . import solana_leader_edge_alignment_patch  # noqa: E402,F401
