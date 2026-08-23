@@ -69,13 +69,20 @@ jobs:
             sender="$1"
             target="$2"
             mid="sf6-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
+            set +e
             output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
               --from "$sender" \
               --to "$target" \
               --message-id "$mid" \
               --timeout 90 \
-              --message 'Strategy Factory six-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.')"
+              --message 'Strategy Factory six-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
+            sender_rc=$?
+            set -e
             printf '%s\n' "$output"
+            if [[ $sender_rc -ne 0 ]]; then
+              echo "${target}_provider_health=FAILED sender_rc=${sender_rc}"
+              return 1
+            fi
             final="$(printf '%s\n' "$output" | tail -n 1)"
             TARGET="$target" FINAL="$final" python3 - <<'PY'
           import json, os
@@ -88,14 +95,18 @@ jobs:
           print(f'{target}_provider_health=HEALTH_OK')
           PY
           }
-          probe gemini gpt
-          probe gpt claude
-          probe gpt gemini
-          probe gpt deepseek
-          probe gpt grok
-          probe gpt copilot
+          failures=0
+          probe gemini gpt || failures=$((failures+1))
+          probe gpt claude || failures=$((failures+1))
+          probe gpt gemini || failures=$((failures+1))
+          probe gpt deepseek || failures=$((failures+1))
+          probe gpt grok || failures=$((failures+1))
+          probe gpt copilot || failures=$((failures+1))
+          echo "provider_failures=$failures"
+          test "$failures" -eq 0
 
       - name: Verify Grok bounded deterministic task executor
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
