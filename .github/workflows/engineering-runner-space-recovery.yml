@@ -1,0 +1,91 @@
+name: Engineering Runner Space Recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/engineering-runner-space-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: engineering-runner-space-recovery
+  cancel-in-progress: true
+
+jobs:
+  recover:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Recover only stale runner diagnostics and temp files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== BEFORE ==='
+          df -h / /tmp /opt/actions-runner || true
+          df -i / /tmp /opt/actions-runner || true
+
+          # GitHub Actions diagnostic pages are disposable runner telemetry, not
+          # application/trading data. Retain the newest day for current debugging.
+          if [[ -d /opt/actions-runner/_diag ]]; then
+            find /opt/actions-runner/_diag -type f -mtime +1 -print -delete 2>/dev/null || true
+            find /opt/actions-runner/_diag -type d -empty -delete 2>/dev/null || true
+          fi
+
+          # Delete only stale Actions temp files. Never touch the checked-out
+          # workspace, production repo, bot data, CSVbot, SQLite or virtualenv.
+          if [[ -d /opt/actions-runner/_work/_temp ]]; then
+            find /opt/actions-runner/_work/_temp -type f -mtime +1 -print -delete 2>/dev/null || true
+            find /opt/actions-runner/_work/_temp -type d -empty -delete 2>/dev/null || true
+          fi
+
+          # Remove only well-known stale BOOT/agent scratch files older than one day.
+          find /tmp -maxdepth 1 -type f \( \
+            -name 'boot-*.txt' -o -name 'boot-*.json' -o \
+            -name 'claude-*.txt' -o -name 'claude-*.json' -o \
+            -name 'engineering-*.json' -o -name 'sibot-*.txt' -o \
+            -name 'sibot-*.json' \) -mtime +1 -print -delete 2>/dev/null || true
+
+          echo '=== AFTER ==='
+          df -h / /tmp /opt/actions-runner || true
+          df -i / /tmp /opt/actions-runner || true
+
+      - name: Publish small recovery proof
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/runner-space-recovery.json
+          import json,os,shutil,time
+          total,used,free=shutil.disk_usage('/')
+          st=os.statvfs('/')
+          print(json.dumps({
+            'schema_version':1,
+            'generated_epoch':int(time.time()),
+            'scope':'RUNNER_DIAGNOSTIC_AND_STALE_TEMP_ONLY',
+            'filesystem':{
+              'total_bytes':total,'used_bytes':used,'free_bytes':free,
+              'used_percent':round(used/total*100,2) if total else 0,
+              'free_inodes':st.f_favail,'total_inodes':st.f_files,
+            },
+            'protected_paths_untouched':[
+              '/root/multichain-learning-bot-v2.2-fast-direct-market/data',
+              '/root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot',
+              '/root/multichain-learning-bot-v2.2-fast-direct-market/.venv',
+            ],
+          },indent=2,sort_keys=True))
+          PY
+          api="repos/${GITHUB_REPOSITORY}/contents/engineering/ops/runner-space-recovery.json"
+          old="$(gh api "$api?ref=ai-reviews" --jq '.sha' 2>/dev/null || true)"
+          python3 - "$old" <<'PY' > /tmp/runner-space-put.json
+          import base64,json,sys
+          raw=open('/tmp/runner-space-recovery.json','rb').read()
+          p={'message':'Record runner space recovery','content':base64.b64encode(raw).decode(),'branch':'ai-reviews'}
+          if sys.argv[1]: p['sha']=sys.argv[1]
+          print(json.dumps(p))
+          PY
+          gh api -X PUT "$api" --input /tmp/runner-space-put.json >/dev/null
