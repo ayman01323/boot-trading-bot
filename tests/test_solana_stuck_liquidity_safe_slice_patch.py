@@ -135,3 +135,62 @@ def test_dust_rejection_is_treated_as_safe_slice_retry_reason() -> None:
         "Economic execution guard: net proceeds after fees 5000 lamports below emergency minimum 10000 lamports"
     )
     assert emergency._prebroadcast_liquidity_reject(exc) is True
+
+
+def test_jupiter_failed_to_get_quotes_is_prebroadcast_retryable() -> None:
+    exc = SolanaLiveError(
+        'Jupiter quote HTTP 400: {"requestId":"abc-123","error":"Failed to get quotes"}'
+    )
+    assert patch._jupiter_quote_unavailable(exc) is True
+    assert emergency._prebroadcast_liquidity_reject(exc) is True
+
+
+def test_arbitrary_jupiter_http_400_is_not_hidden_as_liquidity_backoff() -> None:
+    exc = SolanaLiveError('Jupiter quote HTTP 400: {"error":"invalid amount"}')
+    assert patch._jupiter_quote_unavailable(exc) is False
+    assert emergency._prebroadcast_liquidity_reject(exc) is False
+
+
+def test_no_quote_failure_uses_full_safe_slice_ladder_without_broadcast(monkeypatch) -> None:
+    attempted = []
+
+    def no_quote(app, tid, position, fraction, reason):
+        attempted.append(Decimal(str(fraction)))
+        raise SolanaLiveError(
+            'Jupiter quote HTTP 400: {"requestId":"changing-id","error":"Failed to get quotes"}'
+        )
+
+    monkeypatch.setattr(emergency, "_BASE_CLOSE", no_quote)
+    result, failures = emergency._attempt_slices(
+        object(),
+        "123",
+        {"position_id": "p1"},
+        Decimal("1"),
+        "SOLANA_LEADER_EXIT_LOSS_CAP",
+        "SOLANA_LEADER_EXIT_LOSS_CAP",
+    )
+    assert result is None
+    assert attempted == list(emergency._SLICE_FRACTIONS)
+    assert len(failures or []) == len(emergency._SLICE_FRACTIONS)
+    assert all("Failed to get quotes" in text for text in failures or [])
+    assert emergency._emergency_limit({}) == Decimal("500")
+
+
+def test_quote_unavailable_owner_notice_is_truthful_and_sanitised(monkeypatch) -> None:
+    captured = []
+    monkeypatch.setattr(patch, "_PREV_NOTIFY", lambda app, tid, text: captured.append(text))
+    patch._notify_with_quote_unavailable_context(
+        object(),
+        "123",
+        "🧯 <b>Solana emergency exit deferred — liquidity unsafe</b>\n"
+        "Reason: <code>SOLANA_LEADER_EXIT_LOSS_CAP</code>\n"
+        "No transaction was broadcast. Jupiter still priced every safe slice above the emergency ceiling.\n"
+        'Last guard: <code>Jupiter quote HTTP 400: {"requestId":"volatile-id","error":"Failed to get quotes"}</code>',
+    )
+    assert len(captured) == 1
+    message = captured[0]
+    assert "quote unavailable" in message
+    assert "no executable quote" in message
+    assert "Jupiter HTTP 400 — Failed to get quotes" in message
+    assert "volatile-id" not in message
+    assert "priced every safe slice above" not in message

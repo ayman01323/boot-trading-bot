@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from decimal import Decimal, ROUND_FLOOR
 
 from . import solana_emergency_liquidity_unwind_patch as _emergency
@@ -31,6 +32,7 @@ _sol.DEFAULTS.update({
 
 _PREV_VALIDATE = _emergency.validate_order_with_emergency_liquidity
 _PREV_LIQUIDITY_REJECT = _emergency._prebroadcast_liquidity_reject
+_PREV_NOTIFY = _emergency._live._notify
 
 
 def _estimated_exit_fee_lamports(cfg: dict) -> int:
@@ -104,11 +106,57 @@ def validate_order_with_safe_slice_floor(
     return validated
 
 
+def _jupiter_quote_unavailable(exc_or_text) -> bool:
+    """Recognise only Jupiter's explicit no-quote response, not arbitrary HTTP 400s.
+
+    The observed trapped-token failure is a SolanaLiveError containing both
+    `Jupiter quote HTTP 400` and Jupiter's structured `Failed to get quotes`
+    message. Treating only that exact combination as a pre-broadcast route/
+    liquidity failure avoids hiding malformed-request or programming errors.
+    """
+    text = str(exc_or_text or "").lower()
+    return "jupiter quote http 400" in text and "failed to get quotes" in text
+
+
 def _prebroadcast_liquidity_or_dust_reject(exc: Exception) -> bool:
     if _PREV_LIQUIDITY_REJECT(exc):
         return True
     text = str(exc or "").lower()
-    return "economic execution guard" in text and "net proceeds after fees" in text
+    if "economic execution guard" in text and "net proceeds after fees" in text:
+        return True
+    # No quote means there is no transaction to sign/broadcast. Feed this into
+    # the same durable emergency backoff instead of letting the outer position
+    # monitor emit a raw Telegram warning every cycle.
+    return _jupiter_quote_unavailable(exc)
+
+
+def _notify_with_quote_unavailable_context(app, tid, text):
+    """Make the emergency notice truthful and stable for Jupiter no-quote errors."""
+    message = str(text or "")
+    lower = message.lower()
+    if (
+        "solana emergency exit deferred" in lower
+        and "jupiter quote http 400" in lower
+        and "failed to get quotes" in lower
+    ):
+        message = message.replace(
+            "Solana emergency exit deferred — liquidity unsafe",
+            "Solana emergency exit deferred — quote unavailable",
+        )
+        message = message.replace(
+            "No transaction was broadcast. Jupiter still priced every safe slice above the emergency ceiling.",
+            "No transaction was broadcast. Jupiter returned no executable quote for the attempted safe slices. "
+            "This can indicate exhausted pool liquidity, an unavailable route, or unsupported/malicious token mechanics.",
+        )
+        # Request IDs are operational noise and change every retry. Keep the
+        # owner-facing incident stable/deduplicable while retaining the root cause.
+        message = re.sub(
+            r"Last guard: <code>.*?</code>",
+            "Last guard: <code>Jupiter HTTP 400 — Failed to get quotes</code>",
+            message,
+            flags=re.DOTALL,
+        )
+    return _PREV_NOTIFY(app, tid, message)
 
 
 def install() -> None:
@@ -124,10 +172,15 @@ def install() -> None:
     _eff._validate_order = validate_order_with_safe_slice_floor
     _liquidity.validate_order_fail_closed_on_unknown_liquidity = validate_order_with_safe_slice_floor
 
+    # Notification-only cleanup for the exact Jupiter no-quote incident. This
+    # does not change retry timing, execution, signing, balances or risk gates.
+    _emergency._live._notify = _notify_with_quote_unavailable_context
+
     _sol._stuck_liquidity_safe_slice_installed = True
     print(
         "[solana-stuck-liquidity-safe-slices] adaptive_slices=100,75,50,25,10,5,2,1 "
-        "impact_ceiling_unchanged=true min_net_lamports=10000 prebroadcast_only=true"
+        "impact_ceiling_unchanged=true min_net_lamports=10000 prebroadcast_only=true "
+        "jupiter_no_quote_backoff=true"
     )
 
 
