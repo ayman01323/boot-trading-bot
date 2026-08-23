@@ -130,6 +130,11 @@ from . import sibot_alchemy_internal_trace_patch  # noqa: E402,F401
 # across EVM chains so multiple workers do not burst the same Alchemy account.
 from . import sibot_alchemy_retry_queue_patch  # noqa: E402,F401
 
+# BSC/Arbitrum debug traces are progressive: only a bounded batch is reconstructed
+# per cycle, then the worker yields so one busy wallet cannot freeze history on
+# all EVM chains. Partial progress remains history_complete=false and cannot lead.
+from . import sibot_alchemy_trace_progress_patch  # noqa: E402,F401
+
 # LIVE execution must not trust only rpc_urls[0]. Probe enabled priority endpoints
 # and move the first reachable, correct-chain RPC to the front while preserving
 # every wallet/signing/LIVE/risk/simulation safety gate in LiveTrader.
