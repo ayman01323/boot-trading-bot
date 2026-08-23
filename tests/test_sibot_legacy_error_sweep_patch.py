@@ -93,25 +93,47 @@ def test_non_legacy_alchemy_errors_are_not_swept(tmp_path, monkeypatch):
     assert patch._next_legacy_error_wallet(app, chain, now_epoch=10_000) is None
 
 
-def test_primary_queue_always_preempts_legacy_sweep(monkeypatch):
+def test_legacy_sweep_wins_when_its_cooldown_is_due(monkeypatch):
     chain = _chain()
     app = SimpleNamespace()
     monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: "0xranked")
-    called = []
-    monkeypatch.setattr(
-        patch,
-        "_next_legacy_error_wallet",
-        lambda app, chain: called.append(True) or "0xlegacy",
-    )
-
-    assert patch._next_history_wallet(app, chain) == "0xranked"
-    assert called == []
-
-
-def test_fallback_runs_only_when_primary_queue_is_empty(monkeypatch):
-    chain = _chain()
-    app = SimpleNamespace()
-    monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: None)
     monkeypatch.setattr(patch, "_next_legacy_error_wallet", lambda app, chain: "0xlegacy")
 
     assert patch._next_history_wallet(app, chain) == "0xlegacy"
+
+
+def test_ranked_queue_used_when_legacy_sweep_not_due(monkeypatch):
+    chain = _chain()
+    app = SimpleNamespace()
+    monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: "0xranked")
+    monkeypatch.setattr(patch, "_next_legacy_error_wallet", lambda app, chain: None)
+
+    assert patch._next_history_wallet(app, chain) == "0xranked"
+
+
+def test_legacy_sweep_is_not_starved_by_ranked_queue_that_never_goes_idle(tmp_path, monkeypatch):
+    app = _app(tmp_path)
+    chain = _chain()
+    monkeypatch.setattr(patch, "_sweep_seconds", lambda app, chain: 900)
+    monkeypatch.setattr(patch, "_PREV_NEXT_HISTORY_WALLET", lambda app, chain: "0xranked")
+    _insert(
+        app,
+        chain,
+        "0xstale",
+        100,
+        "RuntimeError: Etherscan txlist: NOTOK Free API access is not supported for this chain",
+    )
+
+    # First eligible pass migrates the stale row even though the ranked queue is busy.
+    monkeypatch.setattr(patch.time, "time", lambda: 100)
+    assert patch._next_history_wallet(app, chain) == "0xstale"
+
+    # During the durable cooldown, the normal ranked queue is unaffected.
+    for now in (150, 500, 999):
+        monkeypatch.setattr(patch.time, "time", lambda now=now: now)
+        assert patch._next_history_wallet(app, chain) == "0xranked"
+
+    # When the cooldown expires, legacy migration receives another bounded turn
+    # even though the ranked queue still never becomes idle.
+    monkeypatch.setattr(patch.time, "time", lambda: 1_001)
+    assert patch._next_history_wallet(app, chain) == "0xstale"
