@@ -1,0 +1,119 @@
+name: Strategy Factory Unified Transport Live Proof
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/strategy-factory-unified-live-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    env:
+      PROD_REPO: /root/multichain-learning-bot-v2.2-fast-direct-market
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Deploy exact current main through restricted wrapper
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deployed=''
+          for attempt in 1 2 3 4 5; do
+            target="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+            echo "deploy_attempt=${attempt} target=${target}"
+            set +e
+            sudo /usr/local/sbin/deploy-boot-trading-bot "$target" 2>&1 | tee /tmp/strategy-factory-unified-deploy.txt
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [[ "$rc" -eq 0 ]]; then
+              deployed="$target"
+              break
+            fi
+            if [[ "$rc" -ne 6 ]]; then
+              exit "$rc"
+            fi
+            sleep 1
+          done
+          test -n "$deployed"
+          echo "DEPLOYED_SHA=$deployed" >> "$GITHUB_ENV"
+
+      - name: Verify production SHA, unified code and six workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/status-boot-trading-bot 2>&1 | tee /tmp/strategy-factory-unified-status.txt
+          running="$(sed -n 's/^sha:[[:space:]]*//p' /tmp/strategy-factory-unified-status.txt | head -n1 | tr -d '[:space:]')"
+          echo "running_sha=$running"
+          echo "expected_sha=$DEPLOYED_SHA"
+          test "$running" = "$DEPLOYED_SHA"
+          test -f "$PROD_REPO/scripts/strategy_factory_transport.py"
+          grep -q 'strategy_factory_transport import AGENTS, exchange, new_message_id' "$PROD_REPO/scripts/ai_agent_ws_send.py"
+          grep -q 'from scripts.strategy_factory_transport import exchange' "$PROD_REPO/learnerbot/strategy_factory_council_transport_patch.py"
+          python3 - <<'PY'
+          import json
+          p='/var/tmp/boot/ai_agent_ws_status.json'
+          d=json.load(open(p,encoding='utf-8'))
+          print(json.dumps(d,sort_keys=True))
+          assert d.get('state') == 'ACTIVE', d
+          workers=set(d.get('workers') or [])
+          expected={'gpt','claude','gemini','deepseek','grok','copilot'}
+          assert expected.issubset(workers), (workers, expected)
+          PY
+
+      - name: Prove DIRECT mode on production shared transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="UNIFIED_DIRECT_PROOF_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          echo "DIRECT_TOKEN=$token" >> "$GITHUB_ENV"
+          cd "$PROD_REPO"
+          ./.venv/bin/python scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message "$token. Reply only: ${token}_ACK" \
+            --timeout 180 | tee /tmp/strategy-factory-direct-proof.txt
+          grep -q '"status": "DELIVERED"' /tmp/strategy-factory-direct-proof.txt
+          grep -q '"status": "ACKNOWLEDGED"' /tmp/strategy-factory-direct-proof.txt
+          grep -q '"status": "REPLIED"' /tmp/strategy-factory-direct-proof.txt
+          grep -q "${token}_ACK" /tmp/strategy-factory-direct-proof.txt
+
+      - name: Prove COUNCIL mode uses same production shared transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="UNIFIED_COUNCIL_PROOF_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          echo "COUNCIL_TOKEN=$token" >> "$GITHUB_ENV"
+          cd "$PROD_REPO"
+          TOKEN="$token" ./.venv/bin/python - <<'PY' | tee /tmp/strategy-factory-council-proof.txt
+          import asyncio, json, os
+          from learnerbot import strategy_factory_council_transport_patch as patch
+          from learnerbot import master_change_council as council
+          assert council._ask_one is patch._ask_one
+          token=os.environ['TOKEN']
+          row=asyncio.run(patch._ask_one(
+              'gemini',
+              'unified-live-proof',
+              f'{token}. Reply only: {token}_ACK',
+              1,
+              timeout=180.0,
+          ))
+          print(json.dumps(row,sort_keys=True))
+          assert row.get('acknowledged') is True, row
+          assert int(row.get('provider_rc') or 1) == 0, row
+          assert row.get('transport') == 'strategy-factory-websocket', row
+          assert row.get('routing_mode') == 'COUNCIL', row
+          assert token + '_ACK' in str(row.get('reply') or ''), row
+          PY
+          grep -q '"transport": "strategy-factory-websocket"' /tmp/strategy-factory-council-proof.txt
+          grep -q '"routing_mode": "COUNCIL"' /tmp/strategy-factory-council-proof.txt
+          grep -q "${token}_ACK" /tmp/strategy-factory-council-proof.txt
