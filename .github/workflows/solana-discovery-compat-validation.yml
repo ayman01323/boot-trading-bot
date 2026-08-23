@@ -4,8 +4,6 @@ on:
   push:
     branches:
       - agent/solana-discovery-compat-ci
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -15,128 +13,46 @@ permissions:
 
 jobs:
   validate:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.ref == 'agent/solana-discovery-compat-ci'
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       CI_VENV: /tmp/solana-discovery-compat-${{ github.run_id }}
+      PYTHON_BIN: /bin/python3.12
     steps:
       - name: Checkout tested ref
-        id: checkout
-        continue-on-error: true
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Provision Python 3.11
-        id: setup_python
-        if: always()
-        continue-on-error: true
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-          cache-dependency-path: requirements.txt
-
-      - name: Prepare isolated Python 3.11 environment
-        id: prepare
-        if: always()
+      - name: Prepare isolated Python 3.12 environment
         shell: bash
         run: |
-          set +e
-          exec > >(tee /tmp/solana-compat-prepare.log) 2>&1
-          checkout_outcome='${{ steps.checkout.outcome }}'
-          setup_outcome='${{ steps.setup_python.outcome }}'
-          echo "checkout_outcome=$checkout_outcome"
-          echo "setup_python_outcome=$setup_outcome"
-          echo "pwd=$(pwd)"
-          echo "repo_present=$([[ -f requirements.txt ]] && echo yes || echo no)"
-          PYTHON_BIN="$(command -v python || true)"
-          echo "python=${PYTHON_BIN:-missing}"
-          if [[ -n "$PYTHON_BIN" ]]; then "$PYTHON_BIN" --version; fi
+          set -euo pipefail
+          "$PYTHON_BIN" -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11)'
+          rm -rf "$CI_VENV"
+          "$PYTHON_BIN" -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
 
-          rc=0
-          if [[ "$checkout_outcome" != success || "$setup_outcome" != success || ! -f requirements.txt || -z "$PYTHON_BIN" ]]; then
-            echo "checkout/repository/Python 3.11 provisioning failed"
-            rc=1
-          elif ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)'; then
-            echo "provisioned Python is below 3.11"
-            rc=1
-          else
-            rm -rf "$CI_VENV"
-            "$PYTHON_BIN" -m venv "$CI_VENV"
-            rc_venv=$?
-            echo "venv_rc=$rc_venv"
-            if [[ $rc_venv -eq 0 ]]; then
-              "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
-              rc_pip=$?
-              echo "pip_upgrade_rc=$rc_pip"
-              if [[ $rc_pip -eq 0 ]]; then
-                "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
-                rc_deps=$?
-              else
-                rc_deps=98
-              fi
-              echo "deps_rc=$rc_deps"
-            else
-              rc_pip=98
-              rc_deps=98
-            fi
-            [[ ${rc_venv:-98} -eq 0 && ${rc_pip:-98} -eq 0 && ${rc_deps:-98} -eq 0 ]] || rc=1
-          fi
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
+      - name: Compile runtime and tests
+        run: "$CI_VENV/bin/python" -m compileall -q learnerbot scripts tests
 
-      - name: Compile changed runtime modules
-        id: compile
-        if: always()
+      - name: Compatibility plus SHADOW trade proof
         shell: bash
         run: |
-          set +e
-          if [[ "${{ steps.prepare.outputs.rc }}" != 0 || ! -x "$CI_VENV/bin/python" ]]; then
-            echo "prepare did not complete; compile not attempted" | tee /tmp/solana-compat-compile.log
-            echo "rc=97" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          "$CI_VENV/bin/python" -m compileall -q learnerbot tests 2>&1 | tee /tmp/solana-compat-compile.log
-          rc=${PIPESTATUS[0]}
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
-
-      - name: Import order, compatibility and SHADOW trade regressions
-        id: compat
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          if [[ "${{ steps.prepare.outputs.rc }}" != 0 || ! -x "$CI_VENV/bin/python" ]]; then
-            echo "prepare did not complete; compatibility tests not attempted" | tee /tmp/solana-compat-tests.log
-            echo "rc=97" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          set -euo pipefail
           "$CI_VENV/bin/python" -m pytest -q \
             tests/test_imports.py \
             tests/test_main_import_order.py \
             tests/test_telegram_trade_blocker_health.py \
             tests/test_solana_leader_discovery_coverage.py \
-            tests/test_solana_shadow_trade_smoke.py \
-            2>&1 | tee /tmp/solana-compat-tests.log
-          rc=${PIPESTATUS[0]}
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
+            tests/test_solana_shadow_trade_smoke.py
 
       - name: Solana safety regression subset
-        id: safety
-        if: always()
         shell: bash
         run: |
-          set +e
-          if [[ "${{ steps.prepare.outputs.rc }}" != 0 || ! -x "$CI_VENV/bin/python" ]]; then
-            echo "prepare did not complete; safety tests not attempted" | tee /tmp/solana-safety-tests.log
-            echo "rc=97" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          set -euo pipefail
           "$CI_VENV/bin/python" -m pytest -q \
             tests/test_solana_profit_guard.py \
             tests/test_solana_live_canary.py \
@@ -146,60 +62,53 @@ jobs:
             tests/test_solana_runtime_composition.py \
             tests/test_solana_positive_edge_entry_gate.py \
             tests/test_solana_liquidity_fail_closed.py \
-            tests/test_solana_profit_first_live_correction.py \
-            2>&1 | tee /tmp/solana-safety-tests.log
-          rc=${PIPESTATUS[0]}
-          echo "rc=$rc" >> "$GITHUB_OUTPUT"
-          exit 0
+            tests/test_solana_profit_first_live_correction.py
 
-      - name: Publish bounded validation result
-        if: always()
+      - name: Full Python suite
+        id: full_suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$CI_VENV/bin/python" -m pytest -q 2>&1 | tee /tmp/solana-full-suite.log
+
+      - name: Publish PASS result
+        if: success()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
-          SETUP_OUTCOME: ${{ steps.setup_python.outcome }}
-          PREPARE_RC: ${{ steps.prepare.outputs.rc }}
-          COMPILE_RC: ${{ steps.compile.outputs.rc }}
-          COMPAT_RC: ${{ steps.compat.outputs.rc }}
-          SAFETY_RC: ${{ steps.safety.outputs.rc }}
         run: |
           set -euo pipefail
-          checkout_outcome="${CHECKOUT_OUTCOME:-unknown}"
-          setup_outcome="${SETUP_OUTCOME:-unknown}"
-          prepare_rc="${PREPARE_RC:-99}"
-          compile_rc="${COMPILE_RC:-99}"
-          compat_rc="${COMPAT_RC:-99}"
-          safety_rc="${SAFETY_RC:-99}"
-          overall=PASS
-          if [[ "$checkout_outcome" != success || "$setup_outcome" != success || "$prepare_rc" != 0 || "$compile_rc" != 0 || "$compat_rc" != 0 || "$safety_rc" != 0 ]]; then overall=FAIL; fi
+          summary="$(tail -n 5 /tmp/solana-full-suite.log | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')"
+          gh pr comment 549 --repo "$GITHUB_REPOSITORY" --body "## Solana discovery compatibility validation — PASS
+
+Validated commit: \`${GITHUB_SHA}\`
+- Python: 3.12 isolated /tmp venv
+- compile: PASS
+- compatibility/import tests: PASS
+- deterministic SHADOW BUY proof: PASS (no signing/funds)
+- Solana safety subset: PASS
+- full pytest suite: PASS
+- summary: \`${summary}\`
+- no sudo, production write, wallet/signing or deploy step"
+
+      - name: Publish failure tail
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           {
-            echo "## Solana discovery compatibility validation — ${overall}"
+            echo "## Solana discovery compatibility validation — FAIL"
             echo
             echo "Validated commit: \`${GITHUB_SHA}\`"
-            echo "- checkout: ${checkout_outcome}"
-            echo "- Python 3.11 provisioning: ${setup_outcome}"
-            echo "- environment preparation: rc=${prepare_rc}"
-            echo "- compile: rc=${compile_rc}"
-            echo "- compatibility/import + SHADOW trade smoke: rc=${compat_rc}"
-            echo "- Solana safety subset: rc=${safety_rc}"
-            echo "- SHADOW proof does not sign or spend funds"
-            echo "- runner isolation: /tmp venv only; no sudo, production write, wallet/signing or deploy step"
-            if [[ "$overall" == FAIL ]]; then
-              echo
-              echo '<details><summary>Failure tail</summary>'
-              echo
-              echo '```text'
-              tail -n 85 /tmp/solana-compat-prepare.log 2>/dev/null || true
-              tail -n 40 /tmp/solana-compat-compile.log 2>/dev/null || true
-              tail -n 100 /tmp/solana-compat-tests.log 2>/dev/null || true
-              tail -n 100 /tmp/solana-safety-tests.log 2>/dev/null || true
-              echo '```'
-              echo '</details>'
-            fi
+            echo "A real test/provisioning step failed; production was not touched."
+            echo
+            echo '```text'
+            tail -n 120 /tmp/solana-full-suite.log 2>/dev/null || true
+            echo '```'
           } > /tmp/validation-result.md
           gh pr comment 549 --repo "$GITHUB_REPOSITORY" --body-file /tmp/validation-result.md
-          [[ "$overall" == PASS ]]
 
       - name: Clean isolated environment
         if: always()
