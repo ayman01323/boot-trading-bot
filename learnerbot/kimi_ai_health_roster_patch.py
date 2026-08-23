@@ -15,21 +15,20 @@ PROVIDERS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")
 
 
 def install() -> None:
-    if getattr(_compact, "_kimi_health_roster_installed", False):
-        return
+    already = bool(getattr(_compact, "_kimi_health_roster_installed", False))
 
-    # The compact/mobile Telegram views iterate this tuple dynamically.
+    # Always re-assert the roster. Older compatibility modules can still be
+    # imported later in test/admin contexts and restore their historical six-agent
+    # tuple. Production installs this patch last, but making install() re-entrant
+    # keeps explicit diagnostics deterministic as well.
     _compact.PROVIDERS = PROVIDERS
     _compact._LABELS["kimi"] = "Kimi"
-
-    # Keep the underlying Engineering/Strategy collectors and Strategy Factory
-    # health snapshots on the same seven-agent roster. Missing Kimi evidence is
-    # therefore displayed as pending/disconnected rather than silently omitted.
     _health.PROVIDERS = PROVIDERS
     _strategy_room.PROVIDERS = PROVIDERS
 
     _compact._kimi_health_roster_installed = True
-    print("[kimi-ai-health] seven_agent_roster=true provider=kimi")
+    if not already:
+        print("[kimi-ai-health] seven_agent_roster=true provider=kimi")
 
 
 install()
