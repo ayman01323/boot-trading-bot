@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 
+from . import ai_agent_score_capture_patch as _capture  # noqa: F401
 from . import ai_agent_target_score as _score
 from . import telegram_ai_reports_menu_patch as _menu
 from . import telegram_sibot_patch as _sibot_ui
