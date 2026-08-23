@@ -1,0 +1,33 @@
+name: Refresh Canonical AI Review Pointers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/ai-review-pointer-refresh.trigger'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: refresh-canonical-ai-review-pointers
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Start fresh Engineering and Strategy base cycles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run weekly-three-agent-bug-audit.yml --repo "$GITHUB_REPOSITORY" --ref main
+          gh workflow run three-agent-strategy-review.yml --repo "$GITHUB_REPOSITORY" --ref main
+          echo 'Dispatched canonical Engineering Audit and Strategy Review.'
+          echo 'Their publishers own weekly/latest_source_commit.txt and strategy/latest_cycle_id.txt.'
+          echo 'This controller does not edit pointers directly and does not trade, deploy, change LIVE/ARMED, capital, risk, wallets or signing.'
