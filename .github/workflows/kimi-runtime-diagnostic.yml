@@ -12,51 +12,50 @@ permissions:
 jobs:
   diagnose:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 6
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false
-      - name: Inspect Kimi worker and bus without secrets
+      - name: Inspect embedded Kimi runtime and queue without secrets
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== SYSTEMD ==='
-          systemctl is-active boot-ai-agent-bus.service || true
-          systemctl is-active boot-ai-agent-worker@kimi.service || true
-          systemctl show boot-ai-agent-worker@kimi.service -p ActiveState -p SubState -p MainPID -p NRestarts --no-pager || true
-          echo '=== KIMI JOURNAL TAIL ==='
-          journalctl -u boot-ai-agent-worker@kimi.service -n 80 --no-pager 2>&1 | sed -E 's/(Bearer[[:space:]]+)[^[:space:]]+/\1[REDACTED]/Ig' || true
-          echo '=== BUS STATUS ==='
-          test -f /var/tmp/boot/ai_agent_ws_status.json && cat /var/tmp/boot/ai_agent_ws_status.json || true
+          echo '=== EMBEDDED STATUS ==='
+          cat /var/tmp/boot/ai_agent_ws_status.json 2>/dev/null || true
+          pid="$(python3 - <<'PY'
+          import json
+          try:
+              print(int(json.load(open('/var/tmp/boot/ai_agent_ws_status.json')).get('pid') or 0))
+          except Exception:
+              print(0)
+          PY
+          )"
+          if [[ "$pid" != 0 ]]; then
+            echo '=== EMBEDDED PROCESS ==='
+            sudo ps -p "$pid" -o pid=,etime=,stat=,cmd= || true
+            echo "exe=$(sudo readlink /proc/$pid/exe 2>/dev/null || true)"
+            echo "cwd=$(sudo readlink /proc/$pid/cwd 2>/dev/null || true)"
+          fi
           echo '=== REDACTED CREDENTIAL PRESENCE ==='
-          python3 - <<'PY'
+          sudo python3 - <<'PY'
           from pathlib import Path
-          p=Path('/var/tmp/boot/ai_council_runtime.env')
-          keys=set()
-          if p.exists():
-              for line in p.read_text(errors='replace').splitlines():
-                  if '=' in line: keys.add(line.split('=',1)[0].strip())
-          print({'runtime_env':p.exists(),'kimi_credential_present':bool({'KIMI_API_KEY','MOONSHOT_API_KEY'} & keys)})
+          for raw in ('/var/tmp/ai_council_runtime.env','/var/tmp/boot/ai_council_runtime.env'):
+              p=Path(raw); keys=set()
+              try:
+                  for line in p.read_text(errors='replace').splitlines():
+                      if '=' in line: keys.add(line.split('=',1)[0].strip())
+              except Exception:
+                  pass
+              print(raw, {'exists':p.exists(),'kimi_credential_present':bool({'KIMI_API_KEY','MOONSHOT_API_KEY'} & keys)})
           PY
-      - name: Direct Kimi provider probe
-        shell: bash
-        run: |
-          set +e
-          timeout 110s /opt/boot-ai-agent-bus/.venv/bin/python - <<'PY'
-          import time
-          from learnerbot.ai_cost_provider_patch import call_provider
-          t=time.monotonic()
-          rc,out,err=call_provider('kimi','Reply with exactly: KIMI_PROVIDER_OK')
-          print({'rc':rc,'elapsed_s':round(time.monotonic()-t,2),'out':str(out)[:300],'error':str(err)[:600]})
+          echo '=== LATEST KIMI QUEUE ==='
+          sudo python3 - <<'PY'
+          import sqlite3, json
+          p='/var/tmp/boot/ai_agent_bus.sqlite3'
+          con=sqlite3.connect(f'file:{p}?mode=ro', uri=True)
+          con.row_factory=sqlite3.Row
+          rows=con.execute("""select message_id,sender,target,status,created_at,delivered_at,acknowledged_at,replied_at,substr(error,1,180) error from messages where target='kimi' order by created_at desc limit 20""").fetchall()
+          for r in rows: print(json.dumps(dict(r), sort_keys=True))
           PY
-          echo "direct_probe_rc=$?"
-          set -e
-      - name: Bus Kimi round trip
-        shell: bash
-        run: |
-          set +e
-          timeout 95s /opt/boot-ai-agent-bus/.venv/bin/python /opt/boot-ai-agent-bus/scripts/ai_agent_ws_send.py --from gpt --to kimi --message 'Reply with exactly: KIMI_BUS_OK' --message-id "kimi-runtime-${GITHUB_RUN_ID}" --subject 'Kimi runtime repair probe' --timeout 75
-          echo "bus_probe_rc=$?"
-          set -e
