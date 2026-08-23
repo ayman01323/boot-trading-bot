@@ -130,6 +130,8 @@ from . import telegram_loss_alert_direction_patch  # noqa: F401
 from . import telegram_hi_keefek_patch  # noqa: F401
 # Loss exits may unwind in safe slices when whole-position Solana liquidity is too shallow; 100% impact is never bypassed.
 from . import solana_emergency_liquidity_unwind_patch  # noqa: F401
+# Extend emergency slice search down to 1% while preserving the same impact ceiling and adding a pre-broadcast dust-output floor.
+from . import solana_stuck_liquidity_safe_slice_patch  # noqa: F401
 # Critical EVM safety fix: native transfers must include the validated destination in the signed transaction.
 from . import evm_transfer_native_hotfix_patch  # noqa: F401
 # Export already-sanitised runtime forensics to a local bridge readable by the self-hosted GitHub runner.
