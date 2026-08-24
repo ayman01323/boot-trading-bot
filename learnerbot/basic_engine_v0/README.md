@@ -21,9 +21,11 @@ Execution is disabled by default.
 
 ## First strategy: atomic arbitrage
 
-The first strategy is deliberately **not buy-and-hold**. It proposes atomic round trips such as:
+The first strategy is deliberately **not buy-and-hold**. It proposes atomic round trips. The first real EVM adapter is intentionally limited to wrapped-native round trips such as:
 
-`USDC -> WETH -> TOKEN -> USDC`
+`WETH -> TOKEN_A -> TOKEN_B -> WETH`
+
+Using wrapped native as both the starting and ending asset lets v0 account for gas and profit in the same unit without adding a price oracle yet.
 
 The strategy is accepted only when:
 
@@ -31,12 +33,61 @@ The strategy is accepted only when:
 - the quote is executable;
 - the quoted input exactly matches the configured trade input;
 - quoted price impact is below the configured maximum;
-- expected output covers input plus quoted fees;
+- quoted output covers input plus estimated gas;
 - the remaining expected profit also covers a separate safety buffer;
 - net profit after that safety buffer is at least the configured minimum;
 - the engine then obtains a second fresh quote, repeats all risk gates, and simulates again immediately before any future execution.
 
-The strategy plugin never receives a private key and cannot sign or broadcast. Pool-rug, honeypot, quarantine, exposure, wallet and chain-health controls remain separate fail-closed plugins so they can be added later without rewriting the arbitrage strategy.
+The strategy plugin never receives a private key and cannot sign or broadcast. Pool-rug, honeypot, quarantine, exposure and chain-health controls remain separate fail-closed plugins so they can be added later without rewriting the arbitrage strategy.
+
+## CSV-driven EVM V2 dry-run adapter
+
+The first chain adapter is read-only and uses the existing CSV configuration model.
+
+It reads:
+
+- `chains.csv` for chain identity and wrapped-native address;
+- `rpc_endpoints.csv` for enabled RPCs and priority;
+- `dex_registry.csv` for the selected enabled V2 router;
+- `basic_engine_v0_settings.csv` for v0 thresholds and optional public simulation address;
+- `basic_engine_v0_routes.csv` for enabled atomic routes.
+
+The new settings CSV uses the same scoped format as the existing bot:
+
+`chain_id,setting,value,description`
+
+Global settings use `*`; chain-specific rows override them.
+
+Route CSV format:
+
+`chain_id,route_id,path,input_amount_native,priority,enabled,description`
+
+The `path` field uses `>` between token contract addresses.
+
+Reference templates are committed under:
+
+- `config_templates/basic_engine_v0_settings.csv`
+- `config_templates/basic_engine_v0_routes.csv`
+
+The runtime copies belong in the configured `CSV_DIR`.
+
+### Read-only safety boundary
+
+The EVM V2 adapter:
+
+- calls `getAmountsOut` for the exact route;
+- compares the full-size quote with a small reference quote to estimate size impact;
+- estimates gas when a public `simulation_from` address can do so;
+- otherwise uses the CSV fallback gas units for quote accounting but refuses to claim a successful simulation;
+- checks wrapped-token balance and router allowance for the public simulation address;
+- calls `swapExactTokensForTokens` through `eth_call` only;
+- sets an output floor covering input + estimated gas + safety buffer + minimum profit;
+- never accepts or reads a private key;
+- contains no transaction-signing method;
+- contains no `send_raw_transaction` path;
+- uses a `NoBroadcastExecutor` sentinel even though the core execution switch is already forced off by the CSV factory.
+
+A real dry-run can therefore reach `DRY_RUN_READY` only after a second fresh quote and second successful `eth_call`, but it still cannot broadcast.
 
 ## What v0 contains
 
@@ -50,33 +101,39 @@ The strategy plugin never receives a private key and cannot sign or broadcast. P
 - two-pass quote and simulation before execution;
 - rejection fall-through so one bad candidate does not starve the cycle;
 - dry-run mode as the default;
-- a first `atomic_arbitrage` candidate source and economics gate.
+- the `atomic_arbitrage` source and economics gate;
+- CSV configuration loading;
+- a read-only EVM V2 quote/gas/`eth_call` adapter;
+- a no-broadcast executor sentinel.
 
-## What v0 intentionally does NOT contain
+## What v0 intentionally does NOT contain yet
 
-- RPC clients;
-- wallets or private keys;
+- private-key loading;
 - transaction signing;
-- broadcasting;
-- EVM or Solana implementation details;
-- DEX-specific code;
+- transaction broadcasting;
+- nonce submission;
+- Solana adapters;
+- V3 adapters;
+- stablecoin-denominated gas conversion/oracles;
 - pool-rug APIs;
-- Telegram;
+- Telegram wiring;
 - AI agents;
-- strategy factory;
+- strategy factory wiring;
+- production CLI/service wiring;
 - live deployment wiring.
 
-Those are adapters/plugins, not core-engine responsibilities.
+Those are future adapters/plugins, not reasons to complicate the core engine.
 
 ## Upgrade path
 
-Add capabilities in layers without changing the core contract:
+Add capabilities in layers without changing the core contract.
 
 ### Layer 1 — chain adapters
 
-- EVM quote/simulation/execution adapter;
-- Solana quote/simulation/execution adapter;
-- chain-specific gas/fee normalisation.
+- EVM V2 read-only quote/simulation: implemented;
+- EVM V3 read-only quote/simulation: future;
+- Solana read-only quote/simulation: future;
+- signing/broadcast adapter: future and separately gated.
 
 ### Layer 2 — market discovery
 
@@ -125,7 +182,7 @@ Observers receive engine events but cannot bypass gates.
 
 **Many discovery workers, one execution arbiter.**
 
-This prevents the current class of failure where one scanner mode accidentally becomes the sole execution owner, while also avoiding duplicate signing and nonce races.
+This prevents one scanner mode from accidentally becoming the only effective execution path, while also avoiding duplicate signing and nonce races.
 
 ## Testing rule
 
