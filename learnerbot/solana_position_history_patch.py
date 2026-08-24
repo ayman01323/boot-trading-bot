@@ -10,11 +10,13 @@ from decimal import Decimal
 from . import solana_sibot as _sol
 
 _PREV_CONNECT = _sol.connect
+_PREV_CLASSIFY_SWAP = _sol.classify_swap
 _PREV_REFRESH_WALLET_HISTORY = _sol.refresh_wallet_history
 _SCHEMA_LOCK = threading.RLock()
 _SCHEMA_READY = set()
 _META_LOCK = threading.RLock()
 _MATCH_META: dict[str, dict[str, tuple[str, int]]] = {}
+_POSITION_METRICS_VERSION = 2
 
 
 def _ensure_position_columns(conn, app) -> None:
@@ -30,15 +32,20 @@ def _ensure_position_columns(conn, app) -> None:
         if "position_closed" not in trade_cols:
             conn.execute("ALTER TABLE trades ADD COLUMN position_closed INTEGER NOT NULL DEFAULT 0")
         history_cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(history_status)").fetchall()}
-        added_version = "position_metrics_version" not in history_cols
-        if added_version:
+        if "position_metrics_version" not in history_cols:
             conn.execute("ALTER TABLE history_status ADD COLUMN position_metrics_version INTEGER NOT NULL DEFAULT 0")
-        # Existing rows pre-date exact inventory-cycle reconstruction. Mark them
-        # immediately stale so the normal history worker refreshes selected leaders
-        # and candidates (leaders are already ordered first) without changing its
-        # RPC cadence or bypassing any quality gate.
-        conn.execute("UPDATE history_status SET fetched_at=0 WHERE COALESCE(position_metrics_version,0)<1")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_sol_trades_position ON trades(wallet,position_id,position_closed,sell_ts)")
+        # Existing rows pre-date balance-proven inventory-cycle reconstruction.
+        # Mark them stale so the normal history worker refreshes selected leaders
+        # and bounded candidates using its existing cadence; no RPC cadence or
+        # quality threshold is relaxed here.
+        conn.execute(
+            "UPDATE history_status SET fetched_at=0 WHERE COALESCE(position_metrics_version,0)<?",
+            (_POSITION_METRICS_VERSION,),
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sol_trades_position "
+            "ON trades(wallet,position_id,position_closed,sell_ts)"
+        )
         conn.commit()
         _SCHEMA_READY.add(key)
 
@@ -53,31 +60,95 @@ def _dec(v, default="0"):
     return _sol._dec(v, default)
 
 
-def _match_events(wallet: str, events: list[dict]):
-    """FIFO-match swaps while tagging exact inventory-cycle closure.
+def classify_swap(result: dict, wallet: str) -> dict | None:
+    """Add transaction-visible pre/post token balances to a classified swap.
 
-    This deliberately preserves the original trade-fragment IDs and P&L maths.
-    The only added information is a stable position_id and a position_closed bit.
-    A cycle closes only when the reconstructed FIFO inventory for that mint reaches
-    zero; partially sold inventory therefore cannot be counted as a closed win.
+    The base classifier already derives these balances to calculate SELL percent,
+    but discards them. Keeping them on the in-memory event lets history prove that
+    a reconstructed inventory cycle started at zero and returned to zero. Extra
+    fields are ignored by the existing leader-event persistence paths.
+    """
+    event = _PREV_CLASSIFY_SWAP(result, wallet)
+    if not event:
+        return None
+    try:
+        _deltas, pre, post, _decimals = _sol._token_state(result, wallet)
+        mint = str(event.get("mint") or "")
+        event = dict(event)
+        event["pre_token_balance_raw"] = int(pre.get(mint, 0))
+        event["post_token_balance_raw"] = int(post.get(mint, 0))
+    except Exception:
+        # Absence of balance proof must fail closed for position-level statistics,
+        # while preserving the base event for legacy fragment reconstruction.
+        event = dict(event)
+        event["pre_token_balance_raw"] = None
+        event["post_token_balance_raw"] = None
+    return event
+
+
+def _balance(event: dict, key: str):
+    value = event.get(key)
+    try:
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _match_events(wallet: str, events: list[dict]):
+    """Preserve FIFO fragments and tag only balance-proven closed positions.
+
+    A position is eligible for position-level quality metrics only when:
+      * its observed BUY cycle starts with transaction-visible pre-balance zero;
+      * every later swap's pre-balance equals the previous observed post-balance;
+      * reconstructed FIFO quantity never conflicts with the observed balance; and
+      * the closing SELL proves post-balance zero.
+
+    Thus partial sells, pre-lookback inventory, token transfers between swaps, or
+    missing balance evidence cannot be promoted into a fabricated closed win/loss.
+    Fragment trade IDs and P&L maths remain byte-for-byte compatible with the base
+    matcher so existing research/audit rows retain their identity.
     """
     lots = defaultdict(deque)
     trades = []
     position_rows = defaultdict(list)
-    active_position: dict[str, str] = {}
+    active: dict[str, dict] = {}
     position_seq = defaultdict(int)
     seq = 0
 
     for ev in sorted(events, key=lambda x: (x["event_ts"], x["signature"])):
-        mint = ev["mint"]
+        mint = str(ev["mint"])
+        pre_balance = _balance(ev, "pre_token_balance_raw")
+        post_balance = _balance(ev, "post_token_balance_raw")
+
         if ev["action"] == "BUY":
+            info = active.get(mint)
             if not lots[mint]:
                 position_seq[mint] += 1
                 pid = hashlib.sha256(
-                    f"solana-position|{wallet}|{mint}|{ev['signature']}|{position_seq[mint]}".encode()
+                    f"solana-position-v2|{wallet}|{mint}|{ev['signature']}|{position_seq[mint]}".encode()
                 ).hexdigest()[:32]
-                active_position[mint] = pid
-            pid = active_position[mint]
+                info = {
+                    "position_id": pid,
+                    "exact": bool(pre_balance == 0 and post_balance is not None),
+                    "visible_balance": post_balance,
+                }
+                active[mint] = info
+            else:
+                if info is None:
+                    # Defensive: existing lots without an active proof state are
+                    # never eligible for exact position metrics.
+                    pid = str(lots[mint][0].get("position_id") or "")
+                    info = {"position_id": pid, "exact": False, "visible_balance": post_balance}
+                    active[mint] = info
+                if info.get("exact") and (
+                    pre_balance is None
+                    or info.get("visible_balance") is None
+                    or pre_balance != int(info["visible_balance"])
+                ):
+                    info["exact"] = False
+                info["visible_balance"] = post_balance
+
+            pid = str(info.get("position_id") or "")
             lots[mint].append({
                 **ev,
                 "remaining": int(ev["token_amount_raw"]),
@@ -85,6 +156,15 @@ def _match_events(wallet: str, events: list[dict]):
                 "position_id": pid,
             })
             continue
+
+        # SELL
+        info = active.get(mint)
+        if info is not None and info.get("exact") and (
+            pre_balance is None
+            or info.get("visible_balance") is None
+            or pre_balance != int(info["visible_balance"])
+        ):
+            info["exact"] = False
 
         remaining = int(ev["token_amount_raw"])
         original = max(1, remaining)
@@ -100,7 +180,7 @@ def _match_events(wallet: str, events: list[dict]):
             tid = hashlib.sha256(
                 f"solana|{wallet}|{lot['signature']}|{ev['signature']}|{mint}|{seq}".encode()
             ).hexdigest()[:32]
-            pid = str(lot["position_id"])
+            pid = str(lot.get("position_id") or "")
             row = {
                 "trade_id": tid,
                 "wallet": wallet,
@@ -121,30 +201,46 @@ def _match_events(wallet: str, events: list[dict]):
                 "position_closed": 0,
             }
             trades.append(row)
-            position_rows[pid].append(row)
+            if pid:
+                position_rows[pid].append(row)
             lot["remaining"] -= qty
             lot["remaining_cost"] = _dec(lot["remaining_cost"]) - cost
             remaining -= qty
             if lot["remaining"] <= 0:
                 lots[mint].popleft()
 
-        if not lots[mint]:
-            pid = active_position.pop(mint, None)
-            if pid:
-                for row in position_rows.get(pid, []):
-                    row["position_closed"] = 1
+        if info is not None:
+            info["visible_balance"] = post_balance
+            # A SELL larger than reconstructed inventory proves unknown carried-in
+            # inventory was involved; do not call the cycle exact.
+            if remaining > 0:
+                info["exact"] = False
+
+            if not lots[mint]:
+                pid = str(info.get("position_id") or "")
+                exact_closed = bool(info.get("exact") and post_balance == 0 and remaining == 0)
+                if exact_closed and pid:
+                    for row in position_rows.get(pid, []):
+                        row["position_closed"] = 1
+                active.pop(mint, None)
+            elif post_balance == 0:
+                # Reconstructed inventory remains but chain-visible balance is zero:
+                # evidence is inconsistent, therefore this cycle is never exact.
+                info["exact"] = False
 
     with _META_LOCK:
         _MATCH_META[str(wallet)] = {
-            str(r["trade_id"]): (str(r["position_id"]), int(r["position_closed"])) for r in trades
+            str(r["trade_id"]): (str(r.get("position_id") or ""), int(r.get("position_closed") or 0))
+            for r in trades
         }
     return trades
 
 
 def refresh_wallet_history(app, wallet: str) -> dict:
     # The original routine remains authoritative for RPC fetching, transaction
-    # classification, error handling and fragment persistence. Our patched matcher
-    # supplies closure metadata, which is written only after that routine succeeds.
+    # classification, error handling and fragment persistence. Patched classifier
+    # and matcher add proof metadata, written only after the original refresh
+    # succeeds. No additional RPC request is introduced.
     result = _PREV_REFRESH_WALLET_HISTORY(app, wallet)
     with _META_LOCK:
         metadata = _MATCH_META.pop(str(wallet), None)
@@ -155,7 +251,7 @@ def refresh_wallet_history(app, wallet: str) -> dict:
         for trade_id, (position_id, position_closed) in metadata.items():
             conn.execute(
                 "UPDATE trades SET position_id=?,position_closed=? WHERE wallet=? AND trade_id=?",
-                (position_id, int(position_closed), str(wallet), trade_id),
+                (position_id or None, int(position_closed), str(wallet), trade_id),
             )
         row = conn.execute(
             """SELECT COUNT(DISTINCT position_id) n FROM trades
@@ -164,13 +260,13 @@ def refresh_wallet_history(app, wallet: str) -> dict:
         ).fetchone()
         closed_positions = int(row["n"] or 0) if row else 0
         conn.execute(
-            "UPDATE history_status SET closed_trades=?,position_metrics_version=1 WHERE wallet=?",
-            (closed_positions, str(wallet)),
+            "UPDATE history_status SET closed_trades=?,position_metrics_version=? WHERE wallet=?",
+            (closed_positions, _POSITION_METRICS_VERSION, str(wallet)),
         )
         conn.commit()
     result = dict(result)
     result["closed_trades"] = closed_positions
-    result["position_metrics_version"] = 1
+    result["position_metrics_version"] = _POSITION_METRICS_VERSION
     return result
 
 
@@ -178,6 +274,7 @@ def install() -> None:
     if getattr(_sol, "_position_history_patch_installed", False):
         return
     _sol.connect = connect
+    _sol.classify_swap = classify_swap
     _sol._match_events = _match_events
     _sol.refresh_wallet_history = refresh_wallet_history
     _sol._position_history_patch_installed = True
