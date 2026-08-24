@@ -1,11 +1,14 @@
-name: EVM Pool Rug Safety CI
+name: EVM / PoolCheck Rug Safety CI
 
 on:
   pull_request:
     paths:
       - 'learnerbot/evm_pool_rug_gate.py'
       - 'learnerbot/evm_transfer_native_hotfix_patch.py'
+      - 'learnerbot/poolcheck_rug_hardening_patch.py'
+      - 'learnerbot/final_runtime_integrity_patch.py'
       - 'tests/test_evm_pool_rug_gate.py'
+      - 'tests/test_poolcheck_rug_hardening_patch.py'
       - '.github/workflows/evm-pool-rug-ci.yml'
   push:
     branches:
@@ -13,7 +16,10 @@ on:
     paths:
       - 'learnerbot/evm_pool_rug_gate.py'
       - 'learnerbot/evm_transfer_native_hotfix_patch.py'
+      - 'learnerbot/poolcheck_rug_hardening_patch.py'
+      - 'learnerbot/final_runtime_integrity_patch.py'
       - 'tests/test_evm_pool_rug_gate.py'
+      - 'tests/test_poolcheck_rug_hardening_patch.py'
 
 permissions:
   contents: read
@@ -43,11 +49,20 @@ jobs:
           "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
           "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
 
-      - name: Compile pool-rug safety code
-        run: "$CI_VENV/bin/python" -m py_compile learnerbot/evm_pool_rug_gate.py tests/test_evm_pool_rug_gate.py
+      - name: Compile PoolCheck safety code
+        run: |
+          "$CI_VENV/bin/python" -m py_compile \
+            learnerbot/evm_pool_rug_gate.py \
+            learnerbot/poolcheck_rug_hardening_patch.py \
+            learnerbot/final_runtime_integrity_patch.py \
+            tests/test_evm_pool_rug_gate.py \
+            tests/test_poolcheck_rug_hardening_patch.py
 
-      - name: Run all-chain pool-rug regression tests
-        run: "$CI_VENV/bin/python" -m pytest -x -vv tests/test_evm_pool_rug_gate.py"
+      - name: Run PoolCheck rug regression tests
+        run: |
+          "$CI_VENV/bin/python" -m pytest -x -vv \
+            tests/test_evm_pool_rug_gate.py \
+            tests/test_poolcheck_rug_hardening_patch.py
 
       - name: Clean isolated Python environment
         if: always()
