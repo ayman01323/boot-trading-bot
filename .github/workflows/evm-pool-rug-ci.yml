@@ -33,25 +33,25 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 15
     env:
-      CI_VENV: /tmp/evm-pool-rug-ci-${{ github.run_id }}
+      BOT_PYTHON: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Prepare isolated Python environment
+      - name: Verify existing bot Python environment
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$CI_VENV"
-          python3 -m venv "$CI_VENV"
-          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
-          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+          test -x "$BOT_PYTHON"
+          "$BOT_PYTHON" --version
+          "$BOT_PYTHON" -c 'import pytest, requests, solders; print("poolcheck-ci-deps=OK")'
 
       - name: Compile PoolCheck safety code
         run: |
-          "$CI_VENV/bin/python" -m py_compile \
+          "$BOT_PYTHON" -m py_compile \
             learnerbot/evm_pool_rug_gate.py \
             learnerbot/poolcheck_rug_hardening_patch.py \
             learnerbot/final_runtime_integrity_patch.py \
@@ -60,10 +60,6 @@ jobs:
 
       - name: Run PoolCheck rug regression tests
         run: |
-          "$CI_VENV/bin/python" -m pytest -x -vv \
+          "$BOT_PYTHON" -m pytest -x -vv \
             tests/test_evm_pool_rug_gate.py \
             tests/test_poolcheck_rug_hardening_patch.py
-
-      - name: Clean isolated Python environment
-        if: always()
-        run: rm -rf "$CI_VENV"
