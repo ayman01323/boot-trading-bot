@@ -83,6 +83,37 @@ def test_primary_master_is_first_master_not_later_added_master(tmp_path):
     assert source.primary_master_id(app.csv_dir) == "111"
 
 
+def test_production_original_master_identity_wins_even_if_csv_order_changes(tmp_path):
+    app = _app(tmp_path)
+    _write_users(app)
+    # Re-purpose the first fixture MASTER as a later-added account, then append the
+    # known original platform MASTER after it. The pinned identity must still win.
+    import csv
+    path = app.csv_dir / "users.csv"
+    with path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    rows.append({
+        "telegram_id": source.ORIGINAL_MAIN_MASTER_ID,
+        "role": "MASTER",
+        "status": "ACTIVE",
+        "fee_plan_id": "MASTER",
+        "label": "Original Main Master",
+        "allowed_chains": "*",
+        "max_wallets": "20",
+        "can_transfer": "true",
+        "can_manual_trade": "true",
+        "can_auto_trade": "true",
+        "created_epoch": "0",
+        "activated_epoch": "0",
+        "notes": "production original",
+    })
+    with path.open("w", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=USER_HEADERS)
+        w.writeheader()
+        w.writerows(rows)
+    assert source.primary_master_id(app.csv_dir) == source.ORIGINAL_MAIN_MASTER_ID
+
+
 def test_main_master_source_inherits_tuning_but_not_execution_authority(tmp_path):
     app = _app(tmp_path)
     _write_users(app)
