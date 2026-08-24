@@ -19,6 +19,25 @@ The core invariant is deliberately simple:
 
 Execution is disabled by default.
 
+## First strategy: atomic arbitrage
+
+The first strategy is deliberately **not buy-and-hold**. It proposes atomic round trips such as:
+
+`USDC -> WETH -> TOKEN -> USDC`
+
+The strategy is accepted only when:
+
+- the path returns to the exact starting asset;
+- the quote is executable;
+- the quoted input exactly matches the configured trade input;
+- quoted price impact is below the configured maximum;
+- expected output covers input plus quoted fees;
+- the remaining expected profit also covers a separate safety buffer;
+- net profit after that safety buffer is at least the configured minimum;
+- the engine then obtains a second fresh quote, repeats all risk gates, and simulates again immediately before any future execution.
+
+The strategy plugin never receives a private key and cannot sign or broadcast. Pool-rug, honeypot, quarantine, exposure, wallet and chain-health controls remain separate fail-closed plugins so they can be added later without rewriting the arbitrage strategy.
+
 ## What v0 contains
 
 - strategy-neutral `Candidate` objects;
@@ -30,7 +49,8 @@ Execution is disabled by default.
 - optional observers for monitoring/Telegram/logging;
 - two-pass quote and simulation before execution;
 - rejection fall-through so one bad candidate does not starve the cycle;
-- dry-run mode as the default.
+- dry-run mode as the default;
+- a first `atomic_arbitrage` candidate source and economics gate.
 
 ## What v0 intentionally does NOT contain
 
@@ -63,7 +83,7 @@ Add capabilities in layers without changing the core contract:
 - legacy v2.2 direct-market scanner adapter;
 - current V2/V3/full-power scanner adapters;
 - leader/copy-trading candidate adapter;
-- arbitrage candidate adapter.
+- additional arbitrage candidate adapters.
 
 All scanners feed the same candidate interface. No scanner gets signing authority.
 
