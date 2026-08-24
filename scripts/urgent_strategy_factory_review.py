@@ -38,7 +38,10 @@ STRATEGY_FAMILIES = {
 
 PROMOTED_REAL_MONEY_STAGES = {"CANARY", "PROBATION", "ACTIVE"}
 BRIDGE_ROOT = Path("/var/tmp/boot")
-RUNNER_REVIEW_ROOT = BRIDGE_ROOT / "monitor_factory_runner"
+# Sanitised production bridges under /var/tmp/boot are intentionally read-only to
+# the self-hosted Actions runner. Review state is ephemeral and belongs in the
+# runner's writable temp area, never beside the production snapshots.
+RUNNER_REVIEW_ROOT = Path(os.environ.get("RUNNER_TEMP") or "/tmp") / "boot-monitor-factory-runner"
 PRODUCTION_BRIDGES = {
     "trading_funnel": BRIDGE_ROOT / "trading_funnel_master.json",
     "evm_selector": BRIDGE_ROOT / "evm_leader_selector.json",
