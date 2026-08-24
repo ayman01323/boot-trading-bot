@@ -123,3 +123,60 @@ def test_transient_json_rpc_error_fails_over(monkeypatch, tmp_path):
     monkeypatch.setattr(failover.requests, "post", post)
     assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == ["ok"]
     assert calls == [first, second]
+
+
+def test_node_unhealthy_json_rpc_error_fails_over(monkeypatch, tmp_path):
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "error": {"message": "Node is unhealthy"}})
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": 123})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == 123
+    assert calls == [first, second]
+
+
+def test_malformed_json_rpc_envelope_fails_over_instead_of_returning_none(monkeypatch, tmp_path):
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(200, {"jsonrpc": "2.0", "id": 1})
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": ["fallback-ok"]})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    assert failover.rpc_failover(_app(tmp_path), "getSignaturesForAddress", ["wallet"]) == ["fallback-ok"]
+    assert calls == [first, second]
+
+
+def test_non_object_json_rpc_envelope_fails_over(monkeypatch, tmp_path):
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(200, ["not", "a", "json-rpc", "object"])
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": "ok"})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    assert failover.rpc_failover(_app(tmp_path), "getHealth", []) == "ok"
+    assert calls == [first, second]
