@@ -1,0 +1,208 @@
+{
+  "cycle_id": "812bbc688d4c-2026082400-3ae2f7e1",
+  "evidence_gaps": [
+    "evidence_status=MISSING_RUNTIME_FORENSICS (evidence.json): no sanitised runtime forensics or trade logs available this cycle; all findings are architecture/code-only and no measured NET P&L, win/loss distribution, or realized cost figures could be assessed.",
+    ".env and CSVbot/*.csv are git-ignored and absent from this checkout, so actual configured RPC providers (vs the public Solana fallback), production slippage/threshold values, and per-chain capital settings could not be verified beyond code defaults.",
+    "ai-reviews:engineering/ops/latest.json sanitised VPS snapshot was not available in this review pass, so trade_latency/infrastructure chain-by-chain p50/p95 vs 6-day baseline, RPC round-trip, and 7-day trade share could not be assessed this cycle -- treat as INSUFFICIENT DATA rather than inferred.",
+    "No data confirming or refuting actual EVM MEV/sandwich losses on arbitrage-cycle trades (proposal evm-arb-cycle-mev-exposure-shadow-probe is an architecture hypothesis pending measurement).",
+    "No data on the actual frequency of EVM nonce-collision or stuck-transaction incidents in production (proposal evm-nonce-serialization-audit is likewise pending measurement).",
+    "Root-cause data for the 2026-08-18 Solana platform-wide loss halt (whether price-driven, liquidity-gate-driven, or both) was not available in this checkout."
+  ],
+  "evidence_sha256": "3ae2f7e120a0a8fe2889ce3b21889de89fef8afc40abaf8cabdc7094291cbf3e",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.35,
+      "downside_risk": "Private relays can have slower/less certain inclusion on some EVM chains, which for a latency-sensitive arbitrage cycle could reduce landed-rate and increase missed-opportunity cost; not every configured EVM chain has a mature private-relay option.",
+      "evidence": [
+        {
+          "detail": "Signed cycle transactions are broadcast via plain send_raw_transaction to the configured RPC with no Flashbots/private-relay or bundle submission path",
+          "path": "learnerbot/live_executor.py:315"
+        },
+        {
+          "detail": "Cycles are only accepted at a conservative edge after a slippage reserve; the shared strategy-lab floor elsewhere requires as little as 3-6bps net edge, a margin fully consumable by a single sandwich/frontrun",
+          "path": "learnerbot/route_scanner.py:452-458"
+        }
+      ],
+      "expected_effect": "If frontrunning materially erodes cycle edges, routing already-qualifying cycles through a private relay (where available) could raise realized-edge-capture without any change to signal logic.",
+      "id": "evm-arb-cycle-mev-exposure-shadow-probe",
+      "minimum_observation": "At least 30 comparable opportunity pairs per chain, or 7 days of paired shadow samples, whichever is longer.",
+      "rationale": "Atomic arbitrage cycles are high-value MEV targets because the entire edge is visible and copyable from the public mempool. With no private-relay/bundle path, a competing searcher can extract the discovered edge before it lands -- an EXECUTION/INFRASTRUCTURE cost that would look like 'strategy stopped working' unless measured separately from signal quality.",
+      "shadow_test": "For chains with a private-relay option, run a bounded paired SHADOW comparison: for N consecutive already-passing cycle opportunities, compare public-mempool broadcast against a private-relay path (or a non-capital-committing simulation of relay inclusion odds) on landed-rate and realized-edge-vs-quoted-edge. Stop/fail condition: if relay inclusion latency exceeds the strategy's own max_signal_age_seconds threshold (e.g. 2s) in more than 20% of samples, reject the relay path as unusable for this strategy.",
+      "strategy": "EVM triangular/multi-hop cycle arbitrage (route_scanner.py / market_scanner.py, executed via live_executor.py execute_cycle/execute_v3_cycle)",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "learnerbot/strategy_lab.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.45,
+      "downside_risk": "Pure accounting change with no direct trading-behavior risk; only cost is engineering effort, which is wasted if the flat-fee approximation turns out to already be immaterial.",
+      "evidence": [
+        {
+          "detail": "P&L bookkeeping uses fixed estimated_entry_fee_sol/estimated_exit_fee_sol = 0.00002 SOL",
+          "path": "learnerbot/solana_sibot.py:48-49"
+        },
+        {
+          "detail": "Actual execution uses a dynamic priority-fee cap and persists real network_fee_lamports/priority_fee_lamports/jito_tip_lamports per signature in live_execution_receipts",
+          "path": "learnerbot/solana_execution_efficiency_patch.py:77-113,152-166"
+        }
+      ],
+      "expected_effect": "Reconciling strategy P&L against live_execution_receipts fee fields would tighten the accuracy of net-P&L figures gating stop-loss, canary promotion, and the platform-wide profit-factor throttle.",
+      "id": "solana-fee-accounting-reconciliation",
+      "minimum_observation": "At least 50 matched trade/receipt pairs, or 14 days of history, whichever is available first.",
+      "rationale": "Strategy-level realized P&L used for stop-loss/take-profit/canary-promotion decisions appears to subtract a flat conservative fee estimate rather than the dynamic priority fee actually paid and already recorded elsewhere. During Solana priority-fee spikes this understates true cost and can overstate net edge, misclassifying EXECUTION cost as STRATEGY profit and risking premature canary promotion on an inflated number.",
+      "shadow_test": "Read-only backfill: for a bounded historical sample of already-executed Solana SiMo trades, compare the flat-fee-based net P&L already recorded against a recomputed net P&L using the matching live_execution_receipts row for the same signature. No new capital or live-behavior change required. Stop condition: if the two P&L series diverge by less than a set materiality threshold (e.g. <1% of average trade size) across the sample, treat the current approximation as adequate and close the finding.",
+      "strategy": "Solana SiMo copy-trading P&L accounting (solana_sibot.py) reconciled against live execution fee receipts (solana_execution_efficiency_patch.py)",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.3,
+      "downside_risk": "A submission lock adds latency by serializing otherwise-parallel opportunity execution on the same wallet; a naive gas-bump could resubmit into a since-unprofitable trade if not re-validated first.",
+      "evidence": [
+        {
+          "detail": "get_transaction_count(address, 'pending') fetched fresh per call with no lock/mutex guarding the fetch-then-sign-then-send sequence across concurrent triggers",
+          "path": "learnerbot/live_executor.py:304"
+        },
+        {
+          "detail": "No gas-bump/replace-by-fee/'speed up' logic found; a stuck pending transaction times out (wait_for_transaction_receipt(timeout=120)) into a manual-intervention error rather than being resubmitted at higher gas",
+          "path": "learnerbot/live_executor.py"
+        }
+      ],
+      "expected_effect": "A per-wallet-per-chain submission lock plus an optional fee-bump-and-resubmit path (re-validated against the existing profit gate before bumping) would reduce infra-caused execution failures without touching strategy signal logic.",
+      "id": "evm-nonce-serialization-audit",
+      "minimum_observation": "30 days of existing execution logs (no new shadow run needed to first confirm the collision occurs in practice).",
+      "rationale": "Multiple independent live-trading entry points exist per EVM wallet (AUTO scanner, SiMo copy engine, manual commands). Without a serialization lock, near-simultaneous nonce fetches can collide, producing a dropped/stuck transaction that surfaces as a failed execution rather than a bad strategy signal; with no gas-bump path, a transaction stuck under a rising base fee simply times out instead of completing, under-executing otherwise-profitable opportunities in a way that would misleadingly look like poor strategy performance unless separated out.",
+      "shadow_test": "This is a code-correctness/execution-quality question rather than a P&L hypothesis -- validate first via a runtime audit of existing execution logs (e.g. execution_latency.py samples) for wallets/chains with multiple submissions in the same block window and their nonce-error rate versus baseline, before any code change. Stop condition: if collision-linked failures are near zero in the observed log window, close as non-issue without code change.",
+      "strategy": "EVM live execution transaction submission serialization (live_executor.py), shared across AUTO arbitrage scanner, SiMo copy engine, and manual commands",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.3,
+      "downside_risk": "Retrospective log-tagging has no trading-behavior risk; it is pure reporting overhead if repeated halt-style incidents don't recur.",
+      "evidence": [
+        {
+          "detail": "One-shot platform-wide Solana LIVE kill switch dated 2026-08-18 citing 'repeated Solana loss/exit-retry pattern' without separating strategy loss from execution/liquidity-gate-blocked exits",
+          "path": "learnerbot/solana_emergency_loss_halt_migration.py:31"
+        },
+        {
+          "detail": "Loss-driven stop-loss exits route through the same liquidity/impact gates as normal exits (with only a wider emergency ceiling), so a stop-loss can itself be delayed or blocked by the liquidity gate rather than executing at the intended trigger level",
+          "path": "learnerbot/solana_emergency_liquidity_unwind_patch.py"
+        }
+      ],
+      "expected_effect": "Logging each stop-loss-triggered exit as 'executed at trigger', 'executed via emergency-unwind wider ceiling', or 'still liquidity-blocked/escalated' would let a future incident review correctly separate bad entries/signals from exits unable to clear liquidity gates at the desired size/time.",
+      "id": "solana-loss-vs-liquidity-gate-attribution",
+      "minimum_observation": "The full set of positions closed or halted in the 2026-08-18 incident, if retrievable; otherwise this becomes a forward-looking logging improvement for the next incident.",
+      "rationale": "A recent platform-wide halt explicitly conflated 'loss' with 'exit-retry pattern' in its own migration comment. If stop-losses were being delayed/blocked by the liquidity gate rather than price movement being the primary driver, the realized loss and the halt decision are actually an EXECUTION/INFRASTRUCTURE finding, not evidence the strategy's edge went negative -- these require different fixes and the current incident record does not distinguish them.",
+      "shadow_test": "Read-only forensic reconstruction, not a capital-risking test: for the positions implicated in the 2026-08-18 halt (if still queryable), classify each loss-driving exit as price-driven-at-trigger vs liquidity-gate-delayed/escalated and report the split. Stop condition: if the underlying data can no longer be reconstructed, mark as an evidence gap rather than guessing.",
+      "strategy": "Solana stop-loss / emergency-exit root-cause attribution (solana_sibot.py stop-loss, solana_emergency_liquidity_unwind_patch.py, solana_emergency_loss_halt_migration.py)",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py"
+      ]
+    },
+    {
+      "action": "KEEP",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.5,
+      "downside_risk": "Quote-simulated economics do not capture execution slippage-at-broadcast, MEV, or partial fills (self-flagged in the code), so a strategy could look profitable in SHADOW and underperform once promoted -- already mitigated by staged canary/probation sizing rather than a full-size launch.",
+      "evidence": [
+        {
+          "detail": "Common executable floor requires net edge >=3-6bps after costs, liquidity>=0.55-0.75, sellability>=0.80-0.95, quote age<=1.5-2.5s before any of the 7 strategies fires",
+          "path": "learnerbot/cross_chain_strategy_signals.py:126-136"
+        },
+        {
+          "detail": "Explicitly non-signing; imports no wallet/signer/RPC-submission code, and self-labels its P&L as 'quote/simulation economics only; not realised P&L and never sufficient for live promotion'",
+          "path": "learnerbot/shadow_strategy_executor.py:18-21,106"
+        },
+        {
+          "detail": "Requires 3-agent AI-council ACCEPT (confidence>=0.85, >=2 agents, risk LOW/MEDIUM) then staged CANARY->PROBATION->ACTIVE sizing, paused on 2 consecutive losses or a net-negative 2-trade sample",
+          "path": "learnerbot/strategy_canary.py:253-282"
+        }
+      ],
+      "expected_effect": "Continuing to accumulate SHADOW quote-simulated samples across all 7 strategies on both chains builds the evidence base needed before any promotion decision, at zero live-capital risk.",
+      "id": "market-native-strategy-lab-continued-shadow",
+      "minimum_observation": "Per docs/STRATEGY_LAB.md's existing promotion criteria; no change proposed to those thresholds.",
+      "rationale": "This is architecturally sound: non-leader-dependent (addressing docs/STRATEGY_LAB.md's stated concern that leader-copying alone is an insufficient strategy portfolio), enforces a conservative common cost/liquidity/sellability floor, is explicitly non-signing while in SHADOW, and requires independent multi-agent agreement plus a small staged canary before any live capital is committed. No architectural weakening found.",
+      "shadow_test": "Continue existing SHADOW accumulation; promotion should remain gated on the existing AI-council + canary process already defined in docs/STRATEGY_LAB.md. No new test proposed -- this is a KEEP.",
+      "strategy": "Cross-chain market-native strategy family (cross_chain_strategy_signals.py, 7 rule-based strategies) under shadow_strategy_executor.py, gated by strategy_canary.py AI-council promotion",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.35,
+      "downside_risk": "An overly sensitive counter could pause EVM live trading on transient/unrelated RPC blips; Solana's default (2 faults) is aggressive and would need chain-appropriate tuning given EVM's existing route/token quarantine already absorbs some of this.",
+      "evidence": [
+        {
+          "detail": "Solana auto-disables solana_live_enabled after live_no_output_disable_after (default 2) consecutive landed-but-invalid execution faults",
+          "path": "learnerbot/solana_execution_fault_counter_patch.py:22-51"
+        },
+        {
+          "detail": "EVM only has route/token-scoped quarantine (300s route, 21600s token after 3 strikes), with no equivalent wallet/account-level auto-disable after repeated execution-mismatch faults",
+          "path": "learnerbot/execution_quarantine.py:18-23"
+        }
+      ],
+      "expected_effect": "Adding an EVM-side execution-fault counter mirroring the existing Solana pattern would close a chain-asymmetric gap without touching any strategy signal or sizing logic.",
+      "id": "evm-execution-fault-kill-switch-asymmetry",
+      "minimum_observation": "30 days of EVM live execution logs monitored in read-only/shadow mode before considering an actual auto-disable wire-up.",
+      "rationale": "Solana has a dedicated per-user auto-disable safety net for ambiguous/invalid execution outcomes, distinct from strategy loss; no equivalent was found for EVM. This is a chain-symmetry gap in the execution/infra safety net: repeated EVM execution-mismatch faults (e.g. from an RPC provider issue or a router/ABI change) would only quarantine the specific route/token, not pause the account's EVM live trading the way Solana does.",
+      "shadow_test": "Not capital-risking: implement first as a read-only monitoring counter (log what the auto-disable would have triggered had it existed) over a bounded observation window, before wiring it to actually disable EVM live trading. Stop condition: if zero or near-zero qualifying faults are observed over the window, deprioritize as low-value for current EVM reliability.",
+      "strategy": "EVM live-trading execution-fault circuit breaker (no account-level auto-disable equivalent to Solana's solana_execution_fault_counter_patch.py)",
+      "suggested_files": [
+        "learnerbot/strategy_lab_research.py"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Re-enable Solana Jito tips by default to improve transaction landing rate",
+      "reason": "solana_profit_first_live_correction_patch.py explicitly force-disabled Jito tips platform-wide (live_enable_jito_tip=false, max=0), reading as a deliberate correction from a prior negative finding; without new evidence that tip cost is currently outweighed by improved landing/edge capture, reversing that correction is unsupported."
+    },
+    {
+      "idea": "Increase EVM/Solana per-trade position sizing or exposure caps given the multi-layer profitability/liquidity gating looks architecturally sound",
+      "reason": "No fresh runtime P&L evidence is available this cycle (evidence_status: MISSING_RUNTIME_FORENSICS); architectural soundness alone does not establish realized net profitability, so any sizing increase is unsupported and out of scope for a report-only review."
+    },
+    {
+      "idea": "Apply EVM private-relay/MEV protection to all trade types (manual trades, SiMo copy trades), not just arbitrage cycles",
+      "reason": "Manual/SiMo trades already tolerate wide slippage (500bps default) and are not the thin-margin (3-6bps) atomic-cycle trades most exposed to sandwich extraction; blanket relay adoption would add latency/complexity without a clear cost-adjusted case for non-arbitrage trade types."
+    },
+    {
+      "idea": "Treat the 2026-08-18 Solana platform-wide loss halt as proof the Solana SiMo/leader-copy strategy has negative edge and should be replaced",
+      "reason": "The halt's own migration comment conflates 'loss' with 'exit-retry pattern' (an execution/liquidity-gate symptom) without separating cause; recommending REPLACE on that basis would violate the requirement to separate STRATEGY/MARKET loss from EXECUTION/INFRASTRUCTURE failure before acting."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "812bbc688d4c0de79d96b5e72dbe27ab1a84a163",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review (no fresh runtime forensics). The bot runs three parallel strategy families -- EVM triangular/multi-hop arbitrage (route_scanner.py/market_scanner.py/live_executor.py), directional leader-copy trading on both chains (sibot.py/solana_sibot.py), and a governed, non-signing market-native Strategy Lab (cross_chain_strategy_signals.py/shadow_strategy_executor.py/strategy_canary.py) -- all sharing multi-layer pre-trade profitability, slippage, price-impact, liquidity and sellability gates. The safety architecture (execution quarantine, exit circuit breakers, platform profit-factor throttle, AI-council + staged canary promotion) is comparatively mature. The main gaps found are EXECUTION/INFRASTRUCTURE rather than strategy-signal issues: EVM arbitrage cycles broadcast via public mempool with no MEV/private-relay protection despite razor-thin (3-6bps) required edges; Solana strategy-level P&L bookkeeping uses a flat fee estimate that may diverge from the dynamic priority fee actually paid and recorded elsewhere; EVM has no nonce-submission lock or gas-bump/RBF path and no wallet-level execution-fault kill switch analogous to Solana's; and a recent platform-wide Solana loss halt (2026-08-18) conflated realized loss with exit-retry/liquidity-gate behavior in its own commit message, which is exactly the strategy-vs-execution conflation this review is asked to avoid. No claim of measured live profitability or canary readiness is made given the missing runtime evidence."
+}
