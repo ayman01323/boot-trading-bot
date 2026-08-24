@@ -41,7 +41,9 @@ jobs:
     if: >-
       github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
-    runs-on: [self-hosted, linux, x64, boot-vps]
+    # Communication-only work uses GitHub/provider APIs and temporary files; it must
+    # not compete with production deploy/status work for the single boot-vps runner.
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
