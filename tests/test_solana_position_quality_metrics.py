@@ -3,6 +3,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 from learnerbot import solana_profit_guard_patch as guard
+from learnerbot import solana_position_history_patch as history_patch
 from learnerbot import solana_sibot as sol
 
 NOW = int(time.time())
@@ -12,7 +13,7 @@ def _app(tmp_path):
     return SimpleNamespace(csv_dir=tmp_path / "CSVbot", data_dir=tmp_path / "data")
 
 
-def _event(action, mint, signature, ts, token_raw, sol_amount):
+def _event(action, mint, signature, ts, token_raw, sol_amount, *, pre, post):
     return {
         "action": action,
         "mint": mint,
@@ -21,6 +22,8 @@ def _event(action, mint, signature, ts, token_raw, sol_amount):
         "token_amount_raw": str(token_raw),
         "sol_amount": str(sol_amount),
         "decimals": 6,
+        "pre_token_balance_raw": int(pre),
+        "post_token_balance_raw": int(post),
     }
 
 
@@ -37,13 +40,16 @@ def _persist_reconstruction(conn, wallet, rows, *, exact=True):
                 r["hold_seconds"], r["source"], r["updated_at"], r.get("position_id"), int(r.get("position_closed") or 0),
             ),
         )
-    closed = len({str(r.get("position_id")) for r in rows if r.get("position_id") and int(r.get("position_closed") or 0) == 1})
+    closed = len({
+        str(r.get("position_id")) for r in rows
+        if r.get("position_id") and int(r.get("position_closed") or 0) == 1
+    })
     conn.execute(
         """INSERT INTO history_status(wallet,fetched_at,closed_trades,truncated,error,position_metrics_version)
            VALUES(?,?,?,?,?,?)
            ON CONFLICT(wallet) DO UPDATE SET fetched_at=excluded.fetched_at,closed_trades=excluded.closed_trades,
              truncated=excluded.truncated,error=excluded.error,position_metrics_version=excluded.position_metrics_version""",
-        (wallet, NOW, closed, 0, "", 1 if exact else 0),
+        (wallet, NOW, closed, 0, "", history_patch._POSITION_METRICS_VERSION if exact else 0),
     )
     conn.commit()
 
@@ -68,8 +74,8 @@ def test_partial_sell_is_not_marked_as_closed_position():
     rows = sol._match_events(
         "w-open",
         [
-            _event("BUY", "MINT", "b", NOW - 100, 100, 10),
-            _event("SELL", "MINT", "s", NOW - 50, 40, 5),
+            _event("BUY", "MINT", "b", NOW - 100, 100, 10, pre=0, post=100),
+            _event("SELL", "MINT", "s", NOW - 50, 40, 5, pre=100, post=60),
         ],
     )
     assert len(rows) == 1
@@ -81,9 +87,9 @@ def test_full_exit_marks_every_fragment_in_cycle_closed():
     rows = sol._match_events(
         "w-close",
         [
-            _event("BUY", "MINT", "b", NOW - 100, 100, 10),
-            _event("SELL", "MINT", "s1", NOW - 60, 40, 5),
-            _event("SELL", "MINT", "s2", NOW - 50, 60, 8),
+            _event("BUY", "MINT", "b", NOW - 100, 100, 10, pre=0, post=100),
+            _event("SELL", "MINT", "s1", NOW - 60, 40, 5, pre=100, post=60),
+            _event("SELL", "MINT", "s2", NOW - 50, 60, 8, pre=60, post=0),
         ],
     )
     assert len(rows) == 2
@@ -91,15 +97,41 @@ def test_full_exit_marks_every_fragment_in_cycle_closed():
     assert all(r["position_closed"] == 1 for r in rows)
 
 
+def test_preexisting_balance_cycle_is_not_called_exact():
+    rows = sol._match_events(
+        "w-preexisting",
+        [
+            _event("BUY", "MINT", "b", NOW - 100, 100, 10, pre=50, post=150),
+            _event("SELL", "MINT", "s", NOW - 50, 150, 20, pre=150, post=0),
+        ],
+    )
+    assert len(rows) == 1
+    assert rows[0]["position_closed"] == 0
+
+
+def test_intervening_balance_mismatch_taints_cycle():
+    rows = sol._match_events(
+        "w-transfer",
+        [
+            _event("BUY", "MINT", "b", NOW - 100, 100, 10, pre=0, post=100),
+            # 20 tokens appeared between swaps (e.g. transfer); the matcher must
+            # refuse to present this as a complete cost-basis position.
+            _event("SELL", "MINT", "s", NOW - 50, 120, 15, pre=120, post=0),
+        ],
+    )
+    assert len(rows) == 1
+    assert rows[0]["position_closed"] == 0
+
+
 def test_same_second_exit_then_reentry_is_new_exact_position():
     t = NOW - 500
     rows = sol._match_events(
         "w-tie",
         [
-            _event("BUY", "MINT", "a", t - 100, 100, 1),
-            _event("SELL", "MINT", "m", t, 100, Decimal("0.5")),
-            _event("BUY", "MINT", "z", t, 100, 1),
-            _event("SELL", "MINT", "zz", t + 100, 100, 2),
+            _event("BUY", "MINT", "a", t - 100, 100, 1, pre=0, post=100),
+            _event("SELL", "MINT", "m", t, 100, Decimal("0.5"), pre=100, post=0),
+            _event("BUY", "MINT", "z", t, 100, 1, pre=0, post=100),
+            _event("SELL", "MINT", "zz", t + 100, 100, 2, pre=100, post=0),
         ],
     )
     assert len(rows) == 2
@@ -113,10 +145,10 @@ def test_scaled_out_position_uses_one_position_for_all_quality_metrics(tmp_path)
     rows = sol._match_events(
         "w1",
         [
-            _event("BUY", "MINT_A", "buyA", buy_ts, 300, 9),
-            _event("SELL", "MINT_A", "s1", buy_ts + 100, 100, 2),
-            _event("SELL", "MINT_A", "s2", buy_ts + 200, 100, Decimal("2.5")),
-            _event("SELL", "MINT_A", "s3", buy_ts + 300, 100, 6),
+            _event("BUY", "MINT_A", "buyA", buy_ts, 300, 9, pre=0, post=300),
+            _event("SELL", "MINT_A", "s1", buy_ts + 100, 100, 2, pre=300, post=200),
+            _event("SELL", "MINT_A", "s2", buy_ts + 200, 100, Decimal("2.5"), pre=200, post=100),
+            _event("SELL", "MINT_A", "s3", buy_ts + 300, 100, 6, pre=100, post=0),
         ],
     )
     with sol.connect(app) as conn:
@@ -141,8 +173,8 @@ def test_open_partial_inventory_is_excluded_from_exact_quality(tmp_path):
     rows = sol._match_events(
         "w-open-db",
         [
-            _event("BUY", "MINT", "b", NOW - 1000, 100, 10),
-            _event("SELL", "MINT", "s", NOW - 900, 40, 8),
+            _event("BUY", "MINT", "b", NOW - 1000, 100, 10, pre=0, post=100),
+            _event("SELL", "MINT", "s", NOW - 900, 40, 8, pre=100, post=60),
         ],
     )
     with sol.connect(app) as conn:
@@ -160,17 +192,22 @@ def test_recent_window_is_last_closed_positions_not_last_fragments(tmp_path):
     app = _app(tmp_path)
     rows = []
     base = NOW - 10000
-    old_events = [_event("BUY", "OLD", "oldbuy", base, 800, 8)]
+    old_events = [_event("BUY", "OLD", "oldbuy", base, 800, 8, pre=0, post=800)]
+    balance = 800
     for i in range(8):
-        old_events.append(_event("SELL", "OLD", f"old{i:02d}", base + 10 + i, 100, Decimal("0.9")))
+        post = balance - 100
+        old_events.append(
+            _event("SELL", "OLD", f"old{i:02d}", base + 10 + i, 100, Decimal("0.9"), pre=balance, post=post)
+        )
+        balance = post
     rows.extend(sol._match_events("w4", old_events))
     for i, proceeds in enumerate([2, 2, 2, 2, Decimal("0.5")]):
         ts = base + 1000 + i * 100
         rows.extend(sol._match_events(
             "w4",
             [
-                _event("BUY", f"NEW{i}", f"b{i}", ts, 100, 1),
-                _event("SELL", f"NEW{i}", f"s{i}", ts + 20, 100, proceeds),
+                _event("BUY", f"NEW{i}", f"b{i}", ts, 100, 1, pre=0, post=100),
+                _event("SELL", f"NEW{i}", f"s{i}", ts + 20, 100, proceeds, pre=100, post=0),
             ],
         ))
     with sol.connect(app) as conn:
@@ -188,9 +225,12 @@ def test_recent_window_is_last_closed_positions_not_last_fragments(tmp_path):
 def test_fragment_count_cannot_satisfy_minimum_position_evidence(tmp_path):
     app = _app(tmp_path)
     buy_ts = NOW - 3600
-    events = [_event("BUY", "MINT_D", "buy", buy_ts, 1000, 10)]
+    events = [_event("BUY", "MINT_D", "buy", buy_ts, 1000, 10, pre=0, post=1000)]
+    balance = 1000
     for i in range(10):
-        events.append(_event("SELL", "MINT_D", f"sell{i:02d}", buy_ts + 10 + i, 100, 2))
+        post = balance - 100
+        events.append(_event("SELL", "MINT_D", f"sell{i:02d}", buy_ts + 10 + i, 100, 2, pre=balance, post=post))
+        balance = post
     rows = sol._match_events("w5", events)
     with sol.connect(app) as conn:
         _persist_reconstruction(conn, "w5", rows)
