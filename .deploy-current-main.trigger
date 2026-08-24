@@ -1,2 +1,5 @@
-Purpose: retrigger the restricted exact-SHA VPS deployment for the current main commit when needed.
-Last requested for: Engineering Monitor / Strategy Monitor / seven-agent Strategy Factory after promotion-gate contract fix 0e07daae1e485a5d12266e76d4d6249047e78aaf at 2026-08-23T20:53Z.
+Purpose: isolated PR-triggered deployment of the exact current main base SHA through deploy-vps.yml.
+Requested: 2026-08-24T02:54:30Z.
+Target main: 4ce90a61dfb827e3f710f6ef3d977e97bcb48092.
+Scope: deploy audited GitHub regression fixes plus Solana RPC 429 multi-provider failover.
+Safety: full VPS test gate; restricted root wrapper; no wallet/private-key access; no LIVE/capital/risk/strategy-threshold bypass.
