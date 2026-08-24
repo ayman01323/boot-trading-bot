@@ -1,0 +1,107 @@
+source_sha=37672baf0fdf2820b4133234dabc9db55f511475
+test_outcome=failure
+pytest_rc=1
+run_id=32679035573
+utc=2026-08-24T01:13:24Z
+
+=== PYTEST TAIL ===
+/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/pathlib.py:1044: FileNotFoundError
+___________________ test_master_gates_are_explicit_booleans ____________________
+
+    def test_master_gates_are_explicit_booleans():
+        # Production operators may intentionally switch these gates on or off.
+        # Deployment tests must verify explicit configuration, not force a live
+        # server back to the repository's original safety default.
+>       auto={r['setting']:r['value'] for r in rows('CSVbot/auto_trading_settings.csv') if r['chain_id']=='*'}
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_v23_full_power.py:102: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_v23_full_power.py:7: in rows
+    with (ROOT/name).open(encoding='utf-8-sig',newline='') as f:return list(csv.DictReader(f))
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv')
+mode = 'r', buffering = -1, encoding = 'utf-8-sig', errors = None, newline = ''
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv'
+
+/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/pathlib.py:1044: FileNotFoundError
+___________________________ test_full_power_defaults ___________________________
+
+    def test_full_power_defaults():
+>       auto={r['setting']:r['value'] for r in rows('CSVbot/auto_trading_settings.csv') if r['chain_id']=='*'}
+                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_v23_full_power.py:108: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/test_v23_full_power.py:7: in rows
+    with (ROOT/name).open(encoding='utf-8-sig',newline='') as f:return list(csv.DictReader(f))
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = PosixPath('/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv')
+mode = 'r', buffering = -1, encoding = 'utf-8-sig', errors = None, newline = ''
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv'
+
+/opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/pathlib.py:1044: FileNotFoundError
+=============================== warnings summary ===============================
+../../../../../opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/websockets/legacy/__init__.py:6
+  /opt/hostedtoolcache/Python/3.11.16/x64/lib/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
+    warnings.warn(  # deprecated in 14.0 - 2024-11-09
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
+FAILED tests/test_v21_direct_market.py::test_all_five_evm_chains_enabled_and_rpc_configured - assert set() == {1, 56, 137, 8453, 42161}
+  
+  Extra items in the right set:
+  1
+  42161
+  8453
+  56
+  137
+  
+  Full diff:
+  + set()
+  - {
+  -     1,
+  -     56,
+  -     137,
+  -     8453,
+  -     42161,
+  - }
+FAILED tests/test_v222_speed_gas.py::test_speed_defaults - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv'
+FAILED tests/test_v222_speed_gas.py::test_gas_bid_default - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/live_trading_settings.csv'
+FAILED tests/test_v22_fast_graph.py::test_default_tokens_include_liquid_seeds_on_all_five_chains - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/tokens.csv'
+FAILED tests/test_v22_fast_graph.py::test_fast_market_defaults_enabled - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv'
+FAILED tests/test_v22_fast_graph.py::test_all_default_v2_venues_are_registry_driven - assert ([])
+FAILED tests/test_v233_dynamic_products.py::test_installer_does_not_copy_wallets_or_databases - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/apply_v233_dynamic_products.sh'
+FAILED tests/test_v23_full_power.py::test_pancake_v3_config_four_chains_live - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/dex_registry.csv'
+FAILED tests/test_v23_full_power.py::test_polygon_algebra_is_not_silently_live_as_uni_v3 - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/dex_registry.csv'
+FAILED tests/test_v23_full_power.py::test_second_v2_venues_for_cross_dex_are_shadow_only - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/dex_registry.csv'
+FAILED tests/test_v23_full_power.py::test_master_gates_are_explicit_booleans - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv'
+FAILED tests/test_v23_full_power.py::test_full_power_defaults - FileNotFoundError: [Errno 2] No such file or directory: '/home/runner/work/boot-trading-bot/boot-trading-bot/CSVbot/auto_trading_settings.csv'
+12 failed, 1052 passed, 1 skipped, 1 warning in 51.00s
