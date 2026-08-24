@@ -42,6 +42,21 @@ def test_user_setting_chain_override(tmp_path):
     assert user_bool(csv,123,56,'auto_trading_enabled',False) is True
 
 
+def test_canonical_global_scope_beats_stale_zero_alias(tmp_path):
+    csv=_base_csv(tmp_path);join_user(csv,123)
+    # Reproduce the production failure: a stale legacy chain_id=0 row remains
+    # false while /autotrade updates the canonical '*' row to true.
+    set_user_setting(csv,123,'auto_trading_enabled','true',chain_id='*')
+    set_user_setting(csv,123,'auto_trading_enabled','false',chain_id='0')
+    assert user_bool(csv,123,0,'auto_trading_enabled',False) is True
+    assert user_bool(csv,123,8453,'auto_trading_enabled',False) is True
+
+    # A real chain-specific setting must still override the global value.
+    set_user_setting(csv,123,'auto_trading_enabled','false',chain_id=56)
+    assert user_bool(csv,123,56,'auto_trading_enabled',False) is False
+    assert user_bool(csv,123,8453,'auto_trading_enabled',False) is True
+
+
 def test_activation_code_single_use(tmp_path):
     csv=_base_csv(tmp_path);join_user(csv,123,'STANDARD')
     code=create_activation_code(csv,'P10',max_uses=1)
