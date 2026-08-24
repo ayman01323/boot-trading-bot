@@ -1,24 +1,20 @@
 from __future__ import annotations
 
-"""Harden user-level trading switches as true global controls.
+"""Harden user-level trading switches without breaking chain disable overrides.
 
 Historical CSVs may contain duplicate ``*`` rows, legacy ``0``/blank aliases, or
-old real-chain rows for settings that are now user-level master switches. Those
-rows must never be able to keep signing/AUTO enabled after the user sends a
-global OFF command.
-
-Only the three control-plane settings below are global-only. Position sizing,
-profit thresholds, gas settings and other numerical policy remain chain-
-overridable through the normal user_registry resolver.
+old real-chain rows. A user-level global OFF must always win, while an explicit
+per-chain OFF may still narrow an otherwise-global ON.
 """
 
 from . import user_registry as _ur
 
-_GLOBAL_ONLY_SETTINGS = frozenset({
+_GLOBAL_BOOLEAN_KILL_SETTINGS = frozenset({
     "auto_trading_enabled",
     "live_trading_enabled",
-    "recommendation_mode",
 })
+_GLOBAL_ONLY_SETTINGS = frozenset({"recommendation_mode"})
+_CONTROL_SETTINGS = _GLOBAL_BOOLEAN_KILL_SETTINGS | _GLOBAL_ONLY_SETTINGS
 
 _ORIGINAL_USER_SETTING = _ur.user_setting
 _ORIGINAL_SET_USER_SETTING = _ur.set_user_setting
@@ -36,32 +32,56 @@ def _scope(row: dict) -> str:
     return str(row.get("chain_id", "*") or "").strip()
 
 
-def user_setting(csv_dir, telegram_id, chain_id, setting: str, default=None):
-    """Resolve global control switches without any real-chain override.
-
-    For global-only controls, legacy blank/0 rows are fallback values and the
-    canonical ``*`` row wins. A real chain row is intentionally ignored so a
-    stale chain-specific ``true`` can never defeat global ``/autotrade off`` or
-    ``/live off``.
-    """
-    if str(setting) not in _GLOBAL_ONLY_SETTINGS:
-        return _ORIGINAL_USER_SETTING(csv_dir, telegram_id, chain_id, setting, default)
-
-    tid = str(telegram_id).strip()
+def _global_value(rows, tid: str, setting: str, default=None):
     value = default
-    rows = _ur._rows(_ur.user_settings_path(csv_dir))
+    found = False
 
+    # Legacy blank/0 rows are fallback only.
     for row in rows:
         if _tid(row) != tid or _setting_name(row) != setting:
             continue
         if _scope(row) in {"", "0"}:
             value = row.get("value", default)
+            found = True
 
+    # Canonical '*' always wins over legacy aliases.
     for row in rows:
         if _tid(row) != tid or _setting_name(row) != setting:
             continue
         if _scope(row) == "*":
             value = row.get("value", default)
+            found = True
+
+    return value, found
+
+
+def user_setting(csv_dir, telegram_id, chain_id, setting: str, default=None):
+    setting = str(setting)
+    if setting not in _CONTROL_SETTINGS:
+        return _ORIGINAL_USER_SETTING(csv_dir, telegram_id, chain_id, setting, default)
+
+    tid = str(telegram_id).strip()
+    target_scope = str(chain_id).strip()
+    rows = _ur._rows(_ur.user_settings_path(csv_dir))
+    value, global_found = _global_value(rows, tid, setting, default)
+
+    if setting in _GLOBAL_ONLY_SETTINGS:
+        return value
+
+    # For LIVE/AUTOTRADE, an explicit global OFF is a hard kill and can never
+    # be resurrected by a stale real-chain true row.
+    if global_found and not _ur._bool(value, False):
+        return value
+
+    # When global is ON (or absent), preserve the existing ability to narrow
+    # one real chain with an explicit chain-specific override. This lets an
+    # operator keep BSC OFF while Base remains ON, but never defeats global OFF.
+    if target_scope not in {"", "*", "0"}:
+        for row in rows:
+            if _tid(row) != tid or _setting_name(row) != setting:
+                continue
+            if _scope(row) == target_scope:
+                value = row.get("value", default)
 
     return value
 
@@ -93,15 +113,12 @@ def _dedupe_scoped_write(rows, tid: str, scope: str, setting: str, value, descri
 
 
 def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*", description=""):
-    """Make canonical global writes idempotent while retaining legacy writes.
+    """Make canonical global writes idempotent and remove stale control rows.
 
-    A canonical ``*`` write for a global-only control removes every obsolete
-    alias/chain row for that user+setting and leaves exactly one authoritative
-    row. That is the path used by Telegram ``/autotrade`` and ``/live``.
-
-    Explicit legacy ``0``/blank or real-chain writes are retained only for
-    compatibility. They are deduplicated at their own scope, but the resolver
-    will not let them override an existing canonical ``*`` control.
+    Telegram ``/autotrade`` and ``/live`` write the canonical ``*`` scope. Such
+    a write replaces all obsolete aliases and chain rows for the same control,
+    leaving exactly one authoritative global row. Explicit legacy or chain
+    writes remain compatible and are deduplicated only within their own scope.
     """
     path = _ur.user_settings_path(csv_dir)
     rows = _ur._rows(path)
@@ -109,7 +126,7 @@ def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*",
     setting = str(setting).strip()
     scope = str(chain_id).strip()
 
-    if setting in _GLOBAL_ONLY_SETTINGS and scope == "*":
+    if setting in _CONTROL_SETTINGS and scope == "*":
         kept = [r for r in rows if not (_tid(r) == tid and _setting_name(r) == setting)]
         kept.append({
             "telegram_id": tid,
