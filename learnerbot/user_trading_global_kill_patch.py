@@ -5,7 +5,16 @@ from __future__ import annotations
 Historical CSVs may contain duplicate ``*`` rows, legacy ``0``/blank aliases, or
 old real-chain rows. A user-level global OFF must always win, while an explicit
 per-chain OFF may still narrow an otherwise-global ON.
+
+All writes to ``user_trading_settings.csv`` are serialized inside this process.
+Atomic ``os.replace`` protects readers from partial files, but without a lock two
+threads can both read the same old snapshot and then overwrite one another. That
+lost-update race can make a Telegram ON/OFF command appear successful and then
+immediately revert when another setting is written. The lock covers the complete
+read -> modify -> replace -> read-back verification sequence.
 """
+
+import threading
 
 from . import user_registry as _ur
 
@@ -18,6 +27,7 @@ _CONTROL_SETTINGS = _GLOBAL_BOOLEAN_KILL_SETTINGS | _GLOBAL_ONLY_SETTINGS
 
 _ORIGINAL_USER_SETTING = _ur.user_setting
 _ORIGINAL_SET_USER_SETTING = _ur.set_user_setting
+_WRITE_LOCK = threading.RLock()
 
 
 def _setting_name(row: dict) -> str:
@@ -112,8 +122,29 @@ def _dedupe_scoped_write(rows, tid: str, scope: str, setting: str, value, descri
     return kept
 
 
+def _verify_persisted(path, tid: str, scope: str, setting: str, expected) -> None:
+    """Fail the command instead of claiming success when persistence disagrees."""
+    rows = _ur._rows(path)
+    matches = [
+        r for r in rows
+        if _tid(r) == tid and _scope(r) == scope and _setting_name(r) == setting
+    ]
+    if not matches or str(matches[-1].get("value")) != str(expected):
+        raise RuntimeError(f"user trading setting did not persist: {setting}@{scope}")
+
+    # Canonical control writes must leave one authoritative row only. This also
+    # proves stale 0/blank/real-chain aliases were removed before Telegram sends
+    # a success confirmation.
+    if setting in _CONTROL_SETTINGS and scope == "*":
+        all_control_rows = [
+            r for r in rows if _tid(r) == tid and _setting_name(r) == setting
+        ]
+        if len(all_control_rows) != 1 or _scope(all_control_rows[0]) != "*":
+            raise RuntimeError(f"user trading control is not canonical: {setting}")
+
+
 def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*", description=""):
-    """Make canonical global writes idempotent and remove stale control rows.
+    """Serialize, canonicalise and verify user setting writes.
 
     Telegram ``/autotrade`` and ``/live`` write the canonical ``*`` scope. Such
     a write replaces all obsolete aliases and chain rows for the same control,
@@ -121,25 +152,29 @@ def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*",
     writes remain compatible and are deduplicated only within their own scope.
     """
     path = _ur.user_settings_path(csv_dir)
-    rows = _ur._rows(path)
     tid = str(telegram_id).strip()
     setting = str(setting).strip()
     scope = str(chain_id).strip()
 
-    if setting in _CONTROL_SETTINGS and scope == "*":
-        kept = [r for r in rows if not (_tid(r) == tid and _setting_name(r) == setting)]
-        kept.append({
-            "telegram_id": tid,
-            "chain_id": "*",
-            "setting": setting,
-            "value": str(value),
-            "description": description,
-        })
-        _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
-        return
+    with _WRITE_LOCK:
+        rows = _ur._rows(path)
 
-    kept = _dedupe_scoped_write(rows, tid, scope, setting, value, description)
-    _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
+        if setting in _CONTROL_SETTINGS and scope == "*":
+            kept = [r for r in rows if not (_tid(r) == tid and _setting_name(r) == setting)]
+            kept.append({
+                "telegram_id": tid,
+                "chain_id": "*",
+                "setting": setting,
+                "value": str(value),
+                "description": description,
+            })
+            _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
+            _verify_persisted(path, tid, "*", setting, value)
+            return
+
+        kept = _dedupe_scoped_write(rows, tid, scope, setting, value, description)
+        _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
+        _verify_persisted(path, tid, scope, setting, value)
 
 
 def install():
