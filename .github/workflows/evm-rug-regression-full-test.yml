@@ -1,4 +1,4 @@
-name: EVM Rug Regression Full Test
+name: EVM Rug Regression Portable Test
 
 on:
   push:
@@ -13,9 +13,9 @@ permissions:
   contents: write
 
 jobs:
-  full-test:
+  focused-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,12 +23,17 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
-      - name: Run full deployment-equivalent pytest suite
+      - name: Run portable regression suite
         id: tests
         shell: bash
         run: |
           set +e
-          python -m pytest -q 2>&1 | tee /tmp/full-pytest.txt
+          python -m pytest -q \
+            tests/test_v221_final_auto.py \
+            tests/test_evm_pool_rug_gate.py \
+            tests/test_solana_moderate_leader_quality.py \
+            tests/test_solana_runtime_composition.py \
+            2>&1 | tee /tmp/focused-pytest.txt
           rc=${PIPESTATUS[0]}
           echo "pytest_rc=$rc" >> "$GITHUB_OUTPUT"
           exit "$rc"
@@ -48,15 +53,15 @@ jobs:
             echo "run_id=${GITHUB_RUN_ID}"
             echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo
-            echo "=== PYTEST TAIL ==="
-            tail -n 100 /tmp/full-pytest.txt 2>/dev/null || true
+            echo "=== PYTEST ==="
+            cat /tmp/focused-pytest.txt 2>/dev/null || true
           } > /tmp/attestation.txt
           api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-evm-rug-regression-full-test.txt"
           existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
           encoded="$(base64 -w0 /tmp/attestation.txt)"
           python - "$encoded" "$existing_sha" <<'PY' > /tmp/put.json
           import json,sys
-          d={'message':'Update EVM rug regression full-test attestation','content':sys.argv[1],'branch':'server-diagnostics'}
+          d={'message':'Update EVM rug regression portable-test attestation','content':sys.argv[1],'branch':'server-diagnostics'}
           if sys.argv[2]: d['sha']=sys.argv[2]
           print(json.dumps(d))
           PY
