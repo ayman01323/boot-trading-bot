@@ -4,7 +4,9 @@ from __future__ import annotations
 
 This module is imported *last* by learnerbot.__main__, after the late Alchemy,
 recovery, leader-alignment, provenance and AI-runtime patches have composed.
-It is intentionally verification-only: it does not repair/rebind any hook.
+It is intentionally verification-only until all audited hooks pass; the explicit
+operator halt at the bottom then disables platform execution without changing
+wallet keys or deleting per-user preferences.
 """
 
 # Operator-facing health must reflect the same seven persistent workers that the
@@ -140,3 +142,93 @@ from . import solana_stuck_owner_warning_v2_patch  # noqa: E402,F401
 # all capital-moving runtime identities above have been verified, and it has no
 # trading/LIVE/capital/wallet/signing authority.
 from . import telegram_ai_target_score_patch  # noqa: E402,F401
+
+# ---------------------------------------------------------------------------
+# OWNER EMERGENCY HALT — 2026-08-24
+# ---------------------------------------------------------------------------
+# The protected GitHub runner currently has deploy/status/restart wrappers but no
+# service-stop wrapper. At the owner's explicit request to stop the bot, fail
+# closed at the platform execution layer instead of weakening sudo isolation.
+# This keeps the process available for status/Telegram diagnostics while making
+# all EVM and Solana LIVE execution gates false. Per-user preferences and wallet
+# material are deliberately left untouched so this can be reversed explicitly.
+from pathlib import Path as _Path  # noqa: E402
+from . import cli as _cli  # noqa: E402
+from .config import load_chains as _load_chains  # noqa: E402
+from .operator_control import audit as _audit, set_kv as _set_kv, set_scoped_default as _set_scoped_default  # noqa: E402
+
+_PREV_APP_OWNER_HALT = _cli._app
+
+
+def _apply_owner_emergency_halt(app):
+    csv_dir = _Path(app.csv_dir)
+
+    # EVM AUTO is globally blocked even if every user remains individually armed.
+    auto_path = csv_dir / "auto_trading_settings.csv"
+    _set_scoped_default(
+        auto_path,
+        "auto_trading_enabled",
+        "false",
+        "OWNER EMERGENCY HALT 2026-08-24 — global AUTO execution disabled",
+    )
+
+    # EVM LIVE is disabled at wildcard and every configured chain scope so a
+    # chain-specific true row cannot override the halt.
+    live_path = csv_dir / "live_trading_settings.csv"
+    _set_scoped_default(
+        live_path,
+        "trading_enabled",
+        "false",
+        "OWNER EMERGENCY HALT 2026-08-24 — global LIVE execution disabled",
+    )
+    for chain in _load_chains(app, enabled_only=False):
+        _set_kv(
+            live_path,
+            "trading_enabled",
+            "false",
+            "OWNER EMERGENCY HALT 2026-08-24 — chain LIVE execution disabled",
+            chain_id=int(chain.chain_id),
+        )
+
+    # Stop SiBot's shared execution/research gate without deleting user choices.
+    _set_scoped_default(
+        csv_dir / "sibot_settings.csv",
+        "platform_enabled",
+        "false",
+        "OWNER EMERGENCY HALT 2026-08-24 — SiBot platform disabled",
+    )
+
+    # Solana LIVE effective state includes the shared Solana enabled flag, so
+    # forcing it false blocks all Solana execution regardless of per-user LIVE.
+    _set_kv(
+        csv_dir / "solana_settings.csv",
+        "enabled",
+        "false",
+        "OWNER EMERGENCY HALT 2026-08-24 — Solana platform disabled",
+    )
+
+    try:
+        _audit(
+            csv_dir,
+            "OWNER",
+            "OWNER_EMERGENCY_HALT",
+            "platform_execution",
+            "enabled",
+            "disabled",
+            "EVM AUTO/LIVE + SiBot platform + Solana platform disabled; user settings preserved",
+        )
+    except Exception:
+        pass
+    print(
+        "[owner-emergency-halt] active=true evm_auto=false evm_live=false "
+        "sibot_platform=false solana_platform=false user_settings_preserved=true"
+    )
+    return app
+
+
+def _app_with_owner_emergency_halt():
+    app = _PREV_APP_OWNER_HALT()
+    return _apply_owner_emergency_halt(app)
+
+
+_cli._app = _app_with_owner_emergency_halt
