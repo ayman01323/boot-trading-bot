@@ -4,6 +4,7 @@ import os
 
 from . import ai_cost_router as _cost
 from . import ai_council_http_patch as _base
+from . import provider_current_api_patch as _provider_current_api_patch  # noqa: F401
 from . import ai_runtime_secret_fallback_patch as _runtime_secret_fallback  # noqa: F401
 from . import grok_provider as _grok  # installs raw xAI-compatible routing first
 from . import kimi_provider as _kimi  # installs raw Kimi/Moonshot routing after Grok
