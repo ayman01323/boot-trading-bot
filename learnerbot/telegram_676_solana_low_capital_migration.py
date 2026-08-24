@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -15,7 +16,14 @@ from .user_registry import set_user_setting
 
 TARGET_TELEGRAM_ID = "6760898817"
 MARKER = ".telegram_6760898817_solana_low_capital_20260818_v1"
+LEGACY_REAPPLY_ENV = "ALLOW_LEGACY_676_SOLANA_LOW_CAPITAL_MIGRATION"
 _PREV_APP = _cli._app
+
+
+def _bool(v, default=False):
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
 def _apply(app) -> None:
@@ -62,6 +70,15 @@ def _apply(app) -> None:
 
 def _app_with_676_low_capital():
     app = _PREV_APP()
+    marker = Path(app.data_dir) / MARKER
+    if marker.exists():
+        return app
+    if not _bool(os.getenv(LEGACY_REAPPLY_ENV, "false"), False):
+        print(
+            "[telegram-676-solana-low-capital] historical migration retired; "
+            "marker_missing=true automatic_reapply=false settings_written=false"
+        )
+        return app
     try:
         _apply(app)
     except Exception as exc:
