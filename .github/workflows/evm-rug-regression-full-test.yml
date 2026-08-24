@@ -1,0 +1,63 @@
+name: EVM Rug Regression Full Test
+
+on:
+  push:
+    branches:
+      - gpt/fix-evm-rug-test-fixture-20260824
+    paths:
+      - 'tests/test_v221_final_auto.py'
+      - '.github/workflows/evm-rug-regression-full-test.yml'
+      - '.github/evm-rug-regression-full-test.trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  full-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+      - name: Run full deployment-equivalent pytest suite
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          python -m pytest -q 2>&1 | tee /tmp/full-pytest.txt
+          rc=${PIPESTATUS[0]}
+          echo "pytest_rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+      - name: Publish attestation
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTEST_RC: ${{ steps.tests.outputs.pytest_rc }}
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            echo "source_sha=${GITHUB_SHA}"
+            echo "test_outcome=${TEST_OUTCOME:-unknown}"
+            echo "pytest_rc=${PYTEST_RC:-unknown}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo
+            echo "=== PYTEST TAIL ==="
+            tail -n 100 /tmp/full-pytest.txt 2>/dev/null || true
+          } > /tmp/attestation.txt
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-evm-rug-regression-full-test.txt"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/attestation.txt)"
+          python - "$encoded" "$existing_sha" <<'PY' > /tmp/put.json
+          import json,sys
+          d={'message':'Update EVM rug regression full-test attestation','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: d['sha']=sys.argv[2]
+          print(json.dumps(d))
+          PY
+          gh api -X PUT "$api" --input /tmp/put.json >/dev/null
