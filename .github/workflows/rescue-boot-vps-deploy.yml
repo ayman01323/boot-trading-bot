@@ -112,7 +112,7 @@ jobs:
           echo "latest_lookup_rc=${latest_rc}" >> "$out"
           dispatch_rc=99
           if [[ $latest_rc -eq 0 && "$latest" =~ ^[0-9a-f]{40}$ ]]; then
-            gh workflow run server-ops.yml --ref main -f operation=deploy_main >>"$out" 2>&1
+            gh workflow run server-ops.yml --repo "$GITHUB_REPOSITORY" --ref main -f operation=deploy_main >>"$out" 2>&1
             dispatch_rc=$?
           fi
           echo "dispatch_rc=${dispatch_rc}" >> "$out"
