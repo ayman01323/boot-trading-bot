@@ -1,0 +1,72 @@
+name: SiBot Settings Source CI
+
+on:
+  push:
+    branches: [main, 'agent/**']
+    paths:
+      - 'learnerbot/telegram_sibot_settings_source_patch.py'
+      - 'learnerbot/telegram_676_full_live_migration.py'
+      - 'learnerbot/telegram_ai_target_score_patch.py'
+      - 'tests/test_sibot_settings_source.py'
+      - 'tests/test_aug18_full_live_migration_retired.py'
+      - '.github/workflows/sibot-settings-source-ci.yml'
+  pull_request:
+    paths:
+      - 'learnerbot/telegram_sibot_settings_source_patch.py'
+      - 'learnerbot/telegram_676_full_live_migration.py'
+      - 'learnerbot/telegram_ai_target_score_patch.py'
+      - 'tests/test_sibot_settings_source.py'
+      - 'tests/test_aug18_full_live_migration_retired.py'
+      - '.github/workflows/sibot-settings-source-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    env:
+      CI_VENV: /tmp/boot-sibot-settings-source-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare isolated Python environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$CI_VENV"
+          python3 -m venv "$CI_VENV"
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+
+      - name: Compile changed Python
+        shell: bash
+        run: |
+          "$CI_VENV/bin/python" -m py_compile \
+            learnerbot/telegram_sibot_settings_source_patch.py \
+            learnerbot/telegram_676_full_live_migration.py \
+            learnerbot/telegram_ai_target_score_patch.py \
+            tests/test_sibot_settings_source.py \
+            tests/test_aug18_full_live_migration_retired.py
+
+      - name: Run settings isolation and migration regression tests
+        shell: bash
+        run: |
+          "$CI_VENV/bin/python" -m pytest -x -vv \
+            tests/test_sibot_settings_source.py \
+            tests/test_aug18_full_live_migration_retired.py \
+            tests/test_telegram_roles_and_command_scope.py \
+            tests/test_sibot_profit_guard.py
+
+      - name: Production import-order regression
+        shell: bash
+        run: "$CI_VENV/bin/python" -m pytest -x -vv tests/test_main_import_order.py
+
+      - name: Clean isolated Python environment
+        if: always()
+        run: rm -rf "$CI_VENV"
