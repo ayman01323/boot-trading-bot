@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from . import solana_positive_edge_entry_gate_patch as _edge_gate
 from . import solana_profit_guard_patch as _guard
+# Correct reconstructed leader drawdown to closed-position semantics before the
+# late leader-edge selector captures quality_metrics. Threshold values stay intact.
+from . import solana_position_drawdown_patch as _position_drawdown  # noqa: F401
 from . import solana_sibot as _sol
 
 # Solana leader-quality policy. The previous restore layer was intentionally strict
