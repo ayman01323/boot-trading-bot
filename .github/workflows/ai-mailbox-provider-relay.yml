@@ -20,7 +20,7 @@ on:
         required: false
         default: all
         type: choice
-        options: [all, deepseek, gemini, grok, copilot]
+        options: [all, deepseek, gemini, grok, kimi, copilot]
 
 permissions:
   contents: write
@@ -42,7 +42,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        provider: [deepseek, gemini, grok, copilot]
+        provider: [deepseek, gemini, grok, kimi, copilot]
     env:
       RELAY_VENV: /tmp/strategy-factory-provider-${{ matrix.provider }}-${{ github.run_id }}
       PYTHONPATH: ${{ github.workspace }}
@@ -116,11 +116,14 @@ jobs:
           MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
           SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
+          DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-v4-flash' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.7-flash' }}
+          GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.5-flash-lite' }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           XAI_COUNCIL_MODEL: ${{ vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          KIMI_COUNCIL_MODEL: ${{ vars.KIMI_COUNCIL_MODEL || 'kimi-k2.6' }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           AI_COUNCIL_RUNTIME_ENV: /tmp/strategy-factory-no-runtime.env
@@ -139,11 +142,11 @@ jobs:
           if [[ $rc -ne 0 || ! -s /tmp/strategy-factory-reply.md ]]; then
             {
               echo "${PROVIDER^^}_TO_GPT"
-              echo "in_reply_to: $MESSAGE_ID"
+              echo "in_reply_to: ${{ steps.mailbox.outputs.message_id }}"
               echo 'status: BLOCKED'
               echo "provider_return_code: $rc"
               echo
-              echo 'Provider could not complete this communication-only request.'
+              echo 'Provider relay could not produce a sanitised reply.'
             } > /tmp/strategy-factory-reply.md
           fi
           exit 0
@@ -152,14 +155,14 @@ jobs:
         if: steps.mailbox.outputs.pending == 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          PROVIDER: ${{ matrix.provider }}
+          SENDER: ${{ matrix.provider }}
           MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/provider_git_mailbox_bridge.py publish-live \
             --repo "$GITHUB_REPOSITORY" \
-            --provider "$PROVIDER" \
+            --provider "$SENDER" \
             --request-id "$MESSAGE_ID" \
             --reply-file /tmp/strategy-factory-reply.md
 
