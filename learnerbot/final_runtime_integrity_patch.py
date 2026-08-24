@@ -48,6 +48,10 @@ from . import transaction_audit_worker_patch as _audit_worker
 from . import trade_strategy_provenance_patch as _provenance
 from .basic_engine_v0 import main_patch as _basic_v0
 
+# Tighten PoolCheck only after the existing EVM/Solana gates and quote cache have
+# composed. This module can only reject entries; it never enables execution.
+from . import poolcheck_rug_hardening_patch as _poolcheck_hardening  # noqa: E402,F401
+
 
 def composition_checks() -> dict[str, bool]:
     """Return the exact final runtime identities that must remain authoritative."""
@@ -90,6 +94,27 @@ def composition_checks() -> dict[str, bool]:
         "evm_pool_rug_manual_buy": _evm_live.LiveTrader.buy is _evm_rug.buy_with_pool_rug_gate,
         "evm_pool_rug_v2_prebroadcast": _evm_live.LiveTrader._prebroadcast_cycle is _evm_rug.prebroadcast_cycle_with_pool_rug_gate,
         "evm_pool_rug_v3_prebroadcast": _evm_live.LiveTrader._prebroadcast_v3_cycle is _evm_rug.prebroadcast_v3_cycle_with_pool_rug_gate,
+        "poolcheck_evm_holder_concentration": (
+            _evm_rug.evaluate_goplus is _poolcheck_hardening.evaluate_goplus_with_concentration
+        ),
+        "poolcheck_evm_activity_telemetry": (
+            _evm_rug.evaluate_dexscreener is _poolcheck_hardening.evaluate_evm_dex_with_activity
+        ),
+        "poolcheck_evm_lp_concentration": (
+            _evm_rug.external_pool_rug_check
+            is _poolcheck_hardening.external_evm_pool_check_with_lp_concentration
+        ),
+        "poolcheck_evm_stress_exit": (
+            _evm_rug._manual_roundtrip_check
+            is _poolcheck_hardening.evm_roundtrip_with_stress_exit
+        ),
+        "poolcheck_solana_stress_exit": (
+            _preflight._PREV_VALIDATE
+            is _poolcheck_hardening.validate_solana_entry_with_stress_exit
+        ),
+        "poolcheck_solana_stress_cache_key": (
+            _preflight._key is _poolcheck_hardening.solana_preflight_key_with_stress
+        ),
         "evm_provenance_connect": _sibot.connect is _provenance._evm_connect_with_provenance,
         "solana_provenance_connect": _sol.connect is _provenance._sol_connect_with_provenance,
         "auto_provenance_append": _auto._append is _provenance._auto_append_with_provenance,
