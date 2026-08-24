@@ -12,39 +12,83 @@ permissions:
   contents: write
 
 jobs:
-  rescue:
+  probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     steps:
-      - name: Clear stale VPS queue and dispatch current main
+      - name: Publish rescue start marker
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          cat > /tmp/probe.txt <<EOF
+          target_sha=${GITHUB_SHA}
+          state=rescue_started
+          run_id=${GITHUB_RUN_ID}
+          utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          EOF
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-vps-rescue-probe.txt"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/probe.txt)"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/put.json
+          import json,sys
+          d={'message':'Update VPS rescue probe','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: d['sha']=sys.argv[2]
+          print(json.dumps(d))
+          PY
+          gh api -X PUT "$api" --input /tmp/put.json >/dev/null
+
+  rescue:
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Clear stale VPS queue, dispatch current main, publish result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
           out=/tmp/vps-rescue.txt
           : > "$out"
           echo "generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$out"
           echo "rescue_run_id=${GITHUB_RUN_ID}" >> "$out"
+          echo "trigger_sha=${GITHUB_SHA}" >> "$out"
 
-          for state in queued in_progress; do
-            gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
-              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
-                [[ -n "$run_id" ]] || continue
-                echo "cancel recovery run_id=${run_id} state=${state}" | tee -a "$out"
-                gh api --method POST -H 'Accept: application/vnd.github+json' \
-                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
-              done
+          cancel_runs() {
+            workflow="$1"; state="$2"; kind="$3"
+            ids="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>>"$out")"
+            query_rc=$?
+            if [[ $query_rc -ne 0 ]]; then
+              echo "query_failed workflow=${workflow} state=${state} rc=${query_rc}" >> "$out"
+              return 0
+            fi
+            while read -r run_id; do
+              [[ -n "$run_id" ]] || continue
+              echo "cancel ${kind} workflow=${workflow} state=${state} run_id=${run_id}" | tee -a "$out"
+              gh api --method POST -H 'Accept: application/vnd.github+json' \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>>"$out"
+              echo "cancel_rc=$? run_id=${run_id}" >> "$out"
+            done <<< "$ids"
+          }
+
+          # AI recovery is report-only and explicitly disposable when production
+          # needs the single boot-vps runner. It may be cancelled even in progress.
+          for state in requested waiting pending queued in_progress; do
+            cancel_runs selfhosted-five-agent-recovery.yml "$state" recovery
           done
 
-          # This old run has no live deploy step; its deploy job was already
-          # cancelled and only a queued post-deploy proof job remained.
+          # Known stale run: deployment job already cancelled; only proof work was left.
           echo "cancel proved_stale_run=32673081630" >> "$out"
           gh api --method POST -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/32673081630/cancel" >/dev/null 2>&1 || true
+            "repos/${GITHUB_REPOSITORY}/actions/runs/32673081630/cancel" >/dev/null 2>>"$out"
+          echo "proved_stale_cancel_rc=$?" >> "$out"
 
-          # Queued only: never cancel a deployment or diagnostic that has started.
+          # Never cancel an in-progress deployment/operation. Clear only non-running
+          # queue states, including GitHub's 'pending' state that the old rescue missed.
           for workflow in \
             deploy-vps.yml \
             final-deploy-v2.yml \
@@ -56,21 +100,23 @@ jobs:
             claude-vps-controlled-ops.yml \
             learnerbot-recovery-restart.yml \
             sibot-history-depth-ci.yml; do
-            gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
-              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
-                [[ -n "$run_id" ]] || continue
-                echo "cancel queued workflow=${workflow} run_id=${run_id}" | tee -a "$out"
-                gh api --method POST -H 'Accept: application/vnd.github+json' \
-                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
-              done
+            for state in requested waiting pending queued; do
+              cancel_runs "$workflow" "$state" stale_queue
+            done
           done
 
           sleep 5
-          latest="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha' 2>>"$out")"
+          latest_rc=$?
           echo "dispatch_target_sha=${latest}" | tee -a "$out"
-          gh workflow run server-ops.yml --ref main -f operation=deploy_main
-          echo "dispatch_requested=true" >> "$out"
+          echo "latest_lookup_rc=${latest_rc}" >> "$out"
+          dispatch_rc=99
+          if [[ $latest_rc -eq 0 && "$latest" =~ ^[0-9a-f]{40}$ ]]; then
+            gh workflow run server-ops.yml --ref main -f operation=deploy_main >>"$out" 2>&1
+            dispatch_rc=$?
+          fi
+          echo "dispatch_rc=${dispatch_rc}" >> "$out"
+          echo "dispatch_requested=$([[ $dispatch_rc -eq 0 ]] && echo true || echo false)" >> "$out"
 
           api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-vps-rescue.txt"
           existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
@@ -81,5 +127,8 @@ jobs:
           if sys.argv[2]: d['sha']=sys.argv[2]
           print(json.dumps(d))
           PY
-          gh api -X PUT "$api" --input /tmp/rescue-put.json >/dev/null
+          gh api -X PUT "$api" --input /tmp/rescue-put.json >/dev/null 2>&1
+          publish_rc=$?
           cat "$out"
+          echo "publish_rc=${publish_rc}"
+          [[ $dispatch_rc -eq 0 && $publish_rc -eq 0 ]]
