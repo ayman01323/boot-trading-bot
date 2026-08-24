@@ -10,11 +10,16 @@ from . import telegram_sibot_patch as _tg
 from . import telegram_solana_live_patch as _sol_live_ui
 from . import telegram_ui as _ui
 from .operator_control import audit
-from .user_registry import all_users, require_user, set_user_setting, user_setting
+from .user_registry import all_users, get_user, require_user, set_user_setting, user_setting
 
 SOURCE_KEY = "sibot_settings_source"
 SOURCE_SELF = "SELF"
 SOURCE_PRIMARY_MASTER = "PRIMARY_MASTER"
+# Existing account-role migration identifies this as the platform's original/main
+# MASTER. Pinning it here avoids a CSV reorder ever promoting a later-added MASTER
+# into the inherited settings source. The first MASTER row remains a fallback only
+# for installations where this historical ID does not exist.
+ORIGINAL_MAIN_MASTER_ID = "5923828381"
 
 # Preserve the exact pre-hard-floor settings resolver. The hard-floor wrapper remains
 # the public/final _sibot.user_settings identity; only its inner source is changed.
@@ -26,13 +31,10 @@ _PREV_HANDLE_UPDATE = _ui.handle_update
 
 
 def primary_master_id(csv_dir):
-    """Return the original/first MASTER row in users.csv.
-
-    users.csv preserves account insertion order. The source is intentionally the
-    first MASTER even if another MASTER was added or activated later. This matches
-    the platform's original-master semantics and prevents a later MASTER from ever
-    becoming the inherited source by accident.
-    """
+    """Return the original MASTER, never a later-added MASTER when it exists."""
+    original = get_user(csv_dir, ORIGINAL_MAIN_MASTER_ID)
+    if original and str(original.get("role") or "").strip().upper() == "MASTER":
+        return ORIGINAL_MAIN_MASTER_ID
     for row in all_users(csv_dir):
         if (
             str(row.get("role") or "").strip().upper() == "MASTER"
