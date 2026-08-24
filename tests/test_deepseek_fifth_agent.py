@@ -46,23 +46,12 @@ def test_deepseek_engineering_workflow_audits_cost_bandwidth_disk_without_mutati
         assert forbidden not in text
 
 
-def test_selected_master_collects_and_can_fallback_to_deepseek() -> None:
-    workflow = _text(".github/workflows/selected-ai-master.yml")
-    runner = _text("scripts/resilient_selected_master_v2.py")
-    assert '"DeepSeek Fifth Strategy Agent"' in workflow
-    assert '"DeepSeek Fifth Engineering Agent"' in workflow
-    assert '"Grok Sixth Strategy Agent"' in workflow
-    assert '"Grok Sixth Engineering Agent"' in workflow
-    assert "gpt gemini claude deepseek grok" in workflow
-    assert "secrets.DEEPSEEK_API_KEY" in workflow
-    assert "secrets.XAI_API_KEY" in workflow
-    assert "'auto','gpt','claude','gemini','deepseek','grok','copilot'" in workflow
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in runner
-    assert 'DEEPSEEK_API_KEY' in runner
-    assert 'ANTHROPIC_AUTH_TOKEN' in runner
-    assert 'env.pop("ANTHROPIC_API_KEY", None)' in runner
-    assert 'XAI_API_KEY' in runner
-    assert 'failed_agent_count"] = max(0, 6 - len(valid_reports))' in runner
+def test_central_factory_collects_deepseek_with_all_other_agents_and_gpt_master() -> None:
+    central = _text("scripts/central_report_scheduler.py")
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in central
+    assert "ops._panel_for = lambda package: list(AGENTS)" in central
+    assert 'out["master"] = "gpt"' in central
+    assert 'NON_GPT_REVIEWERS' in central
 
 
 def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
@@ -77,7 +66,6 @@ def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
     assert "five_agent_reports_complete" in ui
     assert "Blocked: Authentication" in ui
     assert "Progress:" in ui and "of 5 completed" in ui
-    # Sanitised control never carries provider credentials.
     assert "DEEPSEEK_API_KEY" not in control
 
 
