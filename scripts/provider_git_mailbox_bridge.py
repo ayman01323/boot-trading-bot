@@ -15,7 +15,7 @@ from scripts.claude_git_mailbox_bridge import (
     _token_from_env,
 )
 
-ALLOWED_PROVIDERS = ("deepseek", "gemini", "grok", "copilot")
+ALLOWED_PROVIDERS = ("deepseek", "gemini", "grok", "kimi", "copilot")
 
 
 def _provider(value: str) -> str:
