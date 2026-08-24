@@ -3,11 +3,11 @@ from __future__ import annotations
 """Harden user-level trading switches as true global controls.
 
 Historical CSVs may contain duplicate ``*`` rows, legacy ``0``/blank aliases, or
-old real-chain rows for settings that are now user-level master switches.  Those
-rows must never be able to keep signing/AUTO enabled after the user sends an OFF
-command.
+old real-chain rows for settings that are now user-level master switches. Those
+rows must never be able to keep signing/AUTO enabled after the user sends a
+global OFF command.
 
-Only the three control-plane settings below are global-only.  Position sizing,
+Only the three control-plane settings below are global-only. Position sizing,
 profit thresholds, gas settings and other numerical policy remain chain-
 overridable through the normal user_registry resolver.
 """
@@ -40,7 +40,7 @@ def user_setting(csv_dir, telegram_id, chain_id, setting: str, default=None):
     """Resolve global control switches without any real-chain override.
 
     For global-only controls, legacy blank/0 rows are fallback values and the
-    canonical ``*`` row wins.  A real chain row is intentionally ignored so a
+    canonical ``*`` row wins. A real chain row is intentionally ignored so a
     stale chain-specific ``true`` can never defeat global ``/autotrade off`` or
     ``/live off``.
     """
@@ -66,32 +66,7 @@ def user_setting(csv_dir, telegram_id, chain_id, setting: str, default=None):
     return value
 
 
-def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*", description=""):
-    """Write one canonical row for global controls and dedupe exact rows.
-
-    Global-only controls are normalised to one ``*`` row and all obsolete
-    aliases/chain rows for the same user+setting are removed.  This makes ON/OFF
-    idempotent and ensures the user-level OFF command is a hard kill across every
-    EVM chain.
-    """
-    path = _ur.user_settings_path(csv_dir)
-    rows = _ur._rows(path)
-    tid = str(telegram_id).strip()
-    setting = str(setting).strip()
-
-    if setting in _GLOBAL_ONLY_SETTINGS:
-        kept = [r for r in rows if not (_tid(r) == tid and _setting_name(r) == setting)]
-        kept.append({
-            "telegram_id": tid,
-            "chain_id": "*",
-            "setting": setting,
-            "value": str(value),
-            "description": description,
-        })
-        _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
-        return
-
-    scope = str(chain_id)
+def _dedupe_scoped_write(rows, tid: str, scope: str, setting: str, value, description: str):
     matches = []
     kept = []
     for row in rows:
@@ -114,6 +89,39 @@ def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*",
     if description:
         row["description"] = description
     kept.append(row)
+    return kept
+
+
+def set_user_setting(csv_dir, telegram_id, setting: str, value, *, chain_id="*", description=""):
+    """Make canonical global writes idempotent while retaining legacy writes.
+
+    A canonical ``*`` write for a global-only control removes every obsolete
+    alias/chain row for that user+setting and leaves exactly one authoritative
+    row. That is the path used by Telegram ``/autotrade`` and ``/live``.
+
+    Explicit legacy ``0``/blank or real-chain writes are retained only for
+    compatibility. They are deduplicated at their own scope, but the resolver
+    will not let them override an existing canonical ``*`` control.
+    """
+    path = _ur.user_settings_path(csv_dir)
+    rows = _ur._rows(path)
+    tid = str(telegram_id).strip()
+    setting = str(setting).strip()
+    scope = str(chain_id).strip()
+
+    if setting in _GLOBAL_ONLY_SETTINGS and scope == "*":
+        kept = [r for r in rows if not (_tid(r) == tid and _setting_name(r) == setting)]
+        kept.append({
+            "telegram_id": tid,
+            "chain_id": "*",
+            "setting": setting,
+            "value": str(value),
+            "description": description,
+        })
+        _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
+        return
+
+    kept = _dedupe_scoped_write(rows, tid, scope, setting, value, description)
     _ur._atomic_write(path, kept, _ur.USER_SETTING_HEADERS)
 
 
