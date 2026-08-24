@@ -17,7 +17,11 @@ def _module():
 def test_status_parser_fails_closed():
     mod = _module()
     assert mod._status_ok("service active (running)") is True
+    assert mod._status_ok("Active: active (running) since Mon 2026-08-24") is True
     assert mod._status_ok("service inactive (dead)") is False
+    assert mod._status_ok("Active: activating (start)") is False
+    assert mod._status_ok("Active: deactivating (stop-sigterm)") is False
+    assert mod._status_ok("Unit learnerbot.service could not be found.") is False
     assert mod._status_ok("FAILED") is False
     assert mod._status_ok("") is False
 
