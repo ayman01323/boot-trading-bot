@@ -7,6 +7,10 @@ on:
       - 'scripts/urgent_strategy_factory_review.py'
       - '.github/workflows/urgent-strategy-factory-review.yml'
       - 'tests/test_urgent_strategy_factory_review.py'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/urgent-strategy-factory-trigger/**'
   schedule:
     - cron: '5 * * * *'
   workflow_dispatch:
@@ -22,11 +26,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: urgent-strategy-factory-review
+  group: urgent-strategy-factory-review-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   review:
+    if: github.event_name != 'pull_request' || github.head_ref == 'agent/force-urgent-strategy-review-now'
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 45
     env:
@@ -46,7 +51,7 @@ jobs:
           set -euo pipefail
           if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
             mode="${INPUT_MODE:-force}"
-          elif [[ "$EVENT_NAME" == push ]]; then
+          elif [[ "$EVENT_NAME" == push || "$EVENT_NAME" == pull_request ]]; then
             mode=force
           else
             mode=watch
