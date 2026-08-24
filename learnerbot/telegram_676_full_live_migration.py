@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -9,7 +10,14 @@ from .user_registry import get_user, join_user, set_user_setting, update_user
 
 TARGET_TELEGRAM_ID = "6760898817"
 MARKER = ".telegram_6760898817_full_live_20260818_v1"
+LEGACY_REAPPLY_ENV = "ALLOW_LEGACY_676_FULL_LIVE_MIGRATION"
 _PREV_APP = _cli._app
+
+
+def _bool(v, default=False):
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
 def _set(app, setting: str, value: str, *, chain_id="*", description="") -> None:
@@ -33,8 +41,11 @@ def _arm_full_live(app) -> None:
         join_user(app.csv_dir, TARGET_TELEGRAM_ID, "MASTER")
         row = get_user(app.csv_dir, TARGET_TELEGRAM_ID)
 
-    # This change is deliberately scoped to this one Telegram account. It does
-    # not alter the platform-wide emergency AUTO/LIVE gates or any other user.
+    # Historical one-shot owner request from 2026-08-18. This helper remains for
+    # explicit recovery/testing only; normal startup no longer replays it when a
+    # marker is missing after a restore, image rebuild or data-directory change.
+    # The change is deliberately scoped to this one Telegram account and never
+    # alters platform-wide emergency AUTO/LIVE gates or any other user.
     updates = {
         "role": "MASTER",
         "status": "ACTIVE",
@@ -48,8 +59,6 @@ def _arm_full_live(app) -> None:
         updates["fee_plan_id"] = "MASTER"
     update_user(app.csv_dir, TARGET_TELEGRAM_ID, **updates)
 
-    # Global account defaults. ARMED is required by the direct AUTO executor;
-    # SiBot has its own enable/auto switches.
     global_settings = {
         "auto_trading_enabled": ("true", "User automatic execution enabled"),
         "live_trading_enabled": ("true", "User real-money signing enabled"),
@@ -60,10 +69,8 @@ def _arm_full_live(app) -> None:
     for setting, (value, description) in global_settings.items():
         _set(app, setting, value, chain_id="*", description=description)
 
-    # Existing chain-specific OFF rows override global settings. Explicitly arm
-    # every configured EVM chain so stale per-chain overrides cannot keep this
-    # account in SHADOW/OFF. Platform gates, route approval, simulation, profit,
-    # gas, cooldown, capital and signing checks remain mandatory at execution.
+    # Existing chain-specific OFF rows override wildcard rows. Explicitly arming
+    # every configured EVM chain was part of the historical one-shot request.
     evm_chain_ids = []
     for chain in load_chains(app, enabled_only=False):
         if str(getattr(chain, "type", "EVM") or "EVM").upper() != "EVM":
@@ -76,9 +83,6 @@ def _arm_full_live(app) -> None:
         _set(app, "sibot_enabled", "true", chain_id=cid, description="SiBot monitoring enabled")
         _set(app, "sibot_auto_trade_enabled", "true", chain_id=cid, description="SiBot real-money copy execution enabled")
 
-    # Solana LIVE is a separate per-user gate. This authorises real execution,
-    # while the executor still requires a signing-ready wallet, sufficient SOL,
-    # reserve, qualifying leader signal and successful transaction simulation.
     _set(
         app,
         "solana_live_enabled",
@@ -115,6 +119,15 @@ def _arm_full_live(app) -> None:
 
 def _app_with_676_full_live():
     app = _PREV_APP()
+    marker = Path(app.data_dir) / MARKER
+    if marker.exists():
+        return app
+    if not _bool(os.getenv(LEGACY_REAPPLY_ENV, "false"), False):
+        print(
+            "[telegram-full-live] historical migration retired; "
+            "marker_missing=true automatic_reapply=false settings_written=false"
+        )
+        return app
     try:
         _arm_full_live(app)
     except Exception as exc:
