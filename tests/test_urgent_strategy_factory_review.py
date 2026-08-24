@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from scripts import urgent_strategy_factory_review as urgent
 
@@ -81,3 +82,13 @@ def test_bridge_evidence_uses_sanitized_snapshots(monkeypatch, tmp_path: Path):
     assert all(evidence["production_bridge_freshness"][name]["available"] for name in paths)
     assert evidence["strategies_not_in_real_money_validation"] == list(urgent.TARGET_STRATEGIES)
     assert evidence["known_architecture_boundaries"]["live_safety_bypass_allowed"] is False
+
+
+def test_runner_review_storage_is_writable_and_separate_from_readonly_bridges(monkeypatch, tmp_path: Path):
+    review_root = tmp_path / "review-state"
+    monkeypatch.setattr(urgent, "RUNNER_REVIEW_ROOT", review_root)
+    app = urgent._runner_app(SimpleNamespace(root=tmp_path))
+
+    assert review_root.is_dir()
+    assert Path(app.data_dir) == review_root
+    assert Path(app.csv_dir) == urgent.BRIDGE_ROOT
