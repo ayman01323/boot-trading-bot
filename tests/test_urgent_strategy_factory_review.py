@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from scripts import urgent_strategy_factory_review as urgent
 
 
@@ -53,3 +56,28 @@ def test_target_strategy_set_is_complete():
         "Learned Route Replication",
         "Forecasted Positive Net Edge",
     }
+
+
+def test_bridge_target_rows_keep_all_strategies_shadow():
+    rows = urgent._bridge_target_rows()
+    assert [row["name"] for row in rows] == list(urgent.TARGET_STRATEGIES)
+    assert all(row["status"] == "SHADOW" for row in rows)
+    assert all(row["metrics"]["trades"] is None for row in rows)
+
+
+def test_bridge_evidence_uses_sanitized_snapshots(monkeypatch, tmp_path: Path):
+    paths = {}
+    for index, name in enumerate(urgent.PRODUCTION_BRIDGES):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({"generated_epoch": 100 + index, "marker": name}), encoding="utf-8")
+        paths[name] = path
+    monkeypatch.setattr(urgent, "PRODUCTION_BRIDGES", paths)
+
+    evidence = urgent.build_bridge_evidence(now=200, operator_urgent=True)
+
+    assert evidence["evidence_mode"] == "SANITISED_PRODUCTION_BRIDGES"
+    assert evidence["operator_urgent_no_trade_report"] is True
+    assert set(evidence["production_bridges"]) == set(paths)
+    assert all(evidence["production_bridge_freshness"][name]["available"] for name in paths)
+    assert evidence["strategies_not_in_real_money_validation"] == list(urgent.TARGET_STRATEGIES)
+    assert evidence["known_architecture_boundaries"]["live_safety_bypass_allowed"] is False
