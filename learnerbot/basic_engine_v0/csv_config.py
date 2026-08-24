@@ -46,6 +46,9 @@ class EvmV2DryRunSettings:
     safety_buffer_native: Decimal
     max_price_impact_bps: int
     gas_limit_multiplier_bps: int
+    fallback_gas_units: int
+    deadline_seconds: int
+    reference_probe_divisor: int
 
 
 def load_evm_v2_dry_run_settings(app: AppSettings, chain_slug: str) -> EvmV2DryRunSettings:
@@ -92,6 +95,9 @@ def load_evm_v2_dry_run_settings(app: AppSettings, chain_slug: str) -> EvmV2DryR
     safety_buffer = _decimal(scoped.get("safety_buffer_native"), "0", "safety_buffer_native")
     max_impact = _int(scoped.get("max_price_impact_bps"), 500, "max_price_impact_bps")
     gas_mult = _int(scoped.get("gas_limit_multiplier_bps"), 13000, "gas_limit_multiplier_bps")
+    fallback_gas = _int(scoped.get("fallback_gas_units"), 350000, "fallback_gas_units")
+    deadline = _int(scoped.get("deadline_seconds"), 120, "deadline_seconds")
+    probe_divisor = _int(scoped.get("reference_probe_divisor"), 1000, "reference_probe_divisor")
 
     if input_amount <= 0:
         raise BasicEngineCsvError("input_amount_native must be greater than zero")
@@ -101,6 +107,12 @@ def load_evm_v2_dry_run_settings(app: AppSettings, chain_slug: str) -> EvmV2DryR
         raise BasicEngineCsvError("max_price_impact_bps must be between 0 and 10000")
     if gas_mult < 10_000:
         raise BasicEngineCsvError("gas_limit_multiplier_bps must be at least 10000")
+    if fallback_gas <= 0:
+        raise BasicEngineCsvError("fallback_gas_units must be positive")
+    if not 30 <= deadline <= 900:
+        raise BasicEngineCsvError("deadline_seconds must be between 30 and 900")
+    if probe_divisor < 10:
+        raise BasicEngineCsvError("reference_probe_divisor must be at least 10")
 
     simulation_from = (scoped.get("simulation_from") or "").strip() or None
     return EvmV2DryRunSettings(
@@ -116,4 +128,7 @@ def load_evm_v2_dry_run_settings(app: AppSettings, chain_slug: str) -> EvmV2DryR
         safety_buffer_native=safety_buffer,
         max_price_impact_bps=max_impact,
         gas_limit_multiplier_bps=gas_mult,
+        fallback_gas_units=fallback_gas,
+        deadline_seconds=deadline,
+        reference_probe_divisor=probe_divisor,
     )
