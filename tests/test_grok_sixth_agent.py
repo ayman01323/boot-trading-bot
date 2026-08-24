@@ -17,8 +17,6 @@ def test_grok_provider_remains_in_council_and_under_kimi_chain() -> None:
     kimi_provider.install()
     assert "grok" in council.PROVIDERS
     assert "grok" in council.LEADERS
-    # The final public hook remains budget-gated. Kimi is the newest adapter and
-    # delegates every non-Kimi request to the pre-existing Grok-aware adapter.
     assert council.call_provider is cost_provider.call_provider
     assert cost_provider._ORIGINAL_CALL_PROVIDER is kimi_provider.call_provider
     assert kimi_provider._BASE_HTTP_CALL is grok_provider.call_provider
@@ -100,7 +98,7 @@ def test_ai_bus_workflow_passes_xai_secret_and_reports_grok() -> None:
     assert "GROK" in workflow
 
 
-def test_grok_scheduled_reviewers_are_read_only_and_sandboxed() -> None:
+def test_grok_provider_workers_are_read_only_and_sandboxed() -> None:
     for name in ("grok-sixth-strategy-agent.yml", "grok-sixth-engineering-agent.yml"):
         body = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
         assert "@xai-official/grok@latest" in body
@@ -113,16 +111,11 @@ def test_grok_scheduled_reviewers_are_read_only_and_sandboxed() -> None:
         assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in body
 
 
-def test_selected_master_collects_and_can_call_grok() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "selected-ai-master.yml").read_text(encoding="utf-8")
-    runner = (ROOT / "scripts" / "resilient_selected_master_v2.py").read_text(encoding="utf-8")
-    assert '"Grok Sixth Strategy Agent"' in workflow
-    assert '"Grok Sixth Engineering Agent"' in workflow
-    assert "for provider in gpt gemini claude deepseek grok" in workflow
-    assert "XAI_MASTER_MODEL" in workflow
-    assert '"grok", "copilot"' in runner
-    assert 'provider == "grok"' in runner
-    assert "max(0, 6 - len(valid_reports))" in runner
+def test_central_factory_collects_and_can_call_grok() -> None:
+    central = (ROOT / "scripts" / "central_report_scheduler.py").read_text(encoding="utf-8")
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in central
+    assert "ops._panel_for = lambda package: list(AGENTS)" in central
+    assert 'out["master"] = "gpt"' in central
 
 
 def test_grok_is_present_in_persistent_strategy_factory_runtime() -> None:
@@ -143,12 +136,14 @@ def test_grok_is_wired_into_health_strategy_and_engineering_surfaces() -> None:
     assert "strategy_status_six_agent" in patch
 
 
-def test_hourly_provider_preflight_checks_xai_grok() -> None:
+def test_four_hour_provider_preflight_checks_grok_without_model_inference() -> None:
     workflow = (ROOT / ".github" / "workflows" / "ai-provider-preflight.yml").read_text(encoding="utf-8")
+    assert "cron: '11 */4 * * *'" in workflow
     assert "XAI_API_KEY: ${{ secrets.XAI_API_KEY }}" in workflow
-    assert "check_xai()" in workflow
+    assert "check_grok()" in workflow
     assert "https://api.x.ai/v1/models" in workflow
-    assert "'xai':one('xai')" in workflow
+    assert "'grok':one('xai')" in workflow
+    assert "'paid_inference_requested':False" in workflow
 
 
 def test_seven_agent_live_diagnostic_probes_grok_kimi_and_all_other_agents() -> None:
