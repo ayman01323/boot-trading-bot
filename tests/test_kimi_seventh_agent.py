@@ -14,6 +14,8 @@ def test_kimi_uses_bounded_openai_compatible_api(monkeypatch) -> None:
     seen = {}
 
     def fake_http(url, *, headers, payload=None, method=None, timeout=90):
+        if url.endswith("/models"):
+            return 200, {"data": [{"id": "kimi-k2.6"}]}, "", {}
         seen["url"] = url
         seen["headers"] = headers
         seen["payload"] = payload
@@ -37,6 +39,8 @@ def test_kimi_accepts_moonshot_key_and_runtime_overrides(monkeypatch) -> None:
     seen = {}
 
     def fake_http(url, *, headers, payload=None, method=None, timeout=90):
+        if url.endswith("/models"):
+            return 200, {"data": [{"id": "kimi-k3-test"}]}, "", {}
         seen["url"] = url
         seen["payload"] = payload
         return 200, {"choices": [{"message": {"content": "ok"}}]}, "", {}
@@ -54,6 +58,25 @@ def test_kimi_accepts_moonshot_key_and_runtime_overrides(monkeypatch) -> None:
     assert seen["url"] == "https://example.invalid/v1/chat/completions"
     assert seen["payload"]["model"] == "kimi-k3-test"
     assert "thinking" not in seen["payload"]
+
+
+def test_kimi_discovers_available_k2_model_when_configured_model_is_stale(monkeypatch) -> None:
+    monkeypatch.setattr(
+        kimi_provider._http,
+        "_http_json",
+        lambda *a, **k: (
+            200,
+            {"data": [{"id": "kimi-k2.6-202608"}, {"id": "moonshot-v1"}]},
+            "",
+            {},
+        ),
+    )
+    model, error = kimi_provider._discover_kimi_model(
+        "key",
+        {"KIMI_COUNCIL_MODEL": "kimi-stale"},
+    )
+    assert model == "kimi-k2.6-202608"
+    assert error == ""
 
 
 def test_kimi_missing_key_is_explicit() -> None:
