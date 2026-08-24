@@ -27,3 +27,7 @@ try:
 except Exception:
     pass
 sys.excepthook = _startup_excepthook
+
+# Safety-critical compatibility layer: user LIVE/AUTOTRADE/mode are global
+# master controls and must not be defeated by stale per-chain CSV rows.
+from . import user_trading_global_kill_patch as _user_trading_global_kill_patch  # noqa: E402,F401
