@@ -15,9 +15,14 @@ def test_central_factory_is_seven_agent_and_includes_kimi() -> None:
 def test_kimi_is_available_through_persistent_shared_bus() -> None:
     runtime = (ROOT / "learnerbot" / "ai_agent_ws_runtime_patch.py").read_text(encoding="utf-8")
     worker = (ROOT / "scripts" / "ai_agent_ws_worker.py").read_text(encoding="utf-8")
+    provider = (ROOT / "learnerbot" / "kimi_provider.py").read_text(encoding="utf-8")
     assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in runtime
     assert '"kimi"' in worker
-    assert "KIMI_API_KEY" in worker or "MOONSHOT_API_KEY" in worker
+    assert "from learnerbot.ai_cost_provider_patch import call_provider" in worker
+    # Kimi/Moonshot credentials are intentionally owned by the provider adapter,
+    # leaving the shared WebSocket transport provider-agnostic.
+    assert "KIMI_API_KEY" in provider
+    assert "MOONSHOT_API_KEY" in provider
 
 
 def test_kimi_remains_advisory_not_a_protected_live_gate() -> None:
