@@ -34,12 +34,12 @@ def _dec(value, fallback: str) -> Decimal:
 def apply_profile(cfg: dict) -> dict:
     """Return a copy with only stricter-than-profile leader bars relaxed.
 
-    Existing operator settings that are already looser are preserved. Complete
-    history remains fail-closed by default and positive historical net profit is
-    still mandatory in the existing leader gate.
+    Existing operator settings that are already looser are preserved. The current
+    require_complete_history setting is deliberately preserved; production already
+    runs with it disabled after that gate was proven to eliminate the whole pool.
+    Positive historical net profit remains mandatory in the existing leader gate.
     """
     out = dict(cfg or {})
-    out["require_complete_history"] = "true"
     for key, (target_text, direction) in _PROFILE.items():
         target = Decimal(target_text)
         current = _dec(out.get(key), target_text)
@@ -53,6 +53,7 @@ def apply_profile(cfg: dict) -> dict:
                 out[key] = target_text
             elif key not in out:
                 out[key] = target_text
+    out["solana_strategy_profile"] = str(out.get("solana_strategy_profile") or "") + "+MODERATE_LEADER_BAR"
     return out
 
 
@@ -69,7 +70,7 @@ def install() -> None:
         "[solana-leader-bar] profile=moderate "
         "min_closed=5 min_win=50 min_pf=1.35 max_dd=30 "
         "recent_win=55 recent_pf=1.20 median=2.5 recent_median=2.0 "
-        "complete_history=true positive_net_required=true execution_safety_unchanged=true"
+        "history_complete=preserved positive_net_required=true execution_safety_unchanged=true"
     )
 
 
