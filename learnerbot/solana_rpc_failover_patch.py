@@ -22,6 +22,7 @@ _TRANSIENT_RPC_TEXT = (
     "connection aborted",
     "gateway timeout",
     "node is behind",
+    "node is unhealthy",
 )
 
 
@@ -118,7 +119,18 @@ def _post_one(url: str, method: str, params: list) -> Any:
             status_code=status,
         ) from None
 
-    error = data.get("error") if isinstance(data, dict) else "invalid JSON-RPC envelope"
+    # A 2xx response is not automatically a successful JSON-RPC response. Treat a
+    # malformed provider/proxy envelope as an endpoint fault so another configured
+    # provider gets a chance instead of silently returning None to the caller.
+    if not isinstance(data, dict):
+        raise SolanaRpcEndpointError(
+            method,
+            "invalid JSON-RPC envelope",
+            transient=True,
+            status_code=status,
+        )
+
+    error = data.get("error")
     if error:
         raise SolanaRpcEndpointError(
             method,
@@ -126,7 +138,15 @@ def _post_one(url: str, method: str, params: list) -> Any:
             transient=_rpc_error_is_transient(error),
             status_code=status,
         )
-    return data.get("result") if isinstance(data, dict) else None
+
+    if "result" not in data:
+        raise SolanaRpcEndpointError(
+            method,
+            "JSON-RPC response missing result",
+            transient=True,
+            status_code=status,
+        )
+    return data["result"]
 
 
 def rpc_failover(app, method: str, params: list):
