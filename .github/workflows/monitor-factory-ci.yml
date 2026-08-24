@@ -39,37 +39,39 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 15
     env:
-      PROD_PYTHON: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+      VENV: /tmp/monitor-factory-ci-${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify production-compatible Python environment
+      - name: Build focused Python 3.11 test environment
         shell: bash
         run: |
           set -euo pipefail
-          test -x "$PROD_PYTHON"
-          "$PROD_PYTHON" - <<'PY'
-          import sys
-          assert sys.version_info >= (3, 10), sys.version
-          import pytest, solders
+          command -v python3.11 >/dev/null 2>&1
+          rm -rf "$VENV"
+          python3.11 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q pytest python-dotenv websockets
+          "$VENV/bin/python" - <<'PY'
+          import sys, pytest, dotenv, websockets
+          assert sys.version_info >= (3, 11), sys.version
           print('python='+sys.version.split()[0])
           print('pytest='+pytest.__version__)
-          print('solders='+str(getattr(solders,'__version__','installed')))
+          print('websockets='+websockets.__version__)
           PY
 
       - name: Compile control-plane modules
         run: >-
-          "$PROD_PYTHON" -m py_compile
+          "$VENV/bin/python" -m py_compile
           learnerbot/monitor_factory_pipeline.py
           scripts/monitor_factory_operations.py
           scripts/urgent_strategy_factory_review.py
 
       - name: Run focused safety and contract tests
         run: >-
-          "$PROD_PYTHON" -m pytest -q
+          "$VENV/bin/python" -m pytest -q
           tests/test_monitor_factory_pipeline.py
           tests/test_monitor_factory_operations_contract.py
           tests/test_urgent_strategy_factory_review.py
@@ -79,3 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           test -z "$(git status --porcelain)"
+
+      - name: Clean isolated environment
+        if: always()
+        run: rm -rf "$VENV"
