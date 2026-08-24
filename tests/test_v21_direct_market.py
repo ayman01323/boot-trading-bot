@@ -2,6 +2,8 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from learnerbot.config import AppSettings, load_chains
 from learnerbot.live_executor import V2_ROUTERS
 from learnerbot.route_scanner import V2_FACTORY_FALLBACKS, _historical_cycle_variants, _scanner_input_base
@@ -15,7 +17,10 @@ def _addr(n):
 
 def test_all_five_evm_chains_enabled_and_rpc_configured():
     root=Path(__file__).resolve().parents[1]
-    app=AppSettings(root,root/'CSVbot',root/'data','',[],'')
+    csvdir=root/'CSVbot'
+    if not (csvdir/'chains.csv').exists() or not (csvdir/'rpc_endpoints.csv').exists():
+        pytest.skip('server-local CSVbot chain/RPC configuration is not checked into hosted CI')
+    app=AppSettings(root,csvdir,root/'data','',[],'')
     chains=load_chains(app,enabled_only=True)
     assert {c.chain_id for c in chains} == {1,56,137,8453,42161}
     assert all(c.rpc_urls for c in chains)
@@ -68,7 +73,6 @@ def test_direct_market_scanner_returns_current_profitable_triangle(monkeypatch,t
         router_address=_addr(9);wrapped=w;w3=W3()
         def _slippage_bps(self):return 10
         def cycle_quote(self,path,amount):
-            # a->b route has a small positive edge; reverse is negative.
             positive=path[1].lower()==a.lower()
             out=Decimal(amount)*(Decimal('1.002') if positive else Decimal('0.998'))
             return {'gross_profit':out-Decimal(amount),'amount_out':out}
