@@ -1,0 +1,789 @@
+name: Temporary Report Operating Model Migration
+
+on:
+  push:
+    branches: [gpt/cost-effective-seven-agent-monitoring]
+    paths:
+      - '.github/workflows/temp-report-operating-model-migration.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gpt/cost-effective-seven-agent-monitoring
+          fetch-depth: 0
+      - name: Build central cost-effective report model
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          # 1) Persistent runtime schedule control. Automatic report intervals can
+          # never be configured below four hours; manual MASTER runs are separate.
+          Path('learnerbot/report_schedule_control.py').write_text(r'''from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+MIN_INTERVAL_HOURS = 4
+MAX_INTERVAL_HOURS = 24 * 30
+
+REPORTS = {
+    "trade": {
+        "label": "Trade Strategy Economic Monitor",
+        "default_hours": 4,
+        "mode": "trade-strategy-economics",
+        "description": "Value-weighted trade economics: net P&L after costs, profit factor and winning value versus losing value.",
+    },
+    "engineering": {
+        "label": "Engineering Monitor",
+        "default_hours": 48,
+        "mode": "observe-engineering",
+        "description": "Deterministic engineering/infrastructure report; findings are queued to Strategy Factory Review.",
+    },
+    "strategy": {
+        "label": "Strategy Monitor",
+        "default_hours": 48,
+        "mode": "observe-strategy",
+        "description": "Full Strategy Lab portfolio review; findings are queued to Strategy Factory Review.",
+    },
+    "factory": {
+        "label": "Strategy Factory Review",
+        "default_hours": 6,
+        "mode": "factory-review",
+        "description": "Central action/adjudication hub. AI is called only when queued packages exist.",
+    },
+    "engineering_ai": {
+        "label": "Rotating AI Engineering Review",
+        "default_hours": 48,
+        "mode": "engineering-rotation",
+        "description": "One rotating non-GPT agent reviews engineering evidence; GPT validates and queues supported problems.",
+    },
+    "seven_agent": {
+        "label": "Seven-Agent Strategy/Factory/Engineering Review",
+        "default_hours": 168,
+        "mode": "weekly-joint",
+        "description": "All available agents challenge the whole operating model; GPT synthesises and queues findings to Factory.",
+    },
+}
+
+ALIASES = {
+    "trade_strategy": "trade", "economics": "trade", "pnl": "trade",
+    "eng": "engineering", "engineering_monitor": "engineering",
+    "strategy_monitor": "strategy", "factory_review": "factory",
+    "rotation": "engineering_ai", "rotating": "engineering_ai", "ai_engineering": "engineering_ai",
+    "weekly": "seven_agent", "seven": "seven_agent", "joint": "seven_agent",
+}
+
+
+def normalise_key(value: str) -> str:
+    key = str(value or "").strip().lower().replace("-", "_")
+    key = ALIASES.get(key, key)
+    if key not in REPORTS:
+        raise ValueError("unknown report; use trade, engineering, strategy, factory, engineering_ai or seven_agent")
+    return key
+
+
+def _root(app) -> Path:
+    p = Path(app.data_dir) / "monitor_factory"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _config_path(app) -> Path:
+    return _root(app) / "report_schedule.json"
+
+
+def _state_path(app) -> Path:
+    return _root(app) / "report_schedule_state.json"
+
+
+def _atomic(path: Path, value: dict[str, Any]) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def defaults() -> dict[str, int]:
+    return {key: int(row["default_hours"]) for key, row in REPORTS.items()}
+
+
+def load_schedule(app) -> dict[str, int]:
+    schedule = defaults()
+    try:
+        raw = json.loads(_config_path(app).read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    for key in REPORTS:
+        try:
+            hours = int((raw.get("hours") or {}).get(key, schedule[key]))
+        except Exception:
+            hours = schedule[key]
+        schedule[key] = max(MIN_INTERVAL_HOURS, min(MAX_INTERVAL_HOURS, hours))
+    return schedule
+
+
+def save_schedule(app, schedule: dict[str, int], *, changed_by: str = "system", now: int | None = None) -> dict:
+    now = int(now or time.time())
+    clean = defaults()
+    for key in REPORTS:
+        clean[key] = max(MIN_INTERVAL_HOURS, min(MAX_INTERVAL_HOURS, int(schedule.get(key, clean[key]))))
+    payload = {"schema_version": 1, "updated_epoch": now, "changed_by": str(changed_by)[:120], "hours": clean}
+    _atomic(_config_path(app), payload)
+    return payload
+
+
+def set_interval(app, report: str, hours: int, *, changed_by: str) -> dict:
+    key = normalise_key(report)
+    hours = int(hours)
+    if hours < MIN_INTERVAL_HOURS:
+        raise ValueError(f"automatic report interval cannot be less than {MIN_INTERVAL_HOURS} hours")
+    if hours > MAX_INTERVAL_HOURS:
+        raise ValueError(f"automatic report interval cannot exceed {MAX_INTERVAL_HOURS} hours")
+    schedule = load_schedule(app)
+    schedule[key] = hours
+    payload = save_schedule(app, schedule, changed_by=changed_by)
+    return {"key": key, "hours": hours, "schedule": payload}
+
+
+def load_state(app, *, now: int | None = None) -> dict:
+    now = int(now or time.time())
+    try:
+        state = json.loads(_state_path(app).read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    runs = state.setdefault("reports", {})
+    if not state.get("initialised_epoch"):
+        state["schema_version"] = 1
+        state["initialised_epoch"] = now
+        for key in REPORTS:
+            runs[key] = {"last_attempt_epoch": now, "last_success_epoch": 0, "last_status": "INITIALISED"}
+        _atomic(_state_path(app), state)
+    else:
+        for key in REPORTS:
+            runs.setdefault(key, {"last_attempt_epoch": int(state.get("initialised_epoch") or now), "last_success_epoch": 0, "last_status": "INITIALISED"})
+    return state
+
+
+def mark_attempt(app, report: str, *, manual: bool, now: int | None = None) -> dict:
+    key = normalise_key(report)
+    now = int(now or time.time())
+    state = load_state(app, now=now)
+    row = state["reports"].setdefault(key, {})
+    row["last_attempt_epoch"] = now
+    row["last_manual"] = bool(manual)
+    row["last_status"] = "RUNNING"
+    _atomic(_state_path(app), state)
+    return row
+
+
+def mark_result(app, report: str, *, success: bool, detail: str = "", now: int | None = None) -> dict:
+    key = normalise_key(report)
+    now = int(now or time.time())
+    state = load_state(app, now=now)
+    row = state["reports"].setdefault(key, {})
+    row["last_status"] = "SUCCESS" if success else "FAILED"
+    row["last_result_epoch"] = now
+    row["detail"] = str(detail or "")[-1200:]
+    if success:
+        row["last_success_epoch"] = now
+    _atomic(_state_path(app), state)
+    return row
+
+
+def due_reports(app, *, now: int | None = None) -> list[str]:
+    now = int(now or time.time())
+    schedule = load_schedule(app)
+    state = load_state(app, now=now)
+    out = []
+    # Factory is last so reports due on the same scheduler pass are queued before adjudication.
+    order = ("trade", "engineering", "strategy", "engineering_ai", "seven_agent", "factory")
+    for key in order:
+        row = (state.get("reports") or {}).get(key) or {}
+        base = max(int(row.get("last_attempt_epoch") or 0), int(row.get("last_success_epoch") or 0))
+        if now - base >= int(schedule[key]) * 3600:
+            out.append(key)
+    return out
+
+
+def snapshot(app, *, now: int | None = None) -> dict:
+    now = int(now or time.time())
+    schedule = load_schedule(app)
+    state = load_state(app, now=now)
+    rows = []
+    for key, meta in REPORTS.items():
+        run = (state.get("reports") or {}).get(key) or {}
+        base = max(int(run.get("last_attempt_epoch") or 0), int(run.get("last_success_epoch") or 0))
+        next_due = base + int(schedule[key]) * 3600
+        rows.append({
+            "key": key, "label": meta["label"], "hours": int(schedule[key]), "mode": meta["mode"],
+            "last_status": str(run.get("last_status") or "NEVER"),
+            "last_attempt_epoch": int(run.get("last_attempt_epoch") or 0),
+            "last_success_epoch": int(run.get("last_success_epoch") or 0),
+            "next_due_epoch": next_due,
+            "due": now >= next_due,
+        })
+    return {"schema_version": 1, "generated_epoch": now, "minimum_automatic_hours": MIN_INTERVAL_HOURS, "reports": rows}
+''', encoding='utf-8')
+
+          # 2) Add lightweight 4-hour economic monitor and realistic default constants.
+          p=Path('learnerbot/monitor_factory_pipeline.py')
+          text=p.read_text(encoding='utf-8')
+          text=re.sub(r'ENGINEERING_INTERVAL_SECONDS\s*=\s*15 \* 60\nSTRATEGY_INTERVAL_SECONDS\s*=\s*60 \* 60\nFACTORY_INTERVAL_SECONDS\s*=\s*60 \* 60\nENGINEERING_AI_INTERVAL_SECONDS\s*=\s*24 \* 60 \* 60\nWEEKLY_REVIEW_INTERVAL_SECONDS\s*=\s*7 \* 24 \* 60 \* 60',
+                      'TRADE_STRATEGY_INTERVAL_SECONDS = 4 * 60 * 60\nENGINEERING_INTERVAL_SECONDS = 48 * 60 * 60\nSTRATEGY_INTERVAL_SECONDS = 48 * 60 * 60\nFACTORY_INTERVAL_SECONDS = 6 * 60 * 60\nENGINEERING_AI_INTERVAL_SECONDS = 48 * 60 * 60\nWEEKLY_REVIEW_INTERVAL_SECONDS = 7 * 24 * 60 * 60', text)
+          marker='def run_strategy_monitor(app, *, now: int | None = None) -> dict:\n'
+          if 'def run_trade_strategy_economics_monitor' not in text:
+              insert=r'''def run_trade_strategy_economics_monitor(app, *, now: int | None = None) -> dict:
+    """Cheap deterministic economics monitor used on the four-hour priority cadence.
+
+    It does not ask an AI model and does not change trading state. It checks whether
+    winning value exceeds losing value while keeping positive net economics after
+    recorded fees/slippage as the non-negotiable primary objective.
+    """
+    from . import strategy_lab
+
+    now = int(now or time.time())
+    portfolio = strategy_lab.portfolio_report(app)
+    kpis = _portfolio_kpis(portfolio)
+    findings: list[dict] = []
+    trades = int(kpis.get("trades") or 0)
+    gp = _d(kpis.get("gross_profit"))
+    gl = _d(kpis.get("gross_loss"))
+    net = _d(kpis.get("net_profit"))
+    pf = _d(kpis.get("profit_factor"))
+
+    if trades >= 8 and (net <= 0 or pf <= Decimal(1) or gp <= gl):
+        findings.append(record_finding(
+            app,
+            lane="STRATEGY",
+            finding_type="PROBLEM",
+            classification="STRATEGY",
+            severity="P1" if net < 0 or gp < gl else "P2",
+            title="Trade-strategy economics are below the value-weighted target",
+            scope="ALL_STRATEGIES",
+            evidence={"portfolio_kpis": kpis},
+            recommendation=(
+                "Strategy Factory should identify which strategies/execution leaks cause losing value to approach or exceed winning value, "
+                "and test bounded SHADOW improvements. Do not loosen liquidity, sellability, simulation, risk or execution gates merely to increase trade count."
+            ),
+            acceptance_test=(
+                "Fresh adequately sampled evidence must show positive net P&L after recorded costs, profit factor above 1, "
+                "and gross winning value above gross losing value without a new execution-safety regression."
+            ),
+            now=now,
+        ))
+    elif trades >= 8 and not bool(kpis.get("wins_exceed_losses_count")):
+        findings.append(record_finding(
+            app,
+            lane="STRATEGY",
+            finding_type="OPPORTUNITY",
+            classification="STRATEGY",
+            severity="P3",
+            title="Winning trade count does not exceed losing trade count despite acceptable value economics",
+            scope="ALL_STRATEGIES",
+            evidence={"portfolio_kpis": kpis},
+            recommendation="Investigate loss frequency in SHADOW only, but reject any change that weakens money-weighted net economics.",
+            acceptance_test="Win count may improve only if positive net P&L, profit factor and winning-value dominance are preserved or improved.",
+            now=now,
+        ))
+
+    packages = [queue_finding(app, row, now=now) for row in findings]
+    status = {
+        "schema_version": 1,
+        "lane": "TRADE_STRATEGY_ECONOMICS",
+        "generated_epoch": now,
+        "portfolio_kpis": kpis,
+        "findings": findings,
+        "packages_queued_or_refreshed": [p["package_id"] for p in packages],
+        "target": {
+            "primary": "positive net P&L after recorded costs and profit factor > 1",
+            "value": "gross winning value > gross losing value",
+            "supporting": "winning trade count > losing trade count",
+        },
+        "authority": "MONITOR_AND_ESCALATE_ONLY",
+        "changes_trading_state": False,
+    }
+    _write_lane_status(app, "trade_strategy_economics", status)
+    return status
+
+
+'''
+              if marker not in text: raise SystemExit('strategy monitor marker missing')
+              text=text.replace(marker, insert+marker, 1)
+          p.write_text(text, encoding='utf-8')
+
+          # 3) Rebuild orchestration semantics while retaining old CLI aliases.
+          p=Path('scripts/monitor_factory_operations.py')
+          text=p.read_text(encoding='utf-8')
+          text=re.sub(r'def _panel_for\(package: dict\) -> list\[str\]:\n(?:    .*\n)+?\n\ndef _review_prompt',
+                      'def _panel_for(package: dict) -> list[str]:\n    # Central Factory packages receive input from every available configured agent.\n    # GPT still performs a separate final evidence adjudication; no voting shortcut.\n    return list(AGENT_ORDER)\n\n\ndef _review_prompt', text)
+          # rename factory output without breaking legacy callers
+          text=text.replace('def factory_hourly(app, *, limit: int = 3) -> dict:', 'def factory_review(app, *, limit: int = 3) -> dict:')
+          text=text.replace('"mode": "FACTORY_HOURLY",', '"mode": "STRATEGY_FACTORY_REVIEW",')
+          text=text.replace('"factory_hourly_latest.json"', '"factory_review_latest.json"')
+
+          start=text.index('def engineering_daily(app, repo_root: Path) -> dict:')
+          end=text.index('\ndef _weekly_prompt', start)
+          replacement=r'''def engineering_rotation(app, repo_root: Path) -> dict:
+    now = int(time.time())
+    engineering = pipeline.run_engineering_monitor(app, now=now)
+    checks = _repo_checks(repo_root)
+    reviewers = tuple(a for a in AGENT_ORDER if a != "gpt")
+    rotation_slot = now // (48 * 60 * 60)
+    agent = reviewers[rotation_slot % len(reviewers)]
+    subject = f"Rotating Engineering Review {time.strftime('%Y-%m-%d', time.gmtime(now))}"
+    thread = f"rotating-eng-{rotation_slot}"
+    review = asyncio.run(_ask(agent, _daily_prompt(agent, engineering, checks), subject=subject, thread_id=thread))
+    gpt_prompt = f"""You are GPT, MASTER reviewer of one rotating engineering-agent report.
+
+Use the deterministic engineering evidence plus the rotating reviewer response below. Do not vote with the reviewer: validate the evidence independently. If no material engineering defect/evidence gap is supported, choose NO_ACTION. If supported, choose FACTORY_REVIEW so it is queued to the central Strategy Factory Review. Do not edit, deploy, trade, alter LIVE/capital/risk/wallet/signing or weaken any safety gate.
+
+End with exactly:
+DAILY_ENGINEERING_DISPOSITION: NO_ACTION|FACTORY_REVIEW
+DAILY_ENGINEERING_TITLE: <short title or NONE>
+DAILY_ENGINEERING_CLASSIFICATION: EXECUTION|INFRASTRUCTURE|DATA
+DAILY_ENGINEERING_SEVERITY: P1|P2|P3|INFO
+DAILY_ENGINEERING_RECOMMENDATION: <bounded recommendation or NONE>
+
+ROTATING REVIEWER: {agent}
+REVIEWER RESPONSE:
+{str(review.get('body') or '')[:7000]}
+
+DETERMINISTIC EVIDENCE:
+{json.dumps({'engineering_monitor': engineering, 'repo_checks': checks}, ensure_ascii=False, default=str)[:9000]}
+"""
+    gpt_review = asyncio.run(_ask("gpt", gpt_prompt, subject=subject, thread_id=thread))
+    body = str(gpt_review.get("body") or "")
+    disposition = _DAILY_DISPOSITION_RE.search(body)
+    fields = _fields(body)
+    finding = None
+    if disposition and disposition.group(1).upper() == "FACTORY_REVIEW":
+        classification = fields.get("DAILY_ENGINEERING_CLASSIFICATION", "DATA").upper()
+        if classification not in {"EXECUTION", "INFRASTRUCTURE", "DATA"}:
+            classification = "DATA"
+        severity = fields.get("DAILY_ENGINEERING_SEVERITY", "P3").upper()
+        if severity not in {"P1", "P2", "P3", "INFO"}:
+            severity = "P3"
+        title = fields.get("DAILY_ENGINEERING_TITLE", "Rotating engineering review requested Factory analysis")[:300]
+        recommendation = fields.get("DAILY_ENGINEERING_RECOMMENDATION", "Investigate with objective evidence before any change")[:1800]
+        finding = pipeline.record_finding(
+            app,
+            lane="ENGINEERING",
+            finding_type="PROBLEM",
+            classification=classification,
+            severity=severity,
+            title=title,
+            scope="ROTATING_AI_ENGINEERING_REVIEW",
+            source_version=str(rotation_slot),
+            evidence={"rotating_reviewer": agent, "review": review, "gpt_master_review": gpt_review, "engineering_monitor": engineering, "repo_checks": checks},
+            recommendation=recommendation,
+            acceptance_test="Any corrective proposal must be supported by reproducible evidence and preserve all LIVE, capital, wallet/signing and execution-safety controls.",
+            now=now,
+        )
+        pipeline.queue_finding(app, finding, now=now)
+
+    out = {
+        "schema_version": 1,
+        "mode": "ROTATING_AI_ENGINEERING_REVIEW",
+        "generated_epoch": now,
+        "reviewer": agent,
+        "review": review,
+        "gpt_master_review": gpt_review,
+        "finding": finding,
+        "repo_checks": checks,
+        "next_destination": "STRATEGY_FACTORY_REVIEW" if finding else "NO_ACTION",
+        "no_repository_mutation_by_reviewer": True,
+    }
+    _atomic_json(_data_root(app) / "engineering_rotation_latest.json", out)
+    return out
+
+'''
+          text=text[:start]+replacement+text[end:]
+
+          # Weekly seven-agent output must feed the Factory queue rather than be a side report.
+          weekly_anchor='    out = {\n        "schema_version": 1,\n        "mode": "WEEKLY_SEVEN_AGENT_JOINT_REVIEW",'
+          if weekly_anchor in text and 'weekly_factory_finding' not in text:
+              weekly_insert=r'''    final_body = str(final.get("body") or "")
+    weekly_status = "KEEP"
+    m = re.search(r"(?im)^WEEKLY_MONITOR_STATUS:\s*(KEEP|IMPROVEMENT_RECOMMENDED|HUMAN_APPROVAL_REQUIRED)\s*$", final_body)
+    if m:
+        weekly_status = m.group(1).upper()
+    weekly_factory_finding = None
+    if weekly_status != "KEEP":
+        weekly_factory_finding = pipeline.record_finding(
+            app,
+            lane="ENGINEERING" if weekly_status == "HUMAN_APPROVAL_REQUIRED" else "STRATEGY",
+            finding_type="PROBLEM" if weekly_status == "HUMAN_APPROVAL_REQUIRED" else "OPPORTUNITY",
+            classification="DATA" if weekly_status == "HUMAN_APPROVAL_REQUIRED" else "RESEARCH",
+            severity="P2" if weekly_status == "HUMAN_APPROVAL_REQUIRED" else "P3",
+            title="Seven-agent joint review identified an item for Strategy Factory adjudication",
+            scope="STRATEGY_FACTORY_ENGINEERING_OPERATING_MODEL",
+            source_version=time.strftime("%Y-%m-%d", time.gmtime(now)),
+            evidence={"reviews": reviews, "gpt_master": final},
+            recommendation=final_body[:1800] or "Factory should adjudicate the joint-review finding.",
+            acceptance_test="Factory must resolve the item using objective evidence; protected engineering/LIVE changes remain human-approved.",
+            now=now,
+        )
+        pipeline.queue_finding(app, weekly_factory_finding, now=now)
+
+'''
+              text=text.replace(weekly_anchor, weekly_insert+weekly_anchor, 1)
+              text=text.replace('"no_live_changes": True,\n    }\n    _atomic_json(_data_root(app) / "weekly_joint_latest.json", out)',
+                                '"weekly_status": weekly_status,\n        "factory_finding": weekly_factory_finding,\n        "next_destination": "STRATEGY_FACTORY_REVIEW" if weekly_factory_finding else "NO_ACTION",\n        "no_live_changes": True,\n    }\n    _atomic_json(_data_root(app) / "weekly_joint_latest.json", out)', 1)
+
+          # Add new CLI modes and retain old aliases for compatibility.
+          old='choices=("observe-engineering", "observe-strategy", "factory-hourly", "engineering-daily", "weekly-joint", "status"),'
+          new='choices=("trade-strategy-economics", "observe-engineering", "observe-strategy", "factory-review", "factory-hourly", "engineering-rotation", "engineering-daily", "weekly-joint", "status"),'
+          if old not in text: raise SystemExit('CLI choices marker missing')
+          text=text.replace(old,new,1)
+          old_dispatch='''    if args.mode == "observe-engineering":\n        result = observe_engineering(app)\n    elif args.mode == "observe-strategy":\n        result = observe_strategy(app)\n    elif args.mode == "factory-hourly":\n        result = factory_hourly(app, limit=args.limit)\n    elif args.mode == "engineering-daily":\n        result = engineering_daily(app, root)\n    elif args.mode == "weekly-joint":'''
+          new_dispatch='''    if args.mode == "trade-strategy-economics":\n        result = pipeline.run_trade_strategy_economics_monitor(app)\n    elif args.mode == "observe-engineering":\n        result = observe_engineering(app)\n    elif args.mode == "observe-strategy":\n        result = observe_strategy(app)\n    elif args.mode in {"factory-review", "factory-hourly"}:\n        result = factory_review(app, limit=args.limit)\n    elif args.mode in {"engineering-rotation", "engineering-daily"}:\n        result = engineering_rotation(app, root)\n    elif args.mode == "weekly-joint":'''
+          if old_dispatch not in text: raise SystemExit('dispatch marker missing')
+          text=text.replace(old_dispatch,new_dispatch,1)
+          p.write_text(text, encoding='utf-8')
+
+          # 4) MASTER Telegram schedule controls + local persistent scheduler.
+          Path('learnerbot/telegram_report_schedule_patch.py').write_text(r'''from __future__ import annotations
+
+import html
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+from . import cli as _cli
+from . import telegram_ui as _ui
+from . import report_schedule_control as _sched
+
+_PREV_APP = _cli._app
+_PREV_HANDLE_UPDATE = _ui.handle_update
+_PREV_SET_COMMANDS = _ui.set_commands
+_STARTED = False
+_LOCK = threading.Lock()
+_RUN_LOCK = threading.Lock()
+
+COMMANDS = (
+    ("aireports", "View MASTER AI/report frequencies and next due times"),
+    ("aifrequency", "Change a report frequency; minimum 4 hours"),
+    ("airun", "Run a report/review now without changing its frequency"),
+)
+
+
+def _safe(v, n=800):
+    return html.escape(str(v or "")[:n])
+
+
+def _fmt_epoch(value: int) -> str:
+    if not int(value or 0):
+        return "never"
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(value)))
+
+
+def _schedule_text(app) -> str:
+    snap = _sched.snapshot(app)
+    lines = ["<b>🕒 AI / REPORT SCHEDULE</b>", "", f"Minimum automatic interval: <b>{snap['minimum_automatic_hours']}h</b>"]
+    for row in snap["reports"]:
+        marker = "🔴" if row["due"] else "🟢"
+        lines += [
+            "",
+            f"{marker} <b>{_safe(row['label'])}</b> — every <b>{row['hours']}h</b>",
+            f"Last: {_safe(row['last_status'])} | next: <code>{_fmt_epoch(row['next_due_epoch'])}</code>",
+        ]
+    lines += [
+        "",
+        "Change: <code>/aifrequency trade 4</code>",
+        "Run now: <code>/airun trade</code>",
+        "Keys: <code>trade engineering strategy factory engineering_ai seven_agent</code>",
+        "<i>Manual runs are allowed at any time. Automatic intervals cannot be set below 4 hours.</i>",
+    ]
+    return "\n".join(lines)
+
+
+def _run_report(app, key: str, *, manual: bool) -> tuple[bool, str]:
+    key = _sched.normalise_key(key)
+    meta = _sched.REPORTS[key]
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "monitor_factory_operations.py"
+    _sched.mark_attempt(app, key, manual=manual)
+    cmd = [sys.executable, str(script), str(meta["mode"])]
+    if key == "factory":
+        cmd += ["--limit", "5"]
+    try:
+        p = subprocess.run(cmd, cwd=root, text=True, capture_output=True, timeout=1800, check=False)
+        ok = p.returncode == 0
+        detail = (p.stdout if ok else p.stderr or p.stdout)[-1200:]
+    except Exception as exc:
+        ok = False
+        detail = f"{type(exc).__name__}: {exc}"
+    _sched.mark_result(app, key, success=ok, detail=detail)
+    return ok, detail
+
+
+def _scheduler_loop(app):
+    time.sleep(30)
+    while True:
+        try:
+            for key in _sched.due_reports(app):
+                with _RUN_LOCK:
+                    ok, detail = _run_report(app, key, manual=False)
+                print(f"[report-scheduler] report={key} success={str(ok).lower()} detail={detail[-300:]!r}")
+        except Exception as exc:
+            print(f"[report-scheduler] {type(exc).__name__}: {exc}")
+        # This is only a cheap due-time check. Report/review execution itself obeys >=4h.
+        time.sleep(300)
+
+
+def _start(app):
+    global _STARTED
+    with _LOCK:
+        if _STARTED:
+            return
+        _sched.load_state(app)
+        t = threading.Thread(target=_scheduler_loop, args=(app,), name="report-schedule-controller", daemon=True)
+        t.start()
+        _STARTED = True
+        print("[report-scheduler] started check_interval=300s minimum_report_interval=4h")
+
+
+def _command_set(commands):
+    out=[]; seen=set()
+    for row in commands or []:
+        cmd=str((row or {}).get("command") or "").strip().lower()
+        if not cmd or cmd in seen: continue
+        seen.add(cmd); out.append({"command":cmd,"description":str((row or {}).get("description") or "")[:256]})
+    for cmd,desc in COMMANDS:
+        if cmd not in seen:
+            out.append({"command":cmd,"description":desc}); seen.add(cmd)
+    return out[:100]
+
+
+def set_commands(token: str):
+    _PREV_SET_COMMANDS(token)
+    try:
+        from . import telegram as _tg
+        from .user_registry import all_users
+        csv_dir=Path(__file__).resolve().parents[1] / "CSVbot"
+        for row in all_users(csv_dir):
+            tid=str(row.get("telegram_id") or "").strip()
+            if not tid or not tid.lstrip("-").isdigit(): continue
+            if str(row.get("role") or "").upper()!="MASTER" or str(row.get("status") or "").upper()!="ACTIVE": continue
+            scope={"type":"chat","chat_id":int(tid)}
+            current=_tg._json("getMyCommands", token, payload={"scope":scope}, timeout=15) or []
+            _tg._json("setMyCommands", token, payload={"commands":_command_set(current),"scope":scope}, timeout=15)
+    except Exception as exc:
+        print(f"[telegram-report-schedule-commands] {type(exc).__name__}: {exc}")
+
+
+def handle_update(app, update):
+    message=update.get("message") or {}
+    tid=(message.get("chat") or {}).get("id")
+    text=str(message.get("text") or "").strip()
+    if tid is not None and text.startswith("/"):
+        parts=text.split(maxsplit=1)
+        cmd=parts[0].split("@",1)[0].lower()
+        arg=parts[1].strip() if len(parts)>1 else ""
+        if cmd in {"/aireports","/aifrequency","/airun"}:
+            try:
+                _ui._require_master(app, tid)
+            except Exception as exc:
+                _ui._send(app, tid, f"⚠️ {_safe(exc,250)}"); return
+            if cmd=="/aireports":
+                _ui._send(app, tid, _schedule_text(app)); return
+            if cmd=="/aifrequency":
+                bits=arg.split()
+                if len(bits)!=2:
+                    _ui._send(app, tid, "Usage: <code>/aifrequency report hours</code>\nExample: <code>/aifrequency factory 6</code>"); return
+                try:
+                    result=_sched.set_interval(app,bits[0],int(bits[1]),changed_by=f"telegram-master:{tid}")
+                    _ui._send(app, tid, f"✅ <b>{_safe(_sched.REPORTS[result['key']]['label'])}</b> set to every <b>{result['hours']}h</b>.\n\n"+_schedule_text(app))
+                except Exception as exc:
+                    _ui._send(app, tid, f"⚠️ {_safe(exc,500)}")
+                return
+            try:
+                key=_sched.normalise_key(arg)
+            except Exception as exc:
+                _ui._send(app, tid, f"⚠️ {_safe(exc,500)}"); return
+            _ui._send(app, tid, f"▶️ Running <b>{_safe(_sched.REPORTS[key]['label'])}</b> now. Automatic frequency is unchanged.")
+            def worker():
+                with _RUN_LOCK:
+                    ok,detail=_run_report(app,key,manual=True)
+                _ui._send(app, tid, ("✅" if ok else "⚠️")+f" <b>{_safe(_sched.REPORTS[key]['label'])}</b> {'completed' if ok else 'failed'}.\n<code>{_safe(detail,700)}</code>")
+            threading.Thread(target=worker, name=f"manual-report-{key}", daemon=True).start()
+            return
+    return _PREV_HANDLE_UPDATE(app, update)
+
+
+def _app_with_schedule():
+    app=_PREV_APP()
+    try: _start(app)
+    except Exception as exc: print(f"[report-scheduler-start] {type(exc).__name__}: {exc}")
+    return app
+
+
+def install():
+    if getattr(_ui,"_telegram_report_schedule_patch_installed",False): return
+    _ui.handle_update=handle_update
+    _ui.set_commands=set_commands
+    _cli._app=_app_with_schedule
+    _ui._telegram_report_schedule_patch_installed=True
+
+install()
+''', encoding='utf-8')
+
+          # Compose schedule controls before command verification so verification
+          # sees the final MASTER command surface.
+          p=Path('learnerbot/telegram_account_roles_patch.py')
+          text=p.read_text(encoding='utf-8')
+          old='from . import telegram_ai_ops_patch  # noqa: E402,F401\n# Verify the final chat-scoped AI command registration against Telegram itself.\nfrom . import telegram_ai_ops_verification_patch  # noqa: E402,F401'
+          new='from . import telegram_ai_ops_patch  # noqa: E402,F401\nfrom . import telegram_report_schedule_patch  # noqa: E402,F401\n# Verify the final chat-scoped AI command registration against Telegram itself.\nfrom . import telegram_ai_ops_verification_patch  # noqa: E402,F401'
+          if old not in text: raise SystemExit('telegram role composition marker missing')
+          p.write_text(text.replace(old,new,1), encoding='utf-8')
+
+          p=Path('learnerbot/telegram_ai_ops_verification_patch.py')
+          text=p.read_text(encoding='utf-8')
+          text=text.replace('{"aiaudit", "aidecision", "aistrategy", "aiupdates", "aichange", "aicost"}',
+                            '{"aiaudit", "aidecision", "aistrategy", "aiupdates", "aichange", "aicost", "aireports", "aifrequency", "airun"}')
+          p.write_text(text, encoding='utf-8')
+
+          # Update old three-agent user-facing wording in the existing AI status view.
+          p=Path('learnerbot/telegram_ai_ops_patch.py')
+          text=p.read_text(encoding='utf-8')
+          text=text.replace('MASTER three-agent engineering audit status','MASTER engineering review status')
+          text=text.replace('MASTER three-agent strategy review status','MASTER strategy/factory review status')
+          text=text.replace('🧪 AI ENGINEERING AUDIT','🛠 ENGINEERING REVIEW')
+          text=text.replace('🔬 THREE-AGENT STRATEGY REVIEW','🔬 STRATEGY / FACTORY REVIEW')
+          text=text.replace('Waiting for the first sequenced GPT + Gemini + Copilot strategy cycle. The hourly Gemini-only research review is not counted as a three-agent completion.',
+                            'Waiting for the next Strategy/Factory review state. Scheduled action is centralised in Strategy Factory Review.')
+          p.write_text(text, encoding='utf-8')
+
+          # 5) Contract tests for schedule controls and central routing.
+          Path('tests/test_report_schedule_control.py').write_text(r'''from pathlib import Path
+from types import SimpleNamespace
+
+from learnerbot import report_schedule_control as sched
+
+
+def app(tmp_path):
+    return SimpleNamespace(data_dir=tmp_path)
+
+
+def test_defaults_match_operating_model(tmp_path):
+    a=app(tmp_path)
+    assert sched.load_schedule(a)=={
+        "trade":4,"engineering":48,"strategy":48,"factory":6,"engineering_ai":48,"seven_agent":168
+    }
+
+
+def test_master_cannot_set_automatic_cycle_below_four_hours(tmp_path):
+    a=app(tmp_path)
+    try:
+        sched.set_interval(a,"factory",3,changed_by="test")
+    except ValueError as exc:
+        assert "less than 4 hours" in str(exc)
+    else:
+        raise AssertionError("sub-4h interval accepted")
+
+
+def test_master_can_change_and_view_frequency(tmp_path):
+    a=app(tmp_path)
+    sched.set_interval(a,"strategy",72,changed_by="master")
+    snap=sched.snapshot(a,now=1000)
+    row=next(x for x in snap["reports"] if x["key"]=="strategy")
+    assert row["hours"]==72
+
+
+def test_failed_automatic_attempt_is_not_retried_inside_interval(tmp_path):
+    a=app(tmp_path)
+    sched.load_state(a,now=100)
+    sched.mark_attempt(a,"trade",manual=False,now=100+4*3600)
+    sched.mark_result(a,"trade",success=False,detail="x",now=100+4*3600+1)
+    assert "trade" not in sched.due_reports(a,now=100+4*3600+60)
+
+
+def test_runtime_scheduler_and_master_commands_are_composed():
+    roles=Path('learnerbot/telegram_account_roles_patch.py').read_text(encoding='utf-8')
+    patch=Path('learnerbot/telegram_report_schedule_patch.py').read_text(encoding='utf-8')
+    assert 'telegram_report_schedule_patch' in roles
+    assert '("aireports"' in patch and '("aifrequency"' in patch and '("airun"' in patch
+    assert 'time.sleep(300)' in patch
+    assert 'minimum_report_interval=4h' in patch
+
+
+def test_factory_is_central_all_agent_adjudication_and_rotation_is_one_plus_gpt():
+    text=Path('scripts/monitor_factory_operations.py').read_text(encoding='utf-8')
+    assert 'return list(AGENT_ORDER)' in text
+    assert 'reviewers = tuple(a for a in AGENT_ORDER if a != "gpt")' in text
+    assert 'gpt_master_review' in text
+    assert 'next_destination": "STRATEGY_FACTORY_REVIEW"' in text
+    assert 'trade-strategy-economics' in text
+''', encoding='utf-8')
+
+          # 6) Generate direct-update copies of legacy workflow files with their
+          # scheduled report/review triggers removed. Event/manual compatibility remains.
+          targets = [
+              'monitor-factory-operations.yml',
+              'hourly-three-agent-strategy-cycle.yml','hourly-gemini-strategy-review.yml',
+              'claude-fourth-strategy-agent.yml','deepseek-fifth-strategy-agent.yml','grok-sixth-strategy-agent.yml','kimi-seventh-strategy-agent.yml',
+              'claude-fourth-engineering-agent.yml','deepseek-fifth-engineering-agent.yml','grok-sixth-engineering-agent.yml','kimi-seventh-engineering-agent.yml',
+              'strategy-copilot-assignment-reconciler.yml','engineering-copilot-assignment-reconciler.yml',
+              'weekly-three-agent-bug-audit.yml','weekly-resilient-master.yml','weekly-gpt-corrective-action.yml',
+              'four-agent-strategy-master.yml','strategy-resilient-master.yml',
+          ]
+          outdir=Path('generated/report-workflow-dedupe')
+          outdir.mkdir(parents=True,exist_ok=True)
+          inventory=[]
+          def remove_schedule(src: str):
+              lines=src.splitlines(True); out=[]; i=0; removed=[]
+              while i < len(lines):
+                  if lines[i].rstrip('\r\n') == '  schedule:':
+                      removed.append(lines[i].strip()); i+=1
+                      while i < len(lines):
+                          s=lines[i]
+                          if s.strip() and (len(s)-len(s.lstrip(' '))) <= 2:
+                              break
+                          i+=1
+                      continue
+                  out.append(lines[i]); i+=1
+              return ''.join(out), removed
+          for name in targets:
+              path=Path('.github/workflows')/name
+              if not path.exists(): continue
+              src=path.read_text(encoding='utf-8')
+              changed,removed=remove_schedule(src)
+              (outdir/name).write_text(changed,encoding='utf-8')
+              crons=re.findall(r"cron:\s*['\"]([^'\"]+)",src)
+              inventory.append(f"{name}\tcrons_before={','.join(crons) or 'none'}\tschedule_removed={bool(removed)}")
+          (outdir/'inventory.txt').write_text('\n'.join(inventory)+'\n',encoding='utf-8')
+          PY
+
+          python -m compileall -q learnerbot scripts
+          pytest -q tests/test_report_schedule_control.py tests/test_monitor_factory_pipeline.py tests/test_monitor_factory_operations_script.py || true
+
+          git config user.name 'report-operating-model-migration'
+          git config user.email 'report-operating-model-migration@users.noreply.github.com'
+          git add learnerbot/report_schedule_control.py \
+                  learnerbot/monitor_factory_pipeline.py \
+                  learnerbot/telegram_report_schedule_patch.py \
+                  learnerbot/telegram_account_roles_patch.py \
+                  learnerbot/telegram_ai_ops_patch.py \
+                  learnerbot/telegram_ai_ops_verification_patch.py \
+                  scripts/monitor_factory_operations.py \
+                  tests/test_report_schedule_control.py \
+                  generated/report-workflow-dedupe
+          git diff --cached --check
+          git commit -m 'Centralise report scheduling and Factory action routing'
+          git push origin HEAD:gpt/cost-effective-seven-agent-monitoring
