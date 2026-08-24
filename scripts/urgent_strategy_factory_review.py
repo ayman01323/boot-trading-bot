@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
+from pathlib import Path
 from typing import Any
 
 from learnerbot.config import AppSettings
@@ -24,7 +26,58 @@ TARGET_STRATEGIES = (
     "Forecasted Positive Net Edge",
 )
 
+STRATEGY_FAMILIES = {
+    "Cross Venue Net Arbitrage": "ARBITRAGE",
+    "Liquidity Confirmed Momentum": "MOMENTUM",
+    "Dislocation Mean Reversion": "MEAN_REVERSION",
+    "Flow Acceleration": "FLOW",
+    "New Liquidity Quality": "NEW_MARKET",
+    "Learned Route Replication": "LEARNED_PATTERN",
+    "Forecasted Positive Net Edge": "FORECAST",
+}
+
 PROMOTED_REAL_MONEY_STAGES = {"CANARY", "PROBATION", "ACTIVE"}
+BRIDGE_ROOT = Path("/var/tmp/boot")
+RUNNER_REVIEW_ROOT = BRIDGE_ROOT / "monitor_factory_runner"
+PRODUCTION_BRIDGES = {
+    "trading_funnel": BRIDGE_ROOT / "trading_funnel_master.json",
+    "evm_selector": BRIDGE_ROOT / "evm_leader_selector.json",
+    "solana_selector": BRIDGE_ROOT / "solana_leader_selector.json",
+    "evm_reconstruction": BRIDGE_ROOT / "evm_reconstruction_status.json",
+    "strategy_factory_leader_research": BRIDGE_ROOT / "strategy_factory_leader_research.json",
+}
+
+
+def _read_json(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _production_data_accessible(app) -> bool:
+    try:
+        return (
+            Path(app.data_dir).is_dir()
+            and Path(app.csv_dir).is_dir()
+            and os.access(str(app.data_dir), os.R_OK | os.W_OK)
+            and os.access(str(app.csv_dir), os.R_OK)
+        )
+    except Exception:
+        return False
+
+
+def _runner_app(app) -> AppSettings:
+    RUNNER_REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
+    return AppSettings(
+        root=Path(app.root),
+        csv_dir=BRIDGE_ROOT,
+        data_dir=RUNNER_REVIEW_ROOT,
+        telegram_bot_token="",
+        telegram_chat_ids=[],
+        etherscan_api_key="",
+    )
 
 
 def _target_rows(portfolio: dict) -> list[dict]:
@@ -58,6 +111,32 @@ def _target_rows(portfolio: dict) -> list[dict]:
     return sorted(out, key=lambda row: row["name"])
 
 
+def _bridge_target_rows() -> list[dict]:
+    return [
+        {
+            "strategy_id": "",
+            "name": name,
+            "family": STRATEGY_FAMILIES[name],
+            "status": "SHADOW",
+            "previous_status": "",
+            "action": "REVIEW_NOW",
+            "reason": "Production Strategy Lab database is intentionally not readable by the GitHub runner; use sanitised production bridges plus repository implementation evidence.",
+            "metrics": {
+                "windows": None,
+                "opportunities": None,
+                "eligible_opportunities": None,
+                "trades": None,
+                "wins": None,
+                "losses": None,
+                "net_profit": None,
+                "profit_factor": None,
+                "execution_failures": None,
+            },
+        }
+        for name in TARGET_STRATEGIES
+    ]
+
+
 def _canary_rows(app) -> list[dict]:
     try:
         rows = strategy_canary.canary_status(app)
@@ -89,23 +168,7 @@ def _shadow_scorecard(app, now: int) -> dict:
         return {"available": False, "error": f"{type(exc).__name__}: {exc}"[:600]}
 
 
-def build_evidence(app, *, now: int | None = None, operator_urgent: bool = False) -> dict:
-    now = int(now or time.time())
-    normal_monitor = pipeline.run_strategy_monitor(app, now=now)
-    strategy_lab.seed_creative_hypotheses(app)
-    portfolio = strategy_lab.portfolio_report(app)
-    targets = _target_rows(portfolio)
-    canary = _canary_rows(app)
-    promoted = {
-        str(row.get("strategy") or "").casefold()
-        for row in canary
-        if str(row.get("stage") or "").upper() in PROMOTED_REAL_MONEY_STAGES
-    }
-    found = {str(row.get("name") or "").casefold() for row in targets}
-    missing = [name for name in TARGET_STRATEGIES if name.casefold() not in found]
-    waiting = [name for name in TARGET_STRATEGIES if name.casefold() not in promoted]
-    target_trades = sum(int((row.get("metrics") or {}).get("trades") or 0) for row in targets)
-
+def _base_evidence(now: int, operator_urgent: bool) -> dict:
     return {
         "schema_version": 1,
         "generated_epoch": now,
@@ -117,17 +180,6 @@ def build_evidence(app, *, now: int | None = None, operator_urgent: bool = False
         "objective": (
             "Rapidly identify the fastest evidence-backed path to at least one legitimate real-funds CANARY on EVM and the missing implementation/evidence needed for Solana, without lowering execution, liquidity, sellability, simulation, wallet, reserve, signing, reconciliation, or loss-containment protections."
         ),
-        "target_strategies": targets,
-        "missing_target_strategies": missing,
-        "strategies_not_in_real_money_validation": waiting,
-        "target_strategy_lab_trades": target_trades,
-        "canary_state": canary,
-        "shadow_scorecard_24h": _shadow_scorecard(app, now),
-        "normal_strategy_monitor": {
-            "portfolio_kpis": normal_monitor.get("portfolio_kpis") or {},
-            "findings": normal_monitor.get("findings") or [],
-            "packages_queued_or_refreshed": normal_monitor.get("packages_queued_or_refreshed") or [],
-        },
         "known_architecture_boundaries": {
             "evm_canary_policy_present": callable(getattr(strategy_canary, "route_canary_policy", None)),
             "solana_market_native_canary_export_present": any(
@@ -153,6 +205,67 @@ def build_evidence(app, *, now: int | None = None, operator_urgent: bool = False
             ),
         },
     }
+
+
+def build_full_evidence(app, *, now: int, operator_urgent: bool) -> dict:
+    normal_monitor = pipeline.run_strategy_monitor(app, now=now)
+    strategy_lab.seed_creative_hypotheses(app)
+    portfolio = strategy_lab.portfolio_report(app)
+    targets = _target_rows(portfolio)
+    canary = _canary_rows(app)
+    promoted = {
+        str(row.get("strategy") or "").casefold()
+        for row in canary
+        if str(row.get("stage") or "").upper() in PROMOTED_REAL_MONEY_STAGES
+    }
+    found = {str(row.get("name") or "").casefold() for row in targets}
+    evidence = _base_evidence(now, operator_urgent)
+    evidence.update({
+        "evidence_mode": "FULL_PRODUCTION_DATA",
+        "target_strategies": targets,
+        "missing_target_strategies": [name for name in TARGET_STRATEGIES if name.casefold() not in found],
+        "strategies_not_in_real_money_validation": [name for name in TARGET_STRATEGIES if name.casefold() not in promoted],
+        "target_strategy_lab_trades": sum(int((row.get("metrics") or {}).get("trades") or 0) for row in targets),
+        "canary_state": canary,
+        "shadow_scorecard_24h": _shadow_scorecard(app, now),
+        "normal_strategy_monitor": {
+            "portfolio_kpis": normal_monitor.get("portfolio_kpis") or {},
+            "findings": normal_monitor.get("findings") or [],
+            "packages_queued_or_refreshed": normal_monitor.get("packages_queued_or_refreshed") or [],
+        },
+    })
+    return evidence
+
+
+def build_bridge_evidence(*, now: int, operator_urgent: bool) -> dict:
+    bridges = {name: _read_json(path) for name, path in PRODUCTION_BRIDGES.items()}
+    freshness = {}
+    for name, value in bridges.items():
+        ts = int((value or {}).get("generated_epoch") or (value or {}).get("updated_epoch") or 0)
+        freshness[name] = {"available": bool(value), "generated_epoch": ts, "age_seconds": max(0, now - ts) if ts else None}
+    evidence = _base_evidence(now, operator_urgent)
+    evidence.update({
+        "evidence_mode": "SANITISED_PRODUCTION_BRIDGES",
+        "security_boundary": "GitHub runner cannot read /root production databases; current service-generated 0644 /var/tmp/boot snapshots are used instead.",
+        "target_strategies": _bridge_target_rows(),
+        "missing_target_strategies": [],
+        "strategies_not_in_real_money_validation": list(TARGET_STRATEGIES),
+        "target_strategy_lab_trades": None,
+        "canary_state": [],
+        "canary_state_note": "Protected production canary database is not exposed to the runner; repository code still defines EVM CANARY/PROBATION/ACTIVE and no independent Solana market-native canary adapter.",
+        "shadow_scorecard_24h": {"available": False, "reason": "protected production database; use current funnel bridges"},
+        "normal_strategy_monitor": {"available": False, "reason": "protected production database; urgent review uses service-exported current funnel evidence"},
+        "production_bridge_freshness": freshness,
+        "production_bridges": bridges,
+    })
+    return evidence
+
+
+def build_evidence(app, *, now: int | None = None, operator_urgent: bool = False) -> dict:
+    now = int(now or time.time())
+    if _production_data_accessible(app):
+        return build_full_evidence(app, now=now, operator_urgent=operator_urgent)
+    return build_bridge_evidence(now=now, operator_urgent=operator_urgent)
 
 
 def needs_urgent_review(evidence: dict) -> bool:
@@ -196,10 +309,11 @@ async def force_review(app, package: dict) -> dict:
 
 
 def run(mode: str) -> dict:
-    app = AppSettings.load()
+    production_app = AppSettings.load()
     now = int(time.time())
     force = str(mode).lower() == "force"
-    evidence = build_evidence(app, now=now, operator_urgent=force)
+    evidence = build_evidence(production_app, now=now, operator_urgent=force)
+    review_app = production_app if _production_data_accessible(production_app) else _runner_app(production_app)
     if not needs_urgent_review(evidence):
         return {
             "schema_version": 1,
@@ -210,7 +324,7 @@ def run(mode: str) -> dict:
             "evidence": evidence,
         }
 
-    package = queue_urgent_package(app, evidence, now=now, force=force)
+    package = queue_urgent_package(review_app, evidence, now=now, force=force)
     out: dict[str, Any] = {
         "schema_version": 1,
         "mode": str(mode).upper(),
@@ -218,10 +332,11 @@ def run(mode: str) -> dict:
         "action": "QUEUED_P1_FACTORY_PACKAGE",
         "package": package,
         "evidence": evidence,
+        "review_storage": str(review_app.data_dir),
     }
     if force:
         out["action"] = "REVIEWED_NOW_BY_SEVEN_AGENT_FACTORY"
-        out["review"] = asyncio.run(force_review(app, package))
+        out["review"] = asyncio.run(force_review(review_app, package))
     return out
 
 
