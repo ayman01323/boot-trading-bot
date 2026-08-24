@@ -46,12 +46,17 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
       - name: Build isolated test environment
         shell: bash
         run: |
           set -euo pipefail
           rm -rf "$VENV"
-          python3 -m venv "$VENV"
+          python -m venv "$VENV"
           "$VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
           "$VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
 
