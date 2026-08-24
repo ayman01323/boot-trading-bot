@@ -1,0 +1,178 @@
+{
+  "cycle_id": "1fc7ebb321dc-2026082401-e711ae92",
+  "evidence_gaps": [
+    "No runtime/execution telemetry available this cycle (evidence_status: MISSING_RUNTIME_FORENSICS) \u2014 cannot verify actual realized net P&L, fee ratios, or fill quality by chain.",
+    "No trade_latency or infrastructure snapshot available (no ai-reviews:engineering/ops/latest.json referenced in evidence.json this cycle) \u2014 chain-by-chain latency/infrastructure economics comparison could not be performed and is not attempted here.",
+    "Frequency of EVM gross-only P&L fallback states (profit.py WRAPPED_BASE_INFLOW_ONLY/TOKEN_DELTA_ONLY) is unknown from static code alone \u2014 see proposal evm-net-pnl-fallback-state-audit.",
+    "SHADOW-mode performance data for cross_chain_strategy_signals.py signal families was not observed in this review \u2014 progress toward the profit-factor 1.10 promotion gate is unknown.",
+    "Whether Solana Jupiter /order requests pass slippageBps at request time versus relying only on post-hoc economic guards could not be confirmed with certainty from static reading alone.",
+    "Full root-cause detail of the HOOD incident and the Aug-18 Solana LIVE P&L incident was not fully readable from this checkout (forensic error text was redacted in a later commit), limiting confidence in how completely those incidents' lessons are encoded in current gates."
+  ],
+  "evidence_sha256": "e711ae92b81e3d9535b381586af1ed5d9f13f03514a790dd258bbb26357c9846",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.5,
+      "downside_risk": "None to trading behavior \u2014 this is a measurement-only audit, not a strategy or execution change.",
+      "evidence": [
+        {
+          "detail": "net = gross - gas_native - builder_native computed only in the clean on-chain-delta case",
+          "path": "learnerbot/profit.py:112"
+        },
+        {
+          "detail": "WRAPPED_BASE_INFLOW_ONLY / TOKEN_DELTA_ONLY proof states report net=None or net=gross when a clean net delta cannot be proven, i.e. gas/builder costs are not subtracted for that subset of trades",
+          "path": "learnerbot/profit.py:120-131"
+        }
+      ],
+      "expected_effect": "Quantifying the fallback-state frequency reveals whether current EVM net-P&L reporting materially overstates profitability; if material, motivates a follow-up engineering fix to close the proof gap.",
+      "id": "evm-net-pnl-fallback-state-audit",
+      "minimum_observation": "At least 100 closed EVM trades or 30 days of trade logs, whichever is available first.",
+      "rationale": "If a material share of EVM closed trades fall into the gross-only proof states, reported net P&L is upward-biased for that subset since real gas/builder costs were paid but never subtracted, directly undermining the objective of durable money-weighted NET P&L after fees.",
+      "shadow_test": "Deterministic log audit (no capital at risk): sample the last N closed EVM trades' profit-state field distribution, compute the percentage falling into WRAPPED_BASE_INFLOW_ONLY/TOKEN_DELTA_ONLY vs clean-delta, and report the notional dollar amount affected. Stop condition: none needed, this is a read-only audit, not a live test.",
+      "strategy": "leader-copy-evm",
+      "suggested_files": [
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.4,
+      "downside_risk": "SHADOW evaluation consumes engineering/observation time without guaranteed promotion; premature promotion without sufficient sample would introduce an unvetted live strategy and must not bypass the existing promotion gate.",
+      "evidence": [
+        {
+          "detail": "Module explicitly 'deliberately pure and SHADOW-only'; contains momentum, mean-reversion, arbitrage, and ML-forecast signal evaluators never wired to live execution",
+          "path": "learnerbot/cross_chain_strategy_signals.py:8-21"
+        },
+        {
+          "detail": "Stated objective: bot 'must not depend only on following leader wallets'",
+          "path": "docs/STRATEGY_LAB.md:1-9"
+        },
+        {
+          "detail": "Primary and only LIVE strategy family is leader-wallet copy-trading on both chains",
+          "path": "learnerbot/sibot.py; learnerbot/solana_sibot.py"
+        }
+      ],
+      "expected_effect": "Continued/expanded non-signing SHADOW-mode data collection on cross_chain_strategy_signals.py moves the bot toward the existing STRATEGY_LAB promotion gate (profit factor >= 1.10 plus human approval per docs/STRATEGY_LAB.md:85-90), creating a genuine second live-eligible strategy family and reducing single-signal concentration risk over time.",
+      "id": "promote-cross-chain-quant-signals-shadow-track",
+      "minimum_observation": "At least 4-6 weeks of continuous non-signing SHADOW logging per chain, consistent with the existing STRATEGY_LAB promotion gate's own sufficiency bar (not a new bar).",
+      "rationale": "Current live capital allocation is concentrated in a single signal family (leader-copy) structurally correlated to tracked wallets' own edge decay, detection, or front-running risk. The documented alternative quant signal family remains unpromoted SHADOW-only, so the bot's own stated diversification goal is unmet, leaving no fallback signal source if leader-copy edge degrades.",
+      "shadow_test": "Keep cross_chain_strategy_signals.py evaluators running in non-signing SHADOW mode on both chains; log each signal family's would-be net edge (after modeled fees/slippage/gas) separately from the leader-copy SHADOW baseline. Fail/stop condition: a signal family is dropped from further consideration if it fails to reach the existing profit-factor >= 1.10 gate after the minimum observation window.",
+      "strategy": "cross-chain-quant-signal-family",
+      "suggested_files": [
+        "learnerbot/cross_chain_strategy_signals.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.35,
+      "downside_risk": "Added idempotency/nonce-management complexity could itself introduce bugs (e.g. incorrectly suppressing a legitimate retry) if not carefully tested; must not weaken existing gas-reserve or min-profit checks.",
+      "evidence": [
+        {
+          "detail": "_base_tx fetches nonce via get_transaction_count(address, 'pending') fresh on every call with no idempotency key or fee-bump retry logic for slow/stuck transactions",
+          "path": "learnerbot/live_executor.py:304"
+        },
+        {
+          "detail": "Quarantine only reacts to revert-pattern strikes post-hoc; it does not manage nonce state or dedupe pre-broadcast",
+          "path": "learnerbot/execution_quarantine.py:18-23"
+        }
+      ],
+      "expected_effect": "Reduces incidence of duplicate-fill / stuck-nonce execution failures, improving the EXECUTION/INFRASTRUCTURE component of net P&L without altering signal logic.",
+      "id": "evm-nonce-retry-idempotency-guard",
+      "minimum_observation": "At least 200 simulated concurrent-trigger scenarios, or 2 weeks of execution-quarantine log review, whichever surfaces more concurrent-race events.",
+      "rationale": "Pending-nonce reads without a dedupe/idempotency layer create a plausible path to double-submission or nonce collisions if a transaction is slow to confirm and a retry path fires (watchdog restart, manual re-trigger, concurrent worker race). This would surface as EXECUTION/INFRASTRUCTURE loss (wasted gas, orphaned tx, stuck nonce blocking the queue) rather than a strategy signal problem, and is architecturally plausible though not confirmed by runtime evidence this cycle.",
+      "shadow_test": "In a non-signing SHADOW/testnet harness, simulate concurrent execution triggers against the same nonce slot (deliberately delay confirmation, then fire a second trigger) and count double-submit/stuck-nonce occurrences before vs after adding an idempotency key plus fee-bump-based retry. Stop/fail condition: roll back if the guard suppresses more than 1% of legitimate first-attempt broadcasts in dry-run replay.",
+      "strategy": "execution-infrastructure-evm",
+      "suggested_files": [
+        "learnerbot/shadow_strategy_executor.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.3,
+      "downside_risk": "None from verification itself; if a subsequent fix over-tightens slippage bounds, it could increase failed/unfilled orders in volatile conditions.",
+      "evidence": [
+        {
+          "detail": "_order() calls Jupiter's /order endpoint; static reading did not confirm slippageBps/priority-fee params are explicitly set at request time",
+          "path": "learnerbot/solana_live_executor.py:100-126"
+        },
+        {
+          "detail": "live_order_slippage_bps (default 50bps) and combined-impact ceilings are enforced as a separate, apparently post-hoc, economic guard layer",
+          "path": "learnerbot/solana_execution_efficiency_patch.py:38-51"
+        }
+      ],
+      "expected_effect": "Confirming (and if needed, fixing) that slippageBps is passed at request time would tighten actual execution slippage rather than only bounding it after quoting.",
+      "id": "solana-jupiter-order-slippage-param-verification",
+      "minimum_observation": "N/A for verification; if a fix proceeds to SHADOW testing, at least 100 SHADOW orders per variant.",
+      "rationale": "If slippageBps is only enforced as a post-hoc rejection check rather than passed to Jupiter's own routing at quote/order time, worse-than-necessary fills could still be attempted and only rejected after the fact (or accepted within the post-hoc ceiling but worse than optimal), directly affecting realized slippage cost \u2014 a direct NET P&L driver on Solana.",
+      "shadow_test": "Not applicable for the verification step. If the gap is confirmed, A/B compare fill rate and realized slippage bps in SHADOW mode between request-time-bounded vs current post-hoc-only-bounded order flow.",
+      "strategy": "leader-copy-solana",
+      "suggested_files": [
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.25,
+      "downside_risk": "None from research itself; changing sizing without evidence of intent could re-expose the account to HOOD-style concentration risk if the fixed cap was deliberate.",
+      "evidence": [
+        {
+          "detail": "shadow_allocation_sol is a fixed nominal amount (0.05 SOL) regardless of account capital or opportunity liquidity",
+          "path": "learnerbot/solana_sibot.py:45"
+        },
+        {
+          "detail": "EVM sizing uses allocation_pct, a percentage of chain capital, by contrast",
+          "path": "learnerbot/sibot.py:44"
+        }
+      ],
+      "expected_effect": "Clarifying intent avoids either leaving Solana capital under-deployed as the account grows, or mistakenly recommending a change that removes an intentional post-incident safety constraint.",
+      "id": "solana-fixed-sizing-vs-evm-pct-consistency-check",
+      "minimum_observation": "N/A for the research step.",
+      "rationale": "A fixed-nominal Solana position size does not scale with account capital growth or per-opportunity liquidity/volatility, unlike EVM's percentage-based approach. It is unclear from architecture alone whether this is a deliberate HOOD-incident-driven risk containment choice (learnerbot/solana_pool_risk_gate.py was built from that post-mortem) or a legacy default, which matters for interpreting cross-chain net-P&L comparisons under a like-for-like economic lens.",
+      "shadow_test": "Not applicable for the research step. If ambiguous after reviewing config history/comments around live_max_positions and shadow_allocation_sol, run a SHADOW-only paper comparison of fixed vs liquidity-scaled sizing.",
+      "strategy": "leader-copy-solana",
+      "suggested_files": [
+        "docs/STRATEGY_LAB.md"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Add classical TA indicators (RSI/MACD/moving averages) to the live signal set.",
+      "reason": "No backtest engine exists in this repo to validate such indicators, and there is no runtime evidence that the current leader-copy signal is underperforming; adding indicators without a validation path risks unfounded, unfalsifiable strategy churn."
+    },
+    {
+      "idea": "Immediately switch Solana position sizing to percentage-of-capital to match EVM.",
+      "reason": "The fixed-nominal Solana size may be an intentional post-HOOD-incident containment measure; changing it without confirming intent or running a SHADOW comparison risks reintroducing the concentration risk the HOOD post-mortem was meant to fix."
+    },
+    {
+      "idea": "Recommend a specific wallet/signing architecture change (e.g. HSM, remote signer).",
+      "reason": "Wallet/signing is an explicitly protected domain per repository instructions and outside a pure P&L strategy review's scope; flagged only as an evidence gap, not proposed as a change."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "1fc7ebb321dc1a2232d922d7a877c96c452a3d45",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review (no runtime forensics available this cycle). Primary LIVE strategy is single-family leader-wallet copy-trading on both chains, with a documented diversification goal unmet since the alternative quant signal family remains SHADOW-only. Chain-specific execution cost controls (slippage, gas/priority fees, liquidity/sellability gates) exist and are incident-derived (HOOD post-mortem), but two measurement/infrastructure gaps could distort durable NET P&L: EVM gross-only P&L fallback states, and absent EVM nonce dedupe/retry logic. All proposals are architecture-level hypotheses requiring SHADOW evidence before any live change; no live-readiness or profitability claim is made."
+}
