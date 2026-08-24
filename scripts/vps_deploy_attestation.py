@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -18,9 +19,14 @@ def _git(repo: Path, *args: str) -> str:
 
 
 def _status_ok(text: str) -> bool:
-    low = str(text or "").lower()
-    bad = ("inactive (dead)", "failed", "not running", "stopped")
-    return bool(low.strip()) and not any(x in low for x in bad)
+    """Accept only an explicit systemd-style active/running state.
+
+    Deployment attestation is a safety gate.  A non-empty status payload is not
+    evidence that the service is healthy (for example, "activating" or "unit not
+    found" are both non-empty).  Require the positive running marker instead of
+    trying to enumerate every possible failure string.
+    """
+    return bool(re.search(r"(?im)(?:^|\s)(?:active:\s*)?active\s+\(running\)(?:\s|$)", str(text or "")))
 
 
 def build_attestation(repo: Path, expected_sha: str, status_log: Path | None = None) -> dict:
