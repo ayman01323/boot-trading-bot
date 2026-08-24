@@ -5,7 +5,9 @@ import threading
 
 from . import sibot as _sibot
 from . import sibot_leader_quality_hard_floor_patch as _quality_floor
+from . import solana_live_patch as _sol_live
 from . import telegram_sibot_patch as _tg
+from . import telegram_solana_live_patch as _sol_live_ui
 from . import telegram_ui as _ui
 from .operator_control import audit
 from .user_registry import all_users, require_user, set_user_setting, user_setting
@@ -17,29 +19,27 @@ SOURCE_PRIMARY_MASTER = "PRIMARY_MASTER"
 # Preserve the exact pre-hard-floor settings resolver. The hard-floor wrapper remains
 # the public/final _sibot.user_settings identity; only its inner source is changed.
 _PREV_BASE_USER_SETTINGS = _quality_floor._PREV_USER_SETTINGS
+_PREV_SOLANA_LIVE_LIMITS = _sol_live.live_limits
 _PREV_SETTINGS_PAGE = _tg.settings_page
 _PREV_SETTINGS_KEYBOARD = _tg.settings_keyboard
 _PREV_HANDLE_UPDATE = _ui.handle_update
 
 
 def primary_master_id(csv_dir):
-    """Return the original/first MASTER in users.csv, preferring an ACTIVE one.
+    """Return the original/first MASTER row in users.csv.
 
-    users.csv preserves account insertion order. The original MASTER is therefore
-    the first MASTER row; later-added MASTER accounts never become the source merely
-    because they were activated more recently.
+    users.csv preserves account insertion order. The source is intentionally the
+    first MASTER even if another MASTER was added or activated later. This matches
+    the platform's original-master semantics and prevents a later MASTER from ever
+    becoming the inherited source by accident.
     """
-    masters = [
-        row for row in all_users(csv_dir)
-        if str(row.get("role") or "").strip().upper() == "MASTER"
-        and str(row.get("telegram_id") or "").strip()
-    ]
-    if not masters:
-        return None
-    for row in masters:
-        if str(row.get("status") or "").strip().upper() == "ACTIVE":
+    for row in all_users(csv_dir):
+        if (
+            str(row.get("role") or "").strip().upper() == "MASTER"
+            and str(row.get("telegram_id") or "").strip()
+        ):
             return str(row.get("telegram_id") or "").strip()
-    return str(masters[0].get("telegram_id") or "").strip() or None
+    return None
 
 
 def settings_source(app, telegram_id) -> str:
@@ -56,7 +56,7 @@ def source_telegram_id(app, telegram_id) -> str:
 
 
 def user_settings_with_source_base(app, telegram_id, chain_id=0) -> dict:
-    """Resolve SiBot strategy tuning from SELF or the original MASTER.
+    """Resolve SiBot tuning from SELF or the original MASTER.
 
     Execution authority is deliberately local to the requesting account. Inherited
     settings never copy sibot_enabled or sibot_auto_trade_enabled, so selecting the
@@ -71,6 +71,17 @@ def user_settings_with_source_base(app, telegram_id, chain_id=0) -> dict:
     cfg["_settings_source"] = settings_source(app, tid)
     cfg["_settings_source_tid"] = source_tid
     return cfg
+
+
+def solana_live_limits_with_source(app, telegram_id, cfg=None):
+    """Use the selected SiBot settings source for Solana size/reserve only.
+
+    solana_live_enabled is intentionally not inherited. The account still needs its
+    own LIVE approval/signing wallet; this only lets an ID undo stale per-user
+    2026-08-18 size/reserve overrides by following the original MASTER's values.
+    """
+    source_tid = source_telegram_id(app, telegram_id)
+    return _PREV_SOLANA_LIVE_LIMITS(app, source_tid, cfg)
 
 
 def _source_label(app, tid) -> str:
@@ -89,7 +100,8 @@ def settings_page(app, tid):
     lines = [
         "<b>🧭 SiBot settings</b>",
         f"Source: <b>{html.escape(_source_label(app, tid))}</b>",
-        "Strategy/quality tuning may follow the original Main Master. Your own LIVE, AUTO, wallet and signing permissions always remain separate.",
+        "SiBot strategy/quality tuning and per-user Solana trade-size/reserve overrides may follow the original Main Master.",
+        "Your own LIVE, AUTO, wallet and signing permissions always remain separate.",
     ]
     if not primary:
         lines.append("⚠️ No MASTER account is currently available as a source.")
@@ -153,7 +165,7 @@ def handle_update(app, update):
                 SOURCE_KEY,
                 new,
                 chain_id="*",
-                description="SiBot strategy/quality settings source; execution authority stays per-user",
+                description="SiBot settings source; LIVE/AUTO/wallet/signing authority stays per-user",
             )
             audit(
                 app.csv_dir,
@@ -162,7 +174,7 @@ def handle_update(app, update):
                 SOURCE_KEY,
                 old,
                 new,
-                "Does not change LIVE/AUTO/wallet/signing permissions",
+                "Includes SiBot tuning + Solana size/reserve; does not change LIVE/AUTO/wallet/signing permissions",
             )
             _tg._answer(app, cb, "SiBot settings source updated")
             _refresh_async(app, tid)
@@ -188,11 +200,16 @@ def install():
     # effective settings. This preserves all hard floors/ceilings already audited.
     _quality_floor._PREV_USER_SETTINGS = user_settings_with_source_base
     _tg.user_settings = _sibot.user_settings
+    _sol_live.live_limits = solana_live_limits_with_source
+    _sol_live_ui.live_limits = solana_live_limits_with_source
     _tg.settings_page = settings_page
     _tg.settings_keyboard = settings_keyboard
     _ui.handle_update = handle_update
     _ui._sibot_settings_source_patch_installed = True
-    print("[sibot-settings-source] self-or-primary-master tuning enabled; execution gates remain per-user")
+    print(
+        "[sibot-settings-source] self-or-primary-master tuning enabled; "
+        "solana_size_reserve_source_enabled=true execution_gates_remain_per_user=true"
+    )
 
 
 install()
