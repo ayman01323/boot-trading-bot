@@ -73,10 +73,20 @@ def test_openai_council_uses_responses_api_and_parses_text(monkeypatch) -> None:
 
 def test_gemini_direct_api_retries_429_without_leaking_key(monkeypatch) -> None:
     calls = []
+    inference_attempts = 0
 
     def fake_http(url, *, headers, payload=None, method=None, timeout=90):
-        calls.append(url)
-        if len(calls) == 1:
+        nonlocal inference_attempts
+        calls.append((url, dict(headers), payload))
+        if url.endswith("/models"):
+            return 200, {
+                "models": [{
+                    "name": "models/gemini-3.5-flash-lite",
+                    "supportedGenerationMethods": ["generateContent"],
+                }]
+            }, "", {}
+        inference_attempts += 1
+        if inference_attempts == 1:
             return 429, {"error": {"message": "quota busy"}}, "quota busy", {"Retry-After": "1"}
         return 200, {
             "candidates": [{"content": {"parts": [{"text": "gemini answer"}]}}]
@@ -86,13 +96,16 @@ def test_gemini_direct_api_retries_429_without_leaking_key(monkeypatch) -> None:
     monkeypatch.setattr(http_patch.time, "sleep", lambda _: None)
     rc, out, err = http_patch._call_gemini(
         "question",
-        {"GEMINI_API_KEY": "gemini-secret", "GEMINI_COUNCIL_MODEL": "gemini-3.7-flash"},
+        {"GEMINI_API_KEY": "gemini-secret", "GEMINI_COUNCIL_MODEL": "gemini-3.5-flash-lite"},
     )
     assert rc == 0
     assert out == "gemini answer"
     assert err == ""
-    assert len(calls) == 2
-    assert "gemini-secret" in calls[0]
+    assert inference_attempts == 2
+    assert len(calls) == 3
+    for url, headers, _ in calls:
+        assert "gemini-secret" not in url
+        assert headers.get("x-goog-api-key") == "gemini-secret"
 
 
 def test_claude_discovers_sonnet_and_uses_messages_api(monkeypatch) -> None:

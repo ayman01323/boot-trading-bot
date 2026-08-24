@@ -8,12 +8,14 @@ from pathlib import Path
 
 from learnerbot.ai_cost_provider_patch import call_provider
 
-_ALLOWED_PROVIDERS = {"deepseek", "gemini", "grok", "copilot"}
+_ALLOWED_PROVIDERS = {"deepseek", "gemini", "grok", "kimi", "copilot"}
 _MESSAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 _SECRET_ENV_KEYS = (
     "DEEPSEEK_API_KEY",
     "GEMINI_API_KEY",
     "XAI_API_KEY",
+    "KIMI_API_KEY",
+    "MOONSHOT_API_KEY",
     "COPILOT_ASSIGN_TOKEN",
     "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN",
@@ -143,6 +145,19 @@ def relay(provider: str, message_id: str, source_sha: str, incoming: str) -> str
     )
 
 
+def _blocked_reply(provider: str, message_id: str, exc: Exception) -> str:
+    provider = str(provider or "").strip().lower()
+    prefix = provider.upper() + "_TO_GPT"
+    detail = _redact(f"{type(exc).__name__}: {exc}")
+    return (
+        f"{prefix}\n"
+        f"in_reply_to: {message_id}\n"
+        "status: BLOCKED\n"
+        "provider_return_code: 1\n\n"
+        f"Provider relay exception: {detail or 'unknown error'}\n"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Relay one bounded GPT mailbox message to an AI provider.")
     parser.add_argument("--provider", required=True, choices=sorted(_ALLOWED_PROVIDERS))
@@ -153,7 +168,13 @@ def main() -> int:
     args = parser.parse_args()
 
     incoming = Path(args.input).read_text(encoding="utf-8", errors="replace")
-    reply = relay(args.provider, args.message_id, args.source_sha, incoming)
+    try:
+        reply = relay(args.provider, args.message_id, args.source_sha, incoming)
+    except Exception as exc:
+        # Return a sanitised diagnostic reply instead of making the workflow
+        # collapse to an opaque rc=1. The caller still sees BLOCKED and no
+        # protected authority is granted.
+        reply = _blocked_reply(args.provider, args.message_id, exc)
     Path(args.output).write_text(reply, encoding="utf-8")
     return 0
 

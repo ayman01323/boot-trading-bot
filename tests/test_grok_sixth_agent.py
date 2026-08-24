@@ -22,10 +22,17 @@ def test_grok_provider_remains_in_council_and_under_kimi_chain() -> None:
     assert kimi_provider._BASE_HTTP_CALL is grok_provider.call_provider
 
 
-def test_grok_uses_bounded_xai_chat_completions(monkeypatch) -> None:
+def test_grok_uses_bounded_xai_chat_completions_and_falls_forward(monkeypatch) -> None:
     seen = {}
 
     def fake_http(url, *, headers, payload=None, method=None, timeout=90):
+        if url.endswith("/models"):
+            return 200, {
+                "data": [
+                    {"id": "grok-4.6"},
+                    {"id": "grok-4.20-0309-non-reasoning"},
+                ]
+            }, "", {}
         seen["url"] = url
         seen["headers"] = headers
         seen["payload"] = payload
@@ -34,14 +41,33 @@ def test_grok_uses_bounded_xai_chat_completions(monkeypatch) -> None:
     monkeypatch.setattr(grok_provider._http, "_http_json", fake_http)
     rc, out, err = grok_provider.call_grok(
         "question",
-        {"XAI_API_KEY": "xai-secret", "XAI_COUNCIL_MODEL": "grok-test"},
+        {"XAI_API_KEY": "xai-secret", "XAI_COUNCIL_MODEL": "grok-stale"},
     )
     assert rc == 0
     assert out == "grok answer"
     assert err == ""
     assert seen["url"] == "https://api.x.ai/v1/chat/completions"
     assert seen["headers"]["Authorization"] == "Bearer xai-secret"
-    assert seen["payload"]["model"] == "grok-test"
+    assert seen["payload"]["model"] == "grok-4.20-0309-non-reasoning"
+
+
+def test_grok_alias_resolves_to_current_canonical_model(monkeypatch) -> None:
+    monkeypatch.setattr(
+        grok_provider._http,
+        "_http_json",
+        lambda *a, **k: (
+            200,
+            {"data": [{"id": "grok-4.20-0309-non-reasoning"}]},
+            "",
+            {},
+        ),
+    )
+    model, error = grok_provider._discover_grok_model(
+        "key",
+        {"XAI_COUNCIL_MODEL": "grok-4.20-non-reasoning"},
+    )
+    assert model == "grok-4.20-0309-non-reasoning"
+    assert error == ""
 
 
 def test_grok_missing_key_is_explicit() -> None:
