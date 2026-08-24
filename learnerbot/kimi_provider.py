@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from . import ai_council as _council
@@ -43,13 +42,44 @@ def _base_url(env: dict[str, str]) -> str:
     ).strip().rstrip("/")
 
 
-def _model(env: dict[str, str]) -> str:
+def _configured_model(env: dict[str, str]) -> str:
     return str(
         env.get("KIMI_COUNCIL_MODEL")
         or env.get("MOONSHOT_COUNCIL_MODEL")
         or env.get("KIMI_MASTER_MODEL")
         or _DEFAULT_MODEL
     ).strip()
+
+
+def _discover_kimi_model(key: str, env: dict[str, str]) -> tuple[str, str]:
+    requested = _configured_model(env)
+    status, body, raw, _ = _http._http_json(
+        f"{_base_url(env)}/models",
+        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+    )
+    if not (200 <= status < 300) or not isinstance(body, dict):
+        # Keep an explicitly configured/default model usable when the catalogue
+        # endpoint is transiently unavailable; the inference call will then
+        # return the provider's precise model error if it is genuinely stale.
+        return (requested, "") if requested else ("", _http._error_detail(status, body, raw, env))
+
+    ids = [
+        str(row.get("id") or "")
+        for row in (body.get("data") or [])
+        if isinstance(row, dict) and str(row.get("id") or "")
+    ]
+    if requested in ids:
+        return requested, ""
+    for model_id in ids:
+        if model_id.lower().startswith("kimi-k2.6"):
+            return model_id, ""
+    for model_id in ids:
+        if model_id.lower().startswith("kimi-k2"):
+            return model_id, ""
+    for model_id in ids:
+        if "kimi" in model_id.lower():
+            return model_id, ""
+    return "", "Moonshot returned no Kimi chat model"
 
 
 def call_kimi(prompt: str, env: dict[str, str] | None = None) -> tuple[int, str, str]:
@@ -59,7 +89,9 @@ def call_kimi(prompt: str, env: dict[str, str] | None = None) -> tuple[int, str,
     if not key:
         return 90, "", "KIMI_API_KEY or MOONSHOT_API_KEY missing from SiBot runtime"
 
-    model = _model(env)
+    model, discovery_error = _discover_kimi_model(key, env)
+    if not model:
+        return 92, "", discovery_error or "No Kimi model available"
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": str(prompt or "")}],
