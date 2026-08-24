@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from learnerbot.config import AppSettings, load_chains, load_dex_registry, load_kv_scoped
 
@@ -32,11 +34,39 @@ def _bool(value: str | None, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
 
 
+def _enabled_apex_provider(path: Path, chain_slug: str) -> dict[str, str] | None:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    matches = []
+    for row in rows:
+        if (row.get("chain") or "").strip().lower() != chain_slug.strip().lower():
+            continue
+        if not _bool(row.get("enabled"), False):
+            continue
+        url = (row.get("rpc_url") or "").strip()
+        if not url:
+            continue
+        try:
+            priority = int((row.get("priority") or "999").strip())
+        except ValueError:
+            priority = 999
+        matches.append((priority, row))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0])
+    return {str(k): str(v or "") for k, v in matches[0][1].items()}
+
+
 @dataclass(frozen=True)
 class EvmV2DryRunSettings:
     chain_id: int
     chain_slug: str
     rpc_url: str
+    rpc_provider: str
+    rpc_api_key_env: str | None
+    rpc_auth_header: str
     wrapped_base_address: str
     router_address: str
     simulation_from: str | None
@@ -62,10 +92,22 @@ def load_evm_v2_dry_run_settings(app: AppSettings, chain_slug: str) -> EvmV2DryR
         raise BasicEngineCsvError(f"chain is not EVM: {chain.slug}")
     if not chain.enabled:
         raise BasicEngineCsvError(f"chain disabled in chains.csv: {chain.slug}")
-    if not chain.rpc_urls:
-        raise BasicEngineCsvError(f"no enabled RPC in rpc_endpoints.csv for {chain.slug}")
     if not chain.wrapped_base_address:
         raise BasicEngineCsvError(f"wrapped base missing in chains.csv for {chain.slug}")
+
+    provider = _enabled_apex_provider(app.csv_dir / "apex_rpc_providers.csv", chain.slug)
+    if provider is not None:
+        rpc_url = (provider.get("rpc_url") or "").strip()
+        rpc_provider = (provider.get("provider") or "apex_csv").strip() or "apex_csv"
+        rpc_api_key_env = (provider.get("api_key_env") or "").strip() or None
+    else:
+        if not chain.rpc_urls:
+            raise BasicEngineCsvError(
+                f"no enabled provider in apex_rpc_providers.csv or rpc_endpoints.csv for {chain.slug}"
+            )
+        rpc_url = chain.rpc_urls[0]
+        rpc_provider = "rpc_endpoints_fallback"
+        rpc_api_key_env = None
 
     venues = [
         row
@@ -114,14 +156,16 @@ def load_evm_v2_dry_run_settings(app: AppSettings, chain_slug: str) -> EvmV2DryR
     if probe_divisor < 10:
         raise BasicEngineCsvError("reference_probe_divisor must be at least 10")
 
-    simulation_from = (scoped.get("simulation_from") or "").strip() or None
     return EvmV2DryRunSettings(
         chain_id=chain.chain_id,
         chain_slug=chain.slug,
-        rpc_url=chain.rpc_urls[0],
+        rpc_url=rpc_url,
+        rpc_provider=rpc_provider,
+        rpc_api_key_env=rpc_api_key_env,
+        rpc_auth_header=(scoped.get("rpc_auth_header") or "X-API-Key").strip() or "X-API-Key",
         wrapped_base_address=chain.wrapped_base_address,
         router_address=(venue.get("router") or "").strip(),
-        simulation_from=simulation_from,
+        simulation_from=(scoped.get("simulation_from") or "").strip() or None,
         enabled=_bool(scoped.get("enabled"), False),
         input_amount_native=input_amount,
         min_net_profit_native=min_profit,
