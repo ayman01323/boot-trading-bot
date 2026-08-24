@@ -42,9 +42,9 @@ jobs:
   rescue:
     needs: probe
     runs-on: ubuntu-latest
-    timeout-minutes: 7
+    timeout-minutes: 9
     steps:
-      - name: Clear stale VPS queue, dispatch current main, publish result
+      - name: Drain queued boot-vps work, dispatch current main, publish result
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -56,56 +56,65 @@ jobs:
           echo "rescue_run_id=${GITHUB_RUN_ID}" >> "$out"
           echo "trigger_sha=${GITHUB_SHA}" >> "$out"
 
-          cancel_runs() {
-            workflow="$1"; state="$2"; kind="$3"
-            ids="$(gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=${state}&per_page=100" \
-              --jq '.workflow_runs[].id' 2>>"$out")"
-            query_rc=$?
-            if [[ $query_rc -ne 0 ]]; then
-              echo "query_failed workflow=${workflow} state=${state} rc=${query_rc}" >> "$out"
-              return 0
-            fi
-            while read -r run_id; do
-              [[ -n "$run_id" ]] || continue
-              echo "cancel ${kind} workflow=${workflow} state=${state} run_id=${run_id}" | tee -a "$out"
-              gh api --method POST -H 'Accept: application/vnd.github+json' \
-                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>>"$out"
-              echo "cancel_rc=$? run_id=${run_id}" >> "$out"
-            done <<< "$ids"
+          cancel_run() {
+            run_id="$1"; kind="$2"; state="$3"
+            [[ -n "$run_id" ]] || return 0
+            echo "cancel ${kind} state=${state} run_id=${run_id}" | tee -a "$out"
+            gh api --method POST -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>>"$out"
+            echo "cancel_rc=$? run_id=${run_id}" >> "$out"
           }
 
-          # AI recovery is report-only and explicitly disposable when production
-          # needs the single boot-vps runner. It may be cancelled even in progress.
+          # The long AI recovery workflow is report-only and may be released even
+          # if it is currently running so production deployment can use boot-vps.
           for state in requested waiting pending queued in_progress; do
-            cancel_runs selfhosted-five-agent-recovery.yml "$state" recovery
+            ids="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>>"$out")"
+            while read -r run_id; do
+              [[ -n "$run_id" ]] || continue
+              cancel_run "$run_id" recovery "$state"
+            done <<< "$ids"
           done
 
-          # Known stale run: deployment job already cancelled; only proof work was left.
-          echo "cancel proved_stale_run=32673081630" >> "$out"
-          gh api --method POST -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/32673081630/cancel" >/dev/null 2>>"$out"
-          echo "proved_stale_cancel_rc=$?" >> "$out"
-
-          # Never cancel an in-progress deployment/operation. Clear only non-running
-          # queue states, including GitHub's 'pending' state that the old rescue missed.
-          for workflow in \
-            deploy-vps.yml \
-            final-deploy-v2.yml \
-            deploy-current-main-direct.yml \
-            deploy-current-main-pr-isolated.yml \
-            deploy-current-main-trigger.yml \
-            server-ops.yml \
-            deepseek-vps-controlled-ops.yml \
-            claude-vps-controlled-ops.yml \
-            learnerbot-recovery-restart.yml \
-            sibot-history-depth-ci.yml; do
-            for state in requested waiting pending queued; do
-              cancel_runs "$workflow" "$state" stale_queue
-            done
+          # Generic queued-only drain: inspect every non-running workflow run and
+          # cancel it only when one of its queued jobs is explicitly labelled boot-vps.
+          # This avoids brittle workflow-name lists while never cancelling an
+          # in-progress deployment or other active VPS operation.
+          for state in requested waiting pending queued; do
+            ids="$(gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>>"$out")"
+            while read -r run_id; do
+              [[ -n "$run_id" ]] || continue
+              [[ "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+              boot_jobs="$(gh api -H 'Accept: application/vnd.github+json' \
+                "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?per_page=100" \
+                --jq '[.jobs[] | select(.status=="queued" and (.labels | index("boot-vps")))] | length' \
+                2>>"$out")"
+              jobs_rc=$?
+              if [[ $jobs_rc -ne 0 ]]; then
+                echo "job_query_failed run_id=${run_id} state=${state} rc=${jobs_rc}" >> "$out"
+                continue
+              fi
+              if [[ "${boot_jobs:-0}" =~ ^[0-9]+$ && "$boot_jobs" -gt 0 ]]; then
+                cancel_run "$run_id" queued_boot_vps "$state"
+              fi
+            done <<< "$ids"
           done
 
-          sleep 5
+          # Record the runner state directly from GitHub so a persistent queue can
+          # be distinguished from an offline/busy self-hosted runner.
+          echo "runner_snapshot_begin" >> "$out"
+          gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100" \
+            --jq '.runners[] | select([.labels[].name] | index("boot-vps")) | "runner name=\(.name) status=\(.status) busy=\(.busy)"' \
+            >>"$out" 2>>"$out"
+          runner_rc=$?
+          echo "runner_snapshot_rc=${runner_rc}" >> "$out"
+          echo "runner_snapshot_end" >> "$out"
+
+          sleep 3
           latest="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha' 2>>"$out")"
           latest_rc=$?
           echo "dispatch_target_sha=${latest}" | tee -a "$out"
