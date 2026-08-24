@@ -1,0 +1,53 @@
+name: Temporary Central Report Model CI
+
+on:
+  push:
+    branches: [gpt/live-central-report-model]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Compile new scheduler code
+        run: |
+          python -m py_compile \
+            learnerbot/report_schedule_control.py \
+            learnerbot/telegram_report_schedule_patch.py \
+            scripts/central_report_scheduler.py
+      - name: Run scheduler contract tests
+        run: |
+          python -m pip install -q pytest
+          python -m pytest -q tests/test_report_schedule_control.py
+      - name: Assert legacy fast report roots are removed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for p in \
+            .github/workflows/monitor-factory-operations.yml \
+            .github/workflows/hourly-three-agent-strategy-cycle.yml \
+            .github/workflows/weekly-three-agent-bug-audit.yml \
+            .github/workflows/selected-ai-master.yml \
+            .github/workflows/strategy-resilient-master.yml \
+            .github/workflows/weekly-resilient-master.yml \
+            .github/workflows/gpt-master-cycle-dispatcher.yml \
+            .github/workflows/four-agent-strategy-master.yml; do
+            test ! -e "$p" || { echo "legacy root still exists: $p"; exit 1; }
+          done
+          grep -F "cron: '11 */4 * * *'" .github/workflows/ai-provider-preflight.yml
+          grep -F "cron: '23 */6 * * *'" .github/workflows/ai-agent-recovery.yml
+          grep -F '"trade": 4' learnerbot/report_schedule_control.py
+          grep -F '"factory": {' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 6' learnerbot/report_schedule_control.py
+          grep -F '"engineering": {' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 48' learnerbot/report_schedule_control.py
+          grep -F '"seven_agent": {' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 168' learnerbot/report_schedule_control.py
