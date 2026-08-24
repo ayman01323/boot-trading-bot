@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict
 from contextlib import closing
 from decimal import Decimal
 
+from . import solana_position_history_patch as _position_history  # noqa: F401
 from . import solana_sibot as _sol
 
 _HARD_COPIED_PROFIT_FACTOR = Decimal("1.50")
@@ -14,10 +16,10 @@ _HARD_MIN_COPIED_TRADES = 2
 _SOL_QUALITY_DEFAULTS = {
     "require_complete_history": ("true", "Require non-truncated reconstructed Solana history for LIVE leaders"),
     "min_profit_factor": ("1.75", "Minimum historical SOL gross-profit/gross-loss ratio for leaders"),
-    "recent_trade_window": ("20", "Recent Solana closed trades used for regime-change checks"),
-    "min_recent_win_rate_pct": ("65", "Minimum recent Solana positive-trade percentage"),
-    "min_recent_profit_factor": ("1.50", "Minimum recent Solana profit factor"),
-    "max_leader_drawdown_pct": ("20", "Maximum reconstructed Solana leader equity drawdown"),
+    "recent_trade_window": ("20", "Recent Solana closed positions used for regime-change checks"),
+    "min_recent_win_rate_pct": ("65", "Minimum recent Solana positive-position percentage"),
+    "min_recent_profit_factor": ("1.50", "Minimum recent Solana position-level profit factor"),
+    "max_leader_drawdown_pct": ("20", "Maximum reconstructed Solana leader position-level equity drawdown"),
     "leader_recent_activity_hours": ("6", "Prefer otherwise-qualified Solana leaders observed trading within this many hours"),
     "min_copied_trades_for_guard": ("2", "Minimum closed LIVE copies before copied-performance amount gate applies"),
     "min_copied_win_rate_pct": ("50", "Minimum actual Solana LIVE copied win rate"),
@@ -58,37 +60,103 @@ def _drawdown(rows):
     return worst
 
 
+def _stats(values):
+    profit = sum((_d(r["net_sol"]) for r in values if _d(r["net_sol"]) > 0), Decimal(0))
+    loss = sum((-_d(r["net_sol"]) for r in values if _d(r["net_sol"]) < 0), Decimal(0))
+    wins = sum(1 for r in values if _d(r["net_sol"]) > 0)
+    losses = sum(1 for r in values if _d(r["net_sol"]) < 0)
+    closed = len(values)
+    return {
+        "profit": profit,
+        "loss": loss,
+        "net": profit - loss,
+        "closed": closed,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": Decimal(wins * 100) / Decimal(closed) if closed else Decimal(0),
+        "profit_factor": _pf(profit, loss),
+    }
+
+
+def _balance_proven_positions(fragments):
+    grouped = defaultdict(list)
+    for row in fragments:
+        pid = str(row.get("position_id") or "")
+        if pid and int(row.get("position_closed") or 0) == 1:
+            grouped[pid].append(row)
+    positions = []
+    for pid, rows in grouped.items():
+        close_ts = max((int(r.get("sell_ts") or 0) for r in rows), default=0)
+        close_signature = max(
+            (str(r.get("sell_signature") or "") for r in rows if int(r.get("sell_ts") or 0) == close_ts),
+            default="",
+        )
+        positions.append({
+            "position_id": pid,
+            "cost_sol": sum((_d(r.get("cost_sol"), 0) for r in rows), Decimal(0)),
+            "net_sol": sum((_d(r.get("net_sol"), 0) for r in rows), Decimal(0)),
+            "sell_ts": close_ts,
+            "close_signature": close_signature,
+            "fragments": len(rows),
+        })
+    positions.sort(key=lambda p: (int(p["sell_ts"]), str(p["close_signature"]), str(p["position_id"])))
+    return positions
+
+
 def quality_metrics(app, wallet, cfg):
     lookback = max(1, min(365, _i(cfg.get("lookback_days"), 60)))
     cutoff = int(time.time()) - lookback * 86400
     recent_n = max(5, min(100, _i(cfg.get("recent_trade_window"), 20)))
     with closing(_sol.connect(app)) as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT cost_sol,net_sol,sell_ts FROM trades WHERE wallet=? AND sell_ts>=? ORDER BY sell_ts",
-            (str(wallet), cutoff),
+        fragments_all = [dict(r) for r in conn.execute(
+            """SELECT wallet,mint,buy_signature,sell_signature,buy_ts,sell_ts,cost_sol,net_sol,
+                      position_id,position_closed
+               FROM trades WHERE wallet=? ORDER BY sell_ts,sell_signature""",
+            (str(wallet),),
         ).fetchall()]
-        hs = conn.execute("SELECT truncated,error FROM history_status WHERE wallet=?", (str(wallet),)).fetchone()
+        hs = conn.execute(
+            "SELECT truncated,error,position_metrics_version FROM history_status WHERE wallet=?",
+            (str(wallet),),
+        ).fetchone()
         candidate = conn.execute("SELECT last_seen FROM candidates WHERE wallet=?", (str(wallet),)).fetchone()
-    def stats(values):
-        profit = sum((_d(r["net_sol"]) for r in values if _d(r["net_sol"]) > 0), Decimal(0))
-        loss = sum((-_d(r["net_sol"]) for r in values if _d(r["net_sol"]) < 0), Decimal(0))
-        wins = sum(1 for r in values if _d(r["net_sol"]) > 0)
-        closed = len(values)
-        return {
-            "profit": profit, "loss": loss, "net": profit-loss, "closed": closed,
-            "win_rate": Decimal(wins * 100) / Decimal(closed) if closed else Decimal(0),
-            "profit_factor": _pf(profit, loss),
-        }
-    all_s = stats(rows); recent = stats(rows[-recent_n:])
-    trade_last = max((int(r.get("sell_ts") or 0) for r in rows), default=0)
+
+    fragments = [r for r in fragments_all if int(r.get("sell_ts") or 0) >= cutoff]
+    fragment_s = _stats(fragments)
+    exact = bool(
+        hs
+        and int(hs["position_metrics_version"] or 0) >= _position_history._POSITION_METRICS_VERSION
+    )
+
+    if exact:
+        positions_all = _balance_proven_positions(fragments_all)
+        values = [p for p in positions_all if int(p.get("sell_ts") or 0) >= cutoff]
+        recent_values = values[-recent_n:]
+        measurement_unit = "balance_proven_closed_positions"
+    else:
+        # Existing rows are kept on their historical measurement temporarily while
+        # the ordinary history worker refreshes them. This avoids a sudden leader
+        # blackout, but never labels timestamp-grouped fragments as exact positions.
+        values = fragments
+        recent_values = values[-recent_n:]
+        measurement_unit = "legacy_fragments_pending_refresh"
+
+    all_s = _stats(values)
+    recent = _stats(recent_values)
+    trade_last = max((int(r.get("sell_ts") or 0) for r in fragments_all), default=0)
     candidate_last = int(candidate["last_seen"] or 0) if candidate else 0
     all_s.update({
-        "drawdown_pct": _drawdown(rows),
+        "drawdown_pct": _drawdown(values),
         "recent_closed": recent["closed"],
         "recent_win_rate": recent["win_rate"],
         "recent_profit_factor": recent["profit_factor"],
         "history_complete": bool(hs and not int(hs["truncated"] or 0) and not str(hs["error"] or "").strip()),
         "last_activity_ts": max(trade_last, candidate_last),
+        "position_closed": all_s["closed"] if exact else 0,
+        "fragment_closed": fragment_s["closed"],
+        "fragment_win_rate": fragment_s["win_rate"],
+        "fragment_profit_factor": fragment_s["profit_factor"],
+        "position_metrics_exact": exact,
+        "measurement_unit": measurement_unit,
     })
     return all_s
 
@@ -164,9 +232,6 @@ def _copied_ok(app, tid, wallet, cfg):
         min_pf = max(_HARD_COPIED_PROFIT_FACTOR, _d(cfg.get("min_copied_profit_factor"), "1.50"))
         if m["win_rate"] < min_win:
             return False
-        # Amount is primary: copied gross profit must exceed copied gross loss by
-        # the configured safety factor. This permits fewer but larger winners while
-        # rejecting a strategy whose win count looks acceptable but loses more SOL.
         if m["gross_profit_sol"] <= m["gross_loss_sol"] * min_pf:
             return False
         if m["net_sol"] <= 0 or m["profit_factor"] < min_pf:
@@ -175,8 +240,6 @@ def _copied_ok(app, tid, wallet, cfg):
 
 
 def refresh_rankings(app, telegram_id=None):
-    # Let the original function preserve the broad positive-net Top-20 research,
-    # then replace only each user's automatic leader set with stricter evidence.
     top = _PREV_REFRESH(app, telegram_id)
     cfg = _sol.settings(app)
     users = [u for u in _sol.all_users(app.csv_dir, enabled_only=True) if str(u.get("status") or "").upper()=="ACTIVE"]
@@ -189,10 +252,6 @@ def refresh_rankings(app, telegram_id=None):
         if _historical_ok(m, cfg):
             qualified.append((a, m))
 
-    # Profitability remains mandatory. Within that qualified pool, prefer wallets
-    # observed trading recently so leader slots are less likely to be occupied by
-    # excellent but currently inactive wallets. If there are not enough recently
-    # active wallets, older qualified leaders still fill the remaining slots.
     now = int(time.time())
     activity_hours = max(1, min(168, _i(cfg.get("leader_recent_activity_hours"), 6)))
     activity_cutoff = now - activity_hours * 3600
