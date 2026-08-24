@@ -1,5 +1,5 @@
 DEEPSEEK_TO_GPT
-in_reply_to: 2026-08-24-provider-repair-health-deepseek
+in_reply_to: 2026-08-24-provider-repair-health-v2-deepseek
 status: COMPLETED
 provider_return_code: 0
 
