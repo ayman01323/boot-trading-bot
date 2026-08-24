@@ -9,51 +9,42 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
   rescue:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Cancel non-trading recovery occupancy
+      - name: Clear stale VPS queue and dispatch current main
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          out=/tmp/vps-rescue.txt
+          : > "$out"
+          echo "generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$out"
+          echo "rescue_run_id=${GITHUB_RUN_ID}" >> "$out"
+
           for state in queued in_progress; do
             gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/selfhosted-five-agent-recovery.yml/runs?status=${state}&per_page=100" \
               --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
                 [[ -n "$run_id" ]] || continue
-                echo "Cancelling AI recovery occupancy ${run_id} (${state})"
+                echo "cancel recovery run_id=${run_id} state=${state}" | tee -a "$out"
                 gh api --method POST -H 'Accept: application/vnd.github+json' \
                   "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
               done
           done
 
-      - name: Cancel proved-stale old deploy-vps run
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # Run 32673081630 has a completed/cancelled deploy job and only a stale
-          # queued post-deploy Claude proof job. Cancelling it cannot interrupt a
-          # live deployment or the learnerbot service.
+          # This old run has no live deploy step; its deploy job was already
+          # cancelled and only a queued post-deploy proof job remained.
+          echo "cancel proved_stale_run=32673081630" >> "$out"
           gh api --method POST -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/runs/32673081630/cancel" >/dev/null 2>&1 || true
 
-      - name: Cancel stale queued VPS jobs before current-main deploy
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
           # Queued only: never cancel a deployment or diagnostic that has started.
-          # sibot-history-depth-ci is compile/read-only test work and can be safely
-          # rescheduled after the production write-off deploy is complete.
           for workflow in \
             deploy-vps.yml \
             final-deploy-v2.yml \
@@ -69,19 +60,26 @@ jobs:
               "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
               --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
                 [[ -n "$run_id" ]] || continue
-                echo "Cancelling stale queued ${workflow} run ${run_id}"
+                echo "cancel queued workflow=${workflow} run_id=${run_id}" | tee -a "$out"
                 gh api --method POST -H 'Accept: application/vnd.github+json' \
                   "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
               done
           done
-          sleep 5
 
-      - name: Dispatch one restricted current-main deployment
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
+          sleep 5
           latest="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')"
-          echo "Dispatching restricted server-ops deploy_main for current main ${latest}"
+          echo "dispatch_target_sha=${latest}" | tee -a "$out"
           gh workflow run server-ops.yml --ref main -f operation=deploy_main
+          echo "dispatch_requested=true" >> "$out"
+
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-vps-rescue.txt"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$out")"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/rescue-put.json
+          import json,sys
+          d={'message':'Update VPS rescue attestation','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: d['sha']=sys.argv[2]
+          print(json.dumps(d))
+          PY
+          gh api -X PUT "$api" --input /tmp/rescue-put.json >/dev/null
+          cat "$out"
