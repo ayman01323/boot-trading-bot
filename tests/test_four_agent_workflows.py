@@ -6,33 +6,23 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_claude_workflow_uses_secret_plan_mode_same_cycle_and_clean_workspace() -> None:
-    text = (ROOT / ".github/workflows/claude-fourth-strategy-agent.yml").read_text(encoding="utf-8")
-    assert "secrets.ANTHROPIC_API_KEY" in text
-    assert "@anthropic-ai/claude-code@latest" in text
-    assert "--permission-mode plan" in text
-    assert '"provider":"claude"' in text
-    assert '"scope":"MULTI_AGENT_STRATEGY_REVIEW"' in text
-    assert "evidence_sha256" in text
-    assert "no_live_changes" in text
-    assert "['git','status','--porcelain']" in text
-    assert "Claude reviewer changed tracked/out-of-scope files" in text
+def test_claude_is_available_in_central_factory_and_rotation_without_own_cron() -> None:
+    assert not (ROOT / ".github/workflows/claude-fourth-strategy-agent.yml").exists()
+    assert not (ROOT / ".github/workflows/claude-fourth-engineering-agent.yml").exists()
+    central = (ROOT / "scripts/central_report_scheduler.py").read_text(encoding="utf-8")
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in central
+    assert 'NON_GPT_REVIEWERS = tuple(a for a in AGENTS if a != "gpt")' in central
+    assert 'reviewer = NON_GPT_REVIEWERS[rotation_slot % len(NON_GPT_REVIEWERS)]' in central
+    assert 'ops._ask("gpt", gpt_prompt' in central
 
 
-def test_legacy_four_agent_master_delegates_to_selected_resilient_master() -> None:
-    legacy = (ROOT / ".github/workflows/four-agent-strategy-master.yml").read_text(encoding="utf-8")
-    selected = (ROOT / ".github/workflows/selected-ai-master.yml").read_text(encoding="utf-8")
-    runner = (ROOT / "scripts/resilient_selected_master.py").read_text(encoding="utf-8")
-    fallback = (ROOT / "scripts/resilient_selected_master_v2.py").read_text(encoding="utf-8")
-
-    assert "selected-ai-master.yml" in legacy
-    assert "lane=strategy" in legacy
-    assert "Four-agent completion is no longer required" in legacy
-    assert "matrix:" in selected and "strategy, engineering" in selected
-    assert 'if [[ "$count" == 0 ]]' in selected
-    assert '"minimum_valid_reports_to_continue": 1' in runner
-    assert '_FALLBACK = ("gpt", "claude", "gemini", "deepseek", "grok", "copilot")' in fallback
-    assert '"live_auto_deploy": False' in runner
+def test_old_four_agent_master_is_retired_and_factory_uses_seven_agents() -> None:
+    assert not (ROOT / ".github/workflows/four-agent-strategy-master.yml").exists()
+    assert not (ROOT / ".github/workflows/selected-ai-master.yml").exists()
+    central = (ROOT / "scripts/central_report_scheduler.py").read_text(encoding="utf-8")
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in central
+    assert "ops._panel_for = lambda package: list(AGENTS)" in central
+    assert 'out["master"] = "gpt"' in central
 
 
 def test_legacy_auto_code_gate_is_disabled_without_four_agent_evidence() -> None:

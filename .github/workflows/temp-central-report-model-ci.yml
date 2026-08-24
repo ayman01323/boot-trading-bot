@@ -1,0 +1,86 @@
+name: Temporary Central Report Model CI
+
+on:
+  push:
+    branches: [gpt/live-central-report-model]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime and test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest pyyaml
+      - name: Compile new scheduler code
+        run: |
+          python -m py_compile \
+            learnerbot/report_schedule_control.py \
+            learnerbot/telegram_report_schedule_patch.py \
+            scripts/central_report_scheduler.py
+      - name: Run migrated central-model contracts
+        run: |
+          python -m pytest -q \
+            tests/test_report_schedule_control.py \
+            tests/test_ai_resilient_workflows.py \
+            tests/test_four_agent_workflows.py \
+            tests/test_deepseek_fifth_agent.py \
+            tests/test_grok_sixth_agent.py \
+            tests/test_kimi_seventh_strategy_review.py
+      - name: Assert legacy report/review roots are removed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for p in \
+            .github/workflows/monitor-factory-operations.yml \
+            .github/workflows/hourly-three-agent-strategy-cycle.yml \
+            .github/workflows/weekly-three-agent-bug-audit.yml \
+            .github/workflows/weekly-gpt-corrective-action.yml \
+            .github/workflows/selected-ai-master.yml \
+            .github/workflows/strategy-resilient-master.yml \
+            .github/workflows/weekly-resilient-master.yml \
+            .github/workflows/gpt-master-cycle-dispatcher.yml \
+            .github/workflows/gpt-master-strategy-action.yml \
+            .github/workflows/four-agent-strategy-master.yml \
+            .github/workflows/engineering-agent-retry.yml \
+            .github/workflows/engineering-copilot-assignment-reconciler.yml \
+            .github/workflows/strategy-copilot-assignment-reconciler.yml \
+            .github/workflows/claude-fourth-strategy-agent.yml \
+            .github/workflows/claude-fourth-engineering-agent.yml \
+            .github/workflows/deepseek-fifth-strategy-agent.yml \
+            .github/workflows/deepseek-fifth-engineering-agent.yml \
+            .github/workflows/grok-sixth-strategy-agent.yml \
+            .github/workflows/grok-sixth-engineering-agent.yml \
+            .github/workflows/kimi-seventh-strategy-agent.yml \
+            .github/workflows/six-agent-health-retry.yml; do
+            test ! -e "$p" || { echo "legacy root still exists: $p"; exit 1; }
+          done
+          grep -F "cron: '11 */4 * * *'" .github/workflows/ai-provider-preflight.yml
+          grep -F '"default_hours": 4' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 6' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 48' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 168' learnerbot/report_schedule_control.py
+          grep -F 'cmd += ["--limit", "1"]' learnerbot/telegram_report_schedule_patch.py
+          grep -F 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' scripts/central_report_scheduler.py
+
+  full-pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime and test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt pytest pyyaml
+      - name: Full repository pytest
+        run: python -m pytest -q
