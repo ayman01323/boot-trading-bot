@@ -4,13 +4,9 @@ from __future__ import annotations
 
 This module is imported *last* by learnerbot.__main__, after the late Alchemy,
 recovery, leader-alignment, provenance and AI-runtime patches have composed.
-It is intentionally verification-only until all audited hooks pass; the explicit
-operator halt at the bottom then disables platform execution without changing
-wallet keys or deleting per-user preferences.
+It verifies the audited hooks and the Basic Engine v0 main-entry binding.
 """
 
-# Operator-facing health must reflect the same seven persistent workers that the
-# runtime already starts. Presentation/health bookkeeping only; no trading hooks.
 from . import kimi_ai_health_roster_patch as _kimi_health  # noqa: F401
 
 from . import auto_trader as _auto
@@ -25,8 +21,6 @@ from . import sibot_alchemy_trace_progress_patch as _trace
 from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import sibot_leader_quality_hard_floor_patch as _evm_quality
 from . import sibot_legacy_error_sweep_patch as _legacy
-# Low-priority orphaned-history recovery. Importing this late preserves every
-# existing history selector/refresher identity and wraps only worker/menu startup.
 from . import sibot_legacy_backlog_drainer_patch as _legacy_drainer
 from . import solana_atomic_close_fallback_patch as _atomic
 from . import solana_entry_capacity_reconcile_patch as _capacity
@@ -52,6 +46,7 @@ from . import telegram_ai_council_friendly_patch as _friendly
 from . import telegram_ui as _telegram_ui
 from . import transaction_audit_worker_patch as _audit_worker
 from . import trade_strategy_provenance_patch as _provenance
+from .basic_engine_v0 import main_patch as _basic_v0
 
 
 def composition_checks() -> dict[str, bool]:
@@ -84,25 +79,10 @@ def composition_checks() -> dict[str, bool]:
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
         "evm_history_trace_to_retry": _trace._PREV_NEXT_HISTORY_WALLET is _retry._next_history_wallet,
-        # Background recovery is additive scheduling only. It must be the final
-        # outer startup wrapper, while the AI Council recovery and transaction-audit
-        # startup chain underneath it remains exactly intact.
-        "evm_history_background_worker_start": (
-            _sibot.start_workers is _legacy_drainer.start_workers_with_legacy_backlog_drainer
-        ),
-        "evm_history_background_menu_start": (
-            _telegram_ui.start_menu_thread
-            is _legacy_drainer.start_menu_thread_with_legacy_backlog_drainer
-        ),
-        "evm_history_background_menu_inner": (
-            _legacy_drainer._PREV_START_MENU_THREAD is _friendly.start_menu_thread
-        ),
-        "evm_history_background_menu_audit_inner": (
-            _friendly._PREV_START_MENU_THREAD
-            is _audit_worker.start_menu_thread_with_transaction_audit
-        ),
-        # WebSocket wake-up serialization is the intended outer wrapper. The
-        # retry-safe/no-skip cursor remains authoritative immediately inside it.
+        "evm_history_background_worker_start": _sibot.start_workers is _legacy_drainer.start_workers_with_legacy_backlog_drainer,
+        "evm_history_background_menu_start": _telegram_ui.start_menu_thread is _legacy_drainer.start_menu_thread_with_legacy_backlog_drainer,
+        "evm_history_background_menu_inner": _legacy_drainer._PREV_START_MENU_THREAD is _friendly.start_menu_thread,
+        "evm_history_background_menu_audit_inner": _friendly._PREV_START_MENU_THREAD is _audit_worker.start_menu_thread_with_transaction_audit,
         "evm_leader_cursor_ws_outer": _sibot.poll_leader_blocks is _evm_ws.poll_leader_blocks_locked,
         "evm_leader_cursor_reliable_inner": _evm_ws._ORIGINAL_POLL is _evm_reliability.poll_leader_blocks_reliable,
         "evm_quality_hard_floor": _sibot.user_settings is _evm_quality.user_settings_with_quality_floor,
@@ -114,6 +94,9 @@ def composition_checks() -> dict[str, bool]:
         "solana_provenance_connect": _sol.connect is _provenance._sol_connect_with_provenance,
         "auto_provenance_append": _auto._append is _provenance._auto_append_with_provenance,
         "evm_live_audit_provenance": _evm_live.LiveTrader._audit is _provenance._live_audit_with_provenance,
+        "basic_v0_auto_main": _auto.execute_best_live_opportunity is _basic_v0.execute_best_live_opportunity_v0,
+        "basic_v0_fast_main": _basic_v0._fast.execute_best_live_opportunity is _basic_v0.execute_best_live_opportunity_v0,
+        "basic_v0_cli_main": _basic_v0._cli.execute_best_live_opportunity is _basic_v0.execute_best_live_opportunity_v0,
     }
 
 
@@ -127,108 +110,7 @@ def install() -> None:
 
 install()
 
-# Explicit owner-authorised one-time accounting write-off for the permanently
-# unsellable 8fip position. This runs only after every audited runtime hook above
-# passes. The migration is idempotent and performs no SELL, burn or transfer.
 from . import solana_operator_writeoff_8fip_migration as _writeoff_8fip  # noqa: E402
 _writeoff_8fip.apply()
-
-# Presentation-only owner warning overlay. It is loaded after the trading
-# integrity check and changes only alert composition/reminder cadence; the
-# audited execution/capacity/risk hooks above remain untouched.
 from . import solana_stuck_owner_warning_v2_patch  # noqa: E402,F401
-
-# Observational MASTER-only UI extension. It is deliberately loaded only after
-# all capital-moving runtime identities above have been verified, and it has no
-# trading/LIVE/capital/wallet/signing authority.
 from . import telegram_ai_target_score_patch  # noqa: E402,F401
-
-# ---------------------------------------------------------------------------
-# OWNER EMERGENCY HALT — 2026-08-24
-# ---------------------------------------------------------------------------
-# The protected GitHub runner currently has deploy/status/restart wrappers but no
-# service-stop wrapper. At the owner's explicit request to stop the bot, fail
-# closed at the platform execution layer instead of weakening sudo isolation.
-# This keeps the process available for status/Telegram diagnostics while making
-# all EVM and Solana LIVE execution gates false. Per-user preferences and wallet
-# material are deliberately left untouched so this can be reversed explicitly.
-from pathlib import Path as _Path  # noqa: E402
-from . import cli as _cli  # noqa: E402
-from .config import load_chains as _load_chains  # noqa: E402
-from .operator_control import audit as _audit, set_kv as _set_kv, set_scoped_default as _set_scoped_default  # noqa: E402
-
-_PREV_APP_OWNER_HALT = _cli._app
-
-
-def _apply_owner_emergency_halt(app):
-    csv_dir = _Path(app.csv_dir)
-
-    # EVM AUTO is globally blocked even if every user remains individually armed.
-    auto_path = csv_dir / "auto_trading_settings.csv"
-    _set_scoped_default(
-        auto_path,
-        "auto_trading_enabled",
-        "false",
-        "OWNER EMERGENCY HALT 2026-08-24 — global AUTO execution disabled",
-    )
-
-    # EVM LIVE is disabled at wildcard and every configured chain scope so a
-    # chain-specific true row cannot override the halt.
-    live_path = csv_dir / "live_trading_settings.csv"
-    _set_scoped_default(
-        live_path,
-        "trading_enabled",
-        "false",
-        "OWNER EMERGENCY HALT 2026-08-24 — global LIVE execution disabled",
-    )
-    for chain in _load_chains(app, enabled_only=False):
-        _set_kv(
-            live_path,
-            "trading_enabled",
-            "false",
-            "OWNER EMERGENCY HALT 2026-08-24 — chain LIVE execution disabled",
-            chain_id=int(chain.chain_id),
-        )
-
-    # Stop SiBot's shared execution/research gate without deleting user choices.
-    _set_scoped_default(
-        csv_dir / "sibot_settings.csv",
-        "platform_enabled",
-        "false",
-        "OWNER EMERGENCY HALT 2026-08-24 — SiBot platform disabled",
-    )
-
-    # Solana LIVE effective state includes the shared Solana enabled flag, so
-    # forcing it false blocks all Solana execution regardless of per-user LIVE.
-    _set_kv(
-        csv_dir / "solana_settings.csv",
-        "enabled",
-        "false",
-        "OWNER EMERGENCY HALT 2026-08-24 — Solana platform disabled",
-    )
-
-    try:
-        _audit(
-            csv_dir,
-            "OWNER",
-            "OWNER_EMERGENCY_HALT",
-            "platform_execution",
-            "enabled",
-            "disabled",
-            "EVM AUTO/LIVE + SiBot platform + Solana platform disabled; user settings preserved",
-        )
-    except Exception:
-        pass
-    print(
-        "[owner-emergency-halt] active=true evm_auto=false evm_live=false "
-        "sibot_platform=false solana_platform=false user_settings_preserved=true"
-    )
-    return app
-
-
-def _app_with_owner_emergency_halt():
-    app = _PREV_APP_OWNER_HALT()
-    return _apply_owner_emergency_halt(app)
-
-
-_cli._app = _app_with_owner_emergency_halt
