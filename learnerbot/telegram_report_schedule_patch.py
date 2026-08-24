@@ -19,7 +19,7 @@ _LOCK = threading.Lock()
 _RUN_LOCK = threading.Lock()
 
 COMMANDS = (
-    ("aireports", "View MASTER AI/report frequencies and next due times"),
+    ("reports", "List MASTER reports, frequencies and next due times"),
     ("aifrequency", "Change a report frequency; minimum 4 hours"),
     ("airun", "Run a report/review now without changing its frequency"),
 )
@@ -38,22 +38,29 @@ def _fmt_epoch(value: int) -> str:
 def _schedule_text(app) -> str:
     snap = _sched.snapshot(app)
     lines = [
-        "<b>🕒 AI / REPORT SCHEDULE</b>",
+        "<b>📋 MASTER REPORTS</b>",
         "",
         f"Minimum automatic interval: <b>{snap['minimum_automatic_hours']}h</b>",
+        "All actionable findings flow to <b>🏭 Strategy Factory Review</b>.",
     ]
-    for row in snap["reports"]:
+    for index, row in enumerate(snap["reports"], start=1):
         marker = "🔴" if row["due"] else "🟢"
+        meta = _sched.REPORTS[row["key"]]
         lines += [
             "",
-            f"{marker} <b>{_safe(row['label'])}</b> — every <b>{row['hours']}h</b>",
+            f"{marker} <b>{index}. {_safe(row['label'])}</b>",
+            f"Frequency: every <b>{row['hours']}h</b>",
+            f"Purpose: {_safe(meta.get('description'), 500)}",
             f"Last: {_safe(row['last_status'])} | next: <code>{_fmt_epoch(row['next_due_epoch'])}</code>",
+            f"Key: <code>{_safe(row['key'])}</code>",
         ]
     lines += [
         "",
-        "Change: <code>/aifrequency trade 4</code>",
-        "Run now: <code>/airun trade</code>",
-        "Keys: <code>trade engineering strategy factory engineering_ai seven_agent</code>",
+        "<b>MASTER controls</b>",
+        "Change frequency: <code>/aifrequency trade 4</code>",
+        "Run immediately: <code>/airun trade</code>",
+        "Refresh this list: <code>/reports</code>",
+        "",
         "<i>Manual MASTER runs are allowed at any time. Automatic intervals cannot be set below 4 hours.</i>",
     ]
     return "\n".join(lines)
@@ -151,13 +158,13 @@ def handle_update(app, update):
         parts = text.split(maxsplit=1)
         cmd = parts[0].split("@", 1)[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
-        if cmd in {"/aireports", "/aifrequency", "/airun"}:
+        if cmd in {"/reports", "/aireports", "/aifrequency", "/airun"}:
             try:
                 _ui._require_master(app, tid)
             except Exception as exc:
                 _ui._send(app, tid, f"⚠️ {_safe(exc, 250)}")
                 return
-            if cmd == "/aireports":
+            if cmd in {"/reports", "/aireports"}:
                 _ui._send(app, tid, _schedule_text(app))
                 return
             if cmd == "/aifrequency":
