@@ -19,10 +19,13 @@ def test_fixed_paths_and_request_parsing(provider):
     assert bridge.request_id_from_gpt(provider, message) == "solana-review-1"
 
 
-def test_grok_is_a_supported_fallback_provider():
+def test_grok_and_kimi_are_supported_fallback_providers():
     assert "grok" in bridge.ALLOWED_PROVIDERS
+    assert "kimi" in bridge.ALLOWED_PROVIDERS
     assert bridge.request_path("grok") == ".github/ai-mailbox/gpt-to-grok.md"
     assert bridge.response_path("grok") == ".github/ai-mailbox/grok-to-gpt.md"
+    assert bridge.request_path("kimi") == ".github/ai-mailbox/gpt-to-kimi.md"
+    assert bridge.response_path("kimi") == ".github/ai-mailbox/kimi-to-gpt.md"
 
 
 def test_non_request_cannot_invoke_provider():
@@ -61,13 +64,20 @@ def test_provider_relay_is_event_driven_without_schedule():
     # This relay only needs GitHub/provider APIs. Keeping it on a hosted runner
     # prevents communication work from starving the production boot-vps deploy queue.
     assert workflow["jobs"]["relay"]["runs-on"] == "ubuntu-latest"
-    assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == ["deepseek", "gemini", "grok", "copilot"]
+    assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == [
+        "deepseek", "gemini", "grok", "kimi", "copilot"
+    ]
     route_env = workflow["jobs"]["relay"]["steps"][5]["env"]
     assert "XAI_API_KEY" in route_env
     assert "XAI_COUNCIL_MODEL" in route_env
+    assert "KIMI_API_KEY" in route_env
+    assert "MOONSHOT_API_KEY" in route_env
+    assert "KIMI_COUNCIL_MODEL" in route_env
+    assert "deepseek-v4-flash" in str(route_env["DEEPSEEK_COUNCIL_MODEL"])
+    assert "gemini-3.5-flash-lite" in str(route_env["GEMINI_COUNCIL_MODEL"])
 
 
-def test_signal_watches_all_provider_request_files_including_grok():
+def test_signal_watches_all_provider_request_files_including_grok_and_kimi():
     workflow = yaml.safe_load(Path(".github/workflows/ai-mailbox-provider-signal.yml").read_text())
     trigger = workflow.get("on") or workflow.get(True)
     paths = trigger["push"]["paths"]
@@ -75,5 +85,6 @@ def test_signal_watches_all_provider_request_files_including_grok():
         ".github/ai-mailbox/gpt-to-deepseek.md",
         ".github/ai-mailbox/gpt-to-gemini.md",
         ".github/ai-mailbox/gpt-to-grok.md",
+        ".github/ai-mailbox/gpt-to-kimi.md",
         ".github/ai-mailbox/gpt-to-copilot.md",
     ]
