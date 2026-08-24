@@ -1,0 +1,137 @@
+name: Urgent Strategy Factory No-Trade Review
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/urgent_strategy_factory_review.py'
+      - '.github/workflows/urgent-strategy-factory-review.yml'
+      - 'tests/test_urgent_strategy_factory_review.py'
+  schedule:
+    - cron: '5 * * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'force = ask all seven now; watch = queue only if stalled'
+        required: true
+        default: force
+        type: choice
+        options: [force, watch]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: urgent-strategy-factory-review
+  cancel-in-progress: false
+
+jobs:
+  review:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 45
+    env:
+      DEPLOY_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+      DATA_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/data
+      CSV_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot
+      AI_AGENT_BUS_URL: ws://127.0.0.1:8765
+
+    steps:
+      - name: Resolve mode
+        id: mode
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == workflow_dispatch ]]; then
+            mode="${INPUT_MODE:-force}"
+          elif [[ "$EVENT_NAME" == push ]]; then
+            mode=force
+          else
+            mode=watch
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "urgent_strategy_mode=$mode"
+
+      - name: Check out exact current main without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify production runtime and seven-agent bus for forced review
+        if: steps.mode.outputs.mode == 'force'
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet learnerbot
+          test -s /var/tmp/boot/ai_agent_ws_status.json
+          python3 - <<'PY'
+          import json,socket,time
+          p=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
+          assert p.get('state') in {'ACTIVE','EXTERNAL'}, p
+          expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
+          assert set(p.get('workers') or []) == expected, p
+          age=int(time.time())-int(p.get('updated_epoch') or 0)
+          assert age < 86400, age
+          with socket.create_connection(('127.0.0.1',8765),timeout=2): pass
+          print('seven_agent_bus=ready')
+          PY
+
+      - name: Run urgent Strategy Monitor and Factory escalation
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python_bin="$DEPLOY_ROOT/.venv/bin/python"
+          [[ -x "$python_bin" ]] || python_bin="$(command -v python3)"
+          export PYTHONPATH="$GITHUB_WORKSPACE:${PYTHONPATH:-}"
+          "$python_bin" scripts/urgent_strategy_factory_review.py "$MODE" > /tmp/urgent-strategy-factory.json
+          python3 - <<'PY'
+          import json
+          p=json.load(open('/tmp/urgent-strategy-factory.json',encoding='utf-8'))
+          print('action='+str(p.get('action') or ''))
+          package=p.get('package') or {}
+          print('package_id='+str(package.get('package_id') or ''))
+          review=p.get('review') or {}
+          if review:
+              print('panel='+','.join(review.get('panel') or []))
+              print('support_count='+str(review.get('support_count') or 0))
+              print('disposition='+str(review.get('disposition') or ''))
+              print('task='+str(review.get('task') or '')[:1000])
+          PY
+
+      - name: Assert no repository mutation by monitor or agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo 'Urgent Strategy Factory review unexpectedly changed checkout:' >&2
+            git status --short >&2
+            exit 3
+          fi
+
+      - name: Publish concise summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### Urgent Strategy Factory review'
+            echo '- Mode: `${{ steps.mode.outputs.mode }}`'
+            echo '- Scope: **Cross Venue Arbitrage, Momentum, Mean Reversion, Flow, New Liquidity, Learned Route, Forecast Edge — EVM + Solana**'
+            echo '- P1 policy: **all seven agents + GPT final adjudication**'
+            echo '- LIVE/capital/wallet/safety authority: **none**'
+            if [[ -s /tmp/urgent-strategy-factory.json ]]; then
+              echo
+              echo '<details><summary>Result</summary>'
+              echo
+              echo '```json'
+              head -c 18000 /tmp/urgent-strategy-factory.json
+              echo
+              echo '```'
+              echo '</details>'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
