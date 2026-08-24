@@ -15,8 +15,8 @@ _HARD_MIN_COPIED_TRADES = 2
 _SOL_QUALITY_DEFAULTS = {
     "require_complete_history": ("true", "Require non-truncated reconstructed Solana history for LIVE leaders"),
     "min_profit_factor": ("1.75", "Minimum historical SOL gross-profit/gross-loss ratio for leaders"),
-    "recent_trade_window": ("20", "Recent Solana closed trades used for regime-change checks"),
-    "min_recent_win_rate_pct": ("65", "Minimum recent Solana positive-trade percentage"),
+    "recent_trade_window": ("20", "Recent Solana closed positions used for regime-change checks"),
+    "min_recent_win_rate_pct": ("65", "Minimum recent Solana positive-position percentage"),
     "min_recent_profit_factor": ("1.50", "Minimum recent Solana profit factor"),
     "max_leader_drawdown_pct": ("20", "Maximum reconstructed Solana leader equity drawdown"),
     "leader_recent_activity_hours": ("6", "Prefer otherwise-qualified Solana leaders observed trading within this many hours"),
@@ -60,43 +60,59 @@ def _drawdown(rows):
 
 
 def _bucket_positions(rows):
-    """Group FIFO trade fragments back into the economic positions that produced them.
+    """Group FIFO fragments into the economic positions that produced them.
 
-    solana_sibot._match_events() can split one buy lot across several sells (partial
-    profit-taking) or match one sell against several buy lots (scaled-in entries),
-    emitting a separate `trades` row per matched slice. Counting win/loss per row
-    therefore scores how a position happened to get sliced, not whether the trade
-    was a win. A wallet's (mint) fragments are one position until its held quantity
-    would have returned to zero -- approximated here as: a new buy_ts occurring only
-    after every sell_ts seen so far for that mint starts a fresh position.
+    ``solana_sibot._match_events()`` can split one buy lot across several sells
+    or one sell across several buy lots, so one trading decision can create many
+    rows in ``trades``.  Counting those rows as independent wins/losses measures
+    matching granularity instead of position quality.
+
+    For each mint, fragments belong to one position until a later buy begins only
+    after every sell timestamp already observed for the current position.  This
+    keeps scale-ins/scale-outs together while treating a genuine post-exit re-entry
+    as a new position.
     """
     by_mint = defaultdict(list)
     for r in rows:
         by_mint[r["mint"]].append(r)
     positions = []
     for mint_rows in by_mint.values():
-        ordered = sorted(mint_rows, key=lambda r: (r["buy_ts"], r["sell_ts"]))
+        ordered = sorted(mint_rows, key=lambda r: (int(r["buy_ts"]), int(r["sell_ts"])))
         current = []
         current_max_sell_ts = None
         for r in ordered:
-            if current and current_max_sell_ts is not None and r["buy_ts"] > current_max_sell_ts:
+            buy_ts = int(r["buy_ts"])
+            sell_ts = int(r["sell_ts"])
+            if current and current_max_sell_ts is not None and buy_ts > current_max_sell_ts:
                 positions.append(current)
                 current = []
                 current_max_sell_ts = None
             current.append(r)
-            current_max_sell_ts = r["sell_ts"] if current_max_sell_ts is None else max(current_max_sell_ts, r["sell_ts"])
+            current_max_sell_ts = sell_ts if current_max_sell_ts is None else max(current_max_sell_ts, sell_ts)
         if current:
             positions.append(current)
+    positions.sort(key=lambda pos: max(int(r["sell_ts"]) for r in pos))
     return positions
 
 
-def _position_win_rate(rows):
-    positions = _bucket_positions(rows)
+def _position_stats(positions):
     closed = len(positions)
     if not closed:
-        return Decimal(0), 0
-    wins = sum(1 for pos in positions if sum((_d(r["net_sol"]) for r in pos), Decimal(0)) > 0)
-    return Decimal(wins * 100) / Decimal(closed), closed
+        return {"closed": 0, "win_rate": Decimal(0)}
+    wins = sum(
+        1
+        for pos in positions
+        if sum((_d(r["net_sol"]) for r in pos), Decimal(0)) > 0
+    )
+    return {
+        "closed": closed,
+        "win_rate": Decimal(wins * 100) / Decimal(closed),
+    }
+
+
+def _position_win_rate(rows):
+    stats = _position_stats(_bucket_positions(rows))
+    return stats["win_rate"], stats["closed"]
 
 
 def quality_metrics(app, wallet, cfg):
@@ -110,6 +126,7 @@ def quality_metrics(app, wallet, cfg):
         ).fetchall()]
         hs = conn.execute("SELECT truncated,error FROM history_status WHERE wallet=?", (str(wallet),)).fetchone()
         candidate = conn.execute("SELECT last_seen FROM candidates WHERE wallet=?", (str(wallet),)).fetchone()
+
     def stats(values):
         profit = sum((_d(r["net_sol"]) for r in values if _d(r["net_sol"]) > 0), Decimal(0))
         loss = sum((-_d(r["net_sol"]) for r in values if _d(r["net_sol"]) < 0), Decimal(0))
@@ -120,28 +137,40 @@ def quality_metrics(app, wallet, cfg):
             "win_rate": Decimal(wins * 100) / Decimal(closed) if closed else Decimal(0),
             "profit_factor": _pf(profit, loss),
         }
-    all_s = stats(rows); recent = stats(rows[-recent_n:])
-    position_win_rate, position_closed = _position_win_rate(rows)
-    recent_position_win_rate, recent_position_closed = _position_win_rate(rows[-recent_n:])
+
+    # Amount accounting remains additive across FIFO fragments, so historical
+    # profit/loss/net and drawdown keep their existing calculations.  Sample size
+    # and win-rate gates, however, are position based.
+    all_s = stats(rows)
+    positions = _bucket_positions(rows)
+    recent_positions = positions[-recent_n:]
+    recent_rows = [r for pos in recent_positions for r in pos]
+    recent = stats(recent_rows)
+    position = _position_stats(positions)
+    recent_position = _position_stats(recent_positions)
+
+    fragment_closed = all_s["closed"]
+    fragment_win_rate = all_s["win_rate"]
+    recent_fragment_closed = recent["closed"]
+    recent_fragment_win_rate = recent["win_rate"]
     trade_last = max((int(r.get("sell_ts") or 0) for r in rows), default=0)
     candidate_last = int(candidate["last_seen"] or 0) if candidate else 0
+
     all_s.update({
         "drawdown_pct": _drawdown(rows),
-        "recent_closed": recent["closed"],
+        "closed": position["closed"],
+        "win_rate": position["win_rate"],
+        "recent_closed": recent_position["closed"],
+        "recent_win_rate": recent_position["win_rate"],
         "recent_profit_factor": recent["profit_factor"],
         "history_complete": bool(hs and not int(hs["truncated"] or 0) and not str(hs["error"] or "").strip()),
         "last_activity_ts": max(trade_last, candidate_last),
-        # win_rate gates on the closed POSITION, not the FIFO cost-basis fragment: a
-        # single profitable position scaled out across many partial sells (or scaled
-        # into across many buys) was previously scored as several separate win/loss
-        # rows, which measures fill granularity rather than trading decision quality.
-        # The 65%-style floors in _historical_ok are unchanged; only this denominator is.
-        "win_rate": position_win_rate,
-        "recent_win_rate": recent_position_win_rate,
-        "position_closed": position_closed,
-        "recent_position_closed": recent_position_closed,
-        "fragment_win_rate": all_s["win_rate"],
-        "recent_fragment_win_rate": recent["win_rate"],
+        "position_closed": position["closed"],
+        "recent_position_closed": recent_position["closed"],
+        "fragment_closed": fragment_closed,
+        "fragment_win_rate": fragment_win_rate,
+        "recent_fragment_closed": recent_fragment_closed,
+        "recent_fragment_win_rate": recent_fragment_win_rate,
     })
     return all_s
 
@@ -149,7 +178,10 @@ def quality_metrics(app, wallet, cfg):
 def _historical_ok(m, cfg):
     if _sol._bool(cfg.get("require_complete_history"), True) and not m.get("history_complete"):
         return False
-    if int(m.get("closed") or 0) < max(1, _i(cfg.get("min_closed_trades"), 10)):
+    # min_closed_trades is intentionally the same numeric floor as before, but
+    # now counts economic positions so one scaled-out trade cannot manufacture
+    # the required sample size by producing many FIFO fragments.
+    if int(m.get("position_closed") if m.get("position_closed") is not None else m.get("closed") or 0) < max(1, _i(cfg.get("min_closed_trades"), 10)):
         return False
     if _d(m.get("win_rate")) < _d(cfg.get("min_win_rate_pct"), 65):
         return False
@@ -282,7 +314,7 @@ def refresh_rankings(app, telegram_id=None):
             for rank,(wallet,m) in enumerate(selected.get(tid, []), 1):
                 conn.execute(
                     "INSERT INTO leaders(telegram_id,rank,wallet,net_profit_sol,win_rate,closed_trades,selected_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                    (tid, rank, wallet, str(m["net"]), float(m["win_rate"]), int(m["closed"]), old.get(wallet, now), now),
+                    (tid, rank, wallet, str(m["net"]), float(m["win_rate"]), int(m["position_closed"]), old.get(wallet, now), now),
                 )
         conn.commit()
     _sol.export_csv(app)
