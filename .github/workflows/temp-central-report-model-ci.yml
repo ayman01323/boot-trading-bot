@@ -3,6 +3,8 @@ name: Temporary Central Report Model CI
 on:
   push:
     branches: [gpt/live-central-report-model]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -44,7 +46,8 @@ jobs:
           done
           grep -F "cron: '11 */4 * * *'" .github/workflows/ai-provider-preflight.yml
           grep -F "cron: '23 */6 * * *'" .github/workflows/ai-agent-recovery.yml
-          grep -F '"trade": 4' learnerbot/report_schedule_control.py
+          grep -F '"trade": {' learnerbot/report_schedule_control.py
+          grep -F '"default_hours": 4' learnerbot/report_schedule_control.py
           grep -F '"factory": {' learnerbot/report_schedule_control.py
           grep -F '"default_hours": 6' learnerbot/report_schedule_control.py
           grep -F '"engineering": {' learnerbot/report_schedule_control.py
