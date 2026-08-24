@@ -67,7 +67,9 @@ def _run_report(app, key: str, *, manual: bool) -> tuple[bool, str]:
     _sched.mark_attempt(app, key, manual=manual)
     cmd = [sys.executable, str(script), str(meta["mode"])]
     if key == "factory":
-        cmd += ["--limit", "5"]
+        # One package per automatic/manual Factory invocation keeps the worst-case
+        # seven-agent + GPT adjudication bounded inside the 30-minute worker timeout.
+        cmd += ["--limit", "1"]
     try:
         proc = subprocess.run(cmd, cwd=root, text=True, capture_output=True, timeout=1800, check=False)
         ok = proc.returncode == 0
