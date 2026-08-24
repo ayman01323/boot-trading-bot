@@ -3,7 +3,10 @@ from pathlib import Path
 from scripts import monitor_factory_operations as ops
 
 
-WORKFLOW = Path(".github/workflows/monitor-factory-operations.yml")
+CENTRAL = Path("scripts/central_report_scheduler.py")
+CONTROL = Path("learnerbot/report_schedule_control.py")
+RUNTIME = Path("learnerbot/telegram_report_schedule_patch.py")
+LEGACY_WORKFLOW = Path(".github/workflows/monitor-factory-operations.yml")
 DOC = Path("docs/MONITOR_FACTORY_OPERATING_MODEL.md")
 
 
@@ -19,26 +22,32 @@ def test_factory_panel_scales_with_severity_and_keeps_gpt():
     assert len(set(p3)) == len(p3)
 
 
-def test_workflow_has_requested_monitor_factory_cadences_and_seven_agent_bus():
-    text = WORKFLOW.read_text(encoding="utf-8")
-    assert "cron: '*/15 * * * *'" in text
-    assert "cron: '7 * * * *'" in text
-    assert "cron: '17 * * * *'" in text
-    assert "cron: '11 6 * * *'" in text
-    assert "cron: '41 7 * * 1'" in text
-    assert "runs-on: [self-hosted, linux, x64, boot-vps]" in text
-    assert "AI_AGENT_BUS_URL: ws://127.0.0.1:8765" in text
-    assert "{'gpt','claude','gemini','deepseek','grok','kimi','copilot'}" in text
+def test_monitor_factory_cadences_are_centralised_in_runtime():
+    assert not LEGACY_WORKFLOW.exists()
+    control = CONTROL.read_text(encoding="utf-8")
+    runtime = RUNTIME.read_text(encoding="utf-8")
+    central = CENTRAL.read_text(encoding="utf-8")
+    assert "MIN_INTERVAL_HOURS = 4" in control
+    assert '"trade": {' in control and '"default_hours": 4' in control
+    assert '"engineering": {' in control and '"default_hours": 48' in control
+    assert '"strategy": {' in control and '"default_hours": 48' in control
+    assert '"factory": {' in control and '"default_hours": 6' in control
+    assert '"engineering_ai": {' in control
+    assert '"seven_agent": {' in control and '"default_hours": 168' in control
+    assert "time.sleep(300)" in runtime
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in central
+    assert "ops._panel_for = lambda package: list(AGENTS)" in central
 
 
-def test_workflow_reads_production_evidence_but_has_no_repo_write_permission():
-    text = WORKFLOW.read_text(encoding="utf-8")
-    assert "contents: read" in text
-    assert "contents: write" not in text
-    assert "persist-credentials: false" in text
-    assert "DATA_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/data" in text
-    assert "CSV_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot" in text
-    assert "git status --porcelain" in text
+def test_central_monitor_factory_has_no_repository_or_live_execution_authority():
+    central = CENTRAL.read_text(encoding="utf-8")
+    assert "subprocess.run" not in central
+    assert "gh workflow run" not in central
+    assert "git push" not in central
+    assert "merge_pull_request" not in central
+    assert "LIVE" not in central or "Do not edit, deploy, trade, alter LIVE" in central
+    assert '"authority": "MONITOR_AND_ESCALATE_ONLY"' in central
+    assert '"changes_trading_state": False' in central
 
 
 def test_operating_model_keeps_profit_first_and_protected_boundaries():

@@ -1,10 +1,14 @@
 from pathlib import Path
 import csv
+import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
 
 def rows(name):
-    with (ROOT/name).open(encoding='utf-8-sig',newline='') as f:return list(csv.DictReader(f))
+    path=ROOT/name
+    if not path.exists():
+        pytest.skip(f'server-local runtime configuration not present in hosted CI: {path.name}')
+    with path.open(encoding='utf-8-sig',newline='') as f:return list(csv.DictReader(f))
 
 def test_v3_path_encoding_shape():
     from learnerbot.full_power_scanner import encode_v3_path
@@ -96,9 +100,6 @@ def test_atomic_executor_source_has_owner_router_and_profit_guards():
     assert 'nonReentrant' in s
 
 def test_master_gates_are_explicit_booleans():
-    # Production operators may intentionally switch these gates on or off.
-    # Deployment tests must verify explicit configuration, not force a live
-    # server back to the repository's original safety default.
     auto={r['setting']:r['value'] for r in rows('CSVbot/auto_trading_settings.csv') if r['chain_id']=='*'}
     live={r['setting']:r['value'] for r in rows('CSVbot/live_trading_settings.csv') if r['chain_id']=='*'}
     assert auto['auto_trading_enabled'].lower() in {'true','false'}

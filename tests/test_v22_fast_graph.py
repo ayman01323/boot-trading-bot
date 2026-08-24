@@ -1,11 +1,20 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from learnerbot.market_scanner import _graph_triangles, _v2_venues
 from learnerbot.config import AppSettings
 
 
 def _addr(n): return "0x"+f"{n:040x}"
+
+
+def _runtime_file(root: Path, name: str) -> Path:
+    path = root/'CSVbot'/name
+    if not path.exists():
+        pytest.skip(f'server-local runtime configuration not present in hosted CI: {name}')
+    return path
 
 
 def test_graph_first_emits_only_real_triangles():
@@ -35,7 +44,7 @@ def test_graph_first_does_not_guess_missing_middle_pair():
 def test_default_tokens_include_liquid_seeds_on_all_five_chains():
     root=Path(__file__).resolve().parents[1]
     import csv
-    rows=list(csv.DictReader((root/'CSVbot'/'tokens.csv').open()))
+    rows=list(csv.DictReader(_runtime_file(root,'tokens.csv').open()))
     by={cid:[r for r in rows if r['chain_id']==cid and r.get('enabled','').lower()=='true'] for cid in {'1','56','137','8453','42161'}}
     assert all(any(r.get('role')=='wrapped_base' for r in rs) for rs in by.values())
     assert all(any(r.get('role')=='liquid_seed' for r in rs) for rs in by.values())
@@ -45,15 +54,16 @@ def test_default_tokens_include_liquid_seeds_on_all_five_chains():
 def test_fast_market_defaults_enabled():
     root=Path(__file__).resolve().parents[1]
     import csv
-    rows=list(csv.DictReader((root/'CSVbot'/'auto_trading_settings.csv').open()))
+    rows=list(csv.DictReader(_runtime_file(root,'auto_trading_settings.csv').open()))
     vals={r['setting']:r['value'] for r in rows if r.get('chain_id')=='*'}
     assert vals['fast_market_enabled'].lower()=='true'
     assert int(vals['fast_market_interval_seconds'])==5
-    assert int(vals['fast_market_pairs_per_dex_pass'])==0  # v2.3 moves discovery out of hot path
+    assert int(vals['fast_market_pairs_per_dex_pass'])==0
 
 
 def test_all_default_v2_venues_are_registry_driven():
     root=Path(__file__).resolve().parents[1]
+    _runtime_file(root,'dex_registry.csv')
     app=AppSettings(root,root/'CSVbot',root/'data','',[],'')
     for cid in (1,56,137,8453,42161):
         venues=_v2_venues(app,cid)

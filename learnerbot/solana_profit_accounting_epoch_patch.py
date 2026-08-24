@@ -5,6 +5,9 @@ import time
 from contextlib import closing
 from decimal import Decimal
 
+# Startup composition: install provider-aware RPC failover before
+# solana_worker_reliability_patch captures the current _sol._rpc as its retry target.
+from . import solana_rpc_failover_patch as _rpc_failover  # noqa: F401
 from . import solana_profit_guard_patch as _guard
 from . import solana_sibot as _sol
 

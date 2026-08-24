@@ -1,48 +1,47 @@
 from pathlib import Path
 
 
-WORKFLOW = Path('.github/workflows/gpt-master-cycle-dispatcher.yml')
+LEGACY_WORKFLOW = Path('.github/workflows/gpt-master-cycle-dispatcher.yml')
+CENTRAL = Path('scripts/central_report_scheduler.py')
+CONTROL = Path('learnerbot/report_schedule_control.py')
+RUNTIME = Path('learnerbot/telegram_report_schedule_patch.py')
 
 
-def _text():
-    return WORKFLOW.read_text(encoding='utf-8')
+def _text(path: Path) -> str:
+    return path.read_text(encoding='utf-8')
 
 
-def test_dispatcher_finds_copilot_pr_by_exact_report_pair_not_mutable_title():
-    text = _text()
-    assert 'cycle_from_report_pair' in text
-    assert ' in:title' not in text
-    assert '.ai/strategy/copilot/*.json' in text
-    assert '.ai/strategy/copilot/*.md' in text
-    assert '[[ ${#files[@]} -eq 2 ]]' in text
-    assert 'gpt-master-strategy-action.yml' in text
-    assert 'copilot_pr_number="$pr"' in text
-    assert 'cycle_id="$cycle"' in text
+def test_legacy_github_dispatcher_stays_retired_after_runtime_centralisation():
+    # The five-minute GitHub dispatcher was intentionally removed when report and
+    # Factory scheduling moved into the VPS runtime. Recreating it would duplicate
+    # paid model calls and reintroduce competing schedulers.
+    assert not LEGACY_WORKFLOW.exists()
 
 
-def test_dispatcher_is_default_branch_scheduled_and_report_pipeline_only():
-    text = _text()
-    assert "cron: '3-59/5 * * * *'" in text
-    assert 'workflow_dispatch:' in text
-    assert 'actions: write' in text
-    assert 'contents: read' in text
-    assert 'pull-requests: read' in text
-    assert 'master_decision.json?ref=ai-reviews' in text
-    assert '--ref main' in text
-
-def test_dispatcher_scopes_pre_checkout_gh_commands_to_repository():
-    text = _text()
-    dispatch_step = text.split(
-        '- name: Find an unresolved exact Copilot report pair and dispatch GPT Master', 1
-    )[1]
-    assert 'GH_REPO: ${{ github.repository }}' in dispatch_step
-    assert 'gh pr list' in dispatch_step
-    assert 'gh workflow run gpt-master-strategy-action.yml' in dispatch_step
+def test_central_factory_invites_all_seven_and_keeps_gpt_master():
+    text = _text(CENTRAL)
+    assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in text
+    assert 'ops._panel_for = lambda package: list(AGENTS)' in text
+    assert 'out["master"] = "gpt"' in text
+    assert '"STRATEGY_FACTORY_REVIEW"' in text
+    assert '"factory-review"' in text
 
 
-def test_dispatcher_scans_unresolved_cycles_instead_of_only_latest_pointer():
-    text = _text()
-    assert 'gh pr list --state open --limit 100' in text
-    assert 'master_decision.json?ref=ai-reviews' in text
-    assert 'latest_cycle_id.txt' not in text
-    assert 'isCrossRepository' in text
+def test_runtime_schedule_replaces_five_minute_github_polling():
+    control = _text(CONTROL)
+    runtime = _text(RUNTIME)
+    assert 'MIN_INTERVAL_HOURS = 4' in control
+    assert '"factory": {' in control
+    assert '"default_hours": 6' in control
+    assert '"seven_agent": {' in control
+    assert '"default_hours": 168' in control
+    assert 'time.sleep(300)' in runtime
+    assert 'minimum_report_interval=4h' in runtime
+
+
+def test_central_runtime_has_no_github_workflow_dispatch_side_effects():
+    text = _text(CENTRAL)
+    assert 'gh workflow run' not in text
+    assert 'gh pr list' not in text
+    assert 'subprocess.run' not in text
+    assert 'actions: write' not in text
