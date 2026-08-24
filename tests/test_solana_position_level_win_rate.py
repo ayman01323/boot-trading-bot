@@ -25,10 +25,6 @@ def _insert_trade(conn, *, wallet, mint, buy_sig, sell_sig, buy_ts, sell_ts, cos
 
 
 def test_scaled_out_winning_position_is_not_fragmented_into_losses(tmp_path):
-    # One buy, sold off in three tranches as price rises: -1 SOL, -0.5 SOL, +3 SOL
-    # legs. Fragment-level: 1 win / 3 = 33% (fails a 65% floor). The position as a
-    # whole nets +1.5 SOL -- a single win. This is exactly the "scale out in stages"
-    # pattern real traders use, which the old per-fragment win_rate punished.
     app = _app(tmp_path)
     buy_ts = NOW - 3600
     with sol.connect(app) as conn:
@@ -42,15 +38,14 @@ def test_scaled_out_winning_position_is_not_fragmented_into_losses(tmp_path):
 
     m = guard.quality_metrics(app, "w1", {"lookback_days": "60", "recent_trade_window": "5"})
 
-    assert m["fragment_win_rate"] == Decimal("100") / Decimal(3)  # 1 win of 3 fragments
+    assert m["fragment_win_rate"] == Decimal("100") / Decimal(3)
+    assert m["fragment_closed"] == 3
     assert m["position_closed"] == 1
-    assert m["win_rate"] == Decimal(100)  # the one real position was a net win
+    assert m["closed"] == 1
+    assert m["win_rate"] == Decimal(100)
 
 
 def test_re_entering_a_mint_after_fully_exiting_is_a_new_position(tmp_path):
-    # Two independent round trips in the same mint: first one loses, fully exits,
-    # then the wallet buys back in later and wins. These must NOT be merged into
-    # one position just because they share a mint.
     app = _app(tmp_path)
     with sol.connect(app) as conn:
         _insert_trade(conn, wallet="w2", mint="MINT_B", buy_sig="buy1", sell_sig="sell1",
@@ -62,18 +57,14 @@ def test_re_entering_a_mint_after_fully_exiting_is_a_new_position(tmp_path):
     m = guard.quality_metrics(app, "w2", {"lookback_days": "60", "recent_trade_window": "5"})
 
     assert m["position_closed"] == 2
-    assert m["win_rate"] == Decimal(50)  # one loss, one win -> 1/2 positions won
+    assert m["closed"] == 2
+    assert m["win_rate"] == Decimal(50)
 
 
 def test_position_level_win_rate_can_flip_historical_ok_decision(tmp_path):
-    # Reproduces the production pattern found via the live-DB audit: many small
-    # fragments of one profitable position fail a 65% fragment-level floor, but
-    # correctly pass once scored per closed position.
     app = _app(tmp_path)
     buy_ts = NOW - 3600
     with sol.connect(app) as conn:
-        # 5 losing fragments (small) + 5 winning fragments (small), all one
-        # continuous position that nets positive overall.
         ts = buy_ts
         for i in range(5):
             _insert_trade(conn, wallet="w3", mint="MINT_C", buy_sig="buyC", sell_sig=f"loss{i}",
@@ -91,10 +82,61 @@ def test_position_level_win_rate_can_flip_historical_ok_decision(tmp_path):
            "min_recent_profit_factor": "0"}
     m = guard.quality_metrics(app, "w3", cfg)
 
-    assert m["fragment_win_rate"] == Decimal(50)  # 5 of 10 fragments won -> fails 65%
+    assert m["fragment_win_rate"] == Decimal(50)
     assert not guard._historical_ok(dict(m, win_rate=m["fragment_win_rate"],
                                           recent_win_rate=m["fragment_win_rate"]), cfg)
 
     assert m["position_closed"] == 1
-    assert m["win_rate"] == Decimal(100)  # the single real position was profitable
+    assert m["win_rate"] == Decimal(100)
     assert guard._historical_ok(m, cfg)
+
+
+def test_fifo_fragments_cannot_fake_minimum_closed_position_sample(tmp_path):
+    app = _app(tmp_path)
+    buy_ts = NOW - 3600
+    with sol.connect(app) as conn:
+        for i in range(10):
+            _insert_trade(conn, wallet="w4", mint="MINT_D", buy_sig="buyD", sell_sig=f"s{i}",
+                          buy_ts=buy_ts, sell_ts=buy_ts + i, cost=Decimal(1), proceeds=Decimal(2))
+        conn.commit()
+
+    cfg = {"lookback_days": "60", "recent_trade_window": "20", "min_win_rate_pct": "0",
+           "min_recent_win_rate_pct": "0", "require_complete_history": "false",
+           "min_closed_trades": "10", "min_profit_factor": "0", "max_leader_drawdown_pct": "100",
+           "min_recent_profit_factor": "0"}
+    m = guard.quality_metrics(app, "w4", cfg)
+
+    assert m["fragment_closed"] == 10
+    assert m["position_closed"] == 1
+    assert m["closed"] == 1
+    assert guard._historical_ok(m, cfg) is False
+
+
+def test_recent_window_uses_complete_positions_not_last_fifo_fragments(tmp_path):
+    app = _app(tmp_path)
+    with sol.connect(app) as conn:
+        # Four simple winning positions.
+        for p in range(4):
+            buy_ts = NOW - 7200 + p * 500
+            _insert_trade(conn, wallet="w5", mint=f"MINT_{p}", buy_sig=f"buy{p}", sell_sig=f"sell{p}",
+                          buy_ts=buy_ts, sell_ts=buy_ts + 20, cost=Decimal(1), proceeds=Decimal(2))
+
+        # The fifth/latest position has ten FIFO fragments. Its early five legs
+        # make enough profit that the complete position is a win, while its final
+        # five fragments are individually losses. A raw rows[-5:] window would
+        # incorrectly classify the recent position as losing.
+        buy_ts = NOW - 1200
+        for i in range(5):
+            _insert_trade(conn, wallet="w5", mint="MINT_LATEST", buy_sig="buy-latest", sell_sig=f"win{i}",
+                          buy_ts=buy_ts, sell_ts=buy_ts + i, cost=Decimal(1), proceeds=Decimal(3))
+        for i in range(5):
+            _insert_trade(conn, wallet="w5", mint="MINT_LATEST", buy_sig="buy-latest", sell_sig=f"loss{i}",
+                          buy_ts=buy_ts, sell_ts=buy_ts + 100 + i, cost=Decimal(1), proceeds=Decimal("0.5"))
+        conn.commit()
+
+    m = guard.quality_metrics(app, "w5", {"lookback_days": "60", "recent_trade_window": "5"})
+
+    assert m["position_closed"] == 5
+    assert m["recent_position_closed"] == 5
+    assert m["recent_win_rate"] == Decimal(100)
+    assert m["recent_fragment_closed"] == 14
