@@ -216,20 +216,32 @@ def create_activation_code(csv_dir: Path, plan_id="STANDARD", max_uses=1, expire
 
 
 def user_setting(csv_dir: Path, telegram_id, chain_id: int, setting: str, default=None):
-    tid = str(telegram_id); value = default
+    tid = str(telegram_id); value = default; target_scope = str(chain_id).strip()
     rows = _rows(user_settings_path(csv_dir))
-    # User global first, then user+chain override.
+
+    # Legacy global aliases (blank/0) are fallback only.
     for row in rows:
         if str(row.get("telegram_id", "")).strip() != tid:
             continue
         scope = str(row.get("chain_id", "*")).strip()
-        if scope in {"", "*", "0"} and (row.get("setting") or "").strip() == setting:
+        if scope in {"", "0"} and (row.get("setting") or "").strip() == setting:
             value = row.get("value", default)
+
+    # '*' is the canonical global scope and always wins over legacy aliases.
     for row in rows:
         if str(row.get("telegram_id", "")).strip() != tid:
             continue
-        if str(row.get("chain_id", "")).strip() == str(chain_id) and (row.get("setting") or "").strip() == setting:
+        if str(row.get("chain_id", "*")).strip() == "*" and (row.get("setting") or "").strip() == setting:
             value = row.get("value", default)
+
+    # Only a real chain id can override the canonical global value. 0 is a
+    # historical global alias, not an executable chain-specific scope.
+    if target_scope not in {"", "*", "0"}:
+        for row in rows:
+            if str(row.get("telegram_id", "")).strip() != tid:
+                continue
+            if str(row.get("chain_id", "")).strip() == target_scope and (row.get("setting") or "").strip() == setting:
+                value = row.get("value", default)
     return value
 
 
