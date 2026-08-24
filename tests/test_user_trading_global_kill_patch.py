@@ -64,19 +64,24 @@ def test_global_autotrade_write_removes_duplicates_aliases_and_chain_rows(tmp_pa
     assert user_setting(csv_dir, 123, 56, "auto_input_base") == "0.02"
 
 
-def test_live_and_mode_are_global_but_numeric_policy_stays_chain_scoped(tmp_path):
+def test_legacy_or_chain_writes_cannot_override_canonical_global_controls(tmp_path):
     csv_dir = _csv(tmp_path)
 
     set_user_setting(csv_dir, 123, "live_trading_enabled", "false")
     set_user_setting(csv_dir, 123, "live_trading_enabled", "true", chain_id=56)
-    # Global-only controls are canonicalised to one '*' row even if an old
-    # caller supplies a chain id.
-    assert user_bool(csv_dir, 123, 1, "live_trading_enabled", False) is True
-    assert user_bool(csv_dir, 123, 56, "live_trading_enabled", False) is True
+    set_user_setting(csv_dir, 123, "live_trading_enabled", "true", chain_id=0)
+    assert user_bool(csv_dir, 123, 1, "live_trading_enabled", True) is False
+    assert user_bool(csv_dir, 123, 56, "live_trading_enabled", True) is False
 
+    set_user_setting(csv_dir, 123, "recommendation_mode", "SHADOW")
     set_user_setting(csv_dir, 123, "recommendation_mode", "ARMED", chain_id=56)
+    assert user_setting(csv_dir, 123, 8453, "recommendation_mode") == "SHADOW"
+    set_user_setting(csv_dir, 123, "recommendation_mode", "ARMED")
     assert user_setting(csv_dir, 123, 8453, "recommendation_mode") == "ARMED"
 
+
+def test_numeric_policy_stays_chain_scoped(tmp_path):
+    csv_dir = _csv(tmp_path)
     set_user_setting(csv_dir, 123, "auto_input_base", "0.005", chain_id="*")
     set_user_setting(csv_dir, 123, "auto_input_base", "0.02", chain_id=56)
     assert user_setting(csv_dir, 123, 56, "auto_input_base") == "0.02"
