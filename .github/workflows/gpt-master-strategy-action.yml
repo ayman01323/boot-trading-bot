@@ -1,8 +1,8 @@
-name: GPT Master Strategy Reconciler
+name: GPT Master Strategy Reconciler (Compatibility)
 
 on:
-  schedule:
-    - cron: '*/10 * * * *'
+  # GPT is one selectable/fallback MASTER inside the event-driven seven-agent
+  # reconciler. Keep this workflow only as a manual compatibility entrypoint.
   workflow_dispatch:
 
 permissions:
@@ -14,10 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Delegate to selected/fallback MASTER
+      - name: Delegate manual request to selected/fallback MASTER
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           gh workflow run selected-ai-master.yml --ref main -f lane=strategy
-          echo 'GPT is now one selectable/fallback MASTER, not a hard-coded master.'
+          echo 'GPT is now one selectable/fallback MASTER, not a hard-coded or scheduled master.'

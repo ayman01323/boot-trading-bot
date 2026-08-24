@@ -1,277 +1,42 @@
-name: Engineering Agent Retry
+name: Engineering Agent Retry (Manual Compatibility)
 
 on:
-  schedule:
-    - cron: '17,47 * * * *'
+  # Historical GPT/Gemini engineering retries were polling every 30 minutes.
+  # Non-urgent paid retries are now explicit only.
   workflow_dispatch:
     inputs:
       source_commit:
-        description: 'Optional exact weekly engineering cycle source'
+        description: 'Optional engineering source; must equal current main for a full re-audit'
         required: false
         type: string
 
 permissions:
-  contents: write
+  actions: write
+  contents: read
 
 concurrency:
-  group: engineering-agent-retry
-  cancel-in-progress: false
+  group: engineering-agent-retry-manual
+  cancel-in-progress: true
 
 jobs:
   retry:
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 5
     steps:
-      - name: Resolve engineering source and missing providers
-        id: meta
+      - name: Dispatch full current-main engineering re-audit only when explicitly requested
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_SOURCE: ${{ inputs.source_commit }}
         shell: bash
         run: |
           set -euo pipefail
-          source_sha="${INPUT_SOURCE:-}"
-          if [[ -z "$source_sha" ]]; then
-            set +e
-            source_sha="$(gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/contents/weekly/latest_source_commit.txt?ref=ai-reviews" --jq '.content' 2>/dev/null \
-              | tr -d '\n' | base64 -d 2>/dev/null | tr -d '\r\n')"
-            rc=$?
-            set -e
-            if [[ $rc -ne 0 || -z "$source_sha" ]]; then
-              echo 'No engineering source is available yet.'
-              echo 'run=false' >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
+          current="$(gh api -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          requested="${INPUT_SOURCE:-$current}"
+          if [[ "$requested" != "$current" ]]; then
+            echo "Historical exact-source paid retry is intentionally not automatic: requested=${requested} current=${current}" >&2
+            echo 'Run the provider-specific workflow manually if an immutable historical review is truly required.' >&2
+            exit 2
           fi
-          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid source commit.' >&2; exit 2; }
-          missing=()
-          for provider in gpt gemini; do
-            tmp="/tmp/${provider}-current.json"
-            set +e
-            gh api -H 'Accept: application/vnd.github+json' \
-              "repos/${GITHUB_REPOSITORY}/contents/weekly/runs/${source_sha}/${provider}.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
-              | tr -d '\n' | base64 -d > "$tmp" 2>/dev/null
-            rc=$?
-            set -e
-            valid=false
-            if [[ $rc -eq 0 && -s "$tmp" ]]; then
-              status="$(python - "$tmp" <<'PY'
-          import json,sys
-          try:
-              p=json.load(open(sys.argv[1])); print(str(p.get('status') or '').upper())
-          except Exception: print('')
-          PY
-              )"
-              [[ "$status" != 'INCOMPLETE' && -n "$status" ]] && valid=true
-            fi
-            [[ "$valid" == 'true' ]] || missing+=("$provider")
-          done
-          providers="$(IFS=,; echo "${missing[*]}")"
-          echo "source=$source_sha" >> "$GITHUB_OUTPUT"
-          echo "providers=$providers" >> "$GITHUB_OUTPUT"
-          if [[ ${#missing[@]} -eq 0 ]]; then
-            echo 'GPT and Gemini engineering reports are already valid.'
-            echo 'run=false' >> "$GITHUB_OUTPUT"
-          else
-            echo "Retrying engineering providers: $providers"
-            echo 'run=true' >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out exact frozen engineering source
-        if: steps.meta.outputs.run == 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.meta.outputs.source }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - uses: actions/setup-python@v5
-        if: steps.meta.outputs.run == 'true'
-        with:
-          python-version: '3.11'
-          cache: pip
-
-      - uses: actions/setup-node@v4
-        if: steps.meta.outputs.run == 'true'
-        with:
-          node-version: '22'
-
-      - name: Install audit tooling
-        if: steps.meta.outputs.run == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
-          npm install -g @openai/codex@latest @google/gemini-cli@latest
-          codex --version
-          gemini --version
-
-      - name: Fetch deterministic baseline and prepare prompt
-        if: steps.meta.outputs.run == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.meta.outputs.source }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .engineering_retry
-          set +e
-          gh api -H 'Accept: application/vnd.github+json' \
-            "repos/${GITHUB_REPOSITORY}/contents/weekly/runs/${SOURCE_SHA}/baseline.json?ref=ai-reviews" --jq '.content' 2>/dev/null \
-            | tr -d '\n' | base64 -d > .engineering_retry/baseline.json 2>/dev/null
-          rc=$?
-          set -e
-          [[ $rc -eq 0 && -s .engineering_retry/baseline.json ]] || echo '{}' > .engineering_retry/baseline.json
-          cat > .engineering_retry/common_prompt.txt <<EOF
-          You are an INDEPENDENT engineering auditor of a multi-chain automated trading bot.
-          Audit the ENTIRE repository at exact frozen source commit ${SOURCE_SHA}. Read .engineering_retry/baseline.json,
-          inspect code/workflows/tests/configuration, EVM and Solana execution, accounting/P&L, concurrency, databases,
-          retries/timeouts, Telegram/operator permissions, Strategy Lab/shadow systems, circuit breakers and deployment interactions.
-
-          Find real software bugs, unsafe inconsistencies, data-corruption risks, execution/accounting defects, race conditions,
-          error-handling defects, test gaps and operational regressions. Do not tune strategy merely for recent profit.
-          REPORT ONLY: no code edits, deploys, trading, settings, secrets, signing/wallet, capital or safety-gate changes.
-
-          Required JSON:
-          {
-            "schema_version":1,"provider":"PROVIDER","source_commit":"${SOURCE_SHA}",
-            "scope":"FULL_REPOSITORY_BUG_AUDIT","status":"CLEAN|ISSUES_FOUND|INCOMPLETE","summary":"...",
-            "findings":[{
-              "id":"stable id","severity":"P0|P1|P2|P3",
-              "category":"CORRECTNESS|SAFETY|EXECUTION|ACCOUNTING|CONCURRENCY|DATA|NETWORK|CONFIG|SECURITY|TESTS|PERFORMANCE|MAINTAINABILITY",
-              "title":"...","evidence":[{"file":"path","line":0,"symbol":"optional","detail":"specific evidence"}],
-              "impact":"...","root_cause":"...","corrective_action":"bounded action",
-              "tests_required":["specific tests"],"confidence":0.0,"deterministic_evidence":false
-            }],
-            "refusals_or_limits":[],"report_only":true,"no_live_changes":true
-          }
-          EOF
-
-      - name: Retry GPT engineering report
-        if: steps.meta.outputs.run == 'true' && contains(steps.meta.outputs.providers, 'gpt')
-        id: gpt
-        continue-on-error: true
-        env:
-          CODEX_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_WEEKLY_AUDIT_MODEL: ${{ vars.OPENAI_WEEKLY_AUDIT_MODEL }}
-          SOURCE_SHA: ${{ steps.meta.outputs.source }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${CODEX_API_KEY:-}"
-          sed 's/"provider":"PROVIDER"/"provider":"gpt"/' .engineering_retry/common_prompt.txt > /tmp/retry-gpt-prompt.txt
-          cat >> /tmp/retry-gpt-prompt.txt <<'EOF'
-          Return exactly one report between ENGINEERING_RETRY_JSON_BEGIN and ENGINEERING_RETRY_JSON_END. Do not write files.
-          EOF
-          model_args=()
-          if [[ -n "${OPENAI_WEEKLY_AUDIT_MODEL:-}" ]]; then model_args=(-m "$OPENAI_WEEKLY_AUDIT_MODEL"); fi
-          codex --ask-for-approval never exec --sandbox danger-full-access --ephemeral "${model_args[@]}" - \
-            < /tmp/retry-gpt-prompt.txt > .engineering_retry/gpt_stdout.txt 2> .engineering_retry/gpt_error.txt
-          python - <<'PY'
-          import json,re,pathlib
-          raw=pathlib.Path('.engineering_retry/gpt_stdout.txt').read_text(errors='replace')
-          m=re.search(r'ENGINEERING_RETRY_JSON_BEGIN\s*(\{.*?\})\s*ENGINEERING_RETRY_JSON_END',raw,re.S)
-          if not m: raise SystemExit('GPT engineering retry JSON markers missing')
-          pathlib.Path('.engineering_retry/gpt.json').write_text(json.dumps(json.loads(m.group(1)),indent=2,sort_keys=True)+'\n')
-          PY
-          python -m learnerbot.weekly_bug_audit_contract validate-agent \
-            --input .engineering_retry/gpt.json --provider gpt --source-commit "$SOURCE_SHA" >/dev/null
-          python - <<'PY'
-          import json
-          p=json.load(open('.engineering_retry/gpt.json'))
-          if p.get('status')=='INCOMPLETE': raise SystemExit('GPT retry returned INCOMPLETE')
-          PY
-
-      - name: Retry Gemini engineering report
-        if: steps.meta.outputs.run == 'true' && contains(steps.meta.outputs.providers, 'gemini')
-        id: gemini
-        continue-on-error: true
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_AUDIT_MODEL: ${{ vars.GEMINI_AUDIT_MODEL || 'pro' }}
-          GEMINI_CLI_TRUST_WORKSPACE: 'true'
-          SOURCE_SHA: ${{ steps.meta.outputs.source }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${GEMINI_API_KEY:-}"
-          sed 's/"provider":"PROVIDER"/"provider":"gemini"/' .engineering_retry/common_prompt.txt > /tmp/retry-gemini-prompt.txt
-          cat >> /tmp/retry-gemini-prompt.txt <<'EOF'
-          End with exactly one report between WEEKLY_AUDIT_JSON_BEGIN and WEEKLY_AUDIT_JSON_END.
-          EOF
-          gemini --approval-mode plan --skip-trust --model "$GEMINI_AUDIT_MODEL" --output-format text \
-            -p "$(cat /tmp/retry-gemini-prompt.txt)" > .engineering_retry/gemini_stdout.txt 2> .engineering_retry/gemini_error.txt
-          python -m learnerbot.weekly_bug_audit_contract extract-agent \
-            --input .engineering_retry/gemini_stdout.txt --output .engineering_retry/gemini.json \
-            --provider gemini --source-commit "$SOURCE_SHA" >/dev/null
-          python - <<'PY'
-          import json
-          p=json.load(open('.engineering_retry/gemini.json'))
-          if p.get('status')=='INCOMPLETE': raise SystemExit('Gemini retry returned INCOMPLETE')
-          PY
-
-      - name: Publish only successful retry reports and retry diagnostics
-        if: steps.meta.outputs.run == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ steps.meta.outputs.source }}
-          GPT_OUTCOME: ${{ steps.gpt.outcome }}
-          GEMINI_OUTCOME: ${{ steps.gemini.outcome }}
-          REQUESTED: ${{ steps.meta.outputs.providers }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
-          rm -rf /tmp/engineering-retry-reviews
-          git worktree add --detach /tmp/engineering-retry-reviews origin/ai-reviews
-          dest="/tmp/engineering-retry-reviews/weekly/runs/${SOURCE_SHA}"
-          mkdir -p "$dest"
-          if [[ "$GPT_OUTCOME" == 'success' && -s .engineering_retry/gpt.json ]]; then
-            cp .engineering_retry/gpt.json "$dest/gpt.json"
-            python - <<'PY' > "$dest/gpt.md"
-          import json
-          p=json.load(open('.engineering_retry/gpt.json')); print('# GPT engineering retry\n\n'+str(p.get('summary') or ''))
-          PY
-          fi
-          if [[ "$GEMINI_OUTCOME" == 'success' && -s .engineering_retry/gemini.json ]]; then
-            cp .engineering_retry/gemini.json "$dest/gemini.json"
-            python - <<'PY' > "$dest/gemini.md"
-          import json
-          p=json.load(open('.engineering_retry/gemini.json')); print('# Gemini engineering retry\n\n'+str(p.get('summary') or ''))
-          PY
-          fi
-          python - "$REQUESTED" "$GPT_OUTCOME" "$GEMINI_OUTCOME" <<'PY' > "$dest/agent_retry_status.json"
-          import json,sys,time,pathlib,re
-          requested,gpt,gemini=sys.argv[1:4]
-          def tail(name):
-              p=pathlib.Path('.engineering_retry')/name
-              if not p.exists(): return ''
-              s=p.read_text(errors='replace')[-1200:]
-              s=re.sub(r'(sk|sess)-[A-Za-z0-9_-]{8,}','<redacted>',s)
-              s=re.sub(r'AIza[A-Za-z0-9_-]{20,}','<redacted>',s)
-              return s
-          print(json.dumps({
-            'checked_epoch':int(time.time()),'requested_providers':[x for x in requested.split(',') if x],
-            'gpt_outcome':gpt,'gemini_outcome':gemini,
-            'gpt_reason':tail('gpt_error.txt') if gpt not in {'success','skipped'} else '',
-            'gemini_reason':tail('gemini_error.txt') if gemini not in {'success','skipped'} else '',
-          },indent=2,sort_keys=True))
-          PY
-          cd /tmp/engineering-retry-reviews
-          git config user.name 'engineering-agent-retry-bot'
-          git config user.email 'engineering-agent-retry-bot@users.noreply.github.com'
-          git add weekly
-          if ! git diff --cached --quiet; then
-            git commit -m "Retry engineering agents ${SOURCE_SHA:0:12}"
-            git fetch origin ai-reviews
-            git rebase origin/ai-reviews
-            git push origin HEAD:ai-reviews
-          fi
-
-      - name: Clean retry workspace
-        if: always()
-        run: rm -rf .engineering_retry /tmp/engineering-retry-reviews /tmp/retry-gpt-prompt.txt /tmp/retry-gemini-prompt.txt
+          gh workflow run weekly-three-agent-bug-audit.yml --ref main
+          echo "Dispatched explicit current-main GPT/Gemini/Copilot engineering re-audit for ${current:0:12}."

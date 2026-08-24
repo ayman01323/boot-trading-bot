@@ -7,7 +7,7 @@ from . import telegram_ui as _ui
 from .user_registry import all_users
 
 _PREV_SET_COMMANDS = _ui.set_commands
-_EXPECTED = {"aiaudit", "aidecision", "aistrategy", "aiupdates", "aichange", "aicost"}
+_EXPECTED = {"aiaudit", "aidecision", "aistrategy", "aiupdates", "aichange", "aicost", "aireports", "aifrequency", "airun"}
 
 
 def _active_master_ids(csv_dir: Path) -> list[str]:

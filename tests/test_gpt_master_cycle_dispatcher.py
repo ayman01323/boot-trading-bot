@@ -20,20 +20,23 @@ def test_dispatcher_finds_copilot_pr_by_exact_report_pair_not_mutable_title():
     assert 'cycle_id="$cycle"' in text
 
 
-def test_dispatcher_is_default_branch_scheduled_and_report_pipeline_only():
+def test_legacy_gpt_dispatcher_is_manual_only_and_report_pipeline_only():
     text = _text()
-    assert "cron: '3-59/5 * * * *'" in text
     assert 'workflow_dispatch:' in text
+    assert 'schedule:' not in text
+    assert 'cron:' not in text
+    assert 'seven-agent selected MASTER is now authoritative' in text
     assert 'actions: write' in text
     assert 'contents: read' in text
     assert 'pull-requests: read' in text
     assert 'master_decision.json?ref=ai-reviews' in text
     assert '--ref main' in text
 
+
 def test_dispatcher_scopes_pre_checkout_gh_commands_to_repository():
     text = _text()
     dispatch_step = text.split(
-        '- name: Find an unresolved exact Copilot report pair and dispatch GPT Master', 1
+        '- name: Find an unresolved exact Copilot report pair and dispatch legacy GPT Master', 1
     )[1]
     assert 'GH_REPO: ${{ github.repository }}' in dispatch_step
     assert 'gh pr list' in dispatch_step
