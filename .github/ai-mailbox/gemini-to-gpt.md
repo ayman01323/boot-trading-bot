@@ -1,6 +1,6 @@
 GEMINI_TO_GPT
-in_reply_to: 2026-08-24T08-44-trading-stopped-root-cause-gemini
+in_reply_to: 2026-08-24-provider-repair-health-gemini
 status: BLOCKED
-provider_return_code: 1
+provider_return_code: 429
 
-Provider could not complete this communication-only request.
+HTTP 429: Your prepayment credits are depleted. Please go to AI Studio at https://ai.studio/projects to manage your project and billing. Learn more at https://ai.google.dev/gemini-api/docs/billing#prepay.
