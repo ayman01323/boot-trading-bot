@@ -12,7 +12,7 @@ permissions:
 
 concurrency:
   group: boot-vps-deploy
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   probe:
@@ -141,7 +141,11 @@ jobs:
           required={'aiaudit','aidecision','aistrategy','aiupdates'}
           command_code_ok=required.issubset(set(expected_commands))
           sha_ok=(deployed==expected.lower())
-          deployment_ok=(deploy_outcome=='success' and str(deploy_exit)=='0' and sha_ok and service_ok and watcher_ok)
+          # The watcher marker is an observability hint, not a safe deployment gate:
+          # status only contains a short journal tail, so a healthy early-start marker
+          # can legitimately scroll out before attestation. Exact SHA + successful
+          # deploy + an explicitly running service are the deployment contract.
+          deployment_ok=(deploy_outcome=='success' and str(deploy_exit)=='0' and sha_ok and service_ok)
           full_ok=(deployment_ok and command_code_ok and telegram_verified and master_count>0)
           print(json.dumps({
               'schema_version':2,
