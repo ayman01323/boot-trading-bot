@@ -28,6 +28,13 @@ def test_relay_formats_completed_reply_and_redacts_secret(monkeypatch: pytest.Mo
     assert "[REDACTED]" in out
 
 
+def test_kimi_is_supported_by_bounded_provider_relay(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(relay, "call_provider", lambda provider, prompt: (0, "kimi ok", ""))
+    out = relay.relay("kimi", "test-1", "0123", _message("kimi"))
+    assert out.startswith("KIMI_TO_GPT\n")
+    assert "status: COMPLETED" in out
+
+
 def test_relay_rejects_wrong_prefix_or_non_request() -> None:
     with pytest.raises(ValueError, match="prefix"):
         relay.relay("gemini", "test-1", "", _message("deepseek"))
@@ -57,3 +64,12 @@ def test_copilot_runs_provider_from_empty_temp_directory(monkeypatch: pytest.Mon
     assert seen["cwd"] != original
     assert os.getcwd() == original
     assert "status: COMPLETED" in out
+
+
+def test_blocked_reply_sanitises_provider_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KIMI_API_KEY", "secret-value-123456")
+    out = relay._blocked_reply("kimi", "test-1", RuntimeError("failed with secret-value-123456"))
+    assert out.startswith("KIMI_TO_GPT\n")
+    assert "status: BLOCKED" in out
+    assert "secret-value-123456" not in out
+    assert "[REDACTED]" in out
