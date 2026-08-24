@@ -48,9 +48,13 @@ def test_failed_automatic_attempt_is_not_retried_inside_interval(tmp_path):
 
 def test_runtime_scheduler_master_command_contract():
     patch = Path("learnerbot/telegram_report_schedule_patch.py").read_text(encoding="utf-8")
-    assert '("aireports"' in patch
+    assert '("reports"' in patch
+    assert '"/aireports"' in patch  # compatibility alias remains callable
     assert '("aifrequency"' in patch
     assert '("airun"' in patch
+    assert "<b>📋 MASTER REPORTS</b>" in patch
+    assert "Purpose:" in patch
+    assert "All actionable findings flow to <b>🏭 Strategy Factory Review</b>." in patch
     assert "time.sleep(300)" in patch
     assert "minimum_report_interval=4h" in patch
 
