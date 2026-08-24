@@ -1,0 +1,65 @@
+name: VPS Runner Occupancy Diagnostic (Ops Branch)
+
+on:
+  push:
+    branches:
+      - ops/vps-runner-diagnostic-20260824
+    paths:
+      - '.github/vps-runner-diagnostic.trigger'
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Identify boot-vps queued and running jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out=/tmp/vps-runner-occupancy.txt
+          : > "$out"
+          echo "generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$out"
+          echo "diagnostic_branch=${GITHUB_REF_NAME}" >> "$out"
+          echo >> "$out"
+          for state in in_progress queued; do
+            echo "=== ${state} workflow runs with boot-vps jobs ===" >> "$out"
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[] | [.id,.name,.head_branch,.head_sha,.event,.created_at] | @tsv' \
+              2>/dev/null | while IFS=$'\t' read -r run_id run_name head_branch head_sha event created_at; do
+                [[ -n "$run_id" ]] || continue
+                jobs="$(gh api -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" 2>/dev/null || true)"
+                [[ -n "$jobs" ]] || continue
+                JOBS="$jobs" python3 - "$run_id" "$run_name" "$head_branch" "$head_sha" "$event" "$created_at" "$state" >> "$out" <<'PY'
+          import json,os,sys
+          data=json.loads(os.environ['JOBS'])
+          rid,name,branch,sha,event,created,state=sys.argv[1:8]
+          for j in data.get('jobs') or []:
+              labels=[str(x) for x in (j.get('labels') or [])]
+              if 'boot-vps' not in labels:
+                  continue
+              print(f"run_id={rid} workflow={name!r} run_state={state} branch={branch} sha={sha} event={event} created={created}")
+              print(f"  job_id={j.get('id')} job_name={j.get('name')!r} job_status={j.get('status')} conclusion={j.get('conclusion')} labels={','.join(labels)}")
+          PY
+              done
+            echo >> "$out"
+          done
+          cat "$out"
+
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-vps-runner-occupancy.txt"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$out")"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/put.json
+          import json,sys
+          d={'message':'Update VPS runner occupancy diagnostic','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: d['sha']=sys.argv[2]
+          print(json.dumps(d))
+          PY
+          gh api -X PUT "$api" --input /tmp/put.json >/dev/null
