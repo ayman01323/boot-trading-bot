@@ -1,8 +1,12 @@
 from pathlib import Path
 
 
-def _workflow_text() -> str:
-    return (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "deploy-vps.yml").read_text(encoding="utf-8")
+ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
+
+
+def _workflow_text(name: str = "deploy-vps.yml") -> str:
+    return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
 def test_deploy_workflow_never_cancels_in_progress_vps_deploy():
@@ -18,3 +22,10 @@ def test_watcher_log_marker_is_observability_not_deployment_gate():
     assert "sha_ok" in deployment_line
     assert "service_ok" in deployment_line
     assert "deploy_outcome=='success'" in deployment_line
+
+
+def test_communication_only_relays_do_not_use_boot_vps_runner():
+    for name in ("universal-ai-bus-mailbox-relay.yml", "ai-mailbox-provider-relay.yml"):
+        text = _workflow_text(name)
+        assert "runs-on: ubuntu-latest" in text
+        assert "runs-on: [self-hosted, linux, x64, boot-vps]" not in text
