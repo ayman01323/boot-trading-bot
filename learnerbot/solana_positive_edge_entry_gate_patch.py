@@ -116,33 +116,58 @@ def _pf(profit: Decimal, loss: Decimal) -> Decimal:
     return Decimal("99") if profit > 0 else Decimal(0)
 
 
+def _position_returns(rows):
+    """Percent return per closed POSITION, not per FIFO cost-basis fragment.
+
+    Mirrors solana_profit_guard_patch._bucket_positions: a wallet/mint's fills are
+    one position until held quantity would have returned to zero. A position
+    scaled out across several sells previously contributed several separate
+    fragment returns (some legs negative even when the position overall was
+    profitable) to this median -- see the sibling fix to win_rate for the same
+    class of bug.
+    """
+    positions = _guard._bucket_positions(rows)
+    returns = []
+    for pos in sorted(positions, key=lambda p: max(r["sell_ts"] for r in p)):
+        cost = sum((_d(r.get("cost_sol"), 0) for r in pos), Decimal(0))
+        net = sum((_d(r.get("net_sol"), 0) for r in pos), Decimal(0))
+        if cost <= 0:
+            continue
+        pct = net * Decimal(100) / cost
+        returns.append(max(Decimal("-95"), min(Decimal("500"), pct)))
+    return returns
+
+
 def leader_return_edge(app, wallet: str, cfg: dict) -> dict:
     lookback = max(1, min(365, _sol._int(cfg.get("lookback_days"), 60)))
     cutoff = int(time.time()) - lookback * 86400
     recent_n = max(3, min(50, _sol._int(cfg.get("live_edge_recent_trade_window"), 10)))
     with closing(_sol.connect(app)) as conn:
         rows = [dict(r) for r in conn.execute(
-            "SELECT cost_sol,net_sol,sell_ts FROM trades WHERE wallet=? AND sell_ts>=? ORDER BY sell_ts",
+            "SELECT mint,buy_ts,cost_sol,net_sol,sell_ts FROM trades WHERE wallet=? AND sell_ts>=? ORDER BY sell_ts",
             (str(wallet), cutoff),
         ).fetchall()]
 
-    returns = []
+    fragment_returns = []
     for row in rows:
         cost = _d(row.get("cost_sol"), 0)
         net = _d(row.get("net_sol"), 0)
         if cost <= 0:
             continue
         pct = net * Decimal(100) / cost
-        returns.append(max(Decimal("-95"), min(Decimal("500"), pct)))
+        fragment_returns.append(max(Decimal("-95"), min(Decimal("500"), pct)))
 
+    returns = _position_returns(rows)
     recent = returns[-recent_n:]
     positive = [x for x in returns if x > 0]
     return {
-        "closed": len(returns),
+        "closed": len(fragment_returns),
         "median_return_pct": _median(returns),
         "recent_closed": len(recent),
         "recent_median_return_pct": _median(recent),
         "median_positive_return_pct": _median(positive),
+        "position_closed": len(returns),
+        "fragment_median_return_pct": _median(fragment_returns),
     }
 
 
