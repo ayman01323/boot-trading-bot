@@ -1,12 +1,10 @@
 from types import SimpleNamespace
 
 from learnerbot import sibot as sibot
+from learnerbot import solana_live_patch as sol_live
+from learnerbot import solana_sibot as solana
 from learnerbot import telegram_sibot_settings_source_patch as source
-from learnerbot.user_registry import (
-    USER_HEADERS,
-    set_user_setting,
-    update_user,
-)
+from learnerbot.user_registry import USER_HEADERS, set_user_setting, update_user
 
 
 def _app(tmp_path):
@@ -79,6 +77,11 @@ def test_primary_master_is_first_master_not_later_added_master(tmp_path):
     _write_users(app)
     assert source.primary_master_id(app.csv_dir) == "111"
 
+    # A later-added active MASTER must never take over the source merely because
+    # the original MASTER is temporarily inactive/suspended.
+    update_user(app.csv_dir, "111", status="SUSPENDED")
+    assert source.primary_master_id(app.csv_dir) == "111"
+
 
 def test_main_master_source_inherits_tuning_but_not_execution_authority(tmp_path):
     app = _app(tmp_path)
@@ -103,6 +106,28 @@ def test_main_master_source_inherits_tuning_but_not_execution_authority(tmp_path
     assert cfg["auto_trade_enabled"] == "false"
     assert cfg["_settings_source"] == source.SOURCE_PRIMARY_MASTER
     assert cfg["_settings_source_tid"] == "111"
+
+
+def test_main_master_source_undoes_stale_solana_size_reserve_without_inheriting_live_enable(tmp_path):
+    app = _app(tmp_path)
+    _write_users(app)
+
+    set_user_setting(app.csv_dir, "111", "solana_live_trade_sol", "0.004", chain_id=solana.SOLANA_CHAIN_ID)
+    set_user_setting(app.csv_dir, "111", "solana_live_min_reserve_sol", "0.015", chain_id=solana.SOLANA_CHAIN_ID)
+    set_user_setting(app.csv_dir, "333", "solana_live_trade_sol", "0.0005", chain_id=solana.SOLANA_CHAIN_ID)
+    set_user_setting(app.csv_dir, "333", "solana_live_min_reserve_sol", "0.005", chain_id=solana.SOLANA_CHAIN_ID)
+    set_user_setting(app.csv_dir, "111", "solana_live_enabled", "true", chain_id=solana.SOLANA_CHAIN_ID)
+    set_user_setting(app.csv_dir, "333", "solana_live_enabled", "false", chain_id=solana.SOLANA_CHAIN_ID)
+    set_user_setting(app.csv_dir, "333", source.SOURCE_KEY, source.SOURCE_PRIMARY_MASTER, chain_id="*")
+
+    trade, reserve = sol_live.live_limits(
+        app,
+        "333",
+        {"live_trade_sol": "0.005", "live_min_sol_reserve": "0.02"},
+    )
+    assert str(trade) == "0.004"
+    assert str(reserve) == "0.015"
+    assert sol_live.live_enabled(app, "333") is False
 
 
 def test_switching_back_to_my_settings_restores_dormant_personal_tuning(tmp_path):
