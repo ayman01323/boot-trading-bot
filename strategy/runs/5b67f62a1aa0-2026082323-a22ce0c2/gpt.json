@@ -1,0 +1,142 @@
+{
+  "cycle_id": "5b67f62a1aa0-2026082323-a22ce0c2",
+  "evidence_gaps": [
+    "Fresh per-attempt Solana and EVM runtime records with timestamps, strategy version, chain, capital weight and final status.",
+    "Closed-position realised NET P&L after network/base fees, priority fees, tips, gas, builder/platform fees, slippage, price impact, rent and failed-attempt costs.",
+    "Quote-to-submit and submit-to-inclusion latency, quote age, simulation result, RPC errors, reverts, dropped transactions and reconciliation outcomes.",
+    "Exclusive STRATEGY/MARKET versus EXECUTION/INFRASTRUCTURE primary-cause attribution with an UNKNOWN category and ledger reconciliation.",
+    "Solana leader-level walk-forward results, selection history, concentration, drawdown and follower-versus-leader return decay.",
+    "EVM chain-specific gas bids, gas estimates versus actual gas, failed-transaction gas, transfer-tax behavior and route-level atomic minimum-profit enforcement.",
+    "Out-of-sample shadow results by chain, route type and trade size, including profit factor, money-weighted net P&L, tail loss and abstention rate.",
+    "At least five current high-resolution execution samples before any infrastructure conclusion, and adequate strategy samples before any profitability, CANARY or LIVE claim."
+  ],
+  "evidence_sha256": "a22ce0c22f7350c323f7ee70da804bc48a0cc092705bc657463d634dee2b7bf0",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "REWORK",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.96,
+      "downside_risk": "A deliberately conservative model may reject real opportunities, especially during temporarily cheap gas or unusually deep liquidity.",
+      "evidence": [
+        {
+          "detail": "V2/V3 candidates record estimated_gas_base as zero; slippage reserve is gross_profit multiplied by slippage bps, not input capital multiplied by adverse-execution bps.",
+          "path": "learnerbot/full_power_scanner.py"
+        },
+        {
+          "detail": "Conservative net is captured gross minus the scanner-provided gas, builder and slippage fields, so understated scanner costs propagate directly into edge ranking.",
+          "path": "learnerbot/copy_engine.py"
+        },
+        {
+          "detail": "Cross-DEX candidates correctly remain disabled and require an atomic executor; preserve this fail-closed treatment.",
+          "path": "learnerbot/full_power_scanner.py"
+        }
+      ],
+      "expected_effect": "Fewer false-positive EVM signals and improved money-weighted shadow net P&L by abstaining when complete executable costs consume the quote edge.",
+      "id": "evm-net-edge-cost-model-v1",
+      "minimum_observation": "At least 100 fresh simulated candidates and 30 executable shadow fills per material EVM chain, spanning at least seven days and multiple gas regimes; report results separately by chain, route type and capital size.",
+      "rationale": "Positive quoted gross edge is not positive executable edge. EVM gas, per-hop adverse fill, transfer-tax behavior, quote decay and failed-transaction gas must be charged using chain-specific values before a candidate is ranked.",
+      "shadow_test": "Replay fresh wallet-specific V2 and V3 simulations by chain and compare the current model with a model charging estimated gas at the chosen fee bid, input-notional slippage/impact reserve, builder fees and failure-cost expectation. Require positive out-of-sample net P&L and profit factor above 1 after every cost, with no worse tail loss. Stop if any candidate labelled positive has non-positive simulated executable net, required cost data is missing, or failure-adjusted net remains non-positive.",
+      "strategy": "EVM V2/V3 single-router triangular arbitrage",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_strategy_evm_net_edge.py"
+      ]
+    },
+    {
+      "action": "SHADOW_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.82,
+      "downside_risk": "Stronger sample and uncertainty requirements reduce frequency and may react slowly to genuinely new profitable leaders.",
+      "evidence": [
+        {
+          "detail": "Entry estimation uses the minimum of historical and recent arithmetic mean returns, permits five samples, then subtracts Jupiter round-trip loss, fee, two-leg slippage and latency reserves.",
+          "path": "learnerbot/solana_first_day_strategy_restore_patch.py"
+        },
+        {
+          "detail": "The profile includes 25% take profit, 10% stop loss, trailing and break-even rules, but stale evidence provides no realised distribution supporting those thresholds.",
+          "path": "learnerbot/solana_first_day_strategy_restore_patch.py"
+        },
+        {
+          "detail": "Receipts can record network fee, priority fee, tips, impact, slippage and net execution P&L, providing the required basis for cost-complete validation when fresh data exists.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py"
+        }
+      ],
+      "expected_effect": "A more robust abstention policy should reduce capital allocated to leaders whose apparent historical return is driven by outliers or is not reproducible after follower latency and costs.",
+      "id": "solana-robust-follower-edge-v1",
+      "minimum_observation": "At least 30 closed shadow positions, at least 10 leaders, 14 calendar days, five or more observations per leader, and at least 90% complete cost and execution-stage records; also report capital-weighted drawdown and leader concentration.",
+      "rationale": "The entry gate is directionally sound but small-sample means are sensitive to skew and leader selection bias. Strategy/market alpha must be validated separately from Jupiter, RPC, signing, simulation and inclusion failures.",
+      "shadow_test": "Walk-forward shadow-test the existing estimator against a conservative lower-confidence or winsorised money-weighted estimator. Charge entry and exit quote deterioration, priority/base fees, tips, rent where applicable, failed attempts and realised price impact. Attribute adverse market movement after successful entry as STRATEGY/MARKET and quote/RPC/simulation/signing/inclusion/reconciliation failures as EXECUTION/INFRASTRUCTURE. Stop if either estimator has non-positive net P&L, profit factor at or below 1, unstable leader concentration, or insufficient cost coverage.",
+      "strategy": "Solana confirmed-fast-lane leader following",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/cross_chain_strategy_signals.py",
+        "tests/test_strategy_solana_robust_edge.py"
+      ]
+    },
+    {
+      "action": "IMPROVE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.9,
+      "downside_risk": "Incorrect causal rules can create false certainty; UNKNOWN must remain available when telemetry cannot distinguish causes.",
+      "evidence": [
+        {
+          "detail": "Losses receive overlapping heuristic flags such as FAST_REVERSAL_OR_EXECUTION_COST and MARKET_MOVE_OR_LEADER_SIGNAL_LOSS rather than an exclusive primary cause with cost attribution.",
+          "path": "learnerbot/solana_incident_forensics_patch.py"
+        },
+        {
+          "detail": "Evaluation aggregates gross profit, gross loss, fees, slippage and net profit, but stale evidence contains no current per-trade causal forensics.",
+          "path": "learnerbot/monitor_factory_pipeline.py"
+        },
+        {
+          "detail": "Evidence status is MISSING_RUNTIME_FORENSICS with no generated runtime timestamp.",
+          "path": ".strategy_cycle/evidence.json"
+        }
+      ],
+      "expected_effect": "Prevents replacing a sound signal because of infrastructure faults, or retaining a losing signal by blaming normal market losses on execution.",
+      "id": "exclusive-loss-attribution-v1",
+      "minimum_observation": "At least 100 attempted signals per chain family, including successes, safety rejections and failures, with exact reconciliation of fees and realised outcomes; require at least five examples before reporting a failure subtype rate.",
+      "rationale": "Strategy changes cannot be evaluated correctly when market losses and infrastructure failures are pooled. Each attempted trade needs one primary cause and optional contributing causes, with failed-attempt costs included in strategy-level money-weighted net P&L.",
+      "shadow_test": "Classify every shadow attempt into STRATEGY_MARKET, EXECUTION_INFRASTRUCTURE, SAFETY_REJECTION or UNKNOWN using predeclared observable rules, then reconcile category costs to the complete ledger. Stop if classifications overlap, totals fail to reconcile exactly, or UNKNOWN exceeds 10%; do not infer profitability from classified data until adequate samples exist.",
+      "strategy": "Cross-chain strategy evaluation and abstention",
+      "suggested_files": [
+        "learnerbot/strategy_lab.py",
+        "learnerbot/shadow_strategy_executor.py",
+        "tests/test_strategy_loss_attribution.py"
+      ]
+    }
+  ],
+  "provider": "gpt",
+  "rejected_ideas": [
+    {
+      "idea": "Promote any current strategy to CANARY or LIVE.",
+      "reason": "Fresh runtime forensics are unavailable, so executable profitability, failure rates and cost coverage cannot be validated."
+    },
+    {
+      "idea": "Optimise leader selection or exit thresholds for win count.",
+      "reason": "Win count ignores position size and loss magnitude; the objective is money-weighted net P&L after all costs."
+    },
+    {
+      "idea": "Enable sequential cross-DEX EVM execution.",
+      "reason": "The repository correctly marks it shadow-only because non-atomic legs expose the wallet to inventory, reversion and adverse-selection risk."
+    },
+    {
+      "idea": "Treat quoted gross arbitrage as executable profit.",
+      "reason": "Current EVM scanner records omit material gas and under-reserve slippage, while execution failure costs are unknown."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "THREE_AGENT_STRATEGY_REVIEW",
+  "source_commit": "5b67f62a1aa018f729ce8cdc04fdaa31524f636e",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Architecture-only review completed. Safety gates generally fail closed, but profitability and promotion claims are prohibited because runtime forensics are absent. EVM opportunity ranking materially understates executable costs: scanner gas is zero and slippage reserve is calculated from gross profit rather than deployed capital. Solana has a cost-adjusted entry gate, but its leader-return estimator uses only means over as few as five observations and needs out-of-sample, money-weighted validation. Loss forensics also use overlapping heuristic flags rather than an exclusive STRATEGY/MARKET versus EXECUTION/INFRASTRUCTURE attribution."
+}
