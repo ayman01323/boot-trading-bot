@@ -45,10 +45,10 @@ def _pf(profit, loss):
     return Decimal("99") if p > 0 else Decimal(0)
 
 
-def _drawdown(rows):
+def _equity_drawdown(steps):
+    """Max peak-to-trough drawdown over a chronological sequence of (cost, net) steps."""
     equity = Decimal(1); peak = Decimal(1); worst = Decimal(0)
-    for r in rows:
-        cost = _d(r.get("cost_sol"), 0); net = _d(r.get("net_sol"), 0)
+    for cost, net in steps:
         if cost <= 0:
             continue
         ret = max(Decimal("-0.95"), min(Decimal("5"), net / cost))
@@ -57,6 +57,27 @@ def _drawdown(rows):
         if peak > 0:
             worst = max(worst, (peak - equity) / peak * Decimal(100))
     return worst
+
+
+def _drawdown(rows):
+    """Fragment-level drawdown, retained only as fragment_drawdown_pct telemetry.
+
+    A position built or unwound across several fills produces several equity-curve
+    steps for what was really one trading decision, inflating apparent volatility
+    (and therefore drawdown) far past what the wallet's actual position-to-position
+    equity history shows. See _position_drawdown for the metric actually gated on.
+    """
+    return _equity_drawdown((_d(r.get("cost_sol"), 0), _d(r.get("net_sol"), 0)) for r in rows)
+
+
+def _position_drawdown(rows):
+    positions = sorted(_bucket_positions(rows), key=lambda pos: max(r["sell_ts"] for r in pos))
+    steps = []
+    for pos in positions:
+        cost = sum((_d(r.get("cost_sol"), 0) for r in pos), Decimal(0))
+        net = sum((_d(r.get("net_sol"), 0) for r in pos), Decimal(0))
+        steps.append((cost, net))
+    return _equity_drawdown(steps)
 
 
 def _bucket_positions(rows):
@@ -126,7 +147,8 @@ def quality_metrics(app, wallet, cfg):
     trade_last = max((int(r.get("sell_ts") or 0) for r in rows), default=0)
     candidate_last = int(candidate["last_seen"] or 0) if candidate else 0
     all_s.update({
-        "drawdown_pct": _drawdown(rows),
+        "drawdown_pct": _position_drawdown(rows),
+        "fragment_drawdown_pct": _drawdown(rows),
         "recent_closed": recent["closed"],
         "recent_profit_factor": recent["profit_factor"],
         "history_complete": bool(hs and not int(hs["truncated"] or 0) and not str(hs["error"] or "").strip()),
