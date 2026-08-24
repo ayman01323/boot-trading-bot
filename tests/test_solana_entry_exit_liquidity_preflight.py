@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from learnerbot import solana_entry_exit_liquidity_preflight_patch as patch
 from learnerbot import solana_preflight_cache_patch as cache
+from learnerbot import poolcheck_rug_hardening_patch as hard
 
 
 def _cfg(**overrides):
@@ -125,11 +126,18 @@ def test_existing_roundtrip_gate_remains_authoritative(monkeypatch):
     assert len(calls) == 2
 
 
-def test_preflight_cache_captures_new_gate_and_keys_its_risk_inputs():
-    assert cache._PREV_VALIDATE is patch.validate_entry_with_exit_liquidity
+def test_preflight_cache_captures_full_exit_then_stress_gate_and_keys_risk_inputs():
+    # PoolCheck hardening intentionally wraps the previous full-position exit gate;
+    # verify both layers remain composed rather than weakening either one.
+    assert cache._PREV_VALIDATE is hard.validate_solana_entry_with_stress_exit
+    assert hard._PREV_SOL_VALIDATE is patch.validate_entry_with_exit_liquidity
+    assert cache._key is hard.solana_preflight_key_with_stress
+
     event = _event()
     a = cache._key(event, Decimal("1"), _cfg())
     b = cache._key(event, Decimal("1"), _cfg(live_entry_require_exit_liquidity_max_bps=400))
     c = cache._key(event, Decimal("1"), _cfg(live_order_slippage_bps=25))
+    d = cache._key(event, Decimal("1"), _cfg(live_entry_stress_exit_multiplier=4))
     assert a != b
     assert a != c
+    assert a != d
