@@ -58,7 +58,9 @@ def test_provider_relay_is_event_driven_without_schedule():
     trigger = workflow.get("on") or workflow.get(True)
     assert "schedule" not in trigger
     assert "workflow_run" in trigger
-    assert workflow["jobs"]["relay"]["runs-on"] == ["self-hosted", "linux", "x64", "boot-vps"]
+    # This relay only needs GitHub/provider APIs. Keeping it on a hosted runner
+    # prevents communication work from starving the production boot-vps deploy queue.
+    assert workflow["jobs"]["relay"]["runs-on"] == "ubuntu-latest"
     assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == ["deepseek", "gemini", "grok", "copilot"]
     route_env = workflow["jobs"]["relay"]["steps"][5]["env"]
     assert "XAI_API_KEY" in route_env
