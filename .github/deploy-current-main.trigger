@@ -1,5 +1,5 @@
-requested: 2026-08-24T20:52+01:00
-purpose: deploy Basic Engine v0 as the primary EVM AUTO entrypoint using the existing main-bot RPC/config stack; no local APEX API/RPC proxy
-source_pr: 616
-base_engine_merge: 4acc7830f4be9b6d8efc714c04b1abd3cec3f546
-constraints: exact current main only; restricted deploy wrapper; full test suite already green; automatic restore on failure; preserve wallet/private-key isolation, LIVE/ARMED controls, quarantine, scanner verification, pool-rug gates, minimum-profit protection and final pre-broadcast eth_call; do not force LIVE/ARMED values
+requested: 2026-08-24T22:22+01:00
+purpose: deploy AUTOTRADE global-scope resolution fix so canonical *=true is not overridden by stale legacy chain_id=0=false rows
+source_pr: 620
+fix_merge: a00e512b7cf7670077816e3160433430204fa5ae
+constraints: exact current main only; restricted deploy wrapper; full repository pytest green; automatic restore on failure; preserve wallet/private-key isolation, LIVE/ARMED controls, pool-rug gates, capital, slippage, minimum-profit protection and final pre-broadcast eth_call
