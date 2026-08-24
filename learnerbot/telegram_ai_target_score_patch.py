@@ -154,3 +154,8 @@ install()
 # audited MASTER sender; it does not broaden broker recipients or permissions.
 from . import trading_pipeline_observability_patch as _trading_pipeline  # noqa: E402,F401
 from . import strategy_factory_service_sender_patch as _strategy_factory_sender  # noqa: E402,F401
+
+# Reversible per-ID SiBot tuning source selector. Loaded only after the final
+# trading-integrity check; it preserves the audited hard-floor user_settings
+# wrapper and never copies LIVE/AUTO/wallet/signing authority between accounts.
+from . import telegram_sibot_settings_source_patch as _sibot_settings_source  # noqa: E402,F401
