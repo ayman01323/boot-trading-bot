@@ -20,9 +20,13 @@ def test_central_factory_collects_deepseek_with_all_other_agents_and_gpt_master(
 def test_deepseek_is_available_through_persistent_shared_bus() -> None:
     runtime = _text("learnerbot/ai_agent_ws_runtime_patch.py")
     worker = _text("scripts/ai_agent_ws_worker.py")
+    provider = _text("learnerbot/ai_council_http_patch.py")
     assert 'AGENTS = ("gpt", "claude", "gemini", "deepseek", "grok", "kimi", "copilot")' in runtime
     assert '"deepseek"' in worker
-    assert "DEEPSEEK_API_KEY" in worker
+    assert "from learnerbot.ai_cost_provider_patch import call_provider" in worker
+    # Provider credentials belong in the provider adapter/runtime-secret layer,
+    # not in the transport worker. This keeps the WebSocket worker provider-agnostic.
+    assert "DEEPSEEK_API_KEY" in provider
 
 
 def test_deepseek_is_sanitised_control_option_and_telegram_visible() -> None:
