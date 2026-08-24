@@ -1,0 +1,131 @@
+{
+  "cycle_id": "b61890de12b1-2026082400-b5135b55",
+  "evidence_gaps": [
+    "evidence.json for this cycle is a stub (evidence_status=MISSING_RUNTIME_FORENSICS, generated_epoch=0, generated_utc=''): no live P&L, win/loss counts, or trade-latency data was available for this review.",
+    "No trade_latency or infrastructure snapshot (e.g. ai-reviews:engineering/ops/latest.json) was present in evidence.json to compare Solana vs EVM p50/p95 execution latency, RPC round-trip, or 7-day trade share, so no infrastructure KEEP/BENCHMARK/MOVE assessment is made here (out of scope for a strategy-only review in any case).",
+    "Whether min_net_bps in cross_chain_strategy_signals.py is a single shared constant or already chain-parameterized was not directly confirmed by line-level inspection this cycle (only summarized via exploration agents) \u2014 needs direct verification before acting on proposal chain-specific-min-net-bps-research.",
+    "No current count/age data for open live_exit_circuit rows (Solana) or stuck-pending-tx incidence (EVM) was available; both proposed observability additions are needed before any further action on those hypotheses can be evidence-based rather than speculative.",
+    "This review relied on three parallel read-only exploration passes summarizing file contents/line ranges rather than the reviewing agent directly reading every named file end-to-end; all cited evidence should be treated as pointers for verification, not as independently re-confirmed by this agent."
+  ],
+  "evidence_sha256": "b5135b55b2633a011042048b40acd07e4d53e328ac3ff7204966dac79b88740c",
+  "no_live_changes": true,
+  "proposals": [
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "EVM"
+      ],
+      "confidence": 0.35,
+      "downside_risk": "Added complexity; a poorly implemented replace-by-fee could itself cause double-spend/nonce errors if ever connected to live signing. Must remain a read-only/SHADOW logger only during evaluation, with no automatic re-submission capability added at this stage.",
+      "evidence": [
+        {
+          "detail": "Nonce is fetched fresh per tx via w3.eth.get_transaction_count(address, 'pending'); no nonce-queue or stuck-tx tracking found.",
+          "path": "learnerbot/live_executor.py:304"
+        },
+        {
+          "detail": "gas_bid_multiplier (bounded 1.0-3.0) is applied once at submission time; no found logic to re-bid/replace an already-submitted tx if network gas rises afterward.",
+          "path": "learnerbot/live_executor.py:266-278"
+        },
+        {
+          "detail": "Existing resilience covers RPC endpoint liveness/failover, not stuck-nonce recovery, indicating this is a different, currently uncovered failure class.",
+          "path": "learnerbot/live_executor_rpc_failover_patch.py"
+        }
+      ],
+      "expected_effect": "If validated, building stuck-tx detection (and later, an operator-gated replace-by-fee path) could reduce forced-late-exit slippage and missed-exit opportunity cost on EVM chains during gas volatility. No effect size is claimed without measurement.",
+      "id": "evm-stuck-tx-shadow-observability",
+      "minimum_observation": "Minimum 30 EVM live transactions or 14 calendar days of logging, whichever is later.",
+      "rationale": "If a submitted EVM tx becomes underpriced mid-flight (gas spike after submission), it can sit pending and block the account's subsequent nonces, delaying or preventing a timed exit. This is an EXECUTION/INFRASTRUCTURE risk distinct from strategy signal quality, and current mitigations (RPC failover, static gas-bid multiplier) do not address it. This is inferred from the absence of replace-by-fee code in the explored files, not from a confirmed incident \u2014 no runtime evidence was available this cycle to confirm frequency.",
+      "shadow_test": "Add a SHADOW-only, non-signing logger that watches already-submitted EVM txs (via existing RPC client) and records: (a) time-to-confirmation, (b) whether current network gas exceeded the tx's paid gas price while pending, (c) resulting confirmation delay in seconds. No trading or signing behavior changes. Falsification: if the observed rate of tx pending > 60s while underpriced is below 1% of EVM live transactions, close this proposal as DORMANT \u2014 the risk is not material enough to justify replace-by-fee complexity.",
+      "strategy": "EVM stuck-pending-transaction / replace-by-fee observability",
+      "suggested_files": [
+        "learnerbot/evm_stuck_tx_shadow_monitor.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA"
+      ],
+      "confidence": 0.3,
+      "downside_risk": "None to trading behavior \u2014 this is a reporting-only addition. Risk is limited to engineering time and any new query load on the SQLite tables it reads (low, given occasional/low-frequency events).",
+      "evidence": [
+        {
+          "detail": "On an ambiguous/failed SELL, opens a live_exit_circuit row and disables solana_live_enabled for the user; reconcile_pending_exit_circuits() re-checks chain state and finalizes without rebroadcasting, but no found aggregate metric for how many circuits are open or their age distribution.",
+          "path": "learnerbot/solana_exit_circuit_breaker_patch.py"
+        },
+        {
+          "detail": "A one-shot, manually authored operator write-off (WRITEOFF_ID operator-writeoff-20260823-8fip) exists for a specific stuck Solana position, indicating at least one real case required manual intervention rather than automated reconciliation.",
+          "path": "learnerbot/solana_operator_writeoff_8fip_migration.py"
+        },
+        {
+          "detail": "A separate one-time migration disabled solana_live_enabled for all users after 'repeated Solana loss/exit-retry pattern,' consistent with exit-failure being a recurring EXECUTION/INFRASTRUCTURE theme on this chain, not merely one isolated incident.",
+          "path": "learnerbot/solana_emergency_loss_halt_migration.py"
+        }
+      ],
+      "expected_effect": "A read-only backlog/age report would let a human operator distinguish 'positions stuck due to execution/reconciliation failure' from 'positions genuinely losing on market/strategy grounds,' improving the accuracy of any future STRATEGY_LAB profit-factor scoring (which should exclude execution-failure losses from strategy attribution).",
+      "id": "solana-exit-circuit-backlog-observability",
+      "minimum_observation": "30 calendar days of read-only report data, or 5 circuit-open events, whichever is later.",
+      "rationale": "The combination of a per-user circuit breaker, a documented emergency all-user halt, and at least one manual write-off suggests ambiguous/failed Solana exits are a recurring EXECUTION/INFRASTRUCTURE cost, but the architecture has no found automated visibility into how many positions are currently stuck behind an open circuit or how long reconciliation takes. Per this review's mandate to separate STRATEGY/MARKET loss from EXECUTION/INFRASTRUCTURE failure, this gap is currently unmeasured, not necessarily unmanaged.",
+      "shadow_test": "Add a read-only script/report that queries live_exit_circuit (and related reconciliation tables) for count of currently-open circuits and their age distribution (p50/p95) over trailing 7/30 days, with zero write access. Falsification: if trailing 30-day data shows the open-circuit count is consistently 0 and p95 time-to-reconcile (when non-zero) is under 1 hour, this proposal is satisfied/DORMANT \u2014 no further tooling needed beyond periodic reporting.",
+      "strategy": "Solana ambiguous-exit circuit-breaker backlog/age metric",
+      "suggested_files": [
+        "learnerbot/solana_exit_circuit_reconciliation_audit.py",
+        "docs/STRATEGY_LAB.md"
+      ]
+    },
+    {
+      "action": "RESEARCH_MORE",
+      "chain_scope": [
+        "SOLANA",
+        "EVM"
+      ],
+      "confidence": 0.25,
+      "downside_risk": "Adding chain-specific thresholds increases configuration surface area and could be mis-tuned; must be validated in SHADOW before touching any live-gating threshold.",
+      "evidence": [
+        {
+          "detail": "_common_executable() rejects a signal when net_edge_bps < min_net_bps, liquidity_score < 0.55, or sellability_score < 0.80, applied identically across the shared MarketFeatures-based signal functions for both chains, per the exploration summary.",
+          "path": "learnerbot/cross_chain_strategy_signals.py"
+        },
+        {
+          "detail": "EVM gas_bid_multiplier ranges 1.0x-3.0x, implying EVM per-trade cost variance driven by network congestion can be materially larger and more volatile than a fixed bps assumption.",
+          "path": "learnerbot/live_executor.py:266-278"
+        },
+        {
+          "detail": "Solana already computes a dynamic_fee_cap_lamports() from trade value/expected-edge share at the execution-cost layer, suggesting Solana's fee structure is treated as more calculable/predictable than EVM's gas market at that layer, but it is unclear whether the upstream signal-level min_net_bps gate reflects this asymmetry.",
+          "path": "learnerbot/solana_execution_efficiency_patch.py"
+        }
+      ],
+      "expected_effect": "If a chain-specific or gas-volatility-adjusted threshold is warranted, this could reduce EVM entries that look profitable pre-congestion but net-lose after realized gas, and/or capture more legitimately profitable Solana entries currently filtered out by an EVM-calibrated threshold.",
+      "id": "chain-specific-min-net-bps-research",
+      "minimum_observation": "MIN_EVALUATION_WINDOWS (3) and MIN_EVALUATION_TRADES (8) per chain as already defined in strategy_lab.py, or 14 days, whichever is later.",
+      "rationale": "A single shared min_net_bps entry threshold may not correctly price in that EVM cost-to-trade can spike disproportionately during congestion (via the gas-bid multiplier) relative to Solana's typically smaller, more bounded fee structure. This could mean the same nominal edge threshold is more permissive on EVM during congestion (net loss after real gas) or unnecessarily conservative on Solana in calm periods (missed otherwise-profitable trades). This is a hypothesis for further research, not a confirmed defect \u2014 the review agents did not verify whether min_net_bps is already parameterized per chain in configuration (evidence gap).",
+      "shadow_test": "First close the evidence gap: confirm via config/code inspection whether min_net_bps is currently a single shared constant or already chain-parameterized. If shared, run a SHADOW-only comparison logging expected_net_edge_bps vs. realized-cost-adjusted edge (using existing profit.py / solana_execution_efficiency_patch.py fee data) separately per chain for a fixed observation window, with no threshold change applied. Falsification: if the distribution of (expected edge - realized cost) is not measurably different by chain (e.g., median difference < 10 bps), reject this proposal as unnecessary.",
+      "strategy": "Chain-specific (vs. shared) minimum net-edge threshold in common signal gate",
+      "suggested_files": [
+        "docs/STRATEGY_LAB.md"
+      ]
+    }
+  ],
+  "provider": "claude",
+  "rejected_ideas": [
+    {
+      "idea": "Loosen the shared liquidity_score/sellability_score thresholds (0.55/0.80) or the Solana pool-risk hard ceilings (MAX_REFERENCE_IMPACT_BPS=200, MAX_RUG_SCORE=70, MIN_LP_LOCKED_PCT=50) to increase trade frequency.",
+      "reason": "These gates were built from a documented prior incident (solana_pool_risk_gate.py explicitly cites the HOOD incident) and fail closed by design when external risk evidence is unavailable. No evidence this cycle supports loosening safety-critical sellability/rug controls, and doing so would optimize trade count over durable net P&L, which this review is explicitly asked not to do."
+    },
+    {
+      "idea": "Recommend a live/canary readiness verdict for any strategy in the Strategy Lab this cycle.",
+      "reason": "evidence.json for this cycle is a MISSING_RUNTIME_FORENSICS stub (generated_epoch=0, empty generated_utc) with no P&L, trade count, or latency data. Making any live-readiness or profitability claim without runtime evidence would violate the review's evidence standard."
+    },
+    {
+      "idea": "Propose new EVM/Solana trading strategies (new entry signals) this cycle.",
+      "reason": "No runtime performance data exists this cycle to justify NEW_SHADOW proposals with a credible edge hypothesis beyond what's already registered; the more valuable, falsifiable contribution from architecture-only review is closing observability gaps in existing EXECUTION/INFRASTRUCTURE handling, which directly affects whether any future strategy P&L attribution will be trustworthy."
+    }
+  ],
+  "review_only": true,
+  "schema_version": 1,
+  "scope": "MULTI_AGENT_STRATEGY_REVIEW",
+  "source_commit": "b61890de12b1ee8556f97e6dc509f393bb4dd5fa",
+  "status": "CHANGES_PROPOSED",
+  "summary": "Evidence this cycle is architecture-only (.strategy_claude/evidence.json is a MISSING_RUNTIME_FORENSICS stub with generated_epoch=0); no live P&L, trade-latency, or infrastructure telemetry was available, so no measured profitability, win-rate, or canary-readiness claim is made. Code review confirms a mature, gated SHADOW->CANARY->LIVE promotion pipeline (strategy_lab.py, strategy_canary.py) and layered chain-specific execution-cost/sellability controls (EVM: gas-bid multiplier + profit-protected gas reserve + roundtrip rug gate; Solana: dynamic fee cap + reverse-quote liquidity preflight + rug/pool risk gate). Two architecture-level EXECUTION/INFRASTRUCTURE gaps are flagged as falsifiable SHADOW/observability hypotheses rather than strategy changes: (1) EVM has no found replace-by-fee/stuck-pending-tx monitor beyond a static gas-bid multiplier, a plausible source of missed exits during gas spikes; (2) Solana's ambiguous-exit circuit breaker has a manual-recovery precedent (the 8fip write-off) but no found automated metric for open live_exit_circuit backlog/age, so operator-visible EXECUTION-failure cost cannot currently be distinguished from STRATEGY/MARKET loss without new observability. A third item questions whether the shared min_net_bps entry gate in cross_chain_strategy_signals.py adequately reflects EVM's higher gas-cost variance versus Solana's more predictable fee structure. All three proposals are read-only-observability or SHADOW-only in scope; none touch LIVE/risk/capital/signing."
+}
