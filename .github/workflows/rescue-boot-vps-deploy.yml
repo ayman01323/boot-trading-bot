@@ -45,13 +45,15 @@ jobs:
           gh api --method POST -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/runs/32673081630/cancel" >/dev/null 2>&1 || true
 
-      - name: Cancel stale queued VPS operational jobs
+      - name: Cancel stale queued VPS jobs before current-main deploy
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Queued only: never cancel a deployment that has actually started.
+          # Queued only: never cancel a deployment or diagnostic that has started.
+          # sibot-history-depth-ci is compile/read-only test work and can be safely
+          # rescheduled after the production write-off deploy is complete.
           for workflow in \
             deploy-vps.yml \
             final-deploy-v2.yml \
@@ -61,7 +63,8 @@ jobs:
             server-ops.yml \
             deepseek-vps-controlled-ops.yml \
             claude-vps-controlled-ops.yml \
-            learnerbot-recovery-restart.yml; do
+            learnerbot-recovery-restart.yml \
+            sibot-history-depth-ci.yml; do
             gh api -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow}/runs?status=queued&per_page=100" \
               --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
