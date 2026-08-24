@@ -42,6 +42,9 @@ def _trader(fail_call=False):
         "0x0000000000000000000000000000000000000002",
         "0x0000000000000000000000000000000000000001",
     ]
+    # LiveTrader.__init__ always sets the wrapped-native address. This synthetic
+    # fixture bypasses __init__, so preserve that production invariant explicitly.
+    t.wrapped = p[0]
     sim = {
         "path": p,
         "amount_in_raw": 100,
