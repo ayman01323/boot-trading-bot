@@ -1,0 +1,28 @@
+name: Prepare Google Server Backup Directory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/google-server-backup-dir.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Create backup directory on botgoogle
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="$HOME/GoogleServerBuckup"
+          mkdir -p "$target"
+          chmod 700 "$target"
+          touch "$target/.backup-dir-ready"
+          echo "backup_dir=$target"
+          stat -c 'mode=%a owner=%U group=%G path=%n' "$target"
+          ls -ld "$target"
