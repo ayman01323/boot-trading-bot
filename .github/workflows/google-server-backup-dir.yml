@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   prepare:
@@ -26,3 +26,45 @@ jobs:
           echo "backup_dir=$target"
           stat -c 'mode=%a owner=%U group=%G path=%n' "$target"
           ls -ld "$target"
+
+      - name: Publish verification marker
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          target="$HOME/GoogleServerBuckup"
+          test -d "$target"
+          mode="$(stat -c '%a' "$target")"
+          owner="$(stat -c '%U:%G' "$target")"
+          cat > /tmp/google-server-backup-dir.txt <<EOF
+          hostname=$(hostname)
+          backup_dir=$target
+          exists=true
+          mode=$mode
+          owner=$owner
+          verified_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          EOF
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/google-server-backup-dir.txt"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/google-server-backup-dir.txt)"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Update Google backup directory verification","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({"message":"Create Google backup directory verification","content":sys.argv[1],"branch":"server-diagnostics"}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" -d "$payload" >/dev/null
