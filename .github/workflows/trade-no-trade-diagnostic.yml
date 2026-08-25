@@ -25,20 +25,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out=/tmp/latest-trade-no-trade.txt
-          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          out=/tmp/latest-trade-no-trade-${GITHUB_RUN_ID}.txt
           {
             echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "scope=READ_ONLY_SANITISED_RUNTIME_BRIDGES"
             echo
             echo "=== SERVER STATUS ==="
             sudo /usr/local/sbin/status-boot-trading-bot || true
-            echo
             for p in \
               /var/tmp/boot/trading_funnel_master.json \
               /var/tmp/boot/evm_leader_selector.json \
               /var/tmp/boot/solana_leader_selector.json \
               /var/tmp/boot/strategy_factory_leader_research.json \
+              /var/tmp/boot/latest_loss_forensics.json \
               /var/tmp/boot/ai_agent_ws_status.json; do
               echo
               echo "=== $p ==="
@@ -49,50 +48,6 @@ jobs:
                 echo "MISSING_OR_EMPTY"
               fi
             done
-            echo
-            echo "=== SANITISED AUTO SIMULATION SUMMARY ==="
-            python3 - "$repo/CSVbot/auto/auto_trade_simulations.csv" "$repo/CSVbot/auto/auto_trade_execution.csv" <<'PY'
-          import csv,sys,time,collections,pathlib,json
-          now=int(time.time())
-          def rows(path):
-              p=pathlib.Path(path)
-              if not p.exists(): return []
-              try:
-                  return list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
-              except Exception: return []
-          sims=[r for r in rows(sys.argv[1]) if now-int(float(r.get('timestamp_epoch') or 0)) <= 7200]
-          execs=[r for r in rows(sys.argv[2]) if now-int(float(r.get('timestamp_epoch') or 0)) <= 7200]
-          out={'simulations_2h':len(sims),'executions_2h':len(execs),'by_chain':{},'recent_simulations':[],'recent_executions':[]}
-          for r in sims:
-              c=str(r.get('chain_slug') or r.get('chain_id') or 'unknown').lower()
-              d=out['by_chain'].setdefault(c,{'simulations':0,'ok':0,'reasons':{}})
-              d['simulations']+=1
-              ok=str(r.get('simulation_ok') or '').lower() in {'1','true','yes','on'}
-              d['ok']+=int(ok)
-              reason=str(r.get('reason') or 'NONE')[:220]
-              d['reasons'][reason]=d['reasons'].get(reason,0)+1
-          for r in sims[-12:]:
-              out['recent_simulations'].append({
-                  'timestamp_epoch':r.get('timestamp_epoch'),'chain_slug':r.get('chain_slug'),
-                  'route_id':str(r.get('route_id') or '')[:120],
-                  'input_base':r.get('input_base'),'min_net_profit_base':r.get('min_net_profit_base'),
-                  'gross_profit_base':r.get('gross_profit_base'),'gas_cost_base':r.get('gas_cost_base'),
-                  'simulation_ok':r.get('simulation_ok'),'reason':str(r.get('reason') or '')[:300],
-              })
-          for r in execs[-8:]:
-              out['recent_executions'].append({
-                  'timestamp_epoch':r.get('timestamp_epoch'),'chain_slug':r.get('chain_slug'),
-                  'route_id':str(r.get('route_id') or '')[:120],
-                  'status':r.get('status'),'note':str(r.get('note') or '')[:300],
-                  'tx_present':bool(str(r.get('tx_hash') or '').strip()),
-              })
-          print(json.dumps(out,indent=2,sort_keys=True))
-          PY
-            echo
-            echo "=== EVM DRAINER / SELECTOR LOGS (last 3h) ==="
-            sudo journalctl -u learnerbot --since '3 hours ago' --no-pager 2>/dev/null \
-              | grep -E 'sibot-legacy-drainer|evm-reconstruction|copy-check|leader|selector|fast-market' \
-              | tail -n 250 || true
           } > "$out" 2>&1
 
           api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-trade-no-trade.txt"
@@ -100,11 +55,7 @@ jobs:
           encoded="$(base64 -w0 "$out")"
           python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/trade-no-trade-put.json
           import json,sys
-          p={
-              'message':'Update live no-trade diagnostic',
-              'content':sys.argv[1],
-              'branch':'server-diagnostics',
-          }
+          p={'message':'Update live no-trade diagnostic','content':sys.argv[1],'branch':'server-diagnostics'}
           if sys.argv[2]: p['sha']=sys.argv[2]
           print(json.dumps(p))
           PY
