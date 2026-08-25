@@ -29,7 +29,12 @@ def install() -> None:
 
 install()
 
-# Load last so SiBot 1 can bind public wallet addresses for observation while the
-# signing/private-key boundary remains hard-disabled. Existing wallet metadata is
-# read only at the public-address layer; no encrypted key material is decrypted.
+# SiBot 1 first binds only public wallet addresses for observation. This layer
+# never decrypts wallet keys and leaves signing/broadcast disabled in the AI runtime.
 from . import telegram_sibot1_watch_wallet_patch as _sibot1_watch_wallet  # noqa: E402,F401
+
+# Final wallet presentation adds a secure private-key import prompt backed by the
+# existing encrypted EVM/Solana wallet vaults. Keys are deleted from Telegram before
+# persistence and are never copied into GPT/Gemini/Grok. Importing a key changes no
+# LIVE, signing or broadcast gate by itself.
+from . import telegram_sibot1_signer_menu_patch as _sibot1_signer_menu  # noqa: E402,F401
