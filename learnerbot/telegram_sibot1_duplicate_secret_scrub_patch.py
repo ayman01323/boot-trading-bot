@@ -135,6 +135,11 @@ from . import sibot1_gpt_atomic_cycle_live_patch as _sibot1_gpt_atomic_cycle_liv
 # wallet addresses, private keys, Telegram IDs, or other signer material.
 from . import sibot1_asset_diag_patch as _sibot1_asset_diag  # noqa: E402,F401
 
+# Correct only the known RugCheck liquidity-only over-classification seen in
+# SHADOW. Structural token dangers and aggregate high-risk scores stay HARD_BLOCK,
+# while LIVE still rejects every non-PASS decision.
+from . import poolcheck_lp_classification_patch as _poolcheck_lp_classification  # noqa: E402,F401
+
 # Solana has a separate protected SiBot 1 bridge. It is deliberately independent
 # from the already-enabled Base controls and always starts with its own controls
 # OFF. The worker may read public candidates while disabled, but cannot decrypt a
