@@ -1,113 +1,18 @@
-requested_sha=57ad11cdd662c9f43a486e1225ae7cb8921dc39d
+requested_sha=d97761f172885760205b76a634694a2d35d1f9d6
 deploy_outcome=failure
-deploy_exit=10
-run_id=32846693209
-utc=2026-08-25T12:18:52Z
+deploy_exit=6
+run_id=32847175966
+utc=2026-08-25T12:22:19Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-25T12:17:21Z BEGIN current=f26db17f163380bf467a4b9289f557258b09695a requested=57ad11cdd662c9f43a486e1225ae7cb8921dc39d
+2026-08-25T12:22:05Z BEGIN current=f26db17f163380bf467a4b9289f557258b09695a requested=d97761f172885760205b76a634694a2d35d1f9d6
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-Updating f26db17..57ad11c
-Fast-forward
- .github/ai-council-runtime-secrets.trigger       |  4 ++--
- .github/workflows/ai-council-runtime-secrets.yml |  9 +++++++--
- learnerbot/ai_runtime_secret_fallback_patch.py   | 16 ++++++++++------
- 3 files changed, 19 insertions(+), 10 deletions(-)
-
-[notice] A new release of pip available: 22.3.1 -> 26.2.1
-[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [  6%]
-...........F............................................................ [ 12%]
-....F................................................................... [ 19%]
-........................................................................ [ 25%]
-........................................................................ [ 32%]
-.................................................................s...... [ 38%]
-........................................................................ [ 45%]
-........................................................................ [ 51%]
-........................................................................ [ 58%]
-........................................................................ [ 64%]
-........................................................................ [ 71%]
-........................................................................ [ 77%]
-........................................................................ [ 84%]
-........................................................................ [ 90%]
-........................................................................ [ 97%]
-..............................                                           [100%]
-=================================== FAILURES ===================================
-__________ test_runtime_secret_bridge_overrides_provider_secret_only ___________
-
-tmp_path = PosixPath('/tmp/pytest-of-root/pytest-580/test_runtime_secret_bridge_ove0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7faab9ae5010>
-
-    def test_runtime_secret_bridge_overrides_provider_secret_only(tmp_path, monkeypatch) -> None:
-        runtime = tmp_path / "ai_council_runtime.env"
-        runtime.write_text(
-            'OPENAI_API_KEY="bridge-openai"\n'
-            'GEMINI_API_KEY="bridge-gemini"\n',
-            encoding="utf-8",
-        )
-        repo_env = tmp_path / ".env"
-        repo_env.write_text(
-            'OPENAI_API_KEY="repo-openai"\n'
-            'OPENAI_COUNCIL_MODEL="gpt-5.6-luna"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(http_patch, "_RUNTIME_ENV", runtime)
-        monkeypatch.setattr(http_patch, "_REPO_ENV", repo_env)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_COUNCIL_MODEL", raising=False)
-    
-        env = http_patch._runtime_env()
->       assert env["OPENAI_API_KEY"] == "bridge-openai"
-E       AssertionError: assert 'sk-proj--786...poduc-pAFPnkA' == 'bridge-openai'
-E         
-E         - bridge-openai
-E         + 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
-
-tests/test_ai_council_http_patch.py:40: AssertionError
-________ test_synced_runtime_bridge_fills_only_missing_provider_secrets ________
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7faab9158810>
-
-    def test_synced_runtime_bridge_fills_only_missing_provider_secrets(monkeypatch) -> None:
-        from learnerbot import ai_runtime_secret_fallback_patch as patch
-    
-        monkeypatch.setattr(patch, '_ORIGINAL_RUNTIME_ENV', lambda: {'GEMINI_API_KEY': 'base'})
-        monkeypatch.setattr(
-            patch,
-            'dotenv_values',
-            lambda path: {'GEMINI_API_KEY': 'fresh', 'OPENAI_API_KEY': 'openai'}
-            if str(path) == '/var/tmp/ai_council_runtime.env'
-            else {},
-        )
-        monkeypatch.setattr(patch._base, '_SECRET_KEYS', {'GEMINI_API_KEY', 'OPENAI_API_KEY'})
-    
-        env = patch.runtime_env_with_synced_fallback()
->       assert env['GEMINI_API_KEY'] == 'base'
-E       AssertionError: assert 'fresh' == 'base'
-E         
-E         - base
-E         + fresh
-
-tests/test_ai_runtime_secret_fallback_patch.py:18: AssertionError
-=============================== warnings summary ===============================
-.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
-  /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
-    warnings.warn(  # deprecated in 14.0 - 2024-11-09
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-FAILED tests/test_ai_council_http_patch.py::test_runtime_secret_bridge_overrides_provider_secret_only
-FAILED tests/test_ai_runtime_secret_fallback_patch.py::test_synced_runtime_bridge_fills_only_missing_provider_secrets
-2 failed, 1107 passed, 1 skipped, 1 warning in 59.25s
-2026-08-25T12:18:31Z TESTS FAILED; service remains on old running process
-HEAD is now at f26db17 ops: resync validated Copilot runtime credential
+2026-08-25T12:22:09Z REFUSED requested SHA is not current origin/main (origin/main=a8eaa95f2c7165bf296f763a42f6f11eee50cb02)
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-25T12:18:47Z
+UTC: 2026-08-25T12:22:16Z
 branch: main
 sha:    f26db17f163380bf467a4b9289f557258b09695a
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -118,21 +23,21 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Tue 2026-08-25 13:16:22 BST; 2min 26s ago
-   Main PID: 1478533 (python)
-      Tasks: 27 (limit: 5869)
-     Memory: 555.0M (peak: 616.9M)
-        CPU: 1min 27.452s
+     Active: active (running) since Tue 2026-08-25 13:21:54 BST; 22s ago
+   Main PID: 1480011 (python)
+      Tasks: 28 (limit: 5869)
+     Memory: 548.8M (peak: 603.4M)
+        CPU: 15.677s
      CGroup: /system.slice/learnerbot.service
-             └─1478533 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─1480011 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]: EOFError: connection closed while reading HTTP request line
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]: The above exception was the direct cause of the following exception:
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]: Traceback (most recent call last):
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]:   File "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/asyncio/server.py", line 356, in conn_handler
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]:     await connection.handshake(
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]:   File "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/asyncio/server.py", line 207, in handshake
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]:     raise self.protocol.handshake_exc
-Aug 25 13:17:08 mint.yesgoodwill.com python[1478533]: websockets.exceptions.InvalidMessage: did not receive a valid HTTP request
-Aug 25 13:17:23 mint.yesgoodwill.com python[1478533]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=51.457
-Aug 25 13:18:31 mint.yesgoodwill.com python[1478533]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=66.325
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: [trading-worker-liveness] supervisor enabled safety_gates_unchanged=true
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 25 13:22:05 mint.yesgoodwill.com python[1480011]: [config] CSVbot configuration loaded/reloaded
+Aug 25 13:22:07 mint.yesgoodwill.com python[1480011]: [scan:bsc] 115383103..115383112 tx=654
+Aug 25 13:22:15 mint.yesgoodwill.com python[1480011]: [daily-botbuc-backup] today already completed and retained on Drive: 2026-08-25.zip
+Aug 25 13:22:16 mint.yesgoodwill.com python[1480011]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
