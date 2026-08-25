@@ -72,14 +72,18 @@ def _trade(runtime, intent):
     result = _PREV_TRADE(runtime, intent)
     after_entries, after_exits = _score_counts(runtime, str(intent.engine_id), str(intent.chain))
 
-    # LIVE export is stricter than paper: central PoolCheck must be PASS and the
-    # paper atomic estimate must have completed both entry + exit accounting.
-    if verdict != "PASS" or after_entries <= before_entries or after_exits <= before_exits:
+    # The shared SiBot 1 runtime is deliberately SHADOW/PAPER, so its EVM
+    # PoolCheck never grants LIVE PASS. SHADOW_ONLY may nominate a *strictly
+    # atomic* cycle for the separate LIVE bridge, but HARD_BLOCK/COOLING never
+    # leave SHADOW. The LIVE bridge must then perform independent GoPlus +
+    # DexScreener pool/rug validation plus wallet-specific quote/simulation and
+    # a second mandatory pre-broadcast eth_call before signing.
+    if verdict not in {"PASS", "SHADOW_ONLY"} or after_entries <= before_entries or after_exits <= before_exits:
         return result
 
     row = _source_row(intent)
     if not row:
-        runtime.scoreboard.error(intent.engine_id, intent.chain, "atomic-cycle live export could not recover source route row")
+        runtime.scoreboard.error(intent.engine_id, intent.chain, "atomic-cycle live nomination could not recover source route row")
         return result
 
     route_kind = str(row.get("route_kind") or "").upper()
@@ -118,8 +122,9 @@ def _trade(runtime, intent):
         "asset_out": str(intent.asset_out),
         "intent_created_at_ms": int(intent.created_at_ms),
         "market_event_id": str(intent.market_event_id or ""),
-        "poolcheck_verdict": verdict,
-        "poolcheck_reasons": reasons,
+        "shadow_poolcheck_verdict": verdict,
+        "shadow_poolcheck_reasons": reasons,
+        "live_revalidation_required": True,
         "route_id": str(row.get("route_id") or ""),
         "route_kind": route_kind,
         "route_path": route_path,
@@ -134,13 +139,15 @@ def _trade(runtime, intent):
         "source_path": str(meta.get("source_path") or ""),
     })
     runtime.scoreboard.audit(
-        "LIVE_CANDIDATE_EXPORT",
+        "LIVE_CANDIDATE_NOMINATION",
         engine_id=str(intent.engine_id),
         chain=str(intent.chain),
         intent_id=str(intent.intent_id),
         kind="ARBITRAGE",
         route_id=str(row.get("route_id") or ""),
         route_kind=route_kind,
+        shadow_poolcheck_verdict=verdict,
+        live_revalidation_required=True,
     )
     return result
 
