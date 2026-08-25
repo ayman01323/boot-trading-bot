@@ -1,4 +1,5 @@
 name: Backup BOOT to Google Drive
+# Manual trigger: 2026-08-18T22:25:42Z
 
 on:
   push:
@@ -17,11 +18,11 @@ concurrency:
 
 jobs:
   backup:
-    name: Conditional encrypted VPS bot backup
+    name: Encrypted full VPS bot backup
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 60
     steps:
-      - name: Mark backup check pending
+      - name: Mark backup pending
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -32,42 +33,10 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -d '{"state":"pending","context":"server/google-drive-backup","description":"Checking first-server files for changes"}' >/dev/null
-
-      - name: Detect source changes
-        id: changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          SOURCE="/root/multichain-learning-bot-v2.2-fast-direct-market"
-          STATE_DIR="$HOME/.local/state/boot-backup"
-          STATE_FILE="$STATE_DIR/first-server-source.sha256"
-
-          sudo -n test -d "$SOURCE" || { echo "Bot source folder not found: $SOURCE" >&2; exit 22; }
-          mkdir -p "$STATE_DIR"
-          chmod 700 "$STATE_DIR"
-
-          CURRENT="$(sudo -n find "$SOURCE" -xdev -printf '%y|%P|%s|%T@|%l\n' | LC_ALL=C sort | sha256sum | awk '{print $1}')"
-          PREVIOUS="$(cat "$STATE_FILE" 2>/dev/null || true)"
-
-          echo "fingerprint=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "state_file=$STATE_FILE" >> "$GITHUB_OUTPUT"
-
-          if [ -n "$PREVIOUS" ] && [ "$CURRENT" = "$PREVIOUS" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No files changed since the last verified backup. Backup skipped."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-            if [ -z "$PREVIOUS" ]; then
-              echo "No previous fingerprint exists. A baseline backup is required."
-            else
-              echo "Source fingerprint changed. Backup required."
-            fi
-          fi
+            -d '{"state":"pending","context":"server/google-drive-backup","description":"Preparing encrypted VPS backup"}' >/dev/null
 
       - name: Create and upload encrypted backup
         id: backup
-        if: ${{ steps.changes.outputs.changed == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -76,7 +45,6 @@ jobs:
           CONFIG="/root/.config/rclone/rclone.conf"
           RECOVERY="/root/.config/rclone/BOOT-BACKUP-RECOVERY.txt"
           DEST="botbackup:full-server-backups"
-          STATE_FILE="${{ steps.changes.outputs.state_file }}"
           STAMP="$(date -u +%Y-%m-%d_%H-%M-%SZ)"
           ARCHIVE="/tmp/boot-trading-bot-${STAMP}.tar.gz"
           CHECKSUM="${ARCHIVE}.sha256"
@@ -97,9 +65,11 @@ jobs:
 
           command -v rclone >/dev/null 2>&1 || { echo "rclone is not installed" >&2; exit 20; }
           command -v openssl >/dev/null 2>&1 || { echo "openssl is not installed" >&2; exit 21; }
-          sudo -n test -f "$CONFIG" || { echo "Missing rclone config: $CONFIG" >&2; exit 23; }
+          sudo -n test -d "$SOURCE" || { echo "Bot source folder not found: $SOURCE" >&2; exit 22; }
+          sudo -n test -f "$CONFIG" || { echo "Missing rclone config: $CONFIG" >&2; echo "Copy your Windows rclone.conf to /root/.config/rclone/rclone.conf first." >&2; exit 23; }
 
           REMOTES="$(sudo -n rclone --config "$CONFIG" listremotes)"
+          printf '%s\n' "$REMOTES"
           grep -qx 'gdrive:' <<<"$REMOTES" || { echo "Server rclone config does not contain gdrive:" >&2; exit 24; }
 
           if ! grep -qx 'botbackup:' <<<"$REMOTES"; then
@@ -125,10 +95,16 @@ jobs:
               'filename_encryption: standard' \
               'directory_name_encryption: true' \
               "password: $PASS1" \
-              "password2: $PASS2" > "$REC_TMP"
+              "password2: $PASS2" \
+              '' \
+              'IMPORTANT: Download this file from the VPS with WinSCP and store it offline.' \
+              'Without these values (or the rclone.conf that contains them), the encrypted backup cannot be decrypted after loss of the VPS.' > "$REC_TMP"
             sudo -n install -m 600 "$REC_TMP" "$RECOVERY"
             rm -f "$REC_TMP"
             unset PASS1 PASS2
+            echo "Created root-only recovery file: $RECOVERY"
+          else
+            echo "Encrypted botbackup: remote already exists; reusing it."
           fi
 
           sudo -n rclone --config "$CONFIG" lsd botbackup: >/dev/null
@@ -141,8 +117,8 @@ jobs:
           sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
           sha256sum "$ARCHIVE" > "$CHECKSUM"
           SIZE="$(stat -c%s "$ARCHIVE")"
-
-          BACKED_UP_FINGERPRINT="$(sudo -n find "$SOURCE" -xdev -printf '%y|%P|%s|%T@|%l\n' | LC_ALL=C sort | sha256sum | awk '{print $1}')"
+          echo "Archive: $ARCHIVE"
+          echo "Bytes: $SIZE"
 
           echo "Restarting $SERVICE before upload"
           sudo -n systemctl start "$SERVICE"
@@ -155,9 +131,6 @@ jobs:
           REMOTE_SIZE="$(rclone --config "$CONFIG" lsjson "$DEST/$(basename "$ARCHIVE")" --stat | python3 -c 'import json,sys; print(json.load(sys.stdin)["Size"])')"
           test "$REMOTE_SIZE" = "$SIZE"
 
-          printf '%s\n' "$BACKED_UP_FINGERPRINT" > "$STATE_FILE"
-          chmod 600 "$STATE_FILE"
-
           echo "Backup verified: $DEST/$(basename "$ARCHIVE")"
           echo "backup_name=$(basename "$ARCHIVE")" >> "$GITHUB_OUTPUT"
 
@@ -167,19 +140,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           JOB_STATUS: ${{ job.status }}
-          CHANGED: ${{ steps.changes.outputs.changed }}
           BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
         run: |
           set -euo pipefail
-          if [ "$JOB_STATUS" != "success" ]; then
-            STATE="failure"
-            DESC="Google Drive backup check or upload failed"
-          elif [ "$CHANGED" = "false" ]; then
+          if [ "$JOB_STATUS" = "success" ]; then
             STATE="success"
-            DESC="No file changes; backup skipped"
+            DESC="Encrypted Google Drive backup verified"
           else
-            STATE="success"
-            DESC="Changed files backed up and verified"
+            STATE="failure"
+            DESC="Google Drive backup failed; inspect workflow log"
           fi
           curl -fsS -X POST \
             -H "Authorization: Bearer $GH_TOKEN" \
