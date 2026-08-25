@@ -32,15 +32,23 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set -euo pipefail
-          test -n "${OPENAI_API_KEY:-}"
+          rm -f /tmp/google-openai-auth-code /tmp/google-sync-stage
+          echo START > /tmp/google-sync-stage
+          if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+            echo MISSING_SECRET > /tmp/google-sync-stage
+            echo 'OPENAI_API_KEY GitHub secret is missing for this workflow.' >&2
+            exit 1
+          fi
 
-          # First prove this exact GitHub secret is accepted from the Google VM.
           code="$(curl -sS -o /tmp/google-openai-auth.json -w '%{http_code}' \
             https://api.openai.com/v1/models \
             -H "Authorization: Bearer ${OPENAI_API_KEY}" \
             -H 'Accept: application/json')"
+          printf '%s\n' "$code" > /tmp/google-openai-auth-code
+          echo "AUTH_${code}" > /tmp/google-sync-stage
           echo "openai_auth_http=${code}"
           test "$code" = "200"
+          echo AUTH_OK > /tmp/google-sync-stage
 
           key_file="$(mktemp /tmp/google-openai-key.XXXXXX)"
           trap 'rm -f "$key_file"' EXIT
@@ -50,6 +58,7 @@ jobs:
 
           target=/var/tmp/boot/ai_council_runtime.env
           if sudo -n true 2>/dev/null; then
+            echo SUDO_OK > /tmp/google-sync-stage
             sudo install -d -m 0755 /var/tmp/boot
             sudo env KEY_FILE="$key_file" TARGET="$target" python3 - <<'PY'
           import json, os, pathlib
@@ -66,9 +75,11 @@ jobs:
           os.replace(tmp, target)
           os.chown(target, 0, 0)
           PY
+            echo FILE_UPDATED > /tmp/google-sync-stage
             sudo chmod 600 "$target"
             sudo systemctl restart boot-ai-agent-worker@gpt.service
           else
+            echo NO_SUDO > /tmp/google-sync-stage
             test -w "$(dirname "$target")" || {
               echo 'Google runner has neither passwordless sudo nor write access to the AI runtime directory.' >&2
               exit 1
@@ -87,13 +98,16 @@ jobs:
           os.chmod(tmp, 0o600)
           os.replace(tmp, target)
           PY
+            echo FILE_UPDATED > /tmp/google-sync-stage
             chmod 600 "$target"
             systemctl restart boot-ai-agent-worker@gpt.service
           fi
 
+          echo WORKER_RESTARTED > /tmp/google-sync-stage
           test -s "$target"
           test "$(stat -c '%a' "$target")" = "600"
           grep -q '^OPENAI_API_KEY=' "$target"
+          echo COMPLETE > /tmp/google-sync-stage
           echo 'google_openai_runtime=refreshed'
 
       - name: GPT and bus status
@@ -133,11 +147,15 @@ jobs:
           set -euo pipefail
           target=/var/tmp/boot/ai_council_runtime.env
           live_result="$(cat /tmp/google-gpt-live-result 2>/dev/null || echo NOT_RUN)"
-          auth_http="$(grep -o '"status"[[:space:]]*:[[:space:]]*[0-9]*' /tmp/google-openai-auth.json 2>/dev/null | head -1 | grep -o '[0-9]*' || true)"
+          sync_stage="$(cat /tmp/google-sync-stage 2>/dev/null || echo NOT_RUN)"
+          auth_http="$(cat /tmp/google-openai-auth-code 2>/dev/null || echo NOT_RUN)"
           {
+            echo "run_id=${GITHUB_RUN_ID}"
             echo "hostname=$(hostname)"
             echo "user=$(whoami)"
             echo "verified_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "sync_stage=$sync_stage"
+            echo "openai_auth_http=$auth_http"
             echo "bus=$(systemctl is-active boot-ai-agent-bus.service || true)"
             echo "gpt_worker=$(systemctl is-active boot-ai-agent-worker@gpt.service || true)"
             echo "runtime_file_present=$([[ -f "$target" ]] && echo true || echo false)"
@@ -149,7 +167,7 @@ jobs:
 
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/google-gpt-verification.txt"
           current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
-          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.read().strip() if False else sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
           encoded="$(base64 -w0 /tmp/google-gpt-verification.txt)"
           if [[ -n "$existing_sha" ]]; then
             payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
