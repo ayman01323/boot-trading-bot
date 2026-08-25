@@ -1,0 +1,38 @@
+name: Google Runner Connectivity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/google-runner-connectivity.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  connectivity:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hostname=$(hostname)"
+          echo "user=$(whoami)"
+          echo "kernel=$(uname -srmo)"
+          echo "python=$(python3 --version 2>&1 || true)"
+      - name: GPT and bus status
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "bus=$(systemctl is-active boot-ai-agent-bus.service || true)"
+          echo "gpt=$(systemctl is-active boot-ai-agent-worker@gpt.service || true)"
+      - name: Resource snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "cpus=$(nproc)"
+          free -h
+          df -h /
