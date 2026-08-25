@@ -1,20 +1,24 @@
 from __future__ import annotations
 
-"""Conservative RugCheck classification correction for SiBot/Solana.
+"""Conservative RugCheck classification/cache correction for SiBot/Solana.
 
 RugCheck can label liquidity observations such as "Large Amount of LP Unlocked"
-with a severe provider level.  That is an important LIVE exit/liquidity risk, but
+with a severe provider level. That is an important LIVE exit/liquidity risk, but
 it is not equivalent to structural token controls such as mint/freeze authority,
 honeypot or blacklist behaviour.
 
-This patch changes only that narrow class from HARD_BLOCK to SHADOW_ONLY.  LIVE
-remains fail-closed because both the legacy Solana LIVE gate and the protected
-SiBot 1 Solana bridge reject every non-PASS external PoolCheck decision.
+This patch changes only that narrow class from HARD_BLOCK to SHADOW_ONLY and caps
+raw RugCheck evidence freshness at five minutes so dynamic LP evidence is not held
+for the old fifteen-minute window. LIVE remains fail-closed because both the
+legacy Solana LIVE gate and the protected SiBot 1 Solana bridge reject every
+non-PASS external PoolCheck decision.
 """
 
 from . import solana_pool_risk_gate as _pool
 
 _ORIGINAL_EVALUATE_RUGCHECK = _pool.evaluate_rugcheck
+_ORIGINAL_FETCH_JSON = _pool._fetch_json
+_MAX_RUGCHECK_CACHE_SECONDS = 5 * 60
 
 _LIQUIDITY_ONLY_TERMS = (
     "lp unlocked",
@@ -53,6 +57,14 @@ def _is_liquidity_only(text: str) -> bool:
 def _has_structural_danger(text: str) -> bool:
     value = str(text or "").lower()
     return any(term in value for term in _STRUCTURAL_DANGER_TERMS)
+
+
+def _fetch_json(provider: str, url: str, mint: str, ttl: float, timeout: float):
+    """Cap RugCheck response freshness without loosening any decision threshold."""
+    effective_ttl = float(ttl)
+    if str(provider or "").lower() == "rugcheck":
+        effective_ttl = min(effective_ttl, float(_MAX_RUGCHECK_CACHE_SECONDS))
+    return _ORIGINAL_FETCH_JSON(provider, url, mint, effective_ttl, timeout)
 
 
 def evaluate_rugcheck(summary: dict, cfg: dict) -> dict:
@@ -99,10 +111,12 @@ def install() -> None:
     if getattr(_pool, "_lp_liquidity_classification_patch_installed", False):
         return
     _pool.evaluate_rugcheck = evaluate_rugcheck
+    _pool._fetch_json = _fetch_json
     _pool._lp_liquidity_classification_patch_installed = True
     print(
         "[poolcheck-lp-classification] installed=true "
-        "lp-unlocked=SHADOW_ONLY structural-danger=HARD_BLOCK live-nonpass=BLOCKED"
+        "lp-unlocked=SHADOW_ONLY structural-danger=HARD_BLOCK live-nonpass=BLOCKED "
+        "rugcheck-cache-max=300s"
     )
 
 

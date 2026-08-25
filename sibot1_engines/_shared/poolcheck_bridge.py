@@ -73,9 +73,9 @@ class MandatoryShadowPoolCheck:
     Only durable structural Solana HARD_BLOCK decisions are retained in the
     local 15-minute duplicate cache. Dynamic liquidity/cooling findings and
     provider outages remain SHADOW-only and are reassessed. The lower provider
-    layer already has its own response cache, so checking its evidence fingerprint
-    here does not require repeated paid model calls and lets changed evidence
-    invalidate a stale local structural block.
+    layer owns its network-response cache; the shared Solana patch caps RugCheck
+    freshness at five minutes so changed dynamic evidence can be observed without
+    repeated paid model calls.
     """
 
     def __init__(self, csv_dir: str | Path, evidence: MarketEvidenceBook):
@@ -207,6 +207,10 @@ class MandatoryShadowPoolCheck:
 
     def _solana(self, mint: str, base_evidence: dict[str, Any]) -> PoolCheckDecision:
         try:
+            # Standalone SiBot workers do not load the Telegram patch chain. Import
+            # this safety patch here so they share the same LP classification and
+            # five-minute RugCheck evidence freshness as the main learnerbot.
+            from learnerbot import poolcheck_lp_classification_patch as _lp_patch  # noqa: F401
             from learnerbot.solana_pool_risk_gate import external_pool_check
             result = external_pool_check(mint, self._pool_settings())
         except Exception as exc:

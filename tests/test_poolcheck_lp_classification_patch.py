@@ -81,3 +81,32 @@ def test_liquidity_label_with_structural_description_stays_hard_block():
         _cfg(),
     )
     assert result["decision"] == "HARD_BLOCK"
+
+
+def test_rugcheck_raw_response_cache_is_capped_at_five_minutes(monkeypatch):
+    seen = {}
+
+    def fake_fetch(provider, url, mint, ttl, timeout):
+        seen["provider"] = provider
+        seen["ttl"] = ttl
+        return {"ok": True}, False
+
+    monkeypatch.setattr(patch, "_ORIGINAL_FETCH_JSON", fake_fetch)
+    result, cached = patch._fetch_json("rugcheck", "https://example.invalid", "MINT", 900, 2.5)
+
+    assert result == {"ok": True}
+    assert cached is False
+    assert seen["provider"] == "rugcheck"
+    assert seen["ttl"] == 300.0
+
+
+def test_non_rugcheck_provider_cache_ttl_is_unchanged(monkeypatch):
+    seen = {}
+
+    def fake_fetch(provider, url, mint, ttl, timeout):
+        seen["ttl"] = ttl
+        return [], False
+
+    monkeypatch.setattr(patch, "_ORIGINAL_FETCH_JSON", fake_fetch)
+    patch._fetch_json("dexscreener", "https://example.invalid", "MINT", 60, 2.5)
+    assert seen["ttl"] == 60.0
