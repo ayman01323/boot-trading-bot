@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
@@ -49,7 +50,9 @@ class GeminiPulseFlowEngine:
             metadata={
                 "pool_id": event.pool_id or "",
                 "source": event.source,
-                "volume_liquidity_ratio": str(Decimal(event.volume_usd) / max(Decimal("1"), Decimal(event.liquidity_usd))) if event.volume_usd is not None and event.liquidity_usd is not None else "",
+                "volume_liquidity_ratio": str(
+                    Decimal(event.volume_usd) / max(Decimal("1"), Decimal(event.liquidity_usd))
+                ) if event.volume_usd is not None and event.liquidity_usd is not None else "",
             },
         )
 
