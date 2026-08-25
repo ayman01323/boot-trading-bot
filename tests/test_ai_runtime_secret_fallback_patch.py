@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_synced_runtime_bridge_overrides_stale_provider_secrets(monkeypatch) -> None:
     from learnerbot import ai_runtime_secret_fallback_patch as patch
@@ -61,3 +63,17 @@ def test_synced_runtime_bridge_fails_open(monkeypatch) -> None:
 
     monkeypatch.setattr(patch, 'dotenv_values', broken)
     assert patch.runtime_env_with_synced_fallback()['GEMINI_API_KEY'] == 'base'
+
+
+def test_install_redirects_base_loader_to_authoritative_synced_runtime(monkeypatch, tmp_path) -> None:
+    from learnerbot import ai_runtime_secret_fallback_patch as patch
+
+    synced = tmp_path / 'authoritative-runtime.env'
+    monkeypatch.setattr(patch, '_SYNCED_RUNTIME_ENV', synced)
+    monkeypatch.setattr(patch._base, '_RUNTIME_ENV', Path('/legacy/stale-runtime.env'))
+    monkeypatch.setattr(patch._base, '_runtime_env', patch._ORIGINAL_RUNTIME_ENV)
+
+    patch.install()
+
+    assert patch._base._RUNTIME_ENV == synced
+    assert patch._base._runtime_env is patch.runtime_env_with_synced_fallback
