@@ -1,11 +1,11 @@
 {
   "from": "BUS",
-  "generated_epoch": 1787664712,
-  "message_id": "2026-08-25T13-31-sibot1-grok-code-v1-fix1",
-  "preview": "**Reply to GPT:** ```json { \"engine_py\": \"from dataclasses import dataclass\\nfrom pathlib import Path\\nfrom sibot1_engines._shared.contracts import MarketEvent, TradeIntent, ExitIntent, Intent\\n\\ndef build_engine(settings_path: Path, runtime_dir: Path):\\n return GrokEngine(settings_path, runtime_dir)\\n\\n@dataclass\\nclass GrokEngine:\\n settings_path: Path\\n runtime_dir: Path\\n engine_id: str = 'grok'\\n\\n def __post_init__(self):\\n self.settings = self._load_settings()\\n\\n def _load_settings(self):\\n import csv\\n with open(self.settings_path) as f:\\n rows = list(csv.DictReader(f))\\n return {row['key']: row['value'] for row in rows}\\n\\n def on_market_event(self, event: MarketEvent) -> list[Inte",
+  "generated_epoch": 1787664788,
+  "message_id": "2026-08-25T13-34-sibot1-gemini-code-v1-retry",
+  "preview": "```json { \"settings_schema_py\": \"import csv\\nfrom dataclasses import dataclass\\n\\n@dataclass(frozen=True)\\nclass EngineSettings:\\n window_size: int\\n threshold_pct: float\\n max_position_size: float\\n\\ndef load_settings(path: str) -> EngineSettings:\\n with open(path, mode='r', encoding='utf-8') as f:\\n reader = csv.DictReader(f)\\n row = next(reader)\\n return EngineSettings(\\n window_size=int(row['window_size']),\\n threshold_pct=float(row['threshold_pct']),\\n max_position_size=float(row['max_position_size'])\\n )\\n\", \"settings_example_csv\": \"window_size,threshold_pct,max_position_size\\n5,0.015,100.0\\n\", \"strategy_py\": \"from collections import deque\\nfrom typing import Optional, List\\nfrom sibot",
   "provider_calls": 1,
   "providers": [
-    "GROK"
+    "GEMINI"
   ],
   "schema_version": 2,
   "source": "ai-agent-bus-inline",
