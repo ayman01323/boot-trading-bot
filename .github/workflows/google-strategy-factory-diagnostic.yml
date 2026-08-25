@@ -1,0 +1,66 @@
+name: Google Strategy Factory Runtime Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/google-strategy-factory-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inspect Google Strategy Factory runtime
+        shell: bash
+        run: |
+          set +e
+          echo '=== HOST ==='
+          hostname
+          id
+          python3 --version
+          echo '=== BROKER PORT ==='
+          ss -ltnp 2>&1 | grep ':8765' || true
+          echo '=== SERVICES ==='
+          for s in boot-ai-agent-bus.service boot-ai-agent-worker@deepseek.service; do
+            echo "--- $s ---"
+            systemctl is-enabled "$s" 2>&1 || true
+            systemctl is-active "$s" 2>&1 || true
+            systemctl --no-pager --full status "$s" 2>&1 | tail -n 30 || true
+          done
+          echo '=== PROCESSES ==='
+          pgrep -af 'ai_agent_ws_(bus|worker)' || true
+          echo '=== INSTALLED FILES ==='
+          ls -la /opt/boot-ai-agent-bus/scripts 2>&1 | head -n 40 || true
+          if test -f /opt/boot-ai-agent-bus/scripts/ai_agent_ws_worker.py; then
+            sha256sum /opt/boot-ai-agent-bus/scripts/ai_agent_ws_worker.py scripts/ai_agent_ws_worker.py 2>&1 || true
+          fi
+          echo '=== SAFE ENV KEYS / MODELS ==='
+          systemctl show boot-ai-agent-worker@deepseek.service -p Environment --value 2>/dev/null \
+            | tr ' ' '\n' \
+            | sed -E 's/(TOKEN|KEY|SECRET|PASSWORD)=.*/\1=<redacted>/' \
+            | grep -E '^(AI_AGENT_BUS_|AI_BUS_DEEPSEEK_MODEL|DEEPSEEK_COUNCIL_MODEL|PYTHONPATH|PATH)=' || true
+          echo '=== RECENT DEEPSEEK LOG ==='
+          journalctl -u boot-ai-agent-worker@deepseek.service --no-pager -n 80 2>&1 \
+            | sed -E 's/(sk-|Bearer )[A-Za-z0-9._-]+/\1<redacted>/g' || true
+          echo '=== RECENT BUS LOG ==='
+          journalctl -u boot-ai-agent-bus.service --no-pager -n 60 2>&1 \
+            | sed -E 's/(sk-|Bearer )[A-Za-z0-9._-]+/\1<redacted>/g' || true
+          echo '=== LOCAL PORT CONNECTIVITY ==='
+          python3 - <<'PY'
+          import socket
+          try:
+              with socket.create_connection(('127.0.0.1',8765),timeout=2):
+                  print('PORT_8765=OPEN')
+          except Exception as exc:
+              print('PORT_8765=CLOSED', type(exc).__name__, str(exc))
+          PY
