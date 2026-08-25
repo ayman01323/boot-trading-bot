@@ -28,3 +28,8 @@ def install() -> None:
 
 
 install()
+
+# Load last so SiBot 1 can bind public wallet addresses for observation while the
+# signing/private-key boundary remains hard-disabled. Existing wallet metadata is
+# read only at the public-address layer; no encrypted key material is decrypted.
+from . import telegram_sibot1_watch_wallet_patch as _sibot1_watch_wallet  # noqa: E402,F401
