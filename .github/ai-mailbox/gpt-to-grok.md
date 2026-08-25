@@ -1,17 +1,26 @@
 GPT_TO_GROK
-message_id: 2026-08-25T20-47-grok-dev-selling-evidence-fix
-source_sha: b96d2ea09f1c3d53bd6f8a5a840549b5e651549b
+message_id: 2026-08-25T21-26-grok-audit-all-sibot1-engines
+source_sha: a6b16761560bee7c3ae946ce1c8e23581ea629a5
 status: REQUEST
-constraints: analysis/design/patch proposal only; do not deploy, trade, alter LIVE/ARMED, capital/risk, wallets/signing, secrets, sudo, or main. Do not treat missing developer-selling evidence as safe.
+constraints: independent audit and bounded patch recommendations only; do not deploy, trade, alter LIVE/ARMED/AUTO, capital/risk, wallets/signing, secrets, sudo, or main. Do not weaken PoolCheck, HARD_BLOCK rules, freshness, simulation, or fail-closed behaviour.
 
-SiBot 1 Grok audit found the engine healthy but permanently silent: the Grok strategy requires dev_selling_known=true when reject_dev_selling is enabled, while SharedBootMarketSource currently emits dev_selling_known=false for every Solana pulse. Please fix this integration design safely.
+Please perform an independent end-to-end audit of ALL currently deployed SiBot 1 engines and the shared handoff path:
+- GPT / Base
+- Gemini / Solana
+- Grok / Solana
 
-Tasks:
-1. Inspect the current Solana evidence sources and identify the cheapest reliable way to determine whether the token developer/deployer wallet is actively selling.
-2. Preserve fail-closed semantics: unknown must remain unknown/blocked; never map unknown to safe.
-3. Propose the exact fields/schema and source-of-truth needed to populate dev_selling_known and dev_selling.
-4. Prefer reuse of existing on-chain/RPC/WebSocket/leader-history data before adding paid providers; include caching/rate-limit strategy.
-5. Specify code changes/tests for sibot1_engines/_shared/market_data.py and Grok strategy integration, including false-positive/false-negative safeguards.
-6. If enough evidence exists in current main to implement safely, return a bounded patch/diff or exact file-level implementation instructions for GPT to integrate and test. Do not push main yourself.
+Audit each engine for:
+1. Worker/runtime health and restart resilience.
+2. Whether it receives the correct chain-specific market events rather than only global broadcast counters.
+3. Input-schema mismatches, permanently-unavailable evidence fields, stale timestamps, unit/decimal mistakes and impossible thresholds.
+4. Signal-generation logic: identify why an engine can be HEALTH but produce zero signals, or produce excessive low-quality signals.
+5. Exit logic, position ownership and emergency-exit behaviour in SHADOW/PAPER.
+6. Central PoolCheck integration, duplicated checks, repeated HARD_BLOCKs and whether the new cooldown/deduplication is correctly placed.
+7. Candidate export: determine exactly which valid strategy outputs can and cannot become LIVE candidates; flag any strategy type that is silently discarded.
+8. Protected execution compatibility: check that nomination fields match the separate Base/EVM bridge expectations without weakening its independent LIVE revalidation.
+9. Cross-engine interference: shared queues, duplicate candidates, one engine starving another, incorrect global-vs-chain counters, or inconsistent settings loading.
+10. Cost/latency: identify unnecessary API/RPC calls and recommend cache/WebSocket/local-data reuse.
 
-Acceptance: Grok can produce signals only when developer-selling state is positively known and false, and remains blocked when unknown or selling=true. Report expected API/RPC cost and latency.
+For each engine return a table with: HEALTH, DATA INTAKE, SIGNAL PATH, POOLCHECK, CANDIDATE EXPORT, EXECUTION COMPATIBILITY, PRIMARY BLOCKER, SEVERITY, and exact file/function to fix.
+
+Then provide a prioritised P0/P1/P2 remediation plan and precise bounded code/test changes for GPT to review. Do not push main yourself. Distinguish genuine bugs from valid safety rejection/no-market-opportunity conditions. Preserve the current safety boundary.
