@@ -94,6 +94,40 @@ jobs:
           raise SystemExit('WebSocket broker unavailable on 127.0.0.1:8765; last=' + last)
           PY
 
+      - name: Prove live GPT to DeepSeek reply on old VPS
+        id: deepseek_live
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          mid="old-vps-gpt-deepseek-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          output="$(PYTHONPATH="$repo" "$repo/.venv/bin/python" "$repo/scripts/ai_agent_ws_send.py" \
+            --from gpt \
+            --to deepseek \
+            --subject 'Old VPS Strategy Factory live verification' \
+            --message-id "$mid" \
+            --timeout 90 \
+            --message 'Reply exactly: DEEPSEEK_REPLY_OK')"
+          printf '%s\n' "$output"
+          final="$(printf '%s\n' "$output" | tail -n 1)"
+          FINAL="$final" MID="$mid" python3 - <<'PY'
+          import json, os
+          value = json.loads(os.environ['FINAL'])
+          assert value.get('message_id') == os.environ['MID'], value
+          assert value.get('delivered') is True, value
+          assert value.get('acknowledged') is True, value
+          assert str(value.get('status') or '').upper() == 'REPLIED', value
+          assert not str(value.get('error') or ''), value
+          body = str(value.get('body') or '').strip().strip('*_`').strip()
+          assert body == 'DEEPSEEK_REPLY_OK', value
+          print('OLD_VPS_GPT_TO_DEEPSEEK=PASS')
+          print('message_id=' + os.environ['MID'])
+          print('delivered=true')
+          print('acknowledged=true')
+          print('status=REPLIED')
+          print('body=' + body)
+          PY
+
       - name: Record deployment and verification result
         if: always()
         env:
@@ -105,6 +139,7 @@ jobs:
           JOB_STATUS: ${{ job.status }}
           DEPLOY_OUTCOME: ${{ steps.deploy.outcome }}
           VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          DEEPSEEK_OUTCOME: ${{ steps.deepseek_live.outcome }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -125,10 +160,11 @@ jobs:
           except urllib.error.HTTPError as exc:
               if exc.code != 404: raise
           status={
-              'schema_version':6,
+              'schema_version':7,
               'status':os.environ['JOB_STATUS'].upper(),
               'deploy_outcome':os.environ.get('DEPLOY_OUTCOME',''),
               'verify_outcome':os.environ.get('VERIFY_OUTCOME',''),
+              'deepseek_live_outcome':os.environ.get('DEEPSEEK_OUTCOME',''),
               'source_sha':os.environ['SOURCE_SHA'],
               'run_id':os.environ['RUN_ID'],
               'run_attempt':os.environ['RUN_ATTEMPT'],
