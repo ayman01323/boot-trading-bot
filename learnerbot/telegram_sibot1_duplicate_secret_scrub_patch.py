@@ -147,3 +147,9 @@ from . import poolcheck_lp_classification_patch as _poolcheck_lp_classification 
 # + AUTO. LIVE entry revalidation is fail-closed and adds full reverse plus 3x
 # reverse-exit stress checks before Jupiter's mandatory signed simulation.
 from . import sibot1_solana_live_bridge_patch as _sibot1_solana_live_bridge  # noqa: E402,F401
+
+# Reporting-only trade lifecycle alerts for Base and Solana. This layer adds no
+# trading authority and changes no gate, threshold, signer or execution result.
+# It reports selected candidates, LIVE PoolCheck/simulation outcomes, broadcasts,
+# confirmations and deferred/error states, while deduplicating noisy repeats.
+from . import sibot1_trade_event_telegram_patch as _sibot1_trade_event_telegram  # noqa: E402,F401
