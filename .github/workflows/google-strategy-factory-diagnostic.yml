@@ -1,4 +1,4 @@
-name: Google Strategy Factory DeepSeek Repair
+name: Google Strategy Factory DeepSeek Persistence Verification
 
 on:
   push:
@@ -11,152 +11,49 @@ permissions:
   contents: read
 
 jobs:
-  repair:
+  verify:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Validate DeepSeek credential without logging it
+      - name: Prove worker survived previous GitHub job cleanup
         shell: bash
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
-            echo 'DEEPSEEK_API_KEY GitHub secret is missing.' >&2
-            exit 1
-          fi
-          code="$(curl -sS -o /tmp/google-deepseek-models.json -w '%{http_code}' \
-            https://api.deepseek.com/models \
-            -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
-            -H 'Accept: application/json')"
-          rm -f /tmp/google-deepseek-models.json
-          echo "deepseek_auth_http=${code}"
-          test "$code" = "200"
-
-      - name: Build isolated user-owned Strategy Factory runtime
-        shell: bash
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
           set -euo pipefail
           DEST="$HOME/.local/share/boot-ai-agent-bus"
           STATE="$HOME/.local/state/boot-ai-agent-bus"
           VENV="$DEST/.venv"
-          install -d -m 0700 "$DEST/scripts" "$DEST/learnerbot" "$STATE"
-          for f in \
-            ai_agent_ws_worker.py ai_agent_ws_memory.py strategy_factory_transport.py \
-            strategy_factory_chat.py ai_agent_ws_send.py ai_agent_task_executor.py; do
-            install -m 0644 "scripts/$f" "$DEST/scripts/$f"
-          done
-          cat >"$DEST/learnerbot/__init__.py" <<'PY'
-          from __future__ import annotations
-          __version__ = "strategy-factory-runtime"
-          PY
-          for f in \
-            ai_council.py ai_council_http_patch.py provider_current_api_patch.py \
-            ai_runtime_secret_fallback_patch.py grok_provider.py kimi_provider.py \
-            ai_cost_router.py ai_cost_grok_patch.py ai_cost_kimi_patch.py ai_cost_provider_patch.py; do
-            install -m 0644 "learnerbot/$f" "$DEST/learnerbot/$f"
-          done
-          if [[ ! -x "$VENV/bin/python" ]]; then
-            python3 -m venv "$VENV"
-          fi
-          "$VENV/bin/python" -m pip install --disable-pip-version-check -q \
-            'websockets>=15,<16' 'python-dotenv>=1,<2'
-
-          runtime="$STATE/ai_council_runtime.env"
-          umask 077
-          KEY="$DEEPSEEK_API_KEY" TARGET="$runtime" python3 - <<'PY'
-          import json, os, pathlib
-          key = os.environ['KEY'].strip()
-          if not key:
-              raise SystemExit('DeepSeek credential is empty')
-          target = pathlib.Path(os.environ['TARGET'])
-          existing = target.read_text(encoding='utf-8', errors='replace').splitlines() if target.exists() else []
-          kept = [line for line in existing if not line.lstrip().startswith('DEEPSEEK_API_KEY=')]
-          kept.append('DEEPSEEK_API_KEY=' + json.dumps(key))
-          tmp = target.with_suffix('.tmp')
-          tmp.write_text('\n'.join(kept) + '\n', encoding='utf-8')
-          os.chmod(tmp, 0o600)
-          os.replace(tmp, target)
-          PY
-          chmod 600 "$runtime"
-
-          AI_COUNCIL_RUNTIME_ENV="$runtime" \
-          AI_COUNCIL_SYNCED_RUNTIME_ENV="$runtime" \
-          AI_COST_DB_PATH="$STATE/ai_cost_router.sqlite3" \
-          AI_AGENT_BUS_DB="$STATE/ai_agent_bus.sqlite3" \
-          PYTHONPATH="$DEST" \
-          "$VENV/bin/python" - <<'PY'
-          from learnerbot.ai_cost_provider_patch import call_provider
-          from scripts.ai_agent_ws_worker import low_cost_model
-          assert callable(call_provider)
-          assert low_cost_model('deepseek')
-          print('provider_import=PASS')
-          print('deepseek_model=' + low_cost_model('deepseek'))
-          PY
-          echo "DEST=$DEST" >> "$GITHUB_ENV"
-          echo "STATE=$STATE" >> "$GITHUB_ENV"
-          echo "VENV=$VENV" >> "$GITHUB_ENV"
-
-      - name: Install persistent unprivileged DeepSeek worker
-        shell: bash
-        run: |
-          set -euo pipefail
-          runtime="$STATE/ai_council_runtime.env"
-          launcher="$DEST/start-deepseek-worker.sh"
-          cat >"$launcher" <<EOF
-          #!/usr/bin/env bash
-          set -euo pipefail
-          export PYTHONPATH="$DEST"
-          export AI_AGENT_BUS_URL="ws://127.0.0.1:8765"
-          export AI_COUNCIL_RUNTIME_ENV="$runtime"
-          export AI_COUNCIL_SYNCED_RUNTIME_ENV="$runtime"
-          export AI_COST_DB_PATH="$STATE/ai_cost_router.sqlite3"
-          export AI_AGENT_BUS_DB="$STATE/ai_agent_bus.sqlite3"
-          exec flock -n "$STATE/deepseek-worker.lock" "$VENV/bin/python" "$DEST/scripts/ai_agent_ws_worker.py" --agent deepseek >>"$STATE/deepseek-worker.log" 2>&1
-          EOF
-          chmod 0700 "$launcher"
-
-          marker='BOOT_AI_DEEPSEEK_GOOGLE'
-          existing="$(crontab -l 2>/dev/null || true)"
-          {
-            printf '%s\n' "$existing" | grep -v "$marker" || true
-            printf '@reboot sleep 20 && %q # %s\n' "$launcher" "$marker"
-            printf '*/5 * * * * pgrep -f %q >/dev/null 2>&1 || %q # %s\n' \
-              "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek" "$launcher" "$marker"
-          } | sed '/^[[:space:]]*$/d' | crontab -
-
-          pgrep -u "$(id -u)" -f "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek" \
-            | xargs -r kill || true
-          sleep 1
-          : > "$STATE/deepseek-worker.log"
-          env -u RUNNER_TRACKING_ID nohup "$launcher" >/dev/null 2>&1 </dev/null &
-          sleep 4
+          test -x "$DEST/start-deepseek-worker.sh"
+          test -x "$VENV/bin/python"
+          echo "root_bus=$(systemctl is-active boot-ai-agent-bus.service)"
+          test "$(systemctl is-active boot-ai-agent-bus.service)" = active
           pgrep -u "$(id -u)" -af "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek"
-          grep -q 'deepseek worker connected' "$STATE/deepseek-worker.log"
-          if grep -q 'unable to open database file' "$STATE/deepseek-worker.log"; then
-            echo 'DeepSeek worker still has a database permission fault.' >&2
-            exit 1
-          fi
-          echo 'google_deepseek_worker=persistent-and-connected'
+          test "$(pgrep -u "$(id -u)" -fc "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek")" -ge 1
+          echo 'worker_survived_runner_cleanup=true'
 
-      - name: Live GPT to DeepSeek correlated reply test on Google
+      - name: Prove restart persistence is installed
         shell: bash
         run: |
           set -euo pipefail
-          mid="google-gpt-deepseek-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          status="$(systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || true)"
+          echo "cron=$status"
+          test "$status" = active
+          count="$(crontab -l 2>/dev/null | grep -c 'BOOT_AI_DEEPSEEK_GOOGLE' || true)"
+          echo "persistence_entries=$count"
+          test "$count" -eq 2
+
+      - name: Independent post-cleanup GPT to DeepSeek reply test
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST="$HOME/.local/share/boot-ai-agent-bus"
+          VENV="$DEST/.venv"
+          mid="google-persistence-gpt-deepseek-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           output="$(PYTHONPATH="$DEST" "$VENV/bin/python" "$DEST/scripts/ai_agent_ws_send.py" \
             --from gpt \
             --to deepseek \
-            --subject 'Google Strategy Factory live DeepSeek verification' \
+            --subject 'Google Strategy Factory persistence verification' \
             --message-id "$mid" \
-            --timeout 120 \
+            --timeout 60 \
             --message 'Reply exactly: DEEPSEEK_REPLY_OK')"
           printf '%s\n' "$output"
           final="$(printf '%s\n' "$output" | tail -n 1)"
@@ -170,23 +67,10 @@ jobs:
           assert not str(value.get('error') or ''), value
           body = str(value.get('body') or '').strip().strip('*_`').strip()
           assert body == 'DEEPSEEK_REPLY_OK', value
-          print('GOOGLE_GPT_TO_DEEPSEEK=PASS')
+          print('GOOGLE_DEEPSEEK_PERSISTENCE=PASS')
           print('message_id=' + os.environ['MID'])
           print('delivered=true')
           print('acknowledged=true')
           print('status=REPLIED')
           print('body=' + body)
           PY
-
-      - name: Final Google runtime state
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          echo "root_bus=$(systemctl is-active boot-ai-agent-bus.service || true)"
-          echo "root_deepseek=$(systemctl is-active boot-ai-agent-worker@deepseek.service || true)"
-          echo "cron=$(systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || true)"
-          echo "user_deepseek_processes=$(pgrep -u "$(id -u)" -fc "$HOME/.local/share/boot-ai-agent-bus/scripts/ai_agent_ws_worker.py --agent deepseek" || true)"
-          crontab -l 2>/dev/null | grep 'BOOT_AI_DEEPSEEK_GOOGLE' | sed 's#^#cron_entry=#' || true
-          tail -n 20 "$HOME/.local/state/boot-ai-agent-bus/deepseek-worker.log" 2>/dev/null \
-            | sed -E 's/(sk-|Bearer )[A-Za-z0-9._-]+/\1<redacted>/g' || true
