@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import html
+import time
 
 from . import telegram as _tg
 from . import telegram_sibot1_only_menu_patch as _sibot1
@@ -185,6 +186,7 @@ def _prompt(chain: str) -> str:
         detail,
         "",
         "The incoming Telegram message must be deleted successfully before the key is encrypted and stored.",
+        "A protected secure-delete splash will appear while the secret message is removed.",
         "The AI engines will not receive the key.",
         "",
         "Send <code>cancel</code> to stop.",
@@ -194,7 +196,6 @@ def _prompt(chain: str) -> str:
 def _bind_evm_from_active(app, tid) -> str:
     meta = _active_evm_meta(app, tid)
     if not meta:
-        # Backward-compatible fallback to the older single-wallet public metadata.
         return _watch._current_evm_public_address(app)
     address = _watch._validate("base", str(meta.get("address") or ""))
     _watch._set_wallet(
@@ -207,6 +208,56 @@ def _bind_evm_from_active(app, tid) -> str:
     return address
 
 
+def _show_delete_splash(app, tid) -> int | None:
+    try:
+        result = _tg._json(
+            "sendMessage",
+            app.telegram_bot_token,
+            payload={
+                "chat_id": tid,
+                "text": "🧹 <b>SECURE DELETE</b>\nRemoving your private-key message…",
+                "parse_mode": "HTML",
+                "protect_content": True,
+                "disable_notification": True,
+                "link_preview_options": {"is_disabled": True},
+            },
+            timeout=15,
+        ) or {}
+        return int(result.get("message_id")) if result.get("message_id") else None
+    except Exception:
+        return None
+
+
+def _edit_delete_splash(app, tid, splash_id: int | None, text: str) -> None:
+    if not splash_id:
+        return
+    try:
+        _tg._json(
+            "editMessageText",
+            app.telegram_bot_token,
+            payload={
+                "chat_id": tid,
+                "message_id": int(splash_id),
+                "text": text,
+                "parse_mode": "HTML",
+                "link_preview_options": {"is_disabled": True},
+            },
+            timeout=15,
+        )
+    except Exception:
+        pass
+
+
+def _clear_delete_splash(app, tid, splash_id: int | None, *, hold_seconds: float = 1.1) -> None:
+    if not splash_id:
+        return
+    try:
+        time.sleep(max(0.0, min(float(hold_seconds), 2.0)))
+        _tg.delete_message(app.telegram_bot_token, tid, splash_id)
+    except Exception:
+        pass
+
+
 def _handle_pending(app, message) -> bool:
     tid = (message.get("chat") or {}).get("id")
     if tid is None:
@@ -217,6 +268,7 @@ def _handle_pending(app, message) -> bool:
     if not _ui._auth(app, tid):
         return True
     text = str(message.get("text") or "").strip()
+    splash_id = None
     try:
         _require_master(app, tid)
         if text.lower() in {"cancel", "/cancel"}:
@@ -226,8 +278,25 @@ def _handle_pending(app, message) -> bool:
         if (message.get("chat") or {}).get("type") != "private":
             raise ValueError("Private-key import is allowed only in a private Telegram chat")
         mid = message.get("message_id")
-        if not mid or not _tg.delete_message(app.telegram_bot_token, tid, mid):
+        if not mid:
+            raise ValueError("Telegram message ID is missing; the private key was NOT saved")
+
+        # Show a protected status message first, but do not intentionally delay
+        # deletion of the user's secret. The key message is deleted immediately
+        # after the splash API call returns.
+        splash_id = _show_delete_splash(app, tid)
+        if not _tg.delete_message(app.telegram_bot_token, tid, mid):
+            _edit_delete_splash(app, tid, splash_id, "❌ <b>SECURE DELETE FAILED</b>\nPrivate key was <b>NOT saved</b>.")
+            _clear_delete_splash(app, tid, splash_id, hold_seconds=1.6)
+            splash_id = None
             raise ValueError("Telegram did not confirm deletion; the private key was NOT saved")
+
+        _edit_delete_splash(
+            app,
+            tid,
+            splash_id,
+            "✅ <b>DELETED SECURELY</b>\nEncrypting signing key in the protected vault…",
+        )
 
         if chain == "evm":
             if " " in text:
@@ -265,6 +334,8 @@ def _handle_pending(app, message) -> bool:
             wallet_id = row.get("wallet_id") or ""
 
         _PENDING_SIGNER.pop(str(tid), None)
+        _clear_delete_splash(app, tid, splash_id, hold_seconds=1.1)
+        splash_id = None
         _ui._send(
             app,
             tid,
@@ -281,6 +352,9 @@ def _handle_pending(app, message) -> bool:
         )
         return True
     except Exception as exc:
+        if splash_id:
+            _edit_delete_splash(app, tid, splash_id, "⚠️ <b>IMPORT STOPPED</b>\nThe secret message was removed; key was not accepted.")
+            _clear_delete_splash(app, tid, splash_id, hold_seconds=1.4)
         _ui._send(
             app,
             tid,
@@ -355,7 +429,7 @@ def install() -> None:
     _sibot1.sibot1_keyboard = sibot1_keyboard
     _ui.handle_update = handle_update
     _ui._telegram_sibot1_signer_menu_patch_installed = True
-    print("[telegram-sibot1-signer] installed encrypted-vault=true ai-private-key-access=false live-unchanged=true")
+    print("[telegram-sibot1-signer] installed encrypted-vault=true secure-delete-splash=true ai-private-key-access=false live-unchanged=true")
 
 
 install()
