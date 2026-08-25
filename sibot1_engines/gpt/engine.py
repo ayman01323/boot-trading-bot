@@ -23,13 +23,19 @@ def _b(value: Any) -> bool:
 
 
 def _score_atomic_cycle(event: MarketEvent, settings: Settings) -> dict[str, Any] | None:
-    """Score a pre-approved same-executor EVM cycle for SiBot 1.
+    """Nominate a current same-executor EVM cycle for strict LIVE revalidation.
 
-    This is deliberately narrower than the GPT cross-DEX spread strategy.  It
-    accepts only an upstream route that already carries the exact quote,
-    simulation, liquidity, whole-route and atomic profit-protection evidence.
-    The LIVE bridge still performs its own wallet-specific quote, simulation and
-    pre-broadcast eth_call immediately before signing.
+    The source scanner is wallet-neutral by design. It can prove an exact current
+    route quote, current route existence and bounded liquidity impact, but it
+    intentionally leaves wallet-specific simulation and atomic profit protection
+    to the selected user's protected LIVE bridge. Requiring those *later* checks
+    here created a circular gate in which a valid route could never reach the
+    component responsible for performing them.
+
+    Candidate nomination therefore requires current quote/liquidity/route proof.
+    It does NOT grant LIVE approval. The LIVE bridge must independently run route
+    rug/pool checks, wallet-specific quote/simulation and the mandatory second
+    pre-broadcast eth_call before any signing/broadcast.
     """
     if event.event_type != "evm_route":
         return None
@@ -37,16 +43,18 @@ def _score_atomic_cycle(event: MarketEvent, settings: Settings) -> dict[str, Any
     age = int(payload.get("quote_age_ms") or 0)
     if age < 0 or age > settings.max_quote_age_ms:
         return None
+
+    # Scan-time evidence required to nominate. Wallet-specific checks deliberately
+    # remain downstream and are reported separately rather than falsely marked safe.
     required = (
         "exact_quote_ok",
-        "simulation_ok",
         "liquidity_ok",
         "route_approved",
         "whole_route_approved",
-        "atomic_profit_protection",
     )
     if not all(_b(payload.get(key)) for key in required):
         return None
+
     route = tuple(str(x).strip() for x in (payload.get("route_path") or ()) if str(x).strip())
     if len(route) < 3 or route[0].lower() != route[-1].lower():
         return None
@@ -57,6 +65,8 @@ def _score_atomic_cycle(event: MarketEvent, settings: Settings) -> dict[str, Any
     net = gross - costs
     if net < settings.min_net_edge_bps:
         return None
+    source_sim = _b(payload.get("simulation_ok"))
+    source_atomic = _b(payload.get("atomic_profit_protection"))
     return {
         "gross_edge_bps": gross,
         "estimated_cost_bps": costs,
@@ -64,12 +74,16 @@ def _score_atomic_cycle(event: MarketEvent, settings: Settings) -> dict[str, Any
         "route": route,
         "source_path": str(payload.get("source_path") or ""),
         "venue_plan": tuple(str(x) for x in (payload.get("venue_plan") or ())),
+        "source_simulation_ok": source_sim,
+        "source_atomic_profit_protection": source_atomic,
+        "source_preflight_complete": bool(source_sim and source_atomic),
+        "live_revalidation_required": True,
     }
 
 
 class GPTNetEdgeArbEngine:
     engine_id = "gpt"
-    engine_version = "1.1.0"
+    engine_version = "1.2.0"
 
     def __init__(self, settings: Settings, runtime_dir: str | Path):
         self.settings = settings
@@ -84,7 +98,7 @@ class GPTNetEdgeArbEngine:
         if event.chain.lower() != self.settings.chain.lower():
             return None
 
-        # Existing GPT cross-DEX research path.  These intents remain paper-only
+        # Existing GPT cross-DEX research path. These intents remain paper-only
         # unless a genuinely atomic multi-venue executor is available.
         if event.event_type == "dex_spread":
             score = score_spread(event.payload, self.settings)
@@ -123,8 +137,9 @@ class GPTNetEdgeArbEngine:
                 },
             )
 
-        # New LIVE-capable path: only upstream-approved single-executor atomic
-        # cycles.  The engine still never signs; it merely emits an intent.
+        # LIVE-capable nomination path: current exact route/liquidity evidence is
+        # enough to reach the protected bridge; LIVE approval itself is never
+        # inherited from this SHADOW engine.
         cycle = _score_atomic_cycle(event, self.settings)
         if cycle is None:
             return None
@@ -161,6 +176,10 @@ class GPTNetEdgeArbEngine:
                 "estimated_cost_bps": str(cycle["estimated_cost_bps"]),
                 "net_edge_bps": str(cycle["net_edge_bps"]),
                 "atomic_required": True,
+                "live_revalidation_required": True,
+                "source_simulation_ok": cycle["source_simulation_ok"],
+                "source_atomic_profit_protection": cycle["source_atomic_profit_protection"],
+                "source_preflight_complete": cycle["source_preflight_complete"],
             },
         )
 
