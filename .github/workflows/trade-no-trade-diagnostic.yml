@@ -1,0 +1,67 @@
+name: Live No-Trade Diagnostic
+
+on:
+  push:
+    branches:
+      - agent/trade-no-trade-diagnostic-20260825
+    paths:
+      - '.github/workflows/trade-no-trade-diagnostic.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: live-no-trade-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Capture sanitised live trading funnel
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out=/tmp/latest-trade-no-trade.txt
+          {
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "scope=READ_ONLY_SANITISED_RUNTIME_BRIDGES"
+            echo
+            echo "=== SERVER STATUS ==="
+            sudo /usr/local/sbin/status-boot-trading-bot || true
+            echo
+            for p in \
+              /var/tmp/boot/trading_funnel_master.json \
+              /var/tmp/boot/evm_leader_selector.json \
+              /var/tmp/boot/solana_leader_selector.json \
+              /var/tmp/boot/strategy_factory_leader_research.json \
+              /var/tmp/boot/ai_agent_ws_status.json; do
+              echo
+              echo "=== $p ==="
+              if [[ -s "$p" ]]; then
+                stat -c 'mtime_epoch=%Y size_bytes=%s mode=%a' "$p" || true
+                cat "$p"
+              else
+                echo "MISSING_OR_EMPTY"
+              fi
+            done
+          } > "$out" 2>&1
+
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-trade-no-trade.txt"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$out")"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/trade-no-trade-put.json
+          import json,sys
+          p={
+              'message':'Update live no-trade diagnostic',
+              'content':sys.argv[1],
+              'branch':'server-diagnostics',
+          }
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+          gh api -X PUT "$api" --input /tmp/trade-no-trade-put.json >/dev/null
+          cat "$out"
