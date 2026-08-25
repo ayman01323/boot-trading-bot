@@ -2,7 +2,7 @@ from __future__ import annotations
 import threading,time
 from pathlib import Path
 from .config import AppSettings,load_kv_scoped
-from .full_power_scanner import discover_full_power_pools
+from . import full_power_scanner as _full_power
 from .multichain import contexts,close_contexts
 from .product_universe import refresh_product_universe, universe_summary
 
@@ -20,10 +20,21 @@ def _loop(initial_app):
         try:
             app=AppSettings.load();cfg=load_kv_scoped(Path(app.csv_dir)/'auto_trading_settings.csv',0)
             interval=max(30,min(1800,int(float(cfg.get('full_power_discovery_interval_seconds','120') or 120))))
-            if _bool(cfg.get('full_power_enabled','true'),True) and _bool(cfg.get('v3_scanner_enabled','true'),True):
-                ctxs=contexts(app,enabled_only=True,with_rpc=False);result=discover_full_power_pools(app,ctxs)
+            if _bool(cfg.get('full_power_enabled','true'),True):
+                ctxs=contexts(app,enabled_only=True,with_rpc=False)
+                v3_on=_bool(cfg.get('v3_scanner_enabled','true'),True)
+                try:
+                    result=_full_power.discover_full_power_pools(app,ctxs,include_v3=v3_on)
+                except TypeError as exc:
+                    # Compatibility with an older unpatched function during isolated
+                    # imports/tests. V3-on behavior is unchanged; V3-off fails visibly
+                    # rather than silently coupling V2 discovery to V3 again.
+                    if v3_on:
+                        result=_full_power.discover_full_power_pools(app,ctxs)
+                    else:
+                        raise RuntimeError('V2 discovery requires v0 independent-discovery patch') from exc
                 products=refresh_product_universe(app,ctxs);psum=universe_summary(app.csv_dir)
-                print(f"[power-discovery] v2-added={result.get('v2_pools_added',0)} v3-pools={result['v3_pools_seen']} products={psum.get('total',len(products))} auto-products={psum.get('trade',0)} rejected={result['rejected']} seconds={time.monotonic()-started:.3f}",flush=True)
+                print(f"[power-discovery] v2-added={result.get('v2_pools_added',0)} v3-on={str(v3_on).lower()} v3-pools={result['v3_pools_seen']} products={psum.get('total',len(products))} auto-products={psum.get('trade',0)} rejected={result['rejected']} seconds={time.monotonic()-started:.3f}",flush=True)
         except Exception as exc:
             print(f'[power-discovery-error] {type(exc).__name__}: {exc}',flush=True)
         finally:
