@@ -1,19 +1,18 @@
-requested_sha=5daac91d1ae0bf09cd6550b80bcf94cf9f747db9
+requested_sha=21c9f5b510a5e5f764b86ee1d46cdbed134e9c37
 deploy_outcome=failure
 deploy_exit=10
-run_id=32901829419
-utc=2026-08-25T21:37:26Z
+run_id=32902007045
+utc=2026-08-25T21:39:32Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-25T21:35:56Z BEGIN current=0442df5733e37e428f796ed65d300be0c8831d34 requested=5daac91d1ae0bf09cd6550b80bcf94cf9f747db9
+2026-08-25T21:38:01Z BEGIN current=0442df5733e37e428f796ed65d300be0c8831d34 requested=21c9f5b510a5e5f764b86ee1d46cdbed134e9c37
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   a38ca1f..5daac91  main       -> origin/main
-Updating 0442df5..5daac91
+   5daac91..21c9f5b  main       -> origin/main
+Updating 0442df5..21c9f5b
 Fast-forward
  .github/workflows/ai-mailbox-provider-relay.yml    |   4 +-
  .github/workflows/google-runner-connectivity.yml   | 157 +++++++-
- .../google-strategy-factory-diagnostic.yml         | 192 ++++++++++
  CSVbot/sibot1/engines/gemini/settings.example.csv  |   4 +-
  learnerbot/ai_runtime_secret_fallback_patch.py     |  25 +-
  scripts/install_ai_agent_ws_bus.sh                 |  29 +-
@@ -28,8 +27,7 @@ Fast-forward
  .../shared/test_poolcheck_hard_block_cache.py      |  71 ++++
  tests/sibot1/shared/test_solana_dev_flow.py        |  79 ++++
  tests/test_ai_runtime_secret_fallback_patch.py     |   8 +-
- 17 files changed, 1349 insertions(+), 73 deletions(-)
- create mode 100644 .github/workflows/google-strategy-factory-diagnostic.yml
+ 16 files changed, 1157 insertions(+), 73 deletions(-)
  create mode 100644 sibot1_engines/_shared/solana_dev_flow.py
  create mode 100644 tests/sibot1/gemini/test_prefilter.py
  create mode 100644 tests/sibot1/shared/test_poolcheck_hard_block_cache.py
@@ -56,8 +54,8 @@ Fast-forward
 =================================== FAILURES ===================================
 __________ test_runtime_secret_bridge_overrides_provider_secret_only ___________
 
-tmp_path = PosixPath('/tmp/pytest-of-root/pytest-631/test_runtime_secret_bridge_ove0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7eff7933ca10>
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-632/test_runtime_secret_bridge_ove0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2275235ad0>
 
     def test_runtime_secret_bridge_overrides_provider_secret_only(tmp_path, monkeypatch) -> None:
         runtime = tmp_path / "ai_council_runtime.env"
@@ -120,13 +118,13 @@ tests/test_provider_git_mailbox_bridge.py:76: AssertionError
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
 FAILED tests/test_ai_council_http_patch.py::test_runtime_secret_bridge_overrides_provider_secret_only
 FAILED tests/test_provider_git_mailbox_bridge.py::test_provider_relay_is_event_driven_without_schedule
-2 failed, 1141 passed, 1 skipped, 1 warning in 59.75s
-2026-08-25T21:37:04Z TESTS FAILED; service remains on old running process
+2 failed, 1141 passed, 1 skipped, 1 warning in 59.76s
+2026-08-25T21:39:10Z TESTS FAILED; service remains on old running process
 HEAD is now at 0442df5 show Google GPT live test failure detail
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-25T21:37:21Z
+UTC: 2026-08-25T21:39:26Z
 branch: main
 sha:    0442df5733e37e428f796ed65d300be0c8831d34
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -137,11 +135,11 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Tue 2026-08-25 22:30:29 BST; 6min ago
+     Active: active (running) since Tue 2026-08-25 22:30:29 BST; 8min ago
    Main PID: 1582073 (python)
       Tasks: 36 (limit: 5869)
-     Memory: 548.4M (peak: 638.6M)
-        CPU: 4min 4.963s
+     Memory: 585.6M (peak: 638.6M)
+        CPU: 5min 16.384s
      CGroup: /system.slice/learnerbot.service
              ├─1582073 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
              ├─1582193 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
@@ -149,13 +147,13 @@ service:
              ├─1582197 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
              └─1582198 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 25 22:33:34 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=59.588
-Aug 25 22:34:05 mint.yesgoodwill.com python[1582073]: [solana-ws] connected logsSubscribe=true leaders=5 commitment=confirmed adaptive_fallback_poll=true
-Aug 25 22:34:14 mint.yesgoodwill.com python[1582073]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 thresholds=unchanged
-Aug 25 22:34:14 mint.yesgoodwill.com python[1582073]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
-Aug 25 22:34:55 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=80.887
-Aug 25 22:35:15 mint.yesgoodwill.com python[1582073]: [score:bsc] wallets=263437
-Aug 25 22:35:26 mint.yesgoodwill.com python[1582073]: [analyse:bsc] {'candidate_pool': 500, 'wallets': 50, 'transactions': 1500, 'transfer_logs': 201, 'evidence_rows': 1500, 'proven_positive_wallets': 8, 'cursor': 200}
-Aug 25 22:35:45 mint.yesgoodwill.com python[1582073]: [learn:bsc] patterns=680
-Aug 25 22:35:51 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=54.632
-Aug 25 22:36:40 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=48.134
+Aug 25 22:37:24 mint.yesgoodwill.com python[1582073]: [power-discovery] v2-added=12 v3-on=true v3-pools=175 products=7922 auto-products=629 rejected=3 seconds=404.519
+Aug 25 22:37:31 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=49.497
+Aug 25 22:38:04 mint.yesgoodwill.com python[1582073]: [research:bsc] {'evidence_rows': 188729, 'behaviours': 7, 'wallet_behaviour_rows': 908}
+Aug 25 22:38:07 mint.yesgoodwill.com python[1582073]: [copy-check:bsc] {'evaluated': 908, 'passed': 2, 'disabled': False}
+Aug 25 22:38:20 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=48.600
+Aug 25 22:38:23 mint.yesgoodwill.com python[1582073]: [solana-ws] connected logsSubscribe=true leaders=5 commitment=confirmed adaptive_fallback_poll=true
+Aug 25 22:38:38 mint.yesgoodwill.com python[1582073]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 thresholds=unchanged
+Aug 25 22:38:38 mint.yesgoodwill.com python[1582073]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
+Aug 25 22:39:02 mint.yesgoodwill.com python[1582073]: [sibot-legacy-drainer] status=RATE_LIMIT chain=polygon kind=LEGACY_ETHERSCAN next_epoch=1787694842
+Aug 25 22:39:17 mint.yesgoodwill.com python[1582073]: [scan:base] 49867126..49867135 tx=1329
