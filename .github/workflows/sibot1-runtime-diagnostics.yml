@@ -13,16 +13,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  snapshot:
-    runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 10
+  wait-for-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
     steps:
-      - name: Wait for requested main to reach VPS
+      - name: Give the protected VPS deploy runner priority
+        run: sleep 120
+
+  snapshot:
+    needs: wait-for-deploy
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Verify VPS reached this commit
         shell: bash
         run: |
           set -euo pipefail
           root=/root/multichain-learning-bot-v2.2-fast-direct-market
-          for i in $(seq 1 120); do
+          for i in $(seq 1 20); do
             current="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
             if [[ "$current" == "$GITHUB_SHA" ]]; then
               echo "server_sha=$current"
@@ -30,7 +38,7 @@ jobs:
             fi
             sleep 3
           done
-          echo "VPS did not reach $GITHUB_SHA within timeout" >&2
+          echo "VPS did not reach $GITHUB_SHA; current=$current" >&2
           exit 1
 
       - name: Allow runtime to produce fresh evidence
@@ -62,21 +70,17 @@ jobs:
               else:
                   keep_top = ('controller_state','mode','live_enabled','signer_attached','broadcast_enabled','wallet_private_key_access')
                   out['sibot1_status'] = {k: status.get(k) for k in keep_top if k in status}
-                  workers = []
-                  for row in status.get('workers') or []:
-                      if not isinstance(row, dict):
-                          continue
-                      workers.append({k: row.get(k) for k in ('engine_id','chain','state','health','alive','pid','last_heartbeat_epoch') if k in row})
-                  out['workers'] = workers
-                  scores = []
-                  for row in status.get('scoreboard') or []:
-                      if not isinstance(row, dict):
-                          continue
-                      scores.append({k: row.get(k) for k in (
+                  out['workers'] = [
+                      {k: row.get(k) for k in ('engine_id','chain','state','health','alive','pid','last_heartbeat_epoch') if k in row}
+                      for row in (status.get('workers') or []) if isinstance(row, dict)
+                  ]
+                  out['scoreboard'] = [
+                      {k: row.get(k) for k in (
                           'engine_id','chain','signals','poolcheck_shadow','poolcheck_blocks','paper_entries','paper_exits',
                           'paper_wins','paper_losses','realised_pnl_quote','errors','last_event_epoch'
-                      ) if k in row})
-                  out['scoreboard'] = scores
+                      ) if k in row}
+                      for row in (status.get('scoreboard') or []) if isinstance(row, dict)
+                  ]
 
           candidate_path = data / 'sibot1' / 'live_candidates.jsonl'
           candidates = []
@@ -86,9 +90,8 @@ jobs:
                       row = json.loads(line)
                   except Exception:
                       continue
-                  if not isinstance(row, dict):
-                      continue
-                  candidates.append(row)
+                  if isinstance(row, dict):
+                      candidates.append(row)
           out['live_candidates_total_tail'] = len(candidates)
           out['live_candidate_kinds'] = dict(Counter(str(r.get('kind') or '') for r in candidates))
           out['live_candidate_engines'] = dict(Counter(str(r.get('engine_id') or '') for r in candidates))
@@ -135,7 +138,6 @@ jobs:
                   text=True, errors='replace', stderr=subprocess.STDOUT,
               )
               lines = [ln for ln in raw.splitlines() if re.search(r'sibot1|gpt worker|gemini worker|grok worker|claude worker|deepseek worker|kimi worker|copilot worker|traceback|error|exception', ln, re.I)]
-              # Defensive redaction for any accidental hex secret-like values.
               lines = [re.sub(r'0x[0-9a-fA-F]{64}', '0x[REDACTED_SECRET]', ln) for ln in lines]
               out['relevant_logs_tail'] = lines[-120:]
           except Exception as exc:
