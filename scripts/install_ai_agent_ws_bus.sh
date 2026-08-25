@@ -20,9 +20,24 @@ install -m 0644 "$SOURCE_DIR/scripts/strategy_factory_transport.py" "$DEST_DIR/s
 install -m 0644 "$SOURCE_DIR/scripts/strategy_factory_chat.py" "$DEST_DIR/scripts/strategy_factory_chat.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_ws_send.py" "$DEST_DIR/scripts/ai_agent_ws_send.py"
 install -m 0644 "$SOURCE_DIR/scripts/ai_agent_task_executor.py" "$DEST_DIR/scripts/ai_agent_task_executor.py"
-install -m 0644 "$SOURCE_DIR/learnerbot/__init__.py" "$DEST_DIR/learnerbot/__init__.py"
+
+# Strategy Factory is intentionally a minimal communication-only runtime.  Do
+# not copy learnerbot/__init__.py here: production learnerbot package startup
+# hooks import trading/runtime modules which are neither required nor installed
+# on a standalone Strategy Factory host.  A side-effect-free package marker
+# keeps provider adapters importable without coupling messaging availability to
+# the trading application composition.
+cat >"$DEST_DIR/learnerbot/__init__.py" <<'PY'
+from __future__ import annotations
+
+__version__ = "strategy-factory-runtime"
+PY
+chmod 0644 "$DEST_DIR/learnerbot/__init__.py"
+
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_council.py" "$DEST_DIR/learnerbot/ai_council.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_council_http_patch.py" "$DEST_DIR/learnerbot/ai_council_http_patch.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/provider_current_api_patch.py" "$DEST_DIR/learnerbot/provider_current_api_patch.py"
+install -m 0644 "$SOURCE_DIR/learnerbot/ai_runtime_secret_fallback_patch.py" "$DEST_DIR/learnerbot/ai_runtime_secret_fallback_patch.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/grok_provider.py" "$DEST_DIR/learnerbot/grok_provider.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/kimi_provider.py" "$DEST_DIR/learnerbot/kimi_provider.py"
 install -m 0644 "$SOURCE_DIR/learnerbot/ai_cost_router.py" "$DEST_DIR/learnerbot/ai_cost_router.py"
@@ -35,6 +50,17 @@ if [[ ! -x "$VENV/bin/python" ]]; then
 fi
 "$VENV/bin/python" -m pip install --disable-pip-version-check -q \
   'websockets>=15,<16' 'python-dotenv>=1,<2'
+
+# Fail the deployment before touching service state if the deliberately minimal
+# provider dependency closure is incomplete.  This would have caught the Google
+# worker crash that previously occurred only after systemd started the service.
+PYTHONPATH="$DEST_DIR" "$VENV/bin/python" - <<'PY'
+from learnerbot.ai_cost_provider_patch import call_provider
+from scripts.ai_agent_ws_worker import low_cost_model
+assert callable(call_provider)
+assert low_cost_model("deepseek")
+print("strategy-factory-provider-import=ok")
+PY
 
 cat >/etc/systemd/system/boot-ai-agent-bus.service <<EOF
 [Unit]
@@ -74,6 +100,7 @@ Environment=PYTHONPATH=$DEST_DIR
 Environment=PYTHONUNBUFFERED=1
 Environment=AI_AGENT_BUS_URL=ws://127.0.0.1:8765
 Environment=AI_AGENT_BUS_DB=$DATA_DIR/ai_agent_bus.sqlite3
+Environment=AI_COUNCIL_RUNTIME_ENV=$DATA_DIR/ai_council_runtime.env
 Environment=PATH=/root/.local/bin:/root/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=$VENV/bin/python $DEST_DIR/scripts/ai_agent_ws_worker.py --agent %i
 Restart=always
