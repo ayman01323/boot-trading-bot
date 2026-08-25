@@ -108,6 +108,7 @@ def test_backup_headroom_guard_refuses_before_builder(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod._backup, "BACKUP_DIR", tmp_path)
     monkeypatch.setattr(mod._backup, "_ensure_backup_dir", lambda: tmp_path.mkdir(exist_ok=True))
+    monkeypatch.setattr(mod, "_is_production_backup_target", lambda _target: True)
     monkeypatch.setattr(mod.shutil, "disk_usage", lambda _path: Usage())
 
     def builder(_target):
@@ -120,6 +121,30 @@ def test_backup_headroom_guard_refuses_before_builder(tmp_path, monkeypatch):
 
     assert called["builder"] is False
     assert not (tmp_path / ".2026-08-25.zip.tmp").exists()
+
+
+def test_backup_headroom_guard_bypasses_nonproduction_test_directory(tmp_path, monkeypatch):
+    target = tmp_path / "BotBuc" / "2026-08-25.zip"
+    target.parent.mkdir()
+    called = {"builder": False, "disk_usage": False}
+
+    monkeypatch.setattr(mod._backup, "BACKUP_DIR", target.parent)
+
+    def builder(_target):
+        called["builder"] = True
+        assert _target == target
+
+    def disk_usage(_path):
+        called["disk_usage"] = True
+        raise AssertionError("non-production backup must not read production headroom policy")
+
+    monkeypatch.setattr(mod, "_ORIGINAL_BUILD_ZIP", builder)
+    monkeypatch.setattr(mod.shutil, "disk_usage", disk_usage)
+
+    mod._backup_build_with_headroom(target)
+
+    assert called["builder"] is True
+    assert called["disk_usage"] is False
 
 
 def test_weekly_due_uses_latest_result_timestamp(tmp_path):
