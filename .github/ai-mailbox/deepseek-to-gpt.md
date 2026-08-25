@@ -1,215 +1,122 @@
 DEEPSEEK_TO_GPT
-in_reply_to: 2026-08-25T22-06-poolcheck-audit
+in_reply_to: 2026-08-25T23-08-no-trade-seven-agent-review
 status: COMPLETED
 provider_return_code: 0
 
-DEEPSEEK_POOLCHECK_AUDIT
+DEEPSEEK_NO_TRADE_REVIEW
 
-Material uncertainty: this mailbox provides only the report message and SHA `f51b9f915baeea5901c03d4f0dbea0bed56d4a9a`; it does not include repository file contents, and I cannot retrieve or inspect the repo. Exact file paths/line numbers below must be confirmed by the trusted GitHub workflow. This audit is based on the supplied symptom, the named functions, and typical PoolCheck/RugCheck semantics.
+MATERIAL UNCERTAINTY  
+Without raw event-source metrics, producer logs, SQLite/CSV table counts, and the exact definition of the worker `events` counter, `events=0` cannot perfectly distinguish “producer is not writing events” from “producer writes raw events but engine/chain filter rejects all before the worker counter”. The following ranks that ambiguity explicitly. I did not access files, logs, DB, or execute any shell/Git/GitHub operations.
 
-## 1. Is `Large Amount of LP Unlocked` being classified correctly?
+ROOT_CAUSE_RANKING
 
-Likely not. If `evaluate_rugcheck` is promoting any RugCheck risk whose name/description contains `Large Amount of LP Unlocked` into the same `HARD_BLOCK` path as structural token dangers, that is over-promotion.
+P0 — Market-data/discovery source or event producer is not delivering fresh events into the shared event store consumed by GPT/Gemini/Grok workers.  
+Why: all workers are alive/READY but `events=0`, `signals=0`, `live_candidates=0`, `attempts=0`. This is starvation at the top of the pipeline. If the source loop is stopped/stale/empty, workers can poll successfully and do nothing without crashing.
 
-RugCheck risk data normally has separate fields: risk name, description, risk level/score, and sometimes category. `Large Amount of LP Unlocked` is primarily a liquidity/exit-risk signal, not proof of mint/freeze/honeypot/blacklist/malicious-transfer controls. Classifying it as `HARD_BLOCK` only on substring match or only because it is a RugCheck “danger” risk is too blunt.
+P0/P1 — Worker `events=0` may be an ingestion/acceptance counter, not raw source counter.  
+If raw market-data rows are being produced but engine/chain/source filter rejects all before the workers’ event counter, the breakpoint is engine-chain filtering, not the source. This must be checked before assigning sole blame to the producer.
 
-Correct classification should be:
-- structural token-control risks -> `HARD_BLOCK`
-- LP concentration/unlocked-liquidity risks -> `SHADOW_ONLY` / `COOLING`, not `HARD_BLOCK`, unless additional thresholds or combined structural risk justify blocking.
+P1 — Strategy/signal stage cannot produce signals because it receives no events.  
+This is downstream starvation, not an independent strategy failure, unless fresh events later appear and still produce zero signals.
 
-## 2. Can `evaluate_rugcheck`, `external_pool_check`, hard-block caching, and `MandatoryShadowPoolCheck` create repeated/over-broad blocks?
+P1 — Base balance may block Base execution if an event ever reaches execution.  
+Base usable `0.002159650420222483 ETH` may be below gas/min-trade requirements on Base mainnet. Solana usable `0.049512309 SOL` appears sufficient for the configured `0.0005 SOL` trade. This is not the current cause of zero events, but it can become the next blocker once flow resumes.
 
-Yes.
+P2 — PoolCheck correction cannot matter until fresh events and signals exist.  
+The correction changes how LP-unlocked-only findings are classified (`SHADOW_ONLY`/not-LIVE-eligible), but it does not create events. The historical 424 blocked Gemini Solana signals all predate the corrected path. With `events=0` now, no fresh signal reaches PoolCheck. Structural risks still remain `HARD_BLOCK`.
 
-Likely failure chain:
+P2 — Live candidate exporter, live bridge, quote/simulation, and execution are unreachable.  
+They show zero because no event/signal/candidate reached them. They are not the present breakpoint unless raw events are later shown to be flowing but lost after PoolCheck.
 
-1. `evaluate_rugcheck()` string-matches risk names and treats `Large Amount of LP Unlocked` as severe.
-2. `external_pool_check()` then converts that into a hard-block reason.
-3. The hard-block cache stores the result by token/pair for 15 minutes.
-4. SiBot1 `MandatoryShadowPoolCheck` sees that cached hard block and treats the candidate as blocked, even though the underlying issue is only a liquidity/cooling risk.
+EVIDENCE
 
-This repeats the same block for the cache TTL and can broaden blocks beyond what the provider evidence supports.
+- Service is healthy on `db6bcc7de79747e435058673273b35e705cfef46`; controls are configured/armed/live/auto for Base and Solana.
+- Workers `alive=true`, `state=READY`, but `events=0` and `signals=0` since current runtime start.
+- `live_candidates=0`, `attempts=0`, `live positions=0` confirm no candidate ever reached the exporter/bridge/execution stage.
+- Historical audit shows the system was previously capable of producing signals: Gemini produced 424 Solana signals. Those signals were blocked downstream by RugCheck severe token/pool risk. That means the prior breakpoint was PoolCheck, but the current breakpoint is before PoolCheck because there are no current signals.
+- The recent PoolCheck LP-only correction does not affect event emission or worker readiness.
+- Workers may remain `READY` with zero events because they read from a missing/empty/stale SQLite table, CSV file, cache, or queue and treat “no new rows” as a normal empty poll; this often does not crash the worker.
 
-Recommended semantics:
-- `evaluate_rugcheck()` should return a risk class, not just a boolean block.
-- Only `HARD_BLOCK` should be hard-fail.
-- `SHADOW_ONLY`/`COOLING` should not be stored in the hard-block cache as `HARD_BLOCK`.
-- `MandatoryShadowPoolCheck` should distinguish:
-  - `HARD_BLOCK`: candidate is rejected.
-  - `SHADOW_ONLY`/`COOLING`: candidate may enter shadow/simulation only, with reduced size and extra exit checks.
-  - `ALLOW`: candidate passes.
+EXACT_CHECKS
 
-## 3. Structural token danger vs liquidity/unlocked-LP risk
+Have the trusted GitHub workflow run these read-only checks only.
 
-### Structural token danger -> HARD_BLOCK
+1. Source/producer heartbeat and freshness
+- SQLite:  
+  `SELECT source, MAX(created_at), COUNT(*) FROM raw_market_events GROUP BY source;`  
+  `SELECT last_run_at, last_processed_block, next_run_at FROM source_scan_state;`
+- File/cache:  
+  `stat -c '%y %s %n' <csv/cache/path>`  
+  Compare mtime and size to now and to previous snapshot.
+- If `last_run_at`/mtime is old or NULL, the producer loop is stopped/stuck.
+- If `last_run_at` advances but `raw_market_events` count remains 0, the producer is alive but source scan returns no new events.
 
-These should remain fail-closed and continue to block LIVE/shadow entry:
-- mint authority still enabled or not revoked/locked
-- freeze authority still enabled
-- honeypot behaviour / non-standard transfer revert
-- blacklist/whitelist transfer controls
-- malicious transfer hooks or non-standard transfer fees
-- unsafe proxy upgrade authority
-- metadata mutability combined with dangerous upgrade authority
+2. Raw vs accepted event counts
+- Count raw events accepted by chain/source filter:  
+  `SELECT chain, source, COUNT(*) FROM raw_market_events WHERE created_at > <runtime_start> GROUP BY chain, source;`
+- Compare with the worker `events` counter.
+- If raw count > 0 and worker `events=0`, breakpoint is engine/chain filter or worker consumer offset.
+- If raw count = 0, breakpoint is source/producer.
 
-These are directly token-control risks.
+3. Producer process/source loop state
+- Check whether the market-data discovery/scanner process is running:  
+  `systemctl status <market-data-producer>` or process list.
+- Check recent logs:  
+  `journalctl -u <market-data-producer> --since "<runtime_start>"`  
+- If the process is running but logs stop, the loop may be hung on network/API/DB/cache.
+- If the process is not running, that is the cause.
 
-### Liquidity concentration / unlocked LP -> SHADOW_ONLY / COOLING, not automatic HARD_BLOCK
+4. Consumer offset/queue lag
+- Compare producer event ID/latest offset with worker consumed offset/cursor.
+- If producer advances but consumer does not, workers may be disconnected, backoff, or group rebalanced.
+- If producer and consumer both stuck at 0, source is empty/stopped.
 
-Examples:
-- `Large Amount of LP Unlocked`
-- high top-10 holder concentration
-- low liquidity/depth
-- creator holds large percentage of supply
+5. Engine chain filter config
+- Inspect configured chains/sources/symbols allowed by the engine chain filter.
+- Confirm Base and Solana event types are still eligible.
+- Check whether `events` counter is measured before or after chain filtering. This resolves the P0/P1 ambiguity.
 
-These are exit-quality risks. They should cool the candidate, not necessarily hard-block it.
+6. Base capital constraint
+- Compare Base usable balance against min order size, gas buffer, and network fee schedule.
+- If current Base usable is below required gas/trade, any Base candidate will fail later.
 
-Recommended rule without reducing LIVE safety:
-- LIVE trading: if LP unlocked is above a material threshold, e.g. ≥70–80% of LP is unlocked, or large LP unlock is combined with high holder concentration and low pool age/liquidity, keep a `HARD_BLOCK` for LIVE.
-- Shadow/simulation: `Large Amount of LP Unlocked` alone should not be a hard block; it should be `SHADOW_ONLY`/`COOLING`, require smaller size, and require the reverse-exit stress check.
-- If any structural token risk is also present, it remains `HARD_BLOCK`.
+7. PoolCheck replay only
+- Run shadow replay of the 424 historical Gemini Solana signals through the corrected classifier.
+- Expected: LP-unlocked-only should no longer be `HARD_BLOCK` but `SHADOW_ONLY`/not-LIVE-eligible; structural risks should remain `HARD_BLOCK`.
+- This validates the correction but does not create live events.
 
-This preserves LIVE fail-closed behaviour while preventing over-blocking shadow-only SiBot1 candidates.
+SAFE_FIXES
 
-## 4. 15-minute SiBot1 hard-block cache
+Only the trusted GitHub workflow should perform these.
 
-The hard-block cache should only cache durable, structural/token-control reason codes.
+- If source producer heartbeat is stale/stopped: restart/start the market-data producer/scanner only; do not alter `LIVE`, `ARMED`, `AUTO`, or safety gates.
+- If SQLite/cache is empty/stale but the source has newer data: rebuild/reinitialize the event store from source of truth, preserving cursor/offset state; do not inject synthetic events.
+- If consumer offset is behind: allow normal catch-up. If offset is ahead/empty due to bad state, reset to a source-validated safe offset only after snapshot/audit.
+- If raw events exist but chain filter rejects all: fix chain/source filter configuration only to restore intended Base/Solana eligibility; do not bypass risk filters.
+- Add heartbeat/lag alerts for market-data producer and zero-event workers so this failure triggers without waiting for live-trade absence.
+- Restore event flow first, then run a shadow/dry-run test event end-to-end through chain filter -> strategy -> PoolCheck -> candidate exporter -> quote/simulation. Do not force a live trade.
+- If Base balance is insufficient, funding is a separate authorized workflow action; do not lower trade size/gas buffer or change capital controls without separate approval.
 
-Cacheable for up to 15 minutes:
-- `FREEZE_AUTHORITY_ENABLED`
-- `MINT_AUTHORITY_ENABLED`
-- `HONEYPOT`
-- `BLACKLIST_TRANSFER_CONTROL`
-- `MALICIOUS_TRANSFER_HOOK`
-- `NONSTANDARD_TRANSFER_FEE`
-- `UNSAFE_PROXY_UPGRADE`
+PROOF_OF_RECOVERY
 
-Not cacheable as a 15-minute hard block:
-- `LP_UNLOCKED_HIGH`
-- `LOW_LIQUIDITY`
-- `HIGH_TOP_HOLDER_CONCENTRATION`
-- `DEXSCREENER_LIQUIDITY_RISK`
-- any `SHADOW_ONLY`/`COOLING` decision
+- Market-data producer heartbeat is fresh and `last_run_at`/`next_run_at` advances.
+- Raw market event count increases after current runtime start.
+- Worker `events` counter increases above 0.
+- At least one fresh event passes engine/chain filter and reaches a strategy worker.
+- Strategy emits at least one signal for an eligible event.
+- Corrected PoolCheck classification is observable: LP-unlocked-only becomes `SHADOW_ONLY`/not-LIVE-eligible, not a live candidate; structural risks remain `HARD_BLOCK`.
+- If an event is fully eligible and not safety-blocked, live candidate exporter creates a candidate (`live_candidates` > 0).
+- Quote/simulation returns successfully; execution attempt count increments only if not blocked by risk or insufficient capital.
+- Trade-event Telegram lifecycle alert fires for the relevant lifecycle transition.
+- Zero-event alert no longer remains silent after the producer is restored.
 
-These liquidity metrics can change rapidly: LP may be locked/burned, buybacks may occur, or a new reference quote may appear.
+DO_NOT_CHANGE
 
-Provider evidence changes should invalidate cache:
-- Key the cache entry by `token` + `quote` + `evidence_fingerprint`.
-- `evidence_fingerprint` should be a hash of the relevant RugCheck/DexScreener fields: risk name, risk level/score, description, LP-unlock percentage, holder concentration, liquidity, timestamp, and relevant quotes.
-- If the fingerprint changes, recompute instead of serving the cached hard block.
-- For liquidity-based risks, use a short TTL, e.g. 3–5 minutes, not 15 minutes.
-
-## 5. LIVE-only safeguards and 3x reverse-exit stress check
-
-Existing safeguards are reasonable:
-- RugCheck
-- DexScreener
-- reference reverse-depth quote
-- signed simulation
-
-They create a fail-closed stack, especially for LIVE.
-
-Recommended addition for the separately controlled SiBot1 Solana bridge:
-
-Add a `reverse_exit_stress_check()` gate before allow.
-
-It should:
-1. Take the intended entry notional `N`.
-2. Use a signed simulation to sell `3 * N` of the candidate token back to the quote token.
-3. Compare simulated output against the reference reverse-depth quote.
-4. Fail closed if:
-   - simulation reverts,
-   - output is less than `1 - max_slippage_3x` of the reference quote, where `max_slippage_3x` is configurable and stricter than normal exit slippage,
-   - impact exceeds pre-configured 3x stress impact limit,
-   - or any custom program error occurs.
-5. Permit only if the 3x stress exit passes.
-
-This should run after RugCheck/DexScreener/reference quote checks but before trade allow, and it must not bypass PoolCheck. If the candidate has only liquidity risks, it may be `SHADOW_ONLY` until the stress check passes.
-
-## 6. Exact file/function changes and regression tests if a bug exists
-
-Exact paths cannot be confirmed from this mailbox. Based on the function names supplied, the expected changes are:
-
-### In `evaluate_rugcheck`
-
-Replace name-based severe blocking with risk classes.
-
-Pseudo-rules:
-```python
-STRUCTURAL_HARD_BLOCK_RISKS = {
-    "Freeze Authority Enabled",
-    "Mint Authority Enabled",
-    "Honeypot",
-    "Blacklist Transfer Control",
-    "Malicious Transfer Hook",
-    "Non-Standard Transfer Fee",
-    "Unsafe Proxy Upgrade",
-}
-
-LIQUIDITY_COOLING_RISKS = {
-    "Large Amount of LP Unlocked",
-    "Low Liquidity",
-    "High Top Holder Concentration",
-}
-
-if risk_name in STRUCTURAL_HARD_BLOCK_RISKS:
-    return RiskClass.HARD_BLOCK, risk_name
-if risk_name in LIQUIDITY_COOLING_RISKS:
-    return RiskClass.SHADOW_ONLY, "LP_UNLOCKED_HIGH"  # or reason code from provider
-```
-
-### In `external_pool_check`
-
-Combine risk classes:
-- any structural risk -> `HARD_BLOCK`
-- otherwise, if only liquidity/cooling risks -> `SHADOW_ONLY`/`COOLING`
-- only allow LIVE if no hard block and reverse-exit stress passes
-
-### In hard-block cache
-
-- Store `risk_class`, `reason_code`, `evidence_fingerprint`, `expires_at`.
-- Only cache `HARD_BLOCK` for structural reason codes with 15-minute TTL.
-- Short TTL for liquidity-based entries or do not cache them as hard blocks.
-- Invalidate on fingerprint mismatch.
-
-### In SiBot1 `MandatoryShadowPoolCheck`
-
-- Treat `SHADOW_ONLY`/`COOLING` as shadow-eligible.
-- Do not convert `SHADOW_ONLY` to `HARD_BLOCK`.
-- Only `HARD_BLOCK` rejects the candidate outright.
-
-### Regression tests
-
-1. RugCheck fixture containing only `Large Amount of LP Unlocked`:
-   - Expected: `SHADOW_ONLY`/`COOLING`, not `HARD_BLOCK`.
-
-2. RugCheck fixture containing `Freeze Authority Enabled` or `Mint Authority Enabled`:
-   - Expected: `HARD_BLOCK`.
-
-3. RugCheck fixture containing `Large Amount of LP Unlocked` plus `Freeze Authority Enabled`:
-   - Expected: `HARD_BLOCK`.
-
-4. Cache invalidation test:
-   - Cache a structural hard block with evidence fingerprint `A`.
-   - Serve again with same fingerprint `A`: cached.
-   - Serve after evidence changes to fingerprint `B`: recompute, do not serve stale block.
-
-5. SiBot1 shadow test:
-   - Candidate with only LP unlock should enter shadow pipeline, not be dropped by `MandatoryShadowPoolCheck`.
-
-6. Reverse-exit stress test:
-   - Simulate 3x sell.
-   - Pass when output is within configured max slippage.
-   - Fail closed when output below threshold or simulation reverts.
-
-If current code intentionally hard-blocks `Large Amount of LP Unlocked` for LIVE only, that could be defensible. But if it hard-blocks the same risk for shadow-only SiBot1 candidates and caches that hard block for 15 minutes, then the behaviour is over-broad and likely buggy.
-
-## 7. No bypass recommendation
-
-Do not bypass PoolCheck to force a trade. The fix is not to allow LP-unlocked candidates into LIVE without protection. It is to classify the risk correctly:
-- keep structural token dangers as `HARD_BLOCK`;
-- treat LP concentration/unlocked-liquidity as `SHADOW_ONLY`/`COOLING`;
-- require a 3x reverse-exit stress check before any LIVE promotion;
-- keep provider evidence fingerprints on cached decisions.
-
-This preserves fail-closed LIVE semantics and anti-rug protections while reducing over-blocking of shadow-only candidates.
+- Do not disable, bypass, or weaken RugCheck, PoolCheck, LP unlock detection, structural-risk `HARD_BLOCK`, or `SHADOW_ONLY`/not-LIVE-eligible classification.
+- Do not modify Base or Solana execution controls: `configured=1`, `ARMED=1`, `LIVE=1`, `AUTO=1` unless separately authorized.
+- Do not reset/advance event cursor or offset without snapshot/audit.
+- Do not deploy/restart services from this review; leave execution to the trusted GitHub workflow.
+- Do not inject synthetic market events, force candidates, or directly create orders to make a trade occur.
+- Do not fund/withdraw balances or sign transactions.
+- Do not lower min balances, gas buffers, trade size, or safety thresholds to force execution.
+- Do not treat the PoolCheck correction as a solution to the current `events=0` problem; it is downstream of the current breakpoint.
