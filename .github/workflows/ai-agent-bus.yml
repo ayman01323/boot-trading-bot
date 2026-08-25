@@ -8,16 +8,19 @@ on:
     paths:
       - '.github/workflows/ai-agent-bus.yml'
       - 'learnerbot/grok_provider.py'
+      - 'learnerbot/kimi_provider.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_pending.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
       - 'scripts/run_ai_agent_bus.py'
       - 'tests/test_ai_agent_bus_delivery_fallback.py'
+      - 'tests/test_kimi_seventh_agent.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/ai-agent-bus.yml'
       - 'learnerbot/grok_provider.py'
+      - 'learnerbot/kimi_provider.py'
       - 'scripts/ai_agent_bus.py'
       - 'scripts/ai_agent_bus_pending.py'
       - 'scripts/ai_agent_bus_provider_compat.py'
@@ -119,6 +122,9 @@ jobs:
           DEEPSEEK_COUNCIL_MODEL: ${{ vars.DEEPSEEK_VPS_MODEL || 'deepseek-chat' }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           XAI_COUNCIL_MODEL: ${{ vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          KIMI_COUNCIL_MODEL: ${{ vars.KIMI_COUNCIL_MODEL || 'kimi-k2.6' }}
           COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
           AI_COUNCIL_RUNTIME_ENV: /tmp/ai-bus-no-runtime.env
         shell: bash
@@ -184,13 +190,13 @@ jobs:
                   headers[key.strip().lower()] = value.strip()
 
           providers = []
-          for match in re.finditer(r'(?m)^###\s+(GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK)\s+·', body):
+          for match in re.finditer(r'(?m)^###\s+(GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK|KIMI)\s+·', body):
               name = match.group(1).upper()
               if name not in providers:
                   providers.append(name)
 
           chunks = []
-          for part in re.split(r'(?m)^###\s+(?:GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK)\s+·[^\n]*\n', body)[1:]:
+          for part in re.split(r'(?m)^###\s+(?:GPT|CLAUDE|GEMINI|DEEPSEEK|COPILOT|GROK|KIMI)\s+·[^\n]*\n', body)[1:]:
               text = part.strip()
               if text:
                   chunks.append(text)
