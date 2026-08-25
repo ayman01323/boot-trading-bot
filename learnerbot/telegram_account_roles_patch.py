@@ -170,5 +170,8 @@ _cli._app = _app_with_roles
 from . import telegram_ai_ops_patch  # noqa: E402,F401
 # MASTER-only central report schedule control composes after AI status handlers.
 from . import telegram_report_schedule_patch  # noqa: E402,F401
+# Weekly Engineering Monitor self-maintenance: allow-listed stale temp/cache/runner cleanup
+# plus a hard free-space preflight before BotBuc can create another multi-GB local ZIP.
+from . import engineering_weekly_cleanup_patch  # noqa: E402,F401
 # Verify the final chat-scoped AI command registration against Telegram itself.
 from . import telegram_ai_ops_verification_patch  # noqa: E402,F401
