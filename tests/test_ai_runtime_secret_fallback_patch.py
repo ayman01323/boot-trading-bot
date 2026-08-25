@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-def test_synced_runtime_bridge_fills_only_missing_provider_secrets(monkeypatch) -> None:
+def test_synced_runtime_bridge_overrides_stale_provider_secrets(monkeypatch) -> None:
     from learnerbot import ai_runtime_secret_fallback_patch as patch
 
     monkeypatch.setattr(patch, '_ORIGINAL_RUNTIME_ENV', lambda: {'GEMINI_API_KEY': 'base'})
@@ -15,11 +15,11 @@ def test_synced_runtime_bridge_fills_only_missing_provider_secrets(monkeypatch) 
     monkeypatch.setattr(patch._base, '_SECRET_KEYS', {'GEMINI_API_KEY', 'OPENAI_API_KEY'})
 
     env = patch.runtime_env_with_synced_fallback()
-    assert env['GEMINI_API_KEY'] == 'base'
+    assert env['GEMINI_API_KEY'] == 'fresh'
     assert env['OPENAI_API_KEY'] == 'openai'
 
 
-def test_synced_runtime_bridge_overrides_stale_copilot_primary(monkeypatch) -> None:
+def test_synced_runtime_bridge_overrides_stale_copilot_and_gemini(monkeypatch) -> None:
     from learnerbot import ai_runtime_secret_fallback_patch as patch
 
     monkeypatch.setattr(
@@ -48,7 +48,7 @@ def test_synced_runtime_bridge_overrides_stale_copilot_primary(monkeypatch) -> N
 
     env = patch.runtime_env_with_synced_fallback()
     assert env['COPILOT_GITHUB_TOKEN'] == 'validated-primary'
-    assert env['GEMINI_API_KEY'] == 'base-gemini'
+    assert env['GEMINI_API_KEY'] == 'fresh-gemini'
 
 
 def test_synced_runtime_bridge_fails_open(monkeypatch) -> None:
