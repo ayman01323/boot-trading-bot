@@ -11,11 +11,15 @@ _ORIGINAL_RUNTIME_ENV = _base._runtime_env
 
 
 def runtime_env_with_synced_fallback() -> dict[str, str]:
-    """Fill missing provider credentials from the writable synced bridge.
+    """Overlay provider credentials from the freshly synced writable bridge.
 
-    Explicit process, repository or compatibility-bridge credentials retain
-    precedence. The writable /var/tmp bridge is only a fallback for missing
-    provider secrets. No process-global environment is mutated and no secret is
+    The GitHub Actions credential sync writes /var/tmp/ai_council_runtime.env
+    atomically before attempting the legacy compatibility copy under
+    /var/tmp/boot.  The compatibility file can be root-owned and therefore
+    become stale.  For provider secret keys, a value in the freshly synced
+    writable bridge is therefore newer and authoritative and must replace any
+    stale process/repository/compatibility value.  Model/config values remain
+    untouched.  No process-global environment is mutated and no secret is
     logged.
     """
     env = _ORIGINAL_RUNTIME_ENV()
@@ -23,7 +27,7 @@ def runtime_env_with_synced_fallback() -> dict[str, str]:
         values = dotenv_values(_SYNCED_RUNTIME_ENV) or {}
         for key in getattr(_base, '_SECRET_KEYS', set()):
             value = values.get(key)
-            if value and not str(env.get(str(key)) or '').strip():
+            if value:
                 env[str(key)] = str(value)
     except Exception:
         pass
