@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 from decimal import Decimal, InvalidOperation
 
+from . import evm_pool_rug_gate as _evm_rug
 from . import sibot1_live_bridge_patch as _bridge
 from .live_executor import LiveTrader
 
@@ -24,8 +25,12 @@ def _route(candidate) -> list[str]:
 def _execute_atomic_cycle(app, tid, candidate, key):
     if str(candidate.get("engine_id") or "").lower() != "gpt":
         raise RuntimeError("atomic Base LIVE cycle is restricted to the GPT SiBot 1 engine")
-    if str(candidate.get("poolcheck_verdict") or "").upper() != "PASS":
-        raise RuntimeError("LIVE atomic cycle requires central PoolCheck PASS")
+
+    shadow_verdict = str(candidate.get("shadow_poolcheck_verdict") or candidate.get("poolcheck_verdict") or "").upper()
+    if shadow_verdict not in {"PASS", "SHADOW_ONLY"}:
+        raise RuntimeError(f"shadow PoolCheck blocked atomic cycle: {shadow_verdict or 'missing'}")
+    if not _bridge._bool(candidate.get("live_revalidation_required"), False):
+        raise RuntimeError("atomic LIVE candidate is missing mandatory LIVE revalidation marker")
 
     route_kind = str(candidate.get("route_kind") or "").upper()
     if route_kind not in {"V2_CYCLE", "V3_CYCLE"}:
@@ -52,8 +57,14 @@ def _execute_atomic_cycle(app, tid, candidate, key):
         if not router:
             raise RuntimeError("V2 atomic cycle is missing its exact router address")
         trader = LiveTrader(app, "base", telegram_id=tid, router_override=router)
-        # Selection-time wallet simulation, followed by execute_cycle's mandatory
-        # second exact-transaction preflight/eth_call immediately before signing.
+        # Independent LIVE safety revalidation. This uses GoPlus + DexScreener
+        # and fails closed on provider errors, honeypots, transfer restrictions,
+        # severe token controls, excessive tax, thin/new/collapsing pools, etc.
+        live_risk = _evm_rug.check_live_route(trader, path)
+        if str(live_risk.get("decision") or "").upper() != "PASS":
+            raise RuntimeError("hardened LIVE route safety revalidation did not pass")
+        # Wallet-specific quote/simulation now, followed by execute_cycle's
+        # mandatory second pre-broadcast pool/rug check + exact eth_call.
         pre = trader.preflight_cycle(path, amount, min_profit)
         if not pre.get("simulation_ok"):
             raise RuntimeError(str(pre.get("reason") or "V2 cycle preflight failed"))
@@ -67,6 +78,9 @@ def _execute_atomic_cycle(app, tid, candidate, key):
         if len(fees) != len(path) - 1:
             raise RuntimeError("V3 atomic cycle fee count does not match route hops")
         trader = LiveTrader(app, "base", telegram_id=tid)
+        live_risk = _evm_rug.check_live_route(trader, path)
+        if str(live_risk.get("decision") or "").upper() != "PASS":
+            raise RuntimeError("hardened LIVE route safety revalidation did not pass")
         pre = trader.simulate_v3_cycle(path, fees, amount, min_profit, router, quoter)
         if not pre.get("simulation_ok"):
             raise RuntimeError(str(pre.get("reason") or "V3 cycle preflight failed"))
@@ -157,7 +171,7 @@ def install() -> None:
         return
     _bridge._process_candidate = _process_candidate
     _bridge._gpt_atomic_cycle_live_installed = True
-    print("[sibot1-live-bridge] gpt-atomic-cycle=enabled cross-dex-live=false")
+    print("[sibot1-live-bridge] gpt-atomic-cycle=enabled live-rug-revalidation=required cross-dex-live=false")
 
 
 install()
