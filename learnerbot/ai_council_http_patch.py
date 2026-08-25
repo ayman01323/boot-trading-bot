@@ -335,6 +335,16 @@ def _deepseek_text(body: Any) -> str:
         return ""
 
 
+def _deepseek_max_tokens(env: dict[str, str]) -> int:
+    """Bound the provider response budget without ever exposing reasoning_content."""
+    raw = str(env.get("DEEPSEEK_COUNCIL_MAX_TOKENS") or "2400").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = 2400
+    return max(512, min(value, 12000))
+
+
 def _call_deepseek(prompt: str, env: dict[str, str]) -> tuple[int, str, str]:
     key = str(env.get("DEEPSEEK_API_KEY") or "").strip()
     if not key:
@@ -352,7 +362,7 @@ def _call_deepseek(prompt: str, env: dict[str, str]) -> tuple[int, str, str]:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
-            "max_tokens": 2400,
+            "max_tokens": _deepseek_max_tokens(env),
         },
     )
     text = _deepseek_text(body)
