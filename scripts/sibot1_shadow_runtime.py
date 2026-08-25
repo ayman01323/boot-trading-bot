@@ -13,6 +13,10 @@ if str(ROOT) not in sys.path:
 # candidate records for the separate protected execution bridge. It does not
 # attach a signer or change the SHADOW/PAPER runtime boundary.
 from sibot1_engines._shared import live_candidate_export as _live_candidate_export  # noqa: F401,E402
+# GPT atomic Base cycles are exported only after central PoolCheck PASS and
+# successful paper entry+exit accounting. Cross-DEX GPT research remains
+# paper-only unless a true atomic multi-venue executor exists.
+from sibot1_engines._shared import live_atomic_cycle_export as _live_atomic_cycle_export  # noqa: F401,E402
 from sibot1_engines._shared.runtime import run_shadow_runtime
 
 
