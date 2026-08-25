@@ -89,6 +89,8 @@ jobs:
 
           AI_COUNCIL_RUNTIME_ENV="$runtime" \
           AI_COUNCIL_SYNCED_RUNTIME_ENV="$runtime" \
+          AI_COST_DB_PATH="$STATE/ai_cost_router.sqlite3" \
+          AI_AGENT_BUS_DB="$STATE/ai_agent_bus.sqlite3" \
           PYTHONPATH="$DEST" \
           "$VENV/bin/python" - <<'PY'
           from learnerbot.ai_cost_provider_patch import call_provider
@@ -115,11 +117,12 @@ jobs:
           export AI_AGENT_BUS_URL="ws://127.0.0.1:8765"
           export AI_COUNCIL_RUNTIME_ENV="$runtime"
           export AI_COUNCIL_SYNCED_RUNTIME_ENV="$runtime"
+          export AI_COST_DB_PATH="$STATE/ai_cost_router.sqlite3"
+          export AI_AGENT_BUS_DB="$STATE/ai_agent_bus.sqlite3"
           exec flock -n "$STATE/deepseek-worker.lock" "$VENV/bin/python" "$DEST/scripts/ai_agent_ws_worker.py" --agent deepseek >>"$STATE/deepseek-worker.log" 2>&1
           EOF
           chmod 0700 "$launcher"
 
-          # Preserve unrelated user cron entries; replace only our tagged worker entries.
           marker='BOOT_AI_DEEPSEEK_GOOGLE'
           existing="$(crontab -l 2>/dev/null || true)"
           {
@@ -129,14 +132,18 @@ jobs:
               "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek" "$launcher" "$marker"
           } | sed '/^[[:space:]]*$/d' | crontab -
 
-          # Stop only a prior user-owned copy of this isolated worker, never the root service.
           pgrep -u "$(id -u)" -f "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek" \
             | xargs -r kill || true
           sleep 1
+          : > "$STATE/deepseek-worker.log"
           env -u RUNNER_TRACKING_ID nohup "$launcher" >/dev/null 2>&1 </dev/null &
           sleep 4
           pgrep -u "$(id -u)" -af "$DEST/scripts/ai_agent_ws_worker.py --agent deepseek"
           grep -q 'deepseek worker connected' "$STATE/deepseek-worker.log"
+          if grep -q 'unable to open database file' "$STATE/deepseek-worker.log"; then
+            echo 'DeepSeek worker still has a database permission fault.' >&2
+            exit 1
+          fi
           echo 'google_deepseek_worker=persistent-and-connected'
 
       - name: Live GPT to DeepSeek correlated reply test on Google
@@ -178,6 +185,8 @@ jobs:
           set +e
           echo "root_bus=$(systemctl is-active boot-ai-agent-bus.service || true)"
           echo "root_deepseek=$(systemctl is-active boot-ai-agent-worker@deepseek.service || true)"
+          echo "cron=$(systemctl is-active cron 2>/dev/null || systemctl is-active crond 2>/dev/null || true)"
           echo "user_deepseek_processes=$(pgrep -u "$(id -u)" -fc "$HOME/.local/share/boot-ai-agent-bus/scripts/ai_agent_ws_worker.py --agent deepseek" || true)"
+          crontab -l 2>/dev/null | grep 'BOOT_AI_DEEPSEEK_GOOGLE' | sed 's#^#cron_entry=#' || true
           tail -n 20 "$HOME/.local/state/boot-ai-agent-bus/deepseek-worker.log" 2>/dev/null \
             | sed -E 's/(sk-|Bearer )[A-Za-z0-9._-]+/\1<redacted>/g' || true
