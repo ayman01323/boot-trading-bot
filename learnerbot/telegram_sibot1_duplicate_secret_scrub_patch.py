@@ -124,3 +124,8 @@ from . import sibot1_live_bridge_patch as _sibot1_live_bridge  # noqa: E402,F401
 # Gate semantics hardening loads after the bridge so the global emergency LIVE
 # gate is always authoritative and the Base-specific scope is shown separately.
 from . import sibot1_gate_semantics_patch as _sibot1_gate_semantics  # noqa: E402,F401
+
+# GPT's LIVE-capable Base path is restricted to pre-approved atomic V2/V3 cycles.
+# Cross-DEX GPT research remains paper-only. This patch reuses the existing exact
+# quote, simulation and mandatory pre-broadcast eth_call executor.
+from . import sibot1_gpt_atomic_cycle_live_patch as _sibot1_gpt_atomic_cycle_live  # noqa: E402,F401
