@@ -15,30 +15,46 @@ concurrency:
 jobs:
   wait-for-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 3
     steps:
-      - name: Give the protected VPS deploy runner priority
-        run: sleep 120
+      - name: Give runtime-affecting deploys priority
+        run: sleep 15
 
   snapshot:
     needs: wait-for-deploy
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 5
+    timeout-minutes: 7
     steps:
-      - name: Verify VPS reached this commit
+      - name: Verify VPS is compatible with current main
         shell: bash
         run: |
           set -euo pipefail
           root=/root/multichain-learning-bot-v2.2-fast-direct-market
-          for i in $(seq 1 20); do
+          git -C "$root" fetch --quiet --force origin main
+          for i in $(seq 1 40); do
             current="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
             if [[ "$current" == "$GITHUB_SHA" ]]; then
-              echo "server_sha=$current"
+              echo "server_sha=$current exact=true"
               exit 0
             fi
+            if git -C "$root" merge-base --is-ancestor "$current" "$GITHUB_SHA" 2>/dev/null; then
+              mapfile -t changed < <(git -C "$root" diff --name-only "$current" "$GITHUB_SHA")
+              runtime_change=false
+              for path in "${changed[@]}"; do
+                if [[ "$path" != .github/* && "$path" != diagnostics/* ]]; then
+                  runtime_change=true
+                  break
+                fi
+              done
+              if [[ "$runtime_change" == false ]]; then
+                echo "server_sha=$current exact=false workflow_only_delta=true"
+                exit 0
+              fi
+            fi
             sleep 3
+            git -C "$root" fetch --quiet --force origin main || true
           done
-          echo "VPS did not reach $GITHUB_SHA; current=$current" >&2
+          echo "VPS is not runtime-compatible with $GITHUB_SHA; current=$current" >&2
           exit 1
 
       - name: Allow runtime to produce fresh evidence
@@ -97,7 +113,8 @@ jobs:
           out['live_candidate_engines'] = dict(Counter(str(r.get('engine_id') or '') for r in candidates))
           out['last_live_candidates'] = [
               {k: r.get(k) for k in (
-                  'candidate_id','kind','engine_id','engine_version','strategy_id','chain','poolcheck_verdict',
+                  'candidate_id','kind','engine_id','engine_version','strategy_id','chain',
+                  'poolcheck_verdict','shadow_poolcheck_verdict','live_revalidation_required',
                   'route_id','route_kind','execution_mode','intent_created_at_ms','net_edge_bps'
               ) if k in r}
               for r in candidates[-10:]
@@ -134,12 +151,12 @@ jobs:
 
           try:
               raw = subprocess.check_output(
-                  ['journalctl','-u','learnerbot.service','--since','10 minutes ago','--no-pager','-o','cat'],
+                  ['journalctl','-u','learnerbot.service','--since','15 minutes ago','--no-pager','-o','cat'],
                   text=True, errors='replace', stderr=subprocess.STDOUT,
               )
               lines = [ln for ln in raw.splitlines() if re.search(r'sibot1|gpt worker|gemini worker|grok worker|claude worker|deepseek worker|kimi worker|copilot worker|traceback|error|exception', ln, re.I)]
               lines = [re.sub(r'0x[0-9a-fA-F]{64}', '0x[REDACTED_SECRET]', ln) for ln in lines]
-              out['relevant_logs_tail'] = lines[-120:]
+              out['relevant_logs_tail'] = lines[-150:]
           except Exception as exc:
               out['journal_error'] = f'{type(exc).__name__}: {exc}'
 
