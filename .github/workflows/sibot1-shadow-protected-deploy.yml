@@ -1,0 +1,61 @@
+name: Deploy SiBot 1 Shadow Engines
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sibot1-shadow-protected-deploy.yml'
+      - 'sibot1_engines/**'
+      - 'CSVbot/sibot1/**'
+      - 'tests/sibot1/**'
+      - 'docs/sibot1/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sibot1-shadow-protected-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy-and-verify:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 20
+    steps:
+      - name: Deploy exact current main through restricted wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${GITHUB_SHA}"
+          [[ "$target" =~ ^[0-9a-f]{40}$ ]]
+          sudo /usr/local/sbin/deploy-boot-trading-bot "$target"
+
+      - name: Verify SiBot 1 shadow package on VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          root=/root/multichain-learning-bot-v2.2-fast-direct-market
+          sudo /usr/local/sbin/status-boot-trading-bot
+          test -f "$root/sibot1_engines/_shared/contracts.py"
+          test -f "$root/sibot1_engines/gpt/engine.py"
+          test -f "$root/sibot1_engines/gemini/engine.py"
+          test -f "$root/sibot1_engines/grok/engine.py"
+          test -d "$root/CSVbot/sibot1"
+          cd "$root"
+          python3 -m compileall -q sibot1_engines
+          python3 - <<'PY'
+          import sibot1_engines.gpt.engine
+          import sibot1_engines.gemini.engine
+          import sibot1_engines.grok.engine
+          from sibot1_engines._shared import contracts
+          print('SIBOT1_SHADOW_IMPORT_OK')
+          PY
+          python3 -m pytest -q tests/sibot1
+
+      - name: Confirm deployment boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'SiBot 1 GPT/Gemini/Grok code is installed and testable in SHADOW/integration mode.'
+          echo 'This workflow does not enable LIVE, create a signer, broadcast a transaction, or move capital.'
