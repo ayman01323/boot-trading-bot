@@ -38,3 +38,9 @@ from . import telegram_sibot1_watch_wallet_patch as _sibot1_watch_wallet  # noqa
 # persistence and are never copied into GPT/Gemini/Grok. Importing a key changes no
 # LIVE, signing or broadcast gate by itself.
 from . import telegram_sibot1_signer_menu_patch as _sibot1_signer_menu  # noqa: E402,F401
+
+# Last-line secret hygiene: if an already-stored SiBot 1 private key is pasted
+# again after the import session ended, recognise it by its derived wallet address
+# and delete the duplicate Telegram message immediately. Existing encrypted signer
+# material is left unchanged.
+from . import telegram_sibot1_duplicate_secret_scrub_patch as _sibot1_duplicate_secret_scrub  # noqa: E402,F401
