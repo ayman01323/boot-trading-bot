@@ -4,6 +4,7 @@ from pathlib import Path
 
 from learnerbot import ai_council as council
 from learnerbot import ai_council_http_patch as http_patch
+from learnerbot import ai_runtime_secret_fallback_patch as secret_fallback
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +31,12 @@ def test_runtime_secret_bridge_overrides_provider_secret_only(tmp_path, monkeypa
         'OPENAI_COUNCIL_MODEL="gpt-5.6-luna"\n',
         encoding="utf-8",
     )
+    # The production process installs a second synced-runtime fallback at
+    # /var/tmp/ai_council_runtime.env. Unit tests must never read that live file:
+    # doing so can both make the test order-dependent and disclose a real secret
+    # in pytest assertion output. Point the fallback at a deliberately absent
+    # temporary file before exercising the base runtime bridge.
+    monkeypatch.setattr(secret_fallback, "_SYNCED_RUNTIME_ENV", tmp_path / "no-live-synced-runtime.env")
     monkeypatch.setattr(http_patch, "_RUNTIME_ENV", runtime)
     monkeypatch.setattr(http_patch, "_REPO_ENV", repo_env)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
