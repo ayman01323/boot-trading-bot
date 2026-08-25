@@ -134,3 +134,11 @@ from . import sibot1_gpt_atomic_cycle_live_patch as _sibot1_gpt_atomic_cycle_liv
 # This diagnostic uses public addresses/RPC reads only and never decrypts or emits
 # wallet addresses, private keys, Telegram IDs, or other signer material.
 from . import sibot1_asset_diag_patch as _sibot1_asset_diag  # noqa: E402,F401
+
+# Solana has a separate protected SiBot 1 bridge. It is deliberately independent
+# from the already-enabled Base controls and always starts with its own controls
+# OFF. The worker may read public candidates while disabled, but cannot decrypt a
+# signer or broadcast until the MASTER user manually confirms Solana ARMED + LIVE
+# + AUTO. LIVE entry revalidation is fail-closed and adds full reverse plus 3x
+# reverse-exit stress checks before Jupiter's mandatory signed simulation.
+from . import sibot1_solana_live_bridge_patch as _sibot1_solana_live_bridge  # noqa: E402,F401
