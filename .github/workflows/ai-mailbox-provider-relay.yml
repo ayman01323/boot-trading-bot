@@ -116,9 +116,11 @@ jobs:
           MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
           SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          # Mailbox work must produce publishable final answer content. Keep the
-          # reasoning-oriented VPS model completely separate from this channel.
-          DEEPSEEK_COUNCIL_MODEL: deepseek-chat
+          # The compatibility layer maps the retired `deepseek-chat` alias to the
+          # reasoning-oriented v4-flash model. Mailbox replies need ordinary
+          # publishable message.content, so use the current v4-pro model here.
+          # This does not alter the VPS/engineering DeepSeek model.
+          DEEPSEEK_COUNCIL_MODEL: deepseek-v4-pro
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_COUNCIL_MODEL: ${{ vars.GEMINI_COUNCIL_MODEL || 'gemini-3.5-flash-lite' }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
