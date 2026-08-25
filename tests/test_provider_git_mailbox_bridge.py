@@ -73,7 +73,7 @@ def test_provider_relay_is_event_driven_without_schedule():
     assert "KIMI_API_KEY" in route_env
     assert "MOONSHOT_API_KEY" in route_env
     assert "KIMI_COUNCIL_MODEL" in route_env
-    assert "deepseek-v4-flash" in str(route_env["DEEPSEEK_COUNCIL_MODEL"])
+    assert "deepseek-v4-pro" in str(route_env["DEEPSEEK_COUNCIL_MODEL"])
     assert "gemini-3.5-flash-lite" in str(route_env["GEMINI_COUNCIL_MODEL"])
 
 
