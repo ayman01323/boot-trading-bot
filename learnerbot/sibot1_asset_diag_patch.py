@@ -21,6 +21,10 @@ _CACHE = {"ts": 0.0, "data": {}}
 CACHE_SECONDS = 60
 
 
+def _bool(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
 def _dec(value, default="0") -> Decimal:
     try:
         return Decimal(str(value))
@@ -28,8 +32,7 @@ def _dec(value, default="0") -> Decimal:
         return Decimal(str(default))
 
 
-def _control_rows(app) -> list[dict]:
-    path = Path(app.csv_dir) / "sibot1" / "live_control.csv"
+def _read_control_rows(path: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
@@ -46,6 +49,42 @@ def _control_rows(app) -> list[dict]:
         seen.add(tid)
         out.append(row)
     return out
+
+
+def _control_rows(app) -> list[dict]:
+    return _read_control_rows(Path(app.csv_dir) / "sibot1" / "live_control.csv")
+
+
+def _gate_summary(path: Path) -> dict:
+    rows = _read_control_rows(path)
+    configured = len(rows)
+    armed_count = sum(1 for row in rows if _bool(row.get("armed")))
+    live_count = sum(1 for row in rows if _bool(row.get("live_enabled")))
+    auto_count = sum(1 for row in rows if _bool(row.get("auto_enabled")))
+    return {
+        "configured_accounts": configured,
+        "armed_accounts": armed_count,
+        "live_accounts": live_count,
+        "auto_accounts": auto_count,
+        "any_armed": armed_count > 0,
+        "any_live": live_count > 0,
+        "any_auto": auto_count > 0,
+        "all_armed": configured > 0 and armed_count == configured,
+        "all_live": configured > 0 and live_count == configured,
+        "all_auto": configured > 0 and auto_count == configured,
+        "identifiers_redacted": True,
+        "read_only": True,
+    }
+
+
+def _execution_controls(app) -> dict:
+    root = Path(app.csv_dir) / "sibot1"
+    return {
+        "base": _gate_summary(root / "live_control.csv"),
+        "solana": _gate_summary(root / "solana_live_control.csv"),
+        "read_only": True,
+        "identifiers_redacted": True,
+    }
 
 
 def _rpc(url: str, method: str, params: list, timeout: float = 6.0):
@@ -223,13 +262,21 @@ def _asset_snapshot(app) -> dict:
 
 def snapshot(app) -> dict:
     out = _PREV_SNAPSHOT(app)
-    out["schema_version"] = max(3, int(out.get("schema_version") or 0))
+    out["schema_version"] = max(4, int(out.get("schema_version") or 0))
     try:
         out["native_assets"] = _asset_snapshot(app)
     except Exception as exc:
         out["native_assets"] = {
             "addresses_redacted": True,
             "private_key_access": False,
+            "error": type(exc).__name__,
+        }
+    try:
+        out["execution_controls"] = _execution_controls(app)
+    except Exception as exc:
+        out["execution_controls"] = {
+            "read_only": True,
+            "identifiers_redacted": True,
             "error": type(exc).__name__,
         }
     return out
@@ -240,7 +287,10 @@ def install() -> None:
         return
     _diag.snapshot = snapshot
     _diag._sibot1_asset_diag_installed = True
-    print("[sibot1-asset-diag] redacted-native-balances=true addresses=false private-key-access=false cache=60s")
+    print(
+        "[sibot1-asset-diag] redacted-native-balances=true controls-read-only=true "
+        "addresses=false private-key-access=false cache=60s"
+    )
 
 
 install()
