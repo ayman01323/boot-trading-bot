@@ -1,8 +1,8 @@
 {
   "from": "BUS",
-  "generated_epoch": 1787664788,
-  "message_id": "2026-08-25T13-34-sibot1-gemini-code-v1-retry",
-  "preview": "```json { \"settings_schema_py\": \"import csv\\nfrom dataclasses import dataclass\\n\\n@dataclass(frozen=True)\\nclass EngineSettings:\\n window_size: int\\n threshold_pct: float\\n max_position_size: float\\n\\ndef load_settings(path: str) -> EngineSettings:\\n with open(path, mode='r', encoding='utf-8') as f:\\n reader = csv.DictReader(f)\\n row = next(reader)\\n return EngineSettings(\\n window_size=int(row['window_size']),\\n threshold_pct=float(row['threshold_pct']),\\n max_position_size=float(row['max_position_size'])\\n )\\n\", \"settings_example_csv\": \"window_size,threshold_pct,max_position_size\\n5,0.015,100.0\\n\", \"strategy_py\": \"from collections import deque\\nfrom typing import Optional, List\\nfrom sibot",
+  "generated_epoch": 1787664977,
+  "message_id": "2026-08-25T13-37-sibot1-gemini-code-v1-fix1",
+  "preview": "```json { \"settings_schema_py\": \"from dataclasses import dataclass\\nfrom decimal import Decimal\\n\\n@dataclass(frozen=True)\\nclass EngineSettings:\\n engine_id: str\\n engine_version: str\\n strategy_id: str\\n chain: str\\n trade_amount: Decimal\\n min_liquidity_usd: Decimal\\n min_volume_usd: Decimal\\n take_profit_pct: Decimal\\n\", \"settings_example_csv\": \"engine_id,engine_version,strategy_id,chain,trade_amount,min_liquidity_usd,min_volume_usd,take_profit_pct\\ngemini,1.0.0,Gemini-PulseFlow,solana,1.5,10000.0,500.0,0.05\\n\", \"strategy_py\": \"from decimal import Decimal\\nfrom typing import Optional, Dict, Any, Tuple\\n\\nclass PulseFlowStrategy:\\n def __init__(self, strategy_id: str, chain: str, trade_am",
   "provider_calls": 1,
   "providers": [
     "GEMINI"
