@@ -1,3 +1,3 @@
 AI Council runtime credential bridge
-sync=2026-08-25T14:52+01:00
-reason=sync newly updated GEMINI_API_KEY and verify live Gemini provider communication
+sync=2026-08-25T21:50Z
+reason=resync current provider credentials to old boot-vps after Strategy Factory repair
