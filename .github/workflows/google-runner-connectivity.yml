@@ -36,13 +36,17 @@ jobs:
       - name: Live GPT provider test
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           cd /opt/boot-ai-agent-bus
-          OUT="$(PYTHONPATH=/opt/boot-ai-agent-bus ./.venv/bin/python scripts/ai_agent_ws_send.py --from gemini --to gpt --subject 'google-live-gpt-test' --message 'Reply exactly: GPT_GOOGLE_LIVE_OK' --timeout 120 2>&1)"
+          RC=0
+          OUT="$(PYTHONPATH=/opt/boot-ai-agent-bus ./.venv/bin/python scripts/ai_agent_ws_send.py --from gemini --to gpt --subject 'google-live-gpt-test' --message 'Reply exactly: GPT_GOOGLE_LIVE_OK' --timeout 120 2>&1)" || RC=$?
           printf '%s\n' "$OUT"
+          echo "sender_rc=$RC"
+          test "$RC" -eq 0
           grep -q 'GPT_GOOGLE_LIVE_OK' <<<"$OUT"
 
       - name: Resource snapshot
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
