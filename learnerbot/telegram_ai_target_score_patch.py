@@ -170,3 +170,7 @@ from . import trading_worker_liveness_patch as _trading_worker_liveness  # noqa:
 # GPT/Gemini/Grok SiBot 1 SHADOW/PAPER runtime only. Legacy LIVE execution commands
 # remain intact but their buttons are intentionally hidden from this menu.
 from . import telegram_sibot1_only_menu_patch as _sibot1_only_menu  # noqa: E402,F401
+
+# Keep stale legacy inline callbacks operational so an old OFF/stop button never
+# becomes ineffective merely because the current menu is now SiBot 1-only.
+from . import telegram_sibot1_legacy_safety_compat_patch as _sibot1_legacy_safety  # noqa: E402,F401
