@@ -1,0 +1,73 @@
+name: Trading Worker Health Diagnostic
+
+on:
+  push:
+    branches:
+      - agent/trade-no-trade-diagnostic-20260825
+    paths:
+      - '.github/workflows/trade-worker-health-diagnostic.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Publish compact worker health
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bridge=/var/tmp/boot/latest_loss_forensics.json
+          funnel=/var/tmp/boot/trading_funnel_master.json
+          out=/tmp/trading-worker-health-${GITHUB_RUN_ID}.json
+          python3 - "$bridge" "$funnel" <<'PY' > "$out"
+          import json,sys,time,pathlib
+          now=int(time.time())
+          def load(p):
+              try: return json.load(open(p,encoding='utf-8'))
+              except Exception as e: return {'_error':f'{type(e).__name__}: {e}'}
+          b=load(sys.argv[1]); f=load(sys.argv[2])
+          # Find a state/worker-state object without copying incident or wallet evidence.
+          candidates=[]
+          def walk(x,path=''):
+              if isinstance(x,dict):
+                  keys=set(map(str,x.keys()))
+                  if any(k.startswith('worker:') for k in keys): candidates.append((path,x))
+                  for k,v in x.items():
+                      if len(candidates)>10: break
+                      walk(v,path+'/'+str(k))
+              elif isinstance(x,list):
+                  for i,v in enumerate(x[:20]): walk(v,path+f'/{i}')
+          walk(b)
+          worker={}
+          source=''
+          if candidates:
+              source,c=candidates[0]
+              worker={k:v for k,v in c.items() if str(k).startswith('worker:')}
+          out={
+            'generated_epoch':now,
+            'forensics_bridge_exists':pathlib.Path(sys.argv[1]).exists(),
+            'forensics_generated_epoch':b.get('generated_epoch') if isinstance(b,dict) else None,
+            'worker_state_source':source,
+            'worker_state':worker,
+            'funnel_generated_epoch':f.get('generated_epoch') if isinstance(f,dict) else None,
+            'evm_first_zero_stage':((f.get('evm_sibot') or {}).get('first_zero_stage') if isinstance(f,dict) else None),
+            'solana':(f.get('solana') if isinstance(f,dict) else None),
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-trading-worker-health.json"
+          existing="$(gh api "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$out")"
+          python3 - "$encoded" "$existing" <<'PY' >/tmp/worker-health-put.json
+          import json,sys
+          p={'message':'Update compact trading worker health','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: p['sha']=sys.argv[2]
+          print(json.dumps(p))
+          PY
+          gh api -X PUT "$api" --input /tmp/worker-health-put.json >/dev/null
+          cat "$out"
