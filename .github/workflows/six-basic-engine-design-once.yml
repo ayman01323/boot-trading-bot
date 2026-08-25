@@ -1,7 +1,8 @@
 name: Six Basic Engine Design Council Once
 
 on:
-  pull_request:
+  push:
+    branches: [ops/six-engine-design-council-once]
     paths:
       - '.github/workflows/six-basic-engine-design-once.yml'
 
@@ -9,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: six-basic-engine-design-${{ github.event.pull_request.number }}
+  group: six-basic-engine-design-once
   cancel-in-progress: true
 
 jobs:
@@ -17,7 +18,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 25
     steps:
-      - name: Check out trusted branch without persisted credentials
+      - name: Check out isolated branch without persisted credentials
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
