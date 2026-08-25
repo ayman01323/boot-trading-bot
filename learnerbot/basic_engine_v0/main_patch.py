@@ -6,6 +6,7 @@ from .. import auto_trader as _auto
 from .. import cli as _cli
 from .. import fast_market as _fast
 from .. import full_power_scanner as _full
+from . import scanner_patch as _scanner_patch
 
 # Preserve the battle-tested execution implementation. v0 changes orchestration
 # only: it removes two redundant admission layers that can starve otherwise safe
@@ -132,6 +133,7 @@ def install() -> None:
     print(
         "[basic-engine-v0-main] installed=true rpc=main_bot_csv "
         "scanner_product_admission=bypassed configured_seeds=always_visible "
+        "v2_discovery_independent=true v3_switch_honoured=true "
         "extra_gas_multiple=bypassed live_trader_safety=preserved "
         "pool_rug=preserved prebroadcast_eth_call=preserved"
     )
