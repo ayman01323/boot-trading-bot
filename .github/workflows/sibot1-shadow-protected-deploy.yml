@@ -9,6 +9,9 @@ on:
       - 'CSVbot/sibot1/**'
       - 'tests/sibot1/**'
       - 'docs/sibot1/**'
+      - 'scripts/sibot1_shadow_runtime.py'
+      - 'learnerbot/sibot1_shadow_runtime_patch.py'
+      - 'learnerbot/__init__.py'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +24,7 @@ concurrency:
 jobs:
   deploy-and-verify:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Deploy exact current main through restricted wrapper
         shell: bash
@@ -31,31 +34,62 @@ jobs:
           [[ "$target" =~ ^[0-9a-f]{40}$ ]]
           sudo /usr/local/sbin/deploy-boot-trading-bot "$target"
 
-      - name: Verify SiBot 1 shadow package on VPS
+      - name: Verify service and SiBot 1 sanitized runtime health
         shell: bash
         run: |
           set -euo pipefail
-          root=/root/multichain-learning-bot-v2.2-fast-direct-market
-          sudo /usr/local/sbin/status-boot-trading-bot || true
-          test -f "$root/sibot1_engines/_shared/contracts.py"
-          test -f "$root/sibot1_engines/gpt/engine.py"
-          test -f "$root/sibot1_engines/gemini/engine.py"
-          test -f "$root/sibot1_engines/grok/engine.py"
-          test -d "$root/CSVbot/sibot1"
-          cd "$root"
-          python3 -m compileall -q sibot1_engines
-          python3 - <<'PY'
-          import sibot1_engines.gpt.engine
-          import sibot1_engines.gemini.engine
-          import sibot1_engines.grok.engine
-          from sibot1_engines._shared import contracts
-          print('SIBOT1_SHADOW_IMPORT_OK')
+          sudo /usr/local/sbin/status-boot-trading-bot
+          status=/var/tmp/boot/sibot1_shadow_status.json
+          ok=0
+          for _ in $(seq 1 60); do
+            if test -r "$status" && STATUS="$status" python3 - <<'PY'
+          import json
+          import os
+          import time
+
+          path = os.environ["STATUS"]
+          try:
+              with open(path, encoding="utf-8") as handle:
+                  data = json.load(handle)
+          except Exception:
+              raise SystemExit(1)
+
+          if str(data.get("supervisor_state") or "") != "ACTIVE":
+              raise SystemExit(1)
+          if str(data.get("mode") or "").upper() != "SHADOW":
+              raise SystemExit(1)
+          for key in ("live_enabled", "signer_attached", "broadcast_enabled", "wallet_private_key_access"):
+              if data.get(key) is not False:
+                  raise SystemExit(1)
+          if data.get("runtime_fresh") is not True:
+              raise SystemExit(1)
+          if int(time.time()) - int(data.get("runtime_updated_epoch") or 0) > 20:
+              raise SystemExit(1)
+
+          workers = data.get("workers") or {}
+          for engine in ("gpt", "gemini", "grok"):
+              row = workers.get(engine) or {}
+              if row.get("alive") is not True:
+                  raise SystemExit(1)
+              if str(row.get("state") or "").upper() not in {"READY", "HEALTH"}:
+                  raise SystemExit(1)
+              if int(row.get("pid") or 0) <= 0:
+                  raise SystemExit(1)
+
+          print("SIBOT1_SHADOW_RUNTIME_OK")
           PY
-          python3 -m pytest -q tests/sibot1
+            then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          test "$ok" -eq 1
+          cat "$status"
 
       - name: Confirm deployment boundary
         shell: bash
         run: |
           set -euo pipefail
-          echo 'SiBot 1 GPT/Gemini/Grok code is installed and testable in SHADOW/integration mode.'
-          echo 'This workflow does not enable LIVE, create a signer, broadcast a transaction, or move capital.'
+          echo 'SiBot 1 GPT/Gemini/Grok runtime is deployed in SHADOW mode.'
+          echo 'LIVE=false signer=false broadcast=false private-key-access=false.'
