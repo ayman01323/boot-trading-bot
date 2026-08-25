@@ -60,7 +60,7 @@ jobs:
           get_review_file control/latest.json /tmp/claude-vps-control.json || echo '{}' > /tmp/claude-vps-control.json
           get_review_file control/claude_vps_dispatch_state.json /tmp/claude-vps-state.json || echo '{}' > /tmp/claude-vps-state.json
 
-          python - "$GITHUB_EVENT_NAME" "${INPUT_ACTION:-none}" /tmp/claude-vps-control.json /tmp/claude-vps-state.json <<'PY' > /tmp/claude-vps-request.env
+          python3 - "$GITHUB_EVENT_NAME" "${INPUT_ACTION:-none}" /tmp/claude-vps-control.json /tmp/claude-vps-state.json <<'PY' > /tmp/claude-vps-request.env
           import json,sys
           event,input_action,control_path,state_path=sys.argv[1:5]
           try: control=json.load(open(control_path,encoding='utf-8'))
