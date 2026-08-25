@@ -1,18 +1,18 @@
-requested_sha=0442df5733e37e428f796ed65d300be0c8831d34
-deploy_outcome=success
-deploy_exit=0
-run_id=32897928089
-utc=2026-08-25T20:57:03Z
+requested_sha=a5d033aadbeacd2f23cfe47bd436995cc3037045
+deploy_outcome=failure
+deploy_exit=10
+run_id=32898261581
+utc=2026-08-25T20:59:51Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-25T20:55:20Z BEGIN current=cb2117e842cad721a76d5a3a7ed19c2c72aabcc2 requested=0442df5733e37e428f796ed65d300be0c8831d34
+2026-08-25T20:58:14Z BEGIN current=0442df5733e37e428f796ed65d300be0c8831d34 requested=a5d033aadbeacd2f23cfe47bd436995cc3037045
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   cb2117e..0442df5  main       -> origin/main
-Updating cb2117e..0442df5
+   0442df5..a5d033a  main       -> origin/main
+Updating 0442df5..a5d033a
 Fast-forward
- .github/workflows/google-runner-connectivity.yml | 8 ++++++--
- 1 file changed, 6 insertions(+), 2 deletions(-)
+ .github/workflows/ai-mailbox-provider-relay.yml | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
@@ -22,7 +22,7 @@ Fast-forward
 ........................................................................ [ 25%]
 ........................................................................ [ 31%]
 ........................................................................ [ 38%]
-...............s........................................................ [ 44%]
+..F............s........................................................ [ 44%]
 ........................................................................ [ 50%]
 ........................................................................ [ 57%]
 ........................................................................ [ 63%]
@@ -32,6 +32,31 @@ Fast-forward
 ........................................................................ [ 89%]
 ........................................................................ [ 95%]
 ....................................................                     [100%]
+=================================== FAILURES ===================================
+_____________ test_provider_relay_is_event_driven_without_schedule _____________
+
+    def test_provider_relay_is_event_driven_without_schedule():
+        workflow = yaml.safe_load(Path(".github/workflows/ai-mailbox-provider-relay.yml").read_text())
+        trigger = workflow.get("on") or workflow.get(True)
+        assert "schedule" not in trigger
+        assert "workflow_run" in trigger
+        # This relay only needs GitHub/provider APIs. Keeping it on a hosted runner
+        # prevents communication work from starving the production boot-vps deploy queue.
+        assert workflow["jobs"]["relay"]["runs-on"] == "ubuntu-latest"
+        assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == [
+            "deepseek", "gemini", "grok", "kimi", "copilot"
+        ]
+        route_env = workflow["jobs"]["relay"]["steps"][5]["env"]
+        assert "XAI_API_KEY" in route_env
+        assert "XAI_COUNCIL_MODEL" in route_env
+        assert "KIMI_API_KEY" in route_env
+        assert "MOONSHOT_API_KEY" in route_env
+        assert "KIMI_COUNCIL_MODEL" in route_env
+>       assert "deepseek-v4-flash" in str(route_env["DEEPSEEK_COUNCIL_MODEL"])
+E       assert 'deepseek-v4-flash' in "${{ vars.DEEPSEEK_MAILBOX_MODEL || 'deepseek-chat' }}"
+E        +  where "${{ vars.DEEPSEEK_MAILBOX_MODEL || 'deepseek-chat' }}" = str("${{ vars.DEEPSEEK_MAILBOX_MODEL || 'deepseek-chat' }}")
+
+tests/test_provider_git_mailbox_bridge.py:76: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -40,31 +65,14 @@ Fast-forward
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-1131 passed, 1 skipped, 1 warning in 62.90s (0:01:02)
-2026-08-25T20:56:31Z TESTS PASSED; restarting learnerbot
-2026-08-25T20:56:41Z SUCCESS sha=0442df5733e37e428f796ed65d300be0c8831d34 version=2.3.10 service=active
-     Active: active (running) since Tue 2026-08-25 21:56:37 BST; 4s ago
-   Main PID: 1572937 (python)
-      Tasks: 11 (limit: 5869)
-     Memory: 575.1M (peak: 582.9M)
-        CPU: 2.461s
-     CGroup: /system.slice/learnerbot.service
-             └─1572937 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: [ai-agent-health] started check=60s warning_repeat=14400s master-role-dynamic=true
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: [botbuc-telegram-alert] MASTER success alerts + hourly failure alerts enabled
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: [ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/grok/kimi/copilot workers
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: gpt worker connected; model=gpt-5-nano
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: claude worker connected; model=claude-haiku-4-5
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: gemini worker connected; model=gemini-3.5-flash-lite
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: deepseek worker connected; model=deepseek-v4-flash
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: grok worker connected; model=grok-4.20-non-reasoning
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: kimi worker connected; model=kimi-k2.6
-Aug 25 21:56:38 mint.yesgoodwill.com python[1572937]: copilot worker connected; model=provider-default
+FAILED tests/test_provider_git_mailbox_bridge.py::test_provider_relay_is_event_driven_without_schedule
+1 failed, 1130 passed, 1 skipped, 1 warning in 67.06s (0:01:07)
+2026-08-25T20:59:29Z TESTS FAILED; service remains on old running process
+HEAD is now at 0442df5 show Google GPT live test failure detail
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-25T20:56:58Z
+UTC: 2026-08-25T20:59:46Z
 branch: main
 sha:    0442df5733e37e428f796ed65d300be0c8831d34
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -73,28 +81,27 @@ version: 2.3.10
 tracked changes:
 
 service:
+● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Tue 2026-08-25 21:56:37 BST; 20s ago
+     Active: active (running) since Tue 2026-08-25 21:56:37 BST; 3min 9s ago
    Main PID: 1572937 (python)
-      Tasks: 38 (limit: 5869)
-     Memory: 608.5M (peak: 636.1M)
-        CPU: 15.888s
+      Tasks: 39 (limit: 5869)
+     Memory: 570.8M (peak: 658.9M)
+        CPU: 1min 59.324s
      CGroup: /system.slice/learnerbot.service
              ├─1572937 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
              ├─1573077 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
              ├─1573078 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
              ├─1573079 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1573080 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1573108 git -C /root/multichain-learning-bot-v2.2-fast-direct-market fetch --quiet origin ai-reviews:refs/remotes/origin/ai-reviews
-             └─1573109 /usr/bin/ssh -o SendEnv=GIT_PROTOCOL -p 443 git@ssh.github.com "git-upload-pack '/ayman01323/boot-trading-bot.git'"
+             └─1573080 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: [sibot1-live-bridge] enabled chain=base default=OFF max_open=1 hard_max_native=0.001
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: Starting multi-chain learning loop v2.3.3. Dynamic risk-tiered products + parallel hot V2/V3 market discovery + cross-DEX shadow detection + configurable gas bidding are ON; signing remains gate-controlled.
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: [sibot-intelligence] leader study, cross-chain profile and adaptive exit layer started
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: [sibot-solana] retry-safe discovery + independent history backfill + leader/position monitoring started
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: [sibot] SiBot/SiMo research, leader monitor and position monitor started
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
-Aug 25 21:56:46 mint.yesgoodwill.com python[1572937]: [config] CSVbot configuration loaded/reloaded
-Aug 25 21:56:48 mint.yesgoodwill.com python[1572937]: [scan:bsc] 115383513..115383522 tx=533
-Aug 25 21:56:52 mint.yesgoodwill.com python[1572937]: [sibot1-shadow] controller active pid=1573077 live=false signer=false broadcast=false
-Aug 25 21:56:57 mint.yesgoodwill.com python[1572937]: [daily-botbuc-backup] today already completed and retained on Drive: 2026-08-25.zip
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]:     raise EOFError("connection closed while reading HTTP request line") from exc
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]: EOFError: connection closed while reading HTTP request line
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]: The above exception was the direct cause of the following exception:
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]: Traceback (most recent call last):
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]:   File "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/asyncio/server.py", line 356, in conn_handler
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]:     await connection.handshake(
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]:   File "/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/asyncio/server.py", line 207, in handshake
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]:     raise self.protocol.handshake_exc
+Aug 25 21:58:05 mint.yesgoodwill.com python[1572937]: websockets.exceptions.InvalidMessage: did not receive a valid HTTP request
+Aug 25 21:58:30 mint.yesgoodwill.com python[1572937]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=57.811
