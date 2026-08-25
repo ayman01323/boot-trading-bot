@@ -14,7 +14,10 @@ class CompactFlowStrategy:
     def entry_signal(self,event:MarketEvent)->Decimal|None:
         if event.chain.lower()!=self.s.chain or not event.asset_in or not event.asset_out: return None
         if event.price is None or event.source_age_ms is None or event.source_age_ms<0 or event.source_age_ms>self.s.max_source_age_ms: return None
-        if self.s.reject_dev_selling and bool(event.payload.get("dev_selling",False)): return None
+        if self.s.reject_dev_selling:
+            # Missing developer-flow evidence is not equivalent to "developer is not selling".
+            if not bool(event.payload.get("dev_selling_known",False)): return None
+            if bool(event.payload.get("dev_selling",False)): return None
         vv=Decimal(str(event.payload.get("volume_velocity","0")))
         conf=Decimal(str(event.payload.get("confidence","0")))
         if vv<self.s.min_volume_velocity or conf<self.s.min_confidence: return None
