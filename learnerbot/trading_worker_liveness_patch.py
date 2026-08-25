@@ -86,6 +86,9 @@ def _ensure_evm_drainer_live(app) -> bool:
     if not _evm._is_runtime_run_command():
         return False
     if _evm_drainer_alive():
+        # Reconcile the boolean as well, so a later normal startup call cannot
+        # mistake an already-live daemon for an unstarted one.
+        _evm._DRAINER_STARTED = True
         return False
     # Do not replace the original start-once helper globally. Only the supervisor
     # clears a stale boolean after proving the uniquely named daemon is absent.
