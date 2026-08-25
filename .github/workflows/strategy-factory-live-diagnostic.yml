@@ -1,0 +1,121 @@
+name: Strategy Factory Live Diagnostic
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/strategy-factory-live-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-diagnostic:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 12
+    steps:
+      - name: Check out repository without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify learnerbot and Strategy Factory runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet learnerbot
+          test -s /var/tmp/boot/ai_agent_ws_status.json
+          python3 - <<'PY'
+          import json, time
+          p = '/var/tmp/boot/ai_agent_ws_status.json'
+          d = json.load(open(p, encoding='utf-8'))
+          assert d.get('state') in {'ACTIVE', 'EXTERNAL'}, d.get('state')
+          assert d.get('host') == '127.0.0.1'
+          assert int(d.get('port') or 0) == 8765
+          assert set(d.get('workers') or []) == {'gpt','claude','gemini','deepseek','copilot'}
+          age = int(time.time()) - int(d.get('updated_epoch') or 0)
+          assert age < 86400, age
+          print('runtime_state=' + str(d.get('state')))
+          print('workers=' + ','.join(d.get('workers') or []))
+          print('status_age_seconds=' + str(age))
+          PY
+          python3 - <<'PY'
+          import socket
+          with socket.create_connection(('127.0.0.1', 8765), timeout=3):
+              print('bus_port_open=true')
+          PY
+
+      - name: Build isolated diagnostic environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/strategy-factory-live-diagnostic"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "VENV=$venv" >> "$GITHUB_ENV"
+
+      - name: Probe all five live agent providers strictly
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe() {
+            sender="$1"
+            target="$2"
+            mid="sf-live-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
+            output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+              --from "$sender" \
+              --to "$target" \
+              --message-id "$mid" \
+              --timeout 90 \
+              --message 'Strategy Factory live health probe. Reply concisely with HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.')"
+            printf '%s\n' "$output"
+            final="$(printf '%s\n' "$output" | tail -n 1)"
+            TARGET="$target" FINAL="$final" python3 - <<'PY'
+          import json, os
+          target = os.environ['TARGET']
+          value = json.loads(os.environ['FINAL'])
+          assert value.get('type') == 'reply', (target, value)
+          assert value.get('status') == 'REPLIED', (target, value.get('status'))
+          assert int(value.get('provider_rc') or 0) == 0, (target, value.get('provider_rc'), value.get('error'))
+          assert str(value.get('body') or '').strip() == 'HEALTH_OK', (target, value.get('body'))
+          print(f'{target}_provider_health=HEALTH_OK')
+          PY
+          }
+          probe gemini gpt
+          probe gpt claude
+          probe gpt gemini
+          probe gpt deepseek
+          probe gpt copilot
+
+      - name: Verify bounded deterministic task executor
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
+            --from gpt \
+            --to gemini \
+            --message-id "sf-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --timeout 90 \
+            --task-action GIT_STATUS \
+            --task-args-json '{}' \
+            --task-instruction 'Return bounded read-only git status evidence.')"
+          printf '%s\n' "$output"
+          final="$(printf '%s\n' "$output" | tail -n 1)"
+          FINAL="$final" python3 - <<'PY'
+          import json, os
+          outer = json.loads(os.environ['FINAL'])
+          assert outer.get('type') == 'reply', outer
+          assert outer.get('status') == 'COMPLETED', outer
+          result = json.loads(str(outer.get('body') or '{}'))
+          assert result.get('status') == 'COMPLETED', result
+          assert result.get('action') == 'GIT_STATUS', result
+          assert int((result.get('evidence') or {}).get('returncode') or 0) == 0, result
+          print('bounded_task_health=COMPLETED')
+          PY
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-live-diagnostic}"
