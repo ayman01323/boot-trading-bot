@@ -40,12 +40,28 @@ def _status(app) -> dict:
         return {'status_error': f'{type(exc).__name__}: {_redact_text(exc)}'}
     if not isinstance(raw, dict):
         return {'status_error': 'status.json is not an object'}
-    keep_top = ('controller_state', 'mode', 'live_enabled', 'signer_attached', 'broadcast_enabled', 'wallet_private_key_access')
+
+    keep_top = ('state', 'controller_state', 'mode', 'live_enabled', 'signer_attached', 'broadcast_enabled', 'wallet_private_key_access', 'updated_epoch')
     out['sibot1_status'] = {k: raw.get(k) for k in keep_top if k in raw}
-    out['workers'] = [
-        {k: row.get(k) for k in ('engine_id', 'chain', 'state', 'health', 'alive', 'pid', 'last_heartbeat_epoch') if k in row}
-        for row in (raw.get('workers') or []) if isinstance(row, dict)
-    ]
+
+    workers_raw = raw.get('workers') or {}
+    workers = []
+    if isinstance(workers_raw, dict):
+        worker_items = workers_raw.items()
+    elif isinstance(workers_raw, list):
+        worker_items = ((str((row or {}).get('engine_id') or ''), row) for row in workers_raw if isinstance(row, dict))
+    else:
+        worker_items = ()
+    for engine_id, row in worker_items:
+        if not isinstance(row, dict):
+            continue
+        item = {'engine_id': str(engine_id or row.get('engine_id') or '')}
+        for key in ('state', 'alive', 'pid', 'version', 'events', 'signals', 'spread_signals', 'cycle_signals', 'updated_epoch', 'error'):
+            if key in row:
+                item[key] = _redact_text(row.get(key)) if key == 'error' else row.get(key)
+        workers.append(item)
+    out['workers'] = sorted(workers, key=lambda row: row.get('engine_id', ''))
+
     out['scoreboard'] = [
         {k: row.get(k) for k in (
             'engine_id', 'chain', 'signals', 'poolcheck_shadow', 'poolcheck_blocks', 'paper_entries', 'paper_exits',
@@ -54,6 +70,47 @@ def _status(app) -> dict:
         for row in (raw.get('scoreboard') or []) if isinstance(row, dict)
     ]
     return out
+
+
+def _audit(app) -> dict:
+    path = Path(app.data_dir) / 'sibot1' / 'audit.ndjson'
+    if not path.exists():
+        return {'audit_event_counts_tail': {}, 'poolcheck_reason_counts_tail': {}, 'last_engine_audit': []}
+    try:
+        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()[-1000:]
+    except Exception as exc:
+        return {'audit_error': f'{type(exc).__name__}: {_redact_text(exc)}'}
+    rows = []
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    counts = Counter(str(row.get('event_type') or '') for row in rows)
+    reason_counts = Counter()
+    for row in rows:
+        if str(row.get('event_type') or '').upper() != 'POOLCHECK':
+            continue
+        for reason in row.get('reasons') or []:
+            reason_counts[_redact_text(reason)] += 1
+    safe = []
+    for row in rows[-60:]:
+        et = str(row.get('event_type') or '').upper()
+        if et not in {'SIGNAL', 'POOLCHECK', 'ERROR', 'PAPER_ENTRY', 'PAPER_EXIT'}:
+            continue
+        item = {k: row.get(k) for k in ('epoch_ms', 'event_type', 'engine_id', 'chain', 'verdict', 'intent_id', 'lot_id') if k in row}
+        if 'reasons' in row:
+            item['reasons'] = [_redact_text(x) for x in (row.get('reasons') or [])][:8]
+        if 'detail' in row:
+            item['detail'] = _redact_text(row.get('detail'))
+        safe.append(item)
+    return {
+        'audit_event_counts_tail': dict(counts),
+        'poolcheck_reason_counts_tail': dict(reason_counts.most_common(30)),
+        'last_engine_audit': safe[-30:],
+    }
 
 
 def _candidates(app) -> dict:
@@ -148,10 +205,11 @@ def snapshot(app) -> dict:
         'utc_epoch': int(time.time()),
         'server_sha': _server_sha(app),
         'service_process_alive': True,
-        'schema_version': 1,
+        'schema_version': 2,
         'redacted': True,
     }
     out.update(_status(app))
+    out.update(_audit(app))
     out.update(_candidates(app))
     out.update(_attempts(app))
     out.update(_controls(app))
