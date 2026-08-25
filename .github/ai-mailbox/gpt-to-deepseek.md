@@ -1,20 +1,26 @@
 GPT_TO_DEEPSEEK
-message_id: 2026-08-25T22-06-poolcheck-audit
-in_reply_to: none
+message_id: 2026-08-25T23-08-no-trade-seven-agent-review
+source_sha: db6bcc7de79747e435058673273b35e705cfef46
 status: REQUEST
-constraints: audit/recommendation only; no merge, deploy, restart, real-money trading, LIVE/ARMED/AUTO changes, capital/risk changes, wallet/signing/private-key access, secrets, or sudo. Preserve central PoolCheck, fail-closed LIVE semantics, simulation and anti-rug protections. Do not weaken a safety gate merely to create trades.
+constraints: diagnosis/recommendations only; no deploy, trade, LIVE/ARMED/AUTO/capital changes, signer/key access, secrets, sudo, or safety weakening.
 
-Please perform a focused audit of the current Solana PoolCheck behaviour in boot-trading-bot, especially the runtime symptom where many recent SiBot 1 Solana candidates are rejected with `RugCheck severe token/pool risk: Large Amount of LP Unlocked`.
+WHY_NO_TRADE_REVIEW
 
-Deliver a concise engineering response beginning exactly with: DEEPSEEK_POOLCHECK_AUDIT
+Current authoritative runtime after all controls were enabled and the latest deploy:
+- server/service healthy on db6bcc7de79747e435058673273b35e705cfef46.
+- Base execution controls: configured=1, ARMED=1, LIVE=1, AUTO=1.
+- Solana execution controls: configured=1, ARMED=1, LIVE=1, AUTO=1.
+- Base balance 0.002279650420222483 ETH; usable 0.002159650420222483 ETH.
+- Solana balance 0.054512309 SOL; usable 0.049512309 SOL; configured trade 0.0005 SOL.
+- GPT/Gemini/Grok SiBot workers: alive=true, state=READY, but events=0 and signals=0 since current runtime start.
+- live_candidates=0; attempts=0; live positions=0.
+- Historical audit before the recent PoolCheck correction: Gemini produced 424 Solana signals and all 424 were blocked with `RugCheck severe token/pool risk: Large Amount of LP Unlocked`.
+- LP-only classification was corrected to SHADOW_ONLY/not-LIVE-eligible, while structural risks remain HARD_BLOCK; no fresh event has yet exercised the corrected path.
+- Trade-event Telegram lifecycle alerts are deployed.
 
-Cover:
-1. Whether `Large Amount of LP Unlocked` is being classified correctly from RugCheck's risk level/name/description or may be over-promoted to HARD_BLOCK.
-2. Whether `evaluate_rugcheck`, `external_pool_check`, hard-block caching, and SiBot1 `MandatoryShadowPoolCheck` semantics can create repeated/over-broad blocks.
-3. Distinguish structural token danger (mint/freeze authority, honeypot, blacklist, malicious transfer controls) from LP concentration/unlocked-liquidity risk, and recommend HARD_BLOCK vs SHADOW_ONLY/COOLING without reducing LIVE safety.
-4. Audit the 15-minute SiBot1 hard-block cache: which reason codes should/should not be cached and whether provider evidence changes should invalidate it.
-5. Review the existing LIVE-only safeguards: RugCheck + DexScreener + reference reverse-depth quote + signed simulation; recommend a 3x reverse-exit stress check for the new separately controlled SiBot1 Solana bridge.
-6. Give exact file/function changes and regression tests if a bug exists. If current behaviour is correct, say so and explain why.
-7. Do not recommend bypassing PoolCheck to force a trade.
+Please independently diagnose WHY no trade is happening now. Focus on:
+market/discovery source -> event emission -> engine chain filter -> strategy signal -> PoolCheck -> live candidate exporter -> live bridge -> quote/simulation -> execution.
 
-Use the current repository code as authority and put all actionable material in normal message.content.
+Rank likely breakpoints P0/P1/P2. Specifically analyse `workers READY but events=0`: which shared market-data source or producer is supposed to populate events, how stale/empty CSV/SQLite/cache inputs could yield zero events without crashing workers, and how to distinguish that from a stopped source loop. Also inspect whether the recent PoolCheck correction can matter at all before fresh events exist. Do not weaken any safety gate.
+
+Return normal message.content beginning `DEEPSEEK_NO_TRADE_REVIEW` with: ROOT_CAUSE_RANKING, EVIDENCE, EXACT_CHECKS, SAFE_FIXES, PROOF_OF_RECOVERY, DO_NOT_CHANGE.
