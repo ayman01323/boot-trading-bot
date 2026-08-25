@@ -25,6 +25,13 @@ jobs:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       COPILOT_ASSIGN_TOKEN: ${{ secrets.COPILOT_ASSIGN_TOKEN }}
     steps:
+      - name: Check out trusted current main for the read-only bus client
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Install official Copilot CLI into isolated VPS runtime
         id: install
         shell: bash
@@ -118,16 +125,18 @@ jobs:
         shell: bash
         run: |
           set +e
-          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
-          py="$repo/.venv/bin/python"
-          sender="$repo/scripts/ai_agent_ws_send.py"
+          venv="$RUNNER_TEMP/copilot-ws-proof-${GITHUB_RUN_ID}"
+          rm -rf "$venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          prep_rc=$?
           reason=''
           ok=false
 
-          if [[ ! -x "$py" || ! -f "$sender" ]]; then
-            reason='production Strategy Factory sender is unavailable'
+          if [[ $prep_rc -ne 0 ]]; then
+            reason="could not build isolated WebSocket proof environment (rc=$prep_rc)"
           else
-            output="$(cd "$repo" && "$py" scripts/ai_agent_ws_send.py \
+            output="$("$venv/bin/python" scripts/ai_agent_ws_send.py \
               --from gpt \
               --to copilot \
               --message-id "copilot-live-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -157,6 +166,7 @@ jobs:
               reason="Strategy Factory WebSocket sender failed (rc=$rc)"
             fi
           fi
+          rm -rf "$venv"
 
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
           printf 'reason=%s\n' "$reason" >> "$GITHUB_OUTPUT"
