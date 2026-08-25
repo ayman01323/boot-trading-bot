@@ -19,6 +19,7 @@ INITIAL_DELAY_SECONDS = 90
 CHECK_SECONDS = 60 * 60
 LOW_FREE_BYTES = 3 * 1024**3
 BACKUP_MIN_FREE_BYTES = 4 * 1024**3
+PRODUCTION_BACKUP_DIR = Path("/root/BotBuc")
 STALE_TMP_SECONDS = 24 * 60 * 60
 STALE_BACKUP_TMP_SECONDS = 12 * 60 * 60
 RUNNER_DIAG_RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -290,8 +291,22 @@ def run_weekly_cleanup(app, *, now: float | None = None, roots: dict[str, Path] 
     return payload
 
 
+def _is_production_backup_target(target: Path) -> bool:
+    """Apply the VPS headroom policy only to the real /root/BotBuc archive path."""
+    try:
+        backup_dir = Path(_backup.BACKUP_DIR).resolve(strict=False)
+        target_parent = Path(target).parent.resolve(strict=False)
+        production_dir = PRODUCTION_BACKUP_DIR.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return False
+    return backup_dir == production_dir and target_parent == production_dir
+
+
 def _backup_build_with_headroom(target: Path) -> None:
-    """Fail before creating a multi-GB temp ZIP when the root filesystem lacks headroom."""
+    """Fail before a production multi-GB ZIP when the root filesystem lacks headroom."""
+    if not _is_production_backup_target(target):
+        return _ORIGINAL_BUILD_ZIP(target)
+
     _backup._ensure_backup_dir()
     now = time.time()
     tmp = _backup.BACKUP_DIR / f".{target.name}.tmp"
@@ -320,7 +335,7 @@ def install_backup_headroom_guard() -> None:
         return
     _backup._build_zip = _backup_build_with_headroom
     _backup._engineering_backup_headroom_guard_installed = True
-    _log(f"backup preflight installed min_free_bytes={BACKUP_MIN_FREE_BYTES}")
+    _log(f"backup preflight installed production_dir={PRODUCTION_BACKUP_DIR} min_free_bytes={BACKUP_MIN_FREE_BYTES}")
 
 
 def _due(app, now: float | None = None) -> bool:
