@@ -1,20 +1,21 @@
-requested_sha=21c9f5b510a5e5f764b86ee1d46cdbed134e9c37
+requested_sha=441e5e6836f63b4a97606a61cc0b8b193180f224
 deploy_outcome=failure
 deploy_exit=10
-run_id=32902007045
-utc=2026-08-25T21:39:32Z
+run_id=32902098218
+utc=2026-08-25T21:43:16Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-25T21:38:01Z BEGIN current=0442df5733e37e428f796ed65d300be0c8831d34 requested=21c9f5b510a5e5f764b86ee1d46cdbed134e9c37
+2026-08-25T21:41:28Z BEGIN current=0442df5733e37e428f796ed65d300be0c8831d34 requested=441e5e6836f63b4a97606a61cc0b8b193180f224
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   5daac91..21c9f5b  main       -> origin/main
-Updating 0442df5..21c9f5b
+Updating 0442df5..441e5e6
 Fast-forward
  .github/workflows/ai-mailbox-provider-relay.yml    |   4 +-
  .github/workflows/google-runner-connectivity.yml   | 157 +++++++-
  CSVbot/sibot1/engines/gemini/settings.example.csv  |   4 +-
  learnerbot/ai_runtime_secret_fallback_patch.py     |  25 +-
+ learnerbot/sibot1_asset_diag_patch.py              | 246 +++++++++++++
+ ...telegram_sibot1_duplicate_secret_scrub_patch.py |   5 +
  scripts/install_ai_agent_ws_bus.sh                 |  29 +-
  sibot1_engines/_shared/poolcheck_bridge.py         |  67 +++-
  sibot1_engines/_shared/solana_dev_flow.py          | 410 +++++++++++++++++++++
@@ -27,7 +28,8 @@ Fast-forward
  .../shared/test_poolcheck_hard_block_cache.py      |  71 ++++
  tests/sibot1/shared/test_solana_dev_flow.py        |  79 ++++
  tests/test_ai_runtime_secret_fallback_patch.py     |   8 +-
- 16 files changed, 1157 insertions(+), 73 deletions(-)
+ 18 files changed, 1408 insertions(+), 73 deletions(-)
+ create mode 100644 learnerbot/sibot1_asset_diag_patch.py
  create mode 100644 sibot1_engines/_shared/solana_dev_flow.py
  create mode 100644 tests/sibot1/gemini/test_prefilter.py
  create mode 100644 tests/sibot1/shared/test_poolcheck_hard_block_cache.py
@@ -54,8 +56,8 @@ Fast-forward
 =================================== FAILURES ===================================
 __________ test_runtime_secret_bridge_overrides_provider_secret_only ___________
 
-tmp_path = PosixPath('/tmp/pytest-of-root/pytest-632/test_runtime_secret_bridge_ove0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f2275235ad0>
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-634/test_runtime_secret_bridge_ove0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9b28243c10>
 
     def test_runtime_secret_bridge_overrides_provider_secret_only(tmp_path, monkeypatch) -> None:
         runtime = tmp_path / "ai_council_runtime.env"
@@ -118,13 +120,13 @@ tests/test_provider_git_mailbox_bridge.py:76: AssertionError
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
 FAILED tests/test_ai_council_http_patch.py::test_runtime_secret_bridge_overrides_provider_secret_only
 FAILED tests/test_provider_git_mailbox_bridge.py::test_provider_relay_is_event_driven_without_schedule
-2 failed, 1141 passed, 1 skipped, 1 warning in 59.76s
-2026-08-25T21:39:10Z TESTS FAILED; service remains on old running process
+2 failed, 1141 passed, 1 skipped, 1 warning in 92.55s (0:01:32)
+2026-08-25T21:43:08Z TESTS FAILED; service remains on old running process
 HEAD is now at 0442df5 show Google GPT live test failure detail
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-25T21:39:26Z
+UTC: 2026-08-25T21:43:09Z
 branch: main
 sha:    0442df5733e37e428f796ed65d300be0c8831d34
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -135,25 +137,25 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Tue 2026-08-25 22:30:29 BST; 8min ago
-   Main PID: 1582073 (python)
+     Active: active (running) since Tue 2026-08-25 22:41:00 BST; 2min 9s ago
+   Main PID: 1584815 (python)
       Tasks: 36 (limit: 5869)
-     Memory: 585.6M (peak: 638.6M)
-        CPU: 5min 16.384s
+     Memory: 602.3M (peak: 631.0M)
+        CPU: 1min 18.622s
      CGroup: /system.slice/learnerbot.service
-             ├─1582073 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             ├─1582193 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1582196 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1582197 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             └─1582198 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─1584815 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             ├─1584950 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─1584951 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─1584952 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             └─1584953 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 25 22:37:24 mint.yesgoodwill.com python[1582073]: [power-discovery] v2-added=12 v3-on=true v3-pools=175 products=7922 auto-products=629 rejected=3 seconds=404.519
-Aug 25 22:37:31 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=49.497
-Aug 25 22:38:04 mint.yesgoodwill.com python[1582073]: [research:bsc] {'evidence_rows': 188729, 'behaviours': 7, 'wallet_behaviour_rows': 908}
-Aug 25 22:38:07 mint.yesgoodwill.com python[1582073]: [copy-check:bsc] {'evaluated': 908, 'passed': 2, 'disabled': False}
-Aug 25 22:38:20 mint.yesgoodwill.com python[1582073]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=48.600
-Aug 25 22:38:23 mint.yesgoodwill.com python[1582073]: [solana-ws] connected logsSubscribe=true leaders=5 commitment=confirmed adaptive_fallback_poll=true
-Aug 25 22:38:38 mint.yesgoodwill.com python[1582073]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 thresholds=unchanged
-Aug 25 22:38:38 mint.yesgoodwill.com python[1582073]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
-Aug 25 22:39:02 mint.yesgoodwill.com python[1582073]: [sibot-legacy-drainer] status=RATE_LIMIT chain=polygon kind=LEGACY_ETHERSCAN next_epoch=1787694842
-Aug 25 22:39:17 mint.yesgoodwill.com python[1582073]: [scan:base] 49867126..49867135 tx=1329
+Aug 25 22:41:15 mint.yesgoodwill.com python[1584815]: [sibot1-shadow] controller active pid=1584950 live=false signer=false broadcast=false
+Aug 25 22:41:21 mint.yesgoodwill.com python[1584815]: [daily-botbuc-backup] today already completed and retained on Drive: 2026-08-25.zip
+Aug 25 22:41:21 mint.yesgoodwill.com python[1584815]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
+Aug 25 22:41:26 mint.yesgoodwill.com python[1584815]: [telegram-command-scope] active_user_commands=1 onboarding_commands=4 master_commands=73 masters=2 active_users=2 onboarding_users=0
+Aug 25 22:41:29 mint.yesgoodwill.com python[1584815]: [sibot-legacy-drainer] started global_interval=45s provider_backoff=adaptive ranked_queue_priority=true progressive_resume=180s
+Aug 25 22:41:31 mint.yesgoodwill.com python[1584815]: [evm-router-probe] ERROR RuntimeError: Alchemy alchemy_getAssetTransfers: HTTP 429; retries exhausted
+Aug 25 22:41:35 mint.yesgoodwill.com python[1584815]: [telegram-menu] interactive multi-chain menu started
+Aug 25 22:41:56 mint.yesgoodwill.com python[1584815]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=45.079
+Aug 25 22:42:34 mint.yesgoodwill.com python[1584815]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 thresholds=unchanged
+Aug 25 22:42:34 mint.yesgoodwill.com python[1584815]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
