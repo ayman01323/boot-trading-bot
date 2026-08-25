@@ -1,134 +1,21 @@
-requested_sha=441e5e6836f63b4a97606a61cc0b8b193180f224
-deploy_outcome=failure
-deploy_exit=10
-run_id=32902098218
-utc=2026-08-25T21:43:16Z
+requested_sha=c62a36b35658941c1f944055f27a5337884b532b
+deploy_outcome=success
+deploy_exit=0
+run_id=32902520673
+utc=2026-08-25T21:46:19Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-25T21:41:28Z BEGIN current=0442df5733e37e428f796ed65d300be0c8831d34 requested=441e5e6836f63b4a97606a61cc0b8b193180f224
+2026-08-25T21:46:06Z BEGIN current=c62a36b35658941c1f944055f27a5337884b532b requested=c62a36b35658941c1f944055f27a5337884b532b
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-Updating 0442df5..441e5e6
-Fast-forward
- .github/workflows/ai-mailbox-provider-relay.yml    |   4 +-
- .github/workflows/google-runner-connectivity.yml   | 157 +++++++-
- CSVbot/sibot1/engines/gemini/settings.example.csv  |   4 +-
- learnerbot/ai_runtime_secret_fallback_patch.py     |  25 +-
- learnerbot/sibot1_asset_diag_patch.py              | 246 +++++++++++++
- ...telegram_sibot1_duplicate_secret_scrub_patch.py |   5 +
- scripts/install_ai_agent_ws_bus.sh                 |  29 +-
- sibot1_engines/_shared/poolcheck_bridge.py         |  67 +++-
- sibot1_engines/_shared/solana_dev_flow.py          | 410 +++++++++++++++++++++
- sibot1_engines/gemini/engine.py                    |  19 +-
- sibot1_engines/gemini/settings_schema.py           |  14 +-
- sibot1_engines/gemini/strategy.py                  |  81 +++-
- sibot1_engines/grok/engine.py                      | 130 +++++--
- tests/sibot1/gemini/test_prefilter.py              |  72 ++++
- tests/sibot1/grok/test_engine.py                   |  60 ++-
- .../shared/test_poolcheck_hard_block_cache.py      |  71 ++++
- tests/sibot1/shared/test_solana_dev_flow.py        |  79 ++++
- tests/test_ai_runtime_secret_fallback_patch.py     |   8 +-
- 18 files changed, 1408 insertions(+), 73 deletions(-)
- create mode 100644 learnerbot/sibot1_asset_diag_patch.py
- create mode 100644 sibot1_engines/_shared/solana_dev_flow.py
- create mode 100644 tests/sibot1/gemini/test_prefilter.py
- create mode 100644 tests/sibot1/shared/test_poolcheck_hard_block_cache.py
- create mode 100644 tests/sibot1/shared/test_solana_dev_flow.py
-
-[notice] A new release of pip available: 22.3.1 -> 26.2.1
-[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [  6%]
-............................................F........................... [ 12%]
-........................................................................ [ 18%]
-........................................................................ [ 25%]
-........................................................................ [ 31%]
-........................................................................ [ 37%]
-..............F............s............................................ [ 44%]
-........................................................................ [ 50%]
-........................................................................ [ 56%]
-........................................................................ [ 62%]
-........................................................................ [ 69%]
-........................................................................ [ 75%]
-........................................................................ [ 81%]
-........................................................................ [ 88%]
-........................................................................ [ 94%]
-................................................................         [100%]
-=================================== FAILURES ===================================
-__________ test_runtime_secret_bridge_overrides_provider_secret_only ___________
-
-tmp_path = PosixPath('/tmp/pytest-of-root/pytest-634/test_runtime_secret_bridge_ove0')
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9b28243c10>
-
-    def test_runtime_secret_bridge_overrides_provider_secret_only(tmp_path, monkeypatch) -> None:
-        runtime = tmp_path / "ai_council_runtime.env"
-        runtime.write_text(
-            'OPENAI_API_KEY="bridge-openai"\n'
-            'GEMINI_API_KEY="bridge-gemini"\n',
-            encoding="utf-8",
-        )
-        repo_env = tmp_path / ".env"
-        repo_env.write_text(
-            'OPENAI_API_KEY="repo-openai"\n'
-            'OPENAI_COUNCIL_MODEL="gpt-5.6-luna"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(http_patch, "_RUNTIME_ENV", runtime)
-        monkeypatch.setattr(http_patch, "_REPO_ENV", repo_env)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.delenv("OPENAI_COUNCIL_MODEL", raising=False)
-    
-        env = http_patch._runtime_env()
->       assert env["OPENAI_API_KEY"] == "bridge-openai"
-E       AssertionError: assert 'sk-proj-Cy58...DDxlmftvIkGgA' == 'bridge-openai'
-E         
-E         - bridge-openai
-E         + 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
-
-tests/test_ai_council_http_patch.py:40: AssertionError
-_____________ test_provider_relay_is_event_driven_without_schedule _____________
-
-    def test_provider_relay_is_event_driven_without_schedule():
-        workflow = yaml.safe_load(Path(".github/workflows/ai-mailbox-provider-relay.yml").read_text())
-        trigger = workflow.get("on") or workflow.get(True)
-        assert "schedule" not in trigger
-        assert "workflow_run" in trigger
-        # This relay only needs GitHub/provider APIs. Keeping it on a hosted runner
-        # prevents communication work from starving the production boot-vps deploy queue.
-        assert workflow["jobs"]["relay"]["runs-on"] == "ubuntu-latest"
-        assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == [
-            "deepseek", "gemini", "grok", "kimi", "copilot"
-        ]
-        route_env = workflow["jobs"]["relay"]["steps"][5]["env"]
-        assert "XAI_API_KEY" in route_env
-        assert "XAI_COUNCIL_MODEL" in route_env
-        assert "KIMI_API_KEY" in route_env
-        assert "MOONSHOT_API_KEY" in route_env
-        assert "KIMI_COUNCIL_MODEL" in route_env
->       assert "deepseek-v4-flash" in str(route_env["DEEPSEEK_COUNCIL_MODEL"])
-E       AssertionError: assert 'deepseek-v4-flash' in 'deepseek-chat'
-E        +  where 'deepseek-chat' = str('deepseek-chat')
-
-tests/test_provider_git_mailbox_bridge.py:76: AssertionError
-=============================== warnings summary ===============================
-.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
-  /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
-    warnings.warn(  # deprecated in 14.0 - 2024-11-09
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-FAILED tests/test_ai_council_http_patch.py::test_runtime_secret_bridge_overrides_provider_secret_only
-FAILED tests/test_provider_git_mailbox_bridge.py::test_provider_relay_is_event_driven_without_schedule
-2 failed, 1141 passed, 1 skipped, 1 warning in 92.55s (0:01:32)
-2026-08-25T21:43:08Z TESTS FAILED; service remains on old running process
-HEAD is now at 0442df5 show Google GPT live test failure detail
+2026-08-25T21:46:08Z ALREADY DEPLOYED c62a36b35658941c1f944055f27a5337884b532b
+active
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-25T21:43:09Z
+UTC: 2026-08-25T21:46:17Z
 branch: main
-sha:    0442df5733e37e428f796ed65d300be0c8831d34
+sha:    c62a36b35658941c1f944055f27a5337884b532b
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
 version: 2.3.10
 
@@ -137,25 +24,25 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Tue 2026-08-25 22:41:00 BST; 2min 9s ago
-   Main PID: 1584815 (python)
-      Tasks: 36 (limit: 5869)
-     Memory: 602.3M (peak: 631.0M)
-        CPU: 1min 18.622s
+     Active: active (running) since Tue 2026-08-25 22:45:31 BST; 46s ago
+   Main PID: 1585912 (python)
+      Tasks: 37 (limit: 5869)
+     Memory: 527.2M (peak: 662.7M)
+        CPU: 33.644s
      CGroup: /system.slice/learnerbot.service
-             ├─1584815 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             ├─1584950 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1584951 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1584952 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             └─1584953 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─1585912 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             ├─1586046 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─1586047 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─1586048 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             └─1586049 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 25 22:41:15 mint.yesgoodwill.com python[1584815]: [sibot1-shadow] controller active pid=1584950 live=false signer=false broadcast=false
-Aug 25 22:41:21 mint.yesgoodwill.com python[1584815]: [daily-botbuc-backup] today already completed and retained on Drive: 2026-08-25.zip
-Aug 25 22:41:21 mint.yesgoodwill.com python[1584815]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
-Aug 25 22:41:26 mint.yesgoodwill.com python[1584815]: [telegram-command-scope] active_user_commands=1 onboarding_commands=4 master_commands=73 masters=2 active_users=2 onboarding_users=0
-Aug 25 22:41:29 mint.yesgoodwill.com python[1584815]: [sibot-legacy-drainer] started global_interval=45s provider_backoff=adaptive ranked_queue_priority=true progressive_resume=180s
-Aug 25 22:41:31 mint.yesgoodwill.com python[1584815]: [evm-router-probe] ERROR RuntimeError: Alchemy alchemy_getAssetTransfers: HTTP 429; retries exhausted
-Aug 25 22:41:35 mint.yesgoodwill.com python[1584815]: [telegram-menu] interactive multi-chain menu started
-Aug 25 22:41:56 mint.yesgoodwill.com python[1584815]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=45.079
-Aug 25 22:42:34 mint.yesgoodwill.com python[1584815]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 thresholds=unchanged
-Aug 25 22:42:34 mint.yesgoodwill.com python[1584815]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
+Aug 25 22:45:40 mint.yesgoodwill.com python[1585912]: [telegram-user-reports] per-user report schedule + LIVE loss alerts started
+Aug 25 22:45:40 mint.yesgoodwill.com python[1585912]: [config] CSVbot configuration loaded/reloaded
+Aug 25 22:45:43 mint.yesgoodwill.com python[1585912]: [scan:bsc] 115383563..115383572 tx=500
+Aug 25 22:45:46 mint.yesgoodwill.com python[1585912]: [sibot1-shadow] controller active pid=1586046 live=false signer=false broadcast=false
+Aug 25 22:45:51 mint.yesgoodwill.com python[1585912]: [daily-botbuc-backup] today already completed and retained on Drive: 2026-08-25.zip
+Aug 25 22:45:59 mint.yesgoodwill.com python[1585912]: [sibot-legacy-drainer] started global_interval=45s provider_backoff=adaptive ranked_queue_priority=true progressive_resume=180s
+Aug 25 22:46:09 mint.yesgoodwill.com python[1585912]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 thresholds=unchanged
+Aug 25 22:46:09 mint.yesgoodwill.com python[1585912]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
+Aug 25 22:46:16 mint.yesgoodwill.com python[1585912]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
+Aug 25 22:46:17 mint.yesgoodwill.com python[1585912]: [evm-router-probe] ERROR RuntimeError: Alchemy alchemy_getAssetTransfers: HTTP 429; retries exhausted
