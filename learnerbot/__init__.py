@@ -31,3 +31,8 @@ sys.excepthook = _startup_excepthook
 # Safety-critical compatibility layer: user LIVE/AUTOTRADE/mode are global
 # master controls and must not be defeated by stale per-chain CSV rows.
 from . import user_trading_global_kill_patch as _user_trading_global_kill_patch  # noqa: E402,F401
+
+# Supervise the independent SiBot 1 SHADOW/PAPER sidecar only for `learnerbot run`.
+# Its child launch is delayed so MAIN BOOT can finish its audited fail-closed
+# composition checks first. This import never enables signing or broadcast.
+from . import sibot1_shadow_runtime_patch as _sibot1_shadow_runtime_patch  # noqa: E402,F401
