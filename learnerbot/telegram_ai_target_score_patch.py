@@ -165,3 +165,8 @@ from . import telegram_sibot_settings_source_patch as _sibot_settings_source  # 
 # sanitised rejection/provider telemetry. It never signs or submits a trade and
 # changes no LIVE/ARMED/profit/risk/liquidity/simulation/reserve gate.
 from . import trading_worker_liveness_patch as _trading_worker_liveness  # noqa: E402,F401
+
+# Final Telegram SiBot presentation: reserve the SiBot entry/menu for the independent
+# GPT/Gemini/Grok SiBot 1 SHADOW/PAPER runtime only. Legacy LIVE execution commands
+# remain intact but their buttons are intentionally hidden from this menu.
+from . import telegram_sibot1_only_menu_patch as _sibot1_only_menu  # noqa: E402,F401
