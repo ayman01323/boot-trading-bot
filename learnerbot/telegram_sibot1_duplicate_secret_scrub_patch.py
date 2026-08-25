@@ -120,3 +120,7 @@ install()
 # execute only after the user manually confirms ARMED + LIVE + AUTO in Telegram,
 # while the pre-existing platform/user LIVE and AUTO gates are also already ON.
 from . import sibot1_live_bridge_patch as _sibot1_live_bridge  # noqa: E402,F401
+
+# Gate semantics hardening loads after the bridge so the global emergency LIVE
+# gate is always authoritative and the Base-specific scope is shown separately.
+from . import sibot1_gate_semantics_patch as _sibot1_gate_semantics  # noqa: E402,F401
