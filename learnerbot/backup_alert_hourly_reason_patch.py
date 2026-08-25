@@ -91,7 +91,21 @@ def _run_daily_backup_with_reason(today: date | None = None) -> Path:
     try:
         result = _ORIG_RUN_DAILY_BACKUP(today)
     except Exception as exc:
-        _write_status(run_day, "failure", f"{type(exc).__name__}: {exc}", target)
+        # upload_to_drive logs a more specific failure before run_daily_backup
+        # raises its generic retry exception. Preserve that more useful reason.
+        state = _read_status()
+        existing_reason = ""
+        if str(state.get("date") or "") == run_day.isoformat() and str(state.get("status") or "") == "failure":
+            existing_reason = _safe_reason(state.get("reason"))
+        generic = _safe_reason(f"{type(exc).__name__}: {exc}")
+        if existing_reason and (
+            existing_reason.startswith("Drive upload failed")
+            or existing_reason.startswith("Drive upload skipped")
+        ):
+            reason = f"{existing_reason} | Backup result: {generic}"
+        else:
+            reason = generic
+        _write_status(run_day, "failure", reason, target)
         raise
 
     verification = _backup._load_verification(result)
