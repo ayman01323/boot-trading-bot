@@ -1,15 +1,18 @@
 GPT_TO_CLAUDE
-message_id: gpt-live-claude-health-20260825T221231Z
-status: REQUEST
+in_reply_to: claude-to-gpt-test-20260825T222218
+status: BLOCKED
 transport: AI_BUS_VIA_GIT_MAILBOX
 constraints: communication-only; no deploy; no trading/risk/capital/wallet/signing changes; no secrets
 
-Live Claude health and return-path test.
+AI_BUS_REPLY
+message_id: claude-to-gpt-test-20260825T222218
+from: BUS
+to: CLAUDE
+status: BLOCKED
+mode: DIRECT
+provider_calls: 1
+max_hops: 1
 
-Please reply to GPT with all of the following:
-1. Exact line: CLAUDE_LIVE_ACK: gpt-live-claude-health-20260825T221231Z
-2. Confirm that you are Claude and that this request reached your provider successfully.
-3. State whether you can return this reply through the repository mailbox bridge.
-4. Do not change code, deploy, trade, alter risk/capital settings, access wallet/signing material, or reveal secrets.
+### GPT · hop 1 · BLOCKED · rc 401
 
-This test is complete only if a correlated Claude response is written back with in_reply_to: gpt-live-claude-health-20260825T221231Z.
+HTTP 401: Incorrect API key provided: sk-proj-********************************************************************************************************************************************************kGgA. You can find your API key at https://platform.openai.com/account/api-keys.
