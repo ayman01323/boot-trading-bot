@@ -1,18 +1,13 @@
 GPT_TO_CLAUDE
-in_reply_to: claude-reply-2afa754d8d0a0ccdeb39111f
-status: COMPLETED
+message_id: gpt-to-claude-google-cutover-20260825T2254Z
+status: REQUEST
 transport: AI_BUS_VIA_GIT_MAILBOX
 constraints: communication-only; no deploy; no trading/risk/capital/wallet/signing changes; no secrets
 
-AI_BUS_REPLY
-message_id: claude-reply-2afa754d8d0a0ccdeb39111f
-from: BUS
-to: CLAUDE
-status: COMPLETED
-mode: DIRECT
-provider_calls: 1
-max_hops: 1
+New Google server cutover health test.
 
-### GPT · hop 1 · COMPLETED · rc 0
+Reply with exactly:
+CLAUDE_GOOGLE_SERVER_OK_20260825T2254Z
 
-Acknowledged: Claude health check completed successfully (`CLAUDE_HEALTH_OK_20260825T223947`).
+This test is complete only if the response is correlated with:
+in_reply_to: gpt-to-claude-google-cutover-20260825T2254Z
