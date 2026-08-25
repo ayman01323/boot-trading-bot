@@ -1,4 +1,4 @@
-name: Google Strategy Factory Runtime Repair
+name: Google Strategy Factory Privilege Probe
 
 on:
   push:
@@ -11,127 +11,34 @@ permissions:
   contents: read
 
 jobs:
-  repair:
+  probe:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 8
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install corrected minimal Strategy Factory runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo -n bash scripts/install_ai_agent_ws_bus.sh "$GITHUB_WORKSPACE"
-          sudo -n systemctl is-active --quiet boot-ai-agent-bus.service
-          for agent in gpt claude gemini deepseek grok kimi copilot; do
-            sudo -n systemctl is-enabled --quiet "boot-ai-agent-worker@${agent}.service"
-            sudo -n systemctl is-active --quiet "boot-ai-agent-worker@${agent}.service"
-          done
-          echo 'strategy_factory_services=7/7-active'
-
-      - name: Validate and sync DeepSeek credential without logging it
-        shell: bash
-        env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
-            echo 'DEEPSEEK_API_KEY GitHub secret is missing.' >&2
-            exit 1
-          fi
-          code="$(curl -sS -o /tmp/google-deepseek-models.json -w '%{http_code}' \
-            https://api.deepseek.com/models \
-            -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
-            -H 'Accept: application/json')"
-          rm -f /tmp/google-deepseek-models.json
-          echo "deepseek_auth_http=${code}"
-          test "$code" = "200"
-
-          key_file="$(mktemp /tmp/google-deepseek-key.XXXXXX)"
-          trap 'rm -f "$key_file"' EXIT
-          umask 077
-          printf '%s' "$DEEPSEEK_API_KEY" > "$key_file"
-          chmod 600 "$key_file"
-          sudo -n install -d -m 0755 /var/tmp/boot
-          sudo -n env KEY_FILE="$key_file" TARGET=/var/tmp/boot/ai_council_runtime.env python3 - <<'PY'
-          import json, os, pathlib
-          key = pathlib.Path(os.environ['KEY_FILE']).read_text(encoding='utf-8').strip()
-          if not key:
-              raise SystemExit('DeepSeek credential is empty')
-          target = pathlib.Path(os.environ['TARGET'])
-          existing = target.read_text(encoding='utf-8', errors='replace').splitlines() if target.exists() else []
-          kept = [line for line in existing if not line.lstrip().startswith('DEEPSEEK_API_KEY=')]
-          kept.append('DEEPSEEK_API_KEY=' + json.dumps(key))
-          tmp = target.with_name('.' + target.name + '.tmp')
-          tmp.write_text('\n'.join(kept) + '\n', encoding='utf-8')
-          os.chmod(tmp, 0o600)
-          os.replace(tmp, target)
-          os.chown(target, 0, 0)
-          PY
-          sudo -n chmod 600 /var/tmp/boot/ai_council_runtime.env
-          sudo -n grep -q '^DEEPSEEK_API_KEY=' /var/tmp/boot/ai_council_runtime.env
-          sudo -n systemctl restart boot-ai-agent-worker@deepseek.service
-          sleep 2
-          sudo -n systemctl is-active --quiet boot-ai-agent-worker@deepseek.service
-          echo 'deepseek_runtime_credential=synced'
-
-      - name: Prove installed provider layer imports cleanly
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd /opt/boot-ai-agent-bus
-          PYTHONPATH=/opt/boot-ai-agent-bus ./.venv/bin/python - <<'PY'
-          from learnerbot.ai_cost_provider_patch import call_provider
-          from scripts.ai_agent_ws_worker import low_cost_model
-          assert callable(call_provider)
-          print('deepseek_model=' + low_cost_model('deepseek'))
-          print('provider_import=PASS')
-          PY
-
-      - name: Live GPT to DeepSeek correlated reply test on Google
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd /opt/boot-ai-agent-bus
-          mid="google-gpt-deepseek-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          output="$(PYTHONPATH=/opt/boot-ai-agent-bus ./.venv/bin/python scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to deepseek \
-            --subject 'Google Strategy Factory live DeepSeek verification' \
-            --message-id "$mid" \
-            --timeout 120 \
-            --message 'Reply exactly: DEEPSEEK_REPLY_OK')"
-          printf '%s\n' "$output"
-          final="$(printf '%s\n' "$output" | tail -n 1)"
-          FINAL="$final" MID="$mid" python3 - <<'PY'
-          import json, os
-          value = json.loads(os.environ['FINAL'])
-          assert value.get('message_id') == os.environ['MID'], value
-          assert value.get('delivered') is True, value
-          assert value.get('acknowledged') is True, value
-          assert str(value.get('status') or '').upper() == 'REPLIED', value
-          assert not str(value.get('error') or ''), value
-          body = str(value.get('body') or '').strip().strip('*_`').strip()
-          assert body == 'DEEPSEEK_REPLY_OK', value
-          print('GOOGLE_GPT_TO_DEEPSEEK=PASS')
-          print('message_id=' + os.environ['MID'])
-          print('delivered=true')
-          print('acknowledged=true')
-          print('status=REPLIED')
-          print('body=' + body)
-          PY
-
-      - name: Final service state
-        if: always()
+      - name: Inspect safe privilege and user-service options
         shell: bash
         run: |
           set +e
-          echo "bus=$(systemctl is-active boot-ai-agent-bus.service || true)"
-          for agent in gpt claude gemini deepseek grok kimi copilot; do
-            echo "${agent}=$(systemctl is-active boot-ai-agent-worker@${agent}.service || true)"
+          echo "user=$(whoami)"
+          echo "uid=$(id -u)"
+          echo '=== SUDO POLICY ==='
+          sudo -n -l 2>&1 || true
+          echo '=== USER SYSTEMD ==='
+          systemctl --user is-system-running 2>&1 || true
+          systemctl --user show-environment 2>&1 | grep -E '^(HOME|PATH|XDG_RUNTIME_DIR)=' || true
+          echo '=== LOGIN USER ==='
+          loginctl show-user "$(id -u)" -p Linger -p State -p RuntimePath 2>&1 || true
+          echo '=== WRITABILITY ==='
+          for p in "$HOME" "$HOME/.config" "$HOME/.local" /opt/boot-ai-agent-bus /var/tmp/boot; do
+            [[ -e "$p" ]] || continue
+            [[ -w "$p" ]] && w=yes || w=no
+            echo "$p writable=$w owner=$(stat -c '%U:%G' "$p" 2>/dev/null || echo unknown) mode=$(stat -c '%a' "$p" 2>/dev/null || echo unknown)"
           done
-          journalctl -u boot-ai-agent-worker@deepseek.service --no-pager -n 20 2>&1 \
-            | sed -E 's/(sk-|Bearer )[A-Za-z0-9._-]+/\1<redacted>/g' || true
+          echo '=== ROOT BROKER ==='
+          systemctl is-active boot-ai-agent-bus.service 2>&1 || true
+          ss -ltn 2>/dev/null | grep '127.0.0.1:8765' || true
