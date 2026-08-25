@@ -67,7 +67,7 @@ jobs:
 
       - name: Create and upload encrypted backup
         id: backup
-        if: steps.changes.outputs.changed == 'true'
+        if: ${{ steps.changes.outputs.changed == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -116,17 +116,16 @@ jobs:
 
             umask 077
             REC_TMP="$(mktemp)"
-            cat > "$REC_TMP" <<EOF
-BOOT Google Drive encrypted backup recovery information
-Created UTC: $STAMP
-
-Rclone crypt remote: botbackup:
-Underlying remote: gdrive:BOOT-BACKUPS
-filename_encryption: standard
-directory_name_encryption: true
-password: $PASS1
-password2: $PASS2
-EOF
+            printf '%s\n' \
+              'BOOT Google Drive encrypted backup recovery information' \
+              "Created UTC: $STAMP" \
+              '' \
+              'Rclone crypt remote: botbackup:' \
+              'Underlying remote: gdrive:BOOT-BACKUPS' \
+              'filename_encryption: standard' \
+              'directory_name_encryption: true' \
+              "password: $PASS1" \
+              "password2: $PASS2" > "$REC_TMP"
             sudo -n install -m 600 "$REC_TMP" "$RECOVERY"
             rm -f "$REC_TMP"
             unset PASS1 PASS2
