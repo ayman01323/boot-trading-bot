@@ -1,0 +1,91 @@
+name: Google DeepSeek Connectivity
+
+on:
+  push:
+    branches: [ai-mailbox]
+    paths:
+      - '.github/workflows/google-deepseek-connectivity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  deepseek-google-test:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 7
+    steps:
+      - name: Test DeepSeek from Google runner
+        shell: bash
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          set -euo pipefail
+          result=/tmp/google-deepseek-verification.txt
+          if [[ -z "${DEEPSEEK_API_KEY:-}" ]]; then
+            printf 'deepseek_key_present=false\nlive_test=FAIL\nreason=missing_secret\n' > "$result"
+            exit 1
+          fi
+          body=/tmp/google-deepseek-body.json
+          code="$(curl -sS -o "$body" -w '%{http_code}' https://api.deepseek.com/chat/completions \
+            -H "Authorization: Bearer ${DEEPSEEK_API_KEY}" \
+            -H 'Content-Type: application/json' \
+            -d '{"model":"deepseek-v4-pro","messages":[{"role":"user","content":"Reply exactly: DEEPSEEK_GOOGLE_LIVE_OK"}],"temperature":0,"max_tokens":1200}')"
+          HTTP_CODE="$code" BODY="$body" python3 - <<'PY' > "$result"
+          import json, os
+          p=os.environ['BODY']; code=os.environ['HTTP_CODE']
+          try:
+              data=json.load(open(p, encoding='utf-8'))
+          except Exception:
+              data={}
+          msg=((data.get('choices') or [{}])[0].get('message') or {}) if isinstance(data,dict) else {}
+          content=str(msg.get('content') or '').strip()
+          model=str(data.get('model') or '') if isinstance(data,dict) else ''
+          ok=(code=='200' and 'DEEPSEEK_GOOGLE_LIVE_OK' in content)
+          print('deepseek_key_present=true')
+          print('http_status='+code)
+          print('model='+model)
+          print('normal_content_present='+('true' if bool(content) else 'false'))
+          print('live_test='+('PASS' if ok else 'FAIL'))
+          if content:
+              safe=' '.join(content.split())[:240]
+              print('reply='+safe)
+          else:
+              print('reply=EMPTY_NORMAL_CONTENT')
+          PY
+          cat "$result"
+          grep -q '^live_test=PASS$' "$result"
+
+      - name: Publish redacted DeepSeek verification
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result=/tmp/google-deepseek-verification.txt
+          [[ -s "$result" ]] || printf 'live_test=NOT_RUN\n' > "$result"
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "hostname=$(hostname)"
+            echo "verified_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            cat "$result"
+          } > /tmp/google-deepseek-publish.txt
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/google-deepseek-verification.txt"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/google-deepseek-publish.txt)"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Update Google DeepSeek verification','content':sys.argv[1],'sha':sys.argv[2],'branch':'server-diagnostics'}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Create Google DeepSeek verification','content':sys.argv[1],'branch':'server-diagnostics'}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$api" -d "$payload" >/dev/null
+          cat /tmp/google-deepseek-publish.txt
