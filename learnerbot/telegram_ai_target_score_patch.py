@@ -159,3 +159,9 @@ from . import strategy_factory_service_sender_patch as _strategy_factory_sender 
 # trading-integrity check; it preserves the audited hard-floor user_settings
 # wrapper and never copies LIVE/AUTO/wallet/signing authority between accounts.
 from . import telegram_sibot_settings_source_patch as _sibot_settings_source  # noqa: E402,F401
+
+# Late liveness supervisor: restarts only dead research/selection daemons, prevents
+# EVM backlog starvation, refreshes stale Solana ranking evidence, and publishes
+# sanitised rejection/provider telemetry. It never signs or submits a trade and
+# changes no LIVE/ARMED/profit/risk/liquidity/simulation/reserve gate.
+from . import trading_worker_liveness_patch as _trading_worker_liveness  # noqa: E402,F401
