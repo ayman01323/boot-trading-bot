@@ -32,15 +32,44 @@ jobs:
             echo
             echo '=== JOURNAL SIZE ==='
             journalctl --disk-usage 2>&1 || true
+            sudo -n journalctl --disk-usage 2>&1 || true
             echo
-            echo '=== READABLE TOP-LEVEL USAGE ==='
-            for p in /opt/actions-runner /home/github-runner /tmp /var/tmp /var/log; do
+            echo '=== IMPORTANT DIRECTORY SIZES ==='
+            for p in \
+              /root/BotBuc \
+              /root/multichain-learning-bot-v2.2-fast-direct-market \
+              /root/.cache \
+              /opt/actions-runner \
+              /opt/actions-runner/_work \
+              /home/github-runner \
+              /tmp \
+              /var/tmp \
+              /var/log; do
               echo "--- $p ---"
-              du -xhd1 "$p" 2>/dev/null | sort -h | tail -n 25 || true
+              du -xsh "$p" 2>/dev/null || sudo -n du -xsh "$p" 2>/dev/null || true
+              du -xhd1 "$p" 2>/dev/null | sort -h | tail -n 30 || sudo -n du -xhd1 "$p" 2>/dev/null | sort -h | tail -n 30 || true
             done
             echo
-            echo '=== LARGE READABLE FILES >=100M ==='
-            find /opt/actions-runner /home/github-runner /tmp /var/tmp /var/log -xdev -type f -size +100M -printf '%s %p\n' 2>/dev/null | sort -nr | head -n 80 || true
+            echo '=== BACKUP ARCHIVE CANDIDATES ==='
+            sudo -n find /root/BotBuc /tmp -xdev -type f \
+              \( -name '*.zip' -o -name '*.zip.tmp' -o -name '.*.zip.tmp' -o -name 'boot-trading-bot-*.tar.gz' -o -name 'boot-trading-bot-*.tar.gz.sha256' \) \
+              -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort -nr | head -n 100 || \
+            find /tmp -xdev -type f \
+              \( -name 'boot-trading-bot-*.tar.gz' -o -name 'boot-trading-bot-*.tar.gz.sha256' \) \
+              -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort -nr | head -n 100 || true
+            echo
+            echo '=== LARGE FILES >=100M IN KNOWN STORAGE AREAS ==='
+            sudo -n find /root/BotBuc /root/multichain-learning-bot-v2.2-fast-direct-market /opt/actions-runner /home/github-runner /tmp /var/tmp /var/log \
+              -xdev -type f -size +100M \
+              ! -path '*/.env' ! -path '*/wallet*' ! -path '*/keys/*' ! -path '*/secrets/*' \
+              -printf '%s %TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort -nr | head -n 120 || true
+            echo
+            echo '=== DELETED BUT STILL OPEN FILES ==='
+            sudo -n lsof +L1 2>/dev/null | head -n 120 || lsof +L1 2>/dev/null | head -n 120 || true
+            echo
+            echo '=== PACKAGE / CONTAINER CACHE SUMMARY ==='
+            sudo -n du -xsh /var/cache 2>/dev/null || du -xsh /var/cache 2>/dev/null || true
+            command -v docker >/dev/null 2>&1 && sudo -n docker system df 2>/dev/null || true
             echo
             echo '=== BOT STATUS VIA RESTRICTED WRAPPER ==='
             sudo /usr/local/sbin/status-boot-trading-bot 2>&1 || true
