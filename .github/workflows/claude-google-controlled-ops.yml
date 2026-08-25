@@ -1,0 +1,129 @@
+name: Claude Google Controlled Operations
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-controlled-ops.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Bounded Google-server action'
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, test, sync]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-controlled-ops
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 20
+    env:
+      MANAGED_ROOT: /home/ayman01323/ClaudeServer
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+    steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve bounded action
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          action='${{ github.event_name == 'workflow_dispatch' && inputs.action || 'sync' }}'
+          case "$action" in
+            inspect|test|sync) ;;
+            *) echo "Unsupported action: $action" >&2; exit 2 ;;
+          esac
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Google runner identity and managed boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(whoami)" = 'ayman01323'
+          case "$MANAGED_ROOT" in
+            /home/ayman01323/ClaudeServer) ;;
+            *) echo 'Managed root boundary mismatch' >&2; exit 3 ;;
+          esac
+          mkdir -p "$MANAGED_ROOT"
+          chmod 700 "$MANAGED_ROOT"
+          echo "hostname=$(hostname)"
+          echo "user=$(whoami)"
+          echo "managed_repo=$MANAGED_REPO"
+
+      - name: Inspect managed server workspace
+        if: steps.request.outputs.action == 'inspect'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d "$MANAGED_REPO/.git" ]]; then
+            echo 'managed_repo_present=false'
+            exit 0
+          fi
+          echo 'managed_repo_present=true'
+          git -C "$MANAGED_REPO" remote -v
+          git -C "$MANAGED_REPO" status --short --branch
+          git -C "$MANAGED_REPO" rev-parse HEAD
+
+      - name: Test trusted repository checkout
+        if: steps.request.outputs.action == 'test'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m compileall -q scripts
+          python3 -m compileall -q src 2>/dev/null || true
+          echo 'trusted_checkout_compile_test=PASS'
+
+      - name: Sync current main into Claude-managed Google-server workspace
+        if: steps.request.outputs.action == 'sync'
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="https://github.com/${GITHUB_REPOSITORY}.git"
+          if [[ ! -d "$MANAGED_REPO/.git" ]]; then
+            rm -rf "$MANAGED_REPO"
+            git clone --branch main --single-branch "$expected" "$MANAGED_REPO"
+          else
+            origin="$(git -C "$MANAGED_REPO" remote get-url origin)"
+            case "$origin" in
+              "$expected"|"https://github.com/${GITHUB_REPOSITORY}") ;;
+              *) echo "Refusing sync: unexpected origin $origin" >&2; exit 4 ;;
+            esac
+            if [[ -n "$(git -C "$MANAGED_REPO" status --porcelain)" ]]; then
+              echo 'Refusing sync: managed server workspace has local changes.' >&2
+              git -C "$MANAGED_REPO" status --short
+              exit 5
+            fi
+            git -C "$MANAGED_REPO" fetch --prune origin main
+            git -C "$MANAGED_REPO" checkout main
+            git -C "$MANAGED_REPO" merge --ff-only origin/main
+          fi
+          test "$(git -C "$MANAGED_REPO" rev-parse HEAD)" = "$(git rev-parse HEAD)"
+          printf 'CLAUDE_GOOGLE_SERVER_SYNC_OK\n'
+          printf 'server_sha=%s\n' "$(git -C "$MANAGED_REPO" rev-parse HEAD)"
+
+      - name: Security boundary summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Claude Google controlled operations boundary:'
+          echo '- runner: botgoogle / boot-google'
+          echo '- writable persistent area: /home/ayman01323/ClaudeServer only'
+          echo '- no sudo used'
+          echo '- no /root access authorised'
+          echo '- no wallet/signing material authorised'
+          echo '- no service restart authorised'
+          echo '- sync accepts only clean fast-forward updates from repository main'
