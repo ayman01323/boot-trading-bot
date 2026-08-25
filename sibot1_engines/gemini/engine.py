@@ -12,7 +12,7 @@ from .strategy import PulseFlowStrategy
 
 class GeminiPulseFlowEngine:
     engine_id = "gemini"
-    engine_version = "1.0.0"
+    engine_version = "1.1.0"
 
     def __init__(self, settings: Settings, runtime_dir: str | Path):
         if settings.engine_id != self.engine_id:
@@ -46,7 +46,11 @@ class GeminiPulseFlowEngine:
             confidence=confidence,
             signal_id=f"pulse:{event.event_id}",
             market_event_id=event.event_id,
-            metadata={"pool_id": event.pool_id or "", "source": event.source},
+            metadata={
+                "pool_id": event.pool_id or "",
+                "source": event.source,
+                "volume_liquidity_ratio": str(Decimal(event.volume_usd) / max(Decimal("1"), Decimal(event.liquidity_usd))) if event.volume_usd is not None and event.liquidity_usd is not None else "",
+            },
         )
 
     def on_position_update(self, update: Mapping[str, Any]) -> ExitIntent | None:
@@ -68,7 +72,13 @@ class GeminiPulseFlowEngine:
         )
 
     def health(self) -> Mapping[str, Any]:
-        return {"engine_id": self.engine_id, "version": self.engine_version, "events": self._events, "signals": self._signals}
+        return {
+            "engine_id": self.engine_id,
+            "version": self.engine_version,
+            "events": self._events,
+            "signals": self._signals,
+            "prefilter_rejections": self.strategy.rejection_counts(),
+        }
 
 
 def build_engine(settings_path: str | Path, runtime_dir: str | Path) -> GeminiPulseFlowEngine:
