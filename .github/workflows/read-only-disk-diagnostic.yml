@@ -1,0 +1,74 @@
+name: Read-only VPS disk diagnostic
+
+on:
+  push:
+    branches:
+      - agent/read-only-disk-diagnostic
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Collect read-only disk diagnostics
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "host=$(hostname)"
+            echo
+            echo '=== FILESYSTEM BLOCK USAGE ==='
+            df -hT /
+            echo
+            echo '=== FILESYSTEM INODE USAGE ==='
+            df -ih /
+            echo
+            echo '=== ALL MOUNTS ==='
+            df -hT
+            echo
+            echo '=== JOURNAL SIZE ==='
+            journalctl --disk-usage 2>&1 || true
+            echo
+            echo '=== READABLE TOP-LEVEL USAGE ==='
+            for p in /opt/actions-runner /home/github-runner /tmp /var/tmp /var/log; do
+              echo "--- $p ---"
+              du -xhd1 "$p" 2>/dev/null | sort -h | tail -n 25 || true
+            done
+            echo
+            echo '=== LARGE READABLE FILES >=100M ==='
+            find /opt/actions-runner /home/github-runner /tmp /var/tmp /var/log -xdev -type f -size +100M -printf '%s %p\n' 2>/dev/null | sort -nr | head -n 80 || true
+            echo
+            echo '=== BOT STATUS VIA RESTRICTED WRAPPER ==='
+            sudo /usr/local/sbin/status-boot-trading-bot 2>&1 || true
+            echo
+            echo '=== LEARNERBOT PROCESS ==='
+            systemctl show learnerbot --property=MainPID,MemoryCurrent,TasksCurrent,ActiveState,SubState 2>&1 || true
+            ps -eo pid,user,%cpu,%mem,rss,etimes,args --sort=-rss | head -n 30 || true
+          } > /tmp/read-only-disk-diagnostic.txt
+          cat /tmp/read-only-disk-diagnostic.txt
+
+      - name: Publish diagnostic snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-disk-diagnostic.txt"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/read-only-disk-diagnostic.txt)"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/disk-put.json
+          import json,sys
+          payload={
+            'message':'Update read-only VPS disk diagnostic',
+            'content':sys.argv[1],
+            'branch':'server-diagnostics',
+          }
+          if sys.argv[2]:
+            payload['sha']=sys.argv[2]
+          print(json.dumps(payload))
+          PY
+          gh api -X PUT "$api" --input /tmp/disk-put.json >/dev/null
