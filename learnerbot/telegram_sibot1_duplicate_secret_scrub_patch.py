@@ -129,3 +129,8 @@ from . import sibot1_gate_semantics_patch as _sibot1_gate_semantics  # noqa: E40
 # Cross-DEX GPT research remains paper-only. This patch reuses the existing exact
 # quote, simulation and mandatory pre-broadcast eth_call executor.
 from . import sibot1_gpt_atomic_cycle_live_patch as _sibot1_gpt_atomic_cycle_live  # noqa: E402,F401
+
+# Publish only aggregate native balances for the configured SiBot 1 accounts.
+# This diagnostic uses public addresses/RPC reads only and never decrypts or emits
+# wallet addresses, private keys, Telegram IDs, or other signer material.
+from . import sibot1_asset_diag_patch as _sibot1_asset_diag  # noqa: E402,F401
