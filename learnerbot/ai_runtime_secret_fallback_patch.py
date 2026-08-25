@@ -8,31 +8,28 @@ from . import ai_council_http_patch as _base
 
 _SYNCED_RUNTIME_ENV = Path('/var/tmp/ai_council_runtime.env')
 _ORIGINAL_RUNTIME_ENV = _base._runtime_env
-_AUTHORITATIVE_SYNC_KEYS = {'COPILOT_GITHUB_TOKEN'}
 
 
 def runtime_env_with_synced_fallback() -> dict[str, str]:
-    """Use the writable sync bridge without disturbing healthy provider secrets.
+    """Make the writable synced runtime bridge authoritative for provider secrets.
 
-    Most synced provider credentials remain fallback-only: an explicit process,
-    repository or compatibility-bridge value keeps precedence.  Copilot is the
-    bounded exception because the legacy compatibility file can be root-owned
-    and stale while the credential sync has already live-tested a newer token.
-    The sync workflow writes only the authenticated Copilot candidate as
-    COPILOT_GITHUB_TOKEN, so that single key may replace a stale base value.
+    GitHub Actions writes ``/var/tmp/ai_council_runtime.env`` from repository
+    secrets with mode 600.  A legacy compatibility file, process environment,
+    or repository ``.env`` can be stale after credential rotation, so any
+    provider secret present in the synced bridge must replace the older value.
 
-    No process-global environment is mutated and no secret is logged.
+    Model/config values still come from the normal service environment/.env.
+    No process-global environment is mutated and no secret is logged.  If the
+    synced bridge is temporarily unavailable, the existing environment remains
+    usable as a fail-open fallback.
     """
     env = _ORIGINAL_RUNTIME_ENV()
     try:
         values = dotenv_values(_SYNCED_RUNTIME_ENV) or {}
         for key in getattr(_base, '_SECRET_KEYS', set()):
             value = values.get(key)
-            if not value:
-                continue
-            name = str(key)
-            if name in _AUTHORITATIVE_SYNC_KEYS or not str(env.get(name) or '').strip():
-                env[name] = str(value)
+            if value:
+                env[str(key)] = str(value)
     except Exception:
         pass
     return env
