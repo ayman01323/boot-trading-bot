@@ -1,18 +1,9 @@
 name: Strategy Factory Seven-Agent Live Diagnostic
 
 on:
-  workflow_dispatch:
   pull_request:
     paths:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
-      - 'learnerbot/ai_agent_ws_runtime_patch.py'
-      - 'learnerbot/kimi_provider.py'
-      - 'scripts/ai_agent_ws_worker.py'
-      - 'scripts/ai_agent_ws_send.py'
-      - 'scripts/strategy_factory_transport.py'
-      - 'learnerbot/grok_provider.py'
-      - 'learnerbot/strategy_room.py'
-      - 'learnerbot/ai_health_compact_report_patch.py'
 
 permissions:
   contents: read
@@ -24,7 +15,7 @@ concurrency:
 jobs:
   live-diagnostic:
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out repository without persisted credentials
         uses: actions/checkout@v4
@@ -39,113 +30,79 @@ jobs:
           systemctl is-active --quiet learnerbot
           test -s /var/tmp/boot/ai_agent_ws_status.json
           python3 - <<'PY'
-          import json, time
-          p='/var/tmp/boot/ai_agent_ws_status.json'
-          d=json.load(open(p,encoding='utf-8'))
-          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d.get('state')
-          assert d.get('host') == '127.0.0.1'
-          assert int(d.get('port') or 0) == 8765
+          import json,time
+          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
           expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
+          assert d.get('state') in {'ACTIVE','EXTERNAL'}, d
+          assert d.get('host') == '127.0.0.1' and int(d.get('port') or 0) == 8765, d
           assert set(d.get('workers') or []) == expected, d.get('workers')
-          age=int(time.time())-int(d.get('updated_epoch') or 0)
-          assert age < 86400, age
-          print('runtime_state='+str(d.get('state')))
-          print('workers='+','.join(d.get('workers') or []))
-          print('status_age_seconds='+str(age))
+          assert int(time.time())-int(d.get('updated_epoch') or 0) < 86400, d
+          print('workers='+','.join(sorted(expected)))
           PY
 
-      - name: Build isolated diagnostic environment
+      - name: Build small isolated WebSocket client environment
         shell: bash
         run: |
           set -euo pipefail
-          venv="$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic"
+          venv="$RUNNER_TEMP/six-basic-engine-design-${GITHUB_RUN_ID}"
           rm -rf "$venv"
           python3 -m venv "$venv"
           "$venv/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
           echo "VENV=$venv" >> "$GITHUB_ENV"
 
-      - name: Probe all seven providers strictly
+      - name: Ask six independent Basic Engine designers
         shell: bash
         run: |
-          set -euo pipefail
-          probe() {
-            sender="$1"
-            target="$2"
-            mid="sf7-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${target}"
-            set +e
-            output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-              --from "$sender" \
-              --to "$target" \
-              --message-id "$mid" \
-              --timeout 90 \
-              --message 'Strategy Factory seven-agent live health probe. Reply HEALTH_OK only. Do not modify files, services, trading, wallets, risk, capital, or secrets.' 2>&1)"
-            sender_rc=$?
-            set -e
-            printf '%s\n' "$output"
-            if [[ $sender_rc -ne 0 ]]; then
-              echo "${target}_provider_health=FAILED sender_rc=${sender_rc}"
-              return 1
-            fi
-            final="$(printf '%s\n' "$output" | tail -n 1)"
-            TARGET="$target" FINAL="$final" python3 - <<'PY'
-          import json, os
-          target=os.environ['TARGET']
-          value=json.loads(os.environ['FINAL'])
-          assert value.get('status') == 'REPLIED', (target,value.get('status'))
-          assert value.get('delivered') is True, (target,value)
-          assert value.get('acknowledged') is True, (target,value)
-          assert not str(value.get('error') or ''), (target,value.get('error'))
-          # Providers sometimes wrap a one-token health response in Markdown.
-          # Accept only the same HEALTH_OK token after removing harmless emphasis
-          # wrappers; do not weaken transport/error checks or accept extra prose.
-          body=str(value.get('body') or '').strip().strip('*_`').strip()
-          assert body == 'HEALTH_OK', (target,value.get('body'))
-          print(f'{target}_provider_health=HEALTH_OK')
-          PY
-          }
-          failures=0
-          probe gemini gpt || failures=$((failures+1))
-          probe gpt claude || failures=$((failures+1))
-          probe gpt gemini || failures=$((failures+1))
-          probe gpt deepseek || failures=$((failures+1))
-          probe gpt grok || failures=$((failures+1))
-          probe gpt kimi || failures=$((failures+1))
-          probe gpt copilot || failures=$((failures+1))
-          echo "provider_failures=$failures"
-          test "$failures" -eq 0
+          set -u
+          read -r -d '' prompt <<'EOF' || true
+          Design ONE independent, deliberately simple trading engine and ONE primary strategy to compete as a separate challenger beside the existing BOOT/main Basic Engine v0. Reason independently; do not copy BOOT merely for consistency.
 
-      - name: Verify Kimi bounded deterministic server task
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          output="$($VENV/bin/python scripts/ai_agent_ws_send.py \
-            --from gpt \
-            --to kimi \
-            --message-id "sf7-kimi-task-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --timeout 90 \
-            --task-action GIT_STATUS \
-            --task-args-json '{}' \
-            --task-instruction 'Return bounded read-only git status evidence from the production server repository. Do not modify anything.')"
-          printf '%s\n' "$output"
-          final="$(printf '%s\n' "$output" | tail -n 1)"
-          FINAL="$final" python3 - <<'PY'
-          import json,os
-          outer=json.loads(os.environ['FINAL'])
-          assert outer.get('status') == 'COMPLETED', outer
-          assert outer.get('delivered') is True, outer
-          assert outer.get('acknowledged') is True, outer
-          assert not str(outer.get('error') or ''), outer
-          result=json.loads(str(outer.get('body') or '{}'))
-          assert result.get('status') == 'COMPLETED', result
-          assert result.get('action') == 'GIT_STATUS', result
-          evidence=result.get('evidence') or {}
-          assert int(evidence.get('returncode') or 0) == 0, result
-          print('kimi_bounded_server_task=COMPLETED')
-          print('kimi_git_status_chars='+str(len(str(evidence.get('stdout') or ''))))
-          PY
+          MONEY-FIRST CHAIN: choose the first blockchain/DEX by expected executable NET profit after gas, fees, slippage, latency and realistic trade frequency. Consider BSC, Base, Arbitrum, Polygon, Ethereum and Solana. State the chosen chain and why it is best for a small canary bot now; if evidence is insufficient, state the minimum measurement needed.
+
+          Requirements: separate engine ID/module; one simple testable strategy; SHADOW first/no signing; log timestamp, chain, venue, route/pair, signal reason, input, gross, gas/fees, slippage reserve, expected net, simulation result and hypothetical outcome. Never weaken rug/sellability, liquidity, price-impact, simulation, reserve, signing, stop-loss, loss-quarantine, nonce or reconciliation controls. If promoted, use the existing hardened shared execution gateway. A future arbiter must allow only one engine to own a duplicate live opportunity. Prefer WebSocket/free RPC/cache/shared data and estimate incremental monthly API/RPC cost.
+
+          Competition: Claude/Gemini/DeepSeek/Grok/Kimi/Copilot challengers all run SHADOW simultaneously while BOOT is unchanged. Common scorecard: net P&L after costs; profit/capital; win rate and counts; opportunity frequency; max drawdown/worst loss; quote-to-simulation survival; stale/invalid/revert rate; p50/p95 decision latency; RPC/API cost per qualified opportunity and simulated trade; safety-rejection rate/reason quality. Recommend minimum sample/time, tie-breaks, SHADOW->CANARY->LIVE criteria and automatic demotion. Goal is eventually ONE challenger beside BOOT, not six live spenders.
+
+          Return exactly these headings:
+          ENGINE_NAME
+          FIRST_BLOCKCHAIN_AND_DEX
+          STRATEGY
+          WHY_MONEY_FIRST
+          DATA_INPUTS_AND_ESTIMATED_COST
+          SIGNAL_AND_ENTRY_RULES
+          EXIT_OR_ATOMIC_COMPLETION
+          RISK_AND_SAFETY
+          SEPARATE_ENGINE_ARCHITECTURE
+          COMMON_SCORECARD_FIELDS
+          COMPETITION_AND_PROMOTION_RULES
+          MINIMUM_BUILD_PLAN
+          TOP_3_FAILURE_MODES
+          ONE_SENTENCE_RECOMMENDATION
+
+          Design/communication only. Do not edit files, deploy, restart, change LIVE/ARMED/risk/capital, access wallets/signing/secrets, or submit trades.
+          EOF
+
+          failures=0
+          for agent in claude gemini deepseek grok kimi copilot; do
+            echo "===== BEGIN ${agent^^} DESIGN ====="
+            set +e
+            "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+              --from gpt --to "$agent" \
+              --subject 'Basic Engine Competition' \
+              --message-id "basic-engine-${GITHUB_RUN_ID}-${agent}" \
+              --timeout 180 --message "$prompt" \
+              > "/tmp/${agent}-engine-design.log" 2>&1
+            rc=$?
+            set -e
+            cat "/tmp/${agent}-engine-design.log"
+            echo "RESULT_RC=$rc"
+            echo "===== END ${agent^^} DESIGN ====="
+            if [[ $rc -ne 0 ]]; then failures=$((failures+1)); fi
+          done
+          echo "DESIGN_FAILURES=$failures"
+          test "$failures" -eq 0
 
       - name: Remove isolated environment
         if: always()
         shell: bash
-        run: rm -rf "${VENV:-$RUNNER_TEMP/strategy-factory-seven-agent-live-diagnostic}"
+        run: rm -rf "${VENV:-$RUNNER_TEMP/six-basic-engine-design-${GITHUB_RUN_ID}}"
