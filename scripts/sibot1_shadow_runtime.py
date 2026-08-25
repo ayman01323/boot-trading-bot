@@ -9,6 +9,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# The exporter observes only paper-filled SiBot 1 intents and writes sanitized
+# candidate records for the separate protected execution bridge. It does not
+# attach a signer or change the SHADOW/PAPER runtime boundary.
+from sibot1_engines._shared import live_candidate_export as _live_candidate_export  # noqa: F401,E402
 from sibot1_engines._shared.runtime import run_shadow_runtime
 
 
