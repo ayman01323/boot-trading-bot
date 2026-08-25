@@ -15,15 +15,11 @@ from . import sibot_legacy_backlog_drainer_patch as _evm
 from . import solana_sibot as _sol
 from . import solana_worker_reliability_patch as _sol_reliable
 
-"""Late liveness repair for trading research/selection workers.
+"""Self-heal stalled trading research/selection workers without changing gates.
 
-This module does not submit trades and does not change any entry, profit, risk,
-liquidity, simulation, reserve, LIVE/ARMED or signing gate. It only:
-- prevents the EVM orphan backlog drainer from starving behind a larger ranked window;
-- restarts a daemon worker if its named thread has actually died;
-- refreshes Solana ranking from already-reconstructed evidence when the selector
-  heartbeat is stale;
-- publishes sanitised liveness/provider/rejection counts for diagnosis.
+The supervisor never signs, submits or broadcasts a transaction. It only repairs
+worker liveness, prevents an EVM backlog scan starvation case, refreshes stale
+Solana ranking from existing evidence, and publishes sanitised telemetry.
 """
 
 _PREV_APP = _cli._app
@@ -48,7 +44,7 @@ def _alive_thread_names() -> set[str]:
 
 
 def _evm_background_candidate_no_starvation(app, chain, now_epoch: int):
-    """Search beyond the ranked queue instead of inspecting only the first 250 rows."""
+    """Look beyond the ranked queue instead of inspecting only 250 old errors."""
     ranked = _evm._ranked_wallets(app, chain)
     scan_limit = min(
         EVM_SCAN_CAP,
@@ -86,14 +82,13 @@ def _evm_drainer_alive() -> bool:
 
 
 def _ensure_evm_drainer_live(app) -> bool:
-    """Restart the existing bounded drainer only when its daemon thread is absent."""
+    """Supervisor-only recovery for a daemon proven absent after startup."""
     if not _evm._is_runtime_run_command():
         return False
     if _evm_drainer_alive():
-        _evm._DRAINER_STARTED = True
         return False
-    # The prior boolean can remain true after a daemon dies; clear it only after
-    # proving the uniquely named thread is absent, then reuse the original starter.
+    # Do not replace the original start-once helper globally. Only the supervisor
+    # clears a stale boolean after proving the uniquely named daemon is absent.
     _evm._DRAINER_STARTED = False
     return bool(_ORIGINAL_EVM_ENSURE(app))
 
@@ -101,7 +96,9 @@ def _ensure_evm_drainer_live(app) -> bool:
 def _status_with_provider(app, chain) -> dict:
     out = dict(_ORIGINAL_EVM_STATUS(app, chain))
     try:
-        out["history_provider_available"] = bool(_alchemy.alchemy_rpc_url(app, int(chain.chain_id)))
+        out["history_provider_available"] = bool(
+            _alchemy.alchemy_rpc_url(app, int(chain.chain_id))
+        )
     except Exception:
         out["history_provider_available"] = False
     try:
@@ -120,27 +117,25 @@ def _status_with_provider(app, chain) -> dict:
 def _selector_age_seconds(now: int | None = None) -> int | None:
     now = int(now or time.time())
     try:
-        payload = json.loads(_SOL_SELECTOR.read_text(encoding="utf-8"))
-        generated = int(payload.get("generated_epoch") or 0)
+        generated = int(
+            json.loads(_SOL_SELECTOR.read_text(encoding="utf-8")).get("generated_epoch") or 0
+        )
     except Exception:
         generated = 0
-    if generated <= 0:
-        return None
-    return max(0, now - generated)
+    return None if generated <= 0 else max(0, now - generated)
 
 
 def _ensure_solana_threads(app) -> list[str]:
-    """Restart only missing named workers; never duplicate a live thread."""
-    names = _alive_thread_names()
+    """Restart only missing uniquely named workers; never duplicate a live one."""
     targets = (
         ("sibot-solana-discovery", _sol_reliable._discovery_worker),
         ("sibot-solana-history", _sol_reliable._history_worker),
         ("sibot-solana-leaders", _sol_reliable._leader_worker),
     )
+    names = _alive_thread_names()
     missing = [(name, target) for name, target in targets if name not in names]
     if not missing:
         return []
-
     try:
         _sol.ensure_settings(app)
         _sol.connect(app).close()
@@ -150,8 +145,6 @@ def _ensure_solana_threads(app) -> list[str]:
 
     launched = []
     for name, target in missing:
-        # Re-check immediately before launch so a normal startup racing this
-        # supervisor cannot create a duplicate worker.
         if name in _alive_thread_names():
             continue
         threading.Thread(target=target, args=(app,), daemon=True, name=name).start()
@@ -170,9 +163,8 @@ def _refresh_solana_selector_if_stale(app, now: int | None = None) -> bool:
     if not _RANK_LOCK.acquire(blocking=False):
         return False
     try:
-        # This is the same ranking function called by the normal discovery worker.
-        # It reads reconstructed evidence and applies the unchanged quality gates;
-        # it does not broadcast or sign a transaction.
+        # Same ranking function used by the normal discovery worker. It applies
+        # existing quality/copy/edge gates and performs no signing/broadcast.
         _sol.refresh_rankings(app)
         print("[trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged")
         return True
@@ -184,12 +176,11 @@ def _refresh_solana_selector_if_stale(app, now: int | None = None) -> bool:
 
 
 def _recent_auto_summary(app, now: int | None = None, seconds: int = 3600) -> dict:
-    """Sanitised direct-AUTO simulation/execution counts; no wallets/routes/tx hashes."""
+    """Count recent direct-AUTO simulation outcomes without identifiers."""
     now = int(now or time.time())
     path = Path(app.csv_dir) / "auto" / "auto_trade_simulations.csv"
-    by_chain: dict[str, dict] = {}
-    total = 0
-    passed = 0
+    buckets: dict[str, dict] = {}
+    total = passed = 0
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
             for row in csv.DictReader(fh):
@@ -199,11 +190,13 @@ def _recent_auto_summary(app, now: int | None = None, seconds: int = 3600) -> di
                     continue
                 if ts <= 0 or now - ts > int(seconds):
                     continue
-                total += 1
                 chain = str(row.get("chain_slug") or row.get("chain_id") or "unknown").lower()[:40]
-                ok = str(row.get("simulation_ok") or "").strip().lower() in {"1", "true", "yes", "on"}
+                ok = str(row.get("simulation_ok") or "").lower() in {"1", "true", "yes", "on"}
+                total += 1
                 passed += int(ok)
-                bucket = by_chain.setdefault(chain, {"simulations": 0, "passed": 0, "reasons": Counter()})
+                bucket = buckets.setdefault(
+                    chain, {"simulations": 0, "passed": 0, "reasons": Counter()}
+                )
                 bucket["simulations"] += 1
                 bucket["passed"] += int(ok)
                 if not ok:
@@ -213,13 +206,15 @@ def _recent_auto_summary(app, now: int | None = None, seconds: int = 3600) -> di
         pass
 
     clean = {}
-    for chain, bucket in by_chain.items():
+    for chain, bucket in buckets.items():
         reasons = bucket.pop("reasons")
-        clean[chain] = {
-            **bucket,
-            "top_rejections": dict(reasons.most_common(8)),
-        }
-    return {"window_seconds": int(seconds), "simulations": total, "passed": passed, "by_chain": clean}
+        clean[chain] = {**bucket, "top_rejections": dict(reasons.most_common(8))}
+    return {
+        "window_seconds": int(seconds),
+        "simulations": total,
+        "passed": passed,
+        "by_chain": clean,
+    }
 
 
 def _provider_status(app) -> dict[str, bool]:
@@ -232,7 +227,7 @@ def _provider_status(app) -> dict[str, bool]:
     return out
 
 
-def _write_bridge(app, *, launched: list[str], selector_refreshed: bool) -> None:
+def _write_bridge(app, launched: list[str], selector_refreshed: bool) -> None:
     try:
         now = int(time.time())
         names = _alive_thread_names()
@@ -276,7 +271,7 @@ def _supervisor(app) -> None:
             refreshed = _refresh_solana_selector_if_stale(app)
         except Exception as exc:
             print("[trading-worker-liveness] solana", type(exc).__name__, str(exc)[:220])
-        _write_bridge(app, launched=launched, selector_refreshed=refreshed)
+        _write_bridge(app, launched, refreshed)
         time.sleep(CHECK_SECONDS)
 
 
@@ -302,8 +297,9 @@ def _app_with_trading_worker_liveness():
 
 
 def install() -> None:
+    # These two substitutions are read/recovery helpers only. Crucially, the
+    # original drainer start-once function remains untouched for startup callers.
     _evm._background_candidate = _evm_background_candidate_no_starvation
-    _evm._ensure_drainer_started = _ensure_evm_drainer_live
     _evm.status_for_chain = _status_with_provider
     _cli._app = _app_with_trading_worker_liveness
 
