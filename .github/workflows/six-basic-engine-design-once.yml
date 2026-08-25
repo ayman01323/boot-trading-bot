@@ -1,0 +1,112 @@
+name: Six Basic Engine Design Council Once
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/six-basic-engine-design-once.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: six-basic-engine-design-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  design:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    steps:
+      - name: Check out trusted branch without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Strategy Factory bus is live
+        shell: bash
+        run: |
+          set -euo pipefail
+          systemctl is-active --quiet learnerbot
+          test -s /var/tmp/boot/ai_agent_ws_status.json
+          python3 - <<'PY'
+          import json
+          d=json.load(open('/var/tmp/boot/ai_agent_ws_status.json',encoding='utf-8'))
+          expected={'gpt','claude','gemini','deepseek','grok','kimi','copilot'}
+          assert set(d.get('workers') or []) == expected, d
+          assert d.get('host') == '127.0.0.1' and int(d.get('port') or 0) == 8765, d
+          print('workers='+','.join(sorted(expected)))
+          PY
+
+      - name: Prepare small WebSocket client environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          VENV="$RUNNER_TEMP/six-basic-engine-design-${GITHUB_RUN_ID}"
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          echo "VENV=$VENV" >> "$GITHUB_ENV"
+
+      - name: Write common design challenge
+        shell: bash
+        run: |
+          cat > /tmp/six-engine-prompt.txt <<'EOF'
+          Design ONE independent, deliberately simple trading engine and ONE primary strategy that can run as a separate challenger beside the existing BOOT/main Basic Engine v0. Do not copy the current engine design merely for consistency; reason independently so six challengers can genuinely compete.
+
+          FIRST TARGET = MONEY-FIRST BLOCKCHAIN. Choose the first blockchain/DEX environment by expected executable NET profit opportunity after gas, fees, slippage, latency and realistic opportunity frequency. Consider BSC, Base, Arbitrum, Polygon, Ethereum and Solana; do not assume a winner. State the chosen chain and why it offers the best first capital-efficiency opportunity for a small canary bot now. If evidence is insufficient, state the minimum live measurement that should decide.
+
+          Requirements: separate engine ID/module; one simple testable strategy; SHADOW first with no signing; log timestamp/chain/venue/route/signal/input/gross/gas/fees/slippage/net/simulation/hypothetical outcome; never weaken rug/sellability/liquidity/price-impact/simulation/reserve/signing/stop-loss/loss-quarantine/nonce/reconciliation controls; eventual promotion must use the existing hardened shared execution gateway; prevent duplicate capital use through a single later arbiter; keep RPC/API cost low using WebSocket/free RPC/cache/shared market data where sensible and estimate incremental monthly cost.
+
+          Competition: all six challengers run simultaneously in SHADOW while BOOT remains unchanged. Common scorecard must include net P&L after all costs, profit per capital, win rate and counts, opportunity frequency, max drawdown/worst loss, quote-to-simulation survival, stale/invalid/revert rate, p50/p95 decision latency, RPC/API cost per qualified opportunity and simulated trade, safety rejection rate/reason quality. Recommend minimum sample/time, tie-breaks, SHADOW->CANARY->LIVE promotion and automatic demotion. Goal: select ONE challenger to run next to BOOT, not seven independent live spenders.
+
+          Return exactly these headings:
+          ENGINE_NAME
+          FIRST_BLOCKCHAIN_AND_DEX
+          STRATEGY
+          WHY_MONEY_FIRST
+          DATA_INPUTS_AND_ESTIMATED_COST
+          SIGNAL_AND_ENTRY_RULES
+          EXIT_OR_ATOMIC_COMPLETION
+          RISK_AND_SAFETY
+          SEPARATE_ENGINE_ARCHITECTURE
+          COMMON_SCORECARD_FIELDS
+          COMPETITION_AND_PROMOTION_RULES
+          MINIMUM_BUILD_PLAN
+          TOP_3_FAILURE_MODES
+          ONE_SENTENCE_RECOMMENDATION
+
+          Design/communication only. Do not edit files, deploy, restart services, change LIVE/ARMED/risk/capital, access wallet/signing material or secrets, or submit trades.
+          EOF
+
+      - name: Ask all six challenger designers over primary WebSocket bus
+        shell: bash
+        run: |
+          set -u
+          prompt="$(cat /tmp/six-engine-prompt.txt)"
+          failures=0
+          for agent in claude gemini deepseek grok kimi copilot; do
+            echo "===== BEGIN ${agent^^} ====="
+            set +e
+            "$VENV/bin/python" scripts/ai_agent_ws_send.py \
+              --from gpt \
+              --to "$agent" \
+              --subject 'Basic Engine Competition' \
+              --message-id "basic-engine-${GITHUB_RUN_ID}-${agent}" \
+              --timeout 180 \
+              --message "$prompt" \
+              > "/tmp/${agent}-design.log" 2>&1
+            rc=$?
+            set -e
+            cat "/tmp/${agent}-design.log"
+            echo "RESULT_RC=$rc"
+            echo "===== END ${agent^^} ====="
+            if [[ $rc -ne 0 ]]; then failures=$((failures+1)); fi
+          done
+          echo "DESIGN_FAILURES=$failures"
+          test "$failures" -eq 0
+
+      - name: Remove temporary environment
+        if: always()
+        shell: bash
+        run: rm -rf "${VENV:-$RUNNER_TEMP/six-basic-engine-design-${GITHUB_RUN_ID}}"
