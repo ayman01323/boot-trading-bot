@@ -1,3 +1,3 @@
 AI Council runtime credential bridge
-sync=2026-08-25T13:18+01:00
-reason=rerun validated Copilot credential sync after making the writable bridge authoritative and the root-owned compatibility copy non-fatal
+sync=2026-08-25T14:52+01:00
+reason=sync newly updated GEMINI_API_KEY and verify live Gemini provider communication
