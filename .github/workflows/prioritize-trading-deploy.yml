@@ -1,0 +1,41 @@
+name: Prioritize protected trading deployment
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/deploy-current-main.trigger'
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  clear-noncritical-vps-diagnostics:
+    if: >-
+      github.head_ref == 'agent/deploy-current-main' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Cancel read-only VPS diagnostics blocking a protected deploy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          # A read-only diagnostic must never monopolise the single trading VPS
+          # runner while an exact-main protected deployment is requested. This
+          # intentionally targets ONLY the diagnostic workflow; active deploy jobs
+          # and the restricted deployment wrapper are never cancelled here.
+          for state in in_progress queued; do
+            gh api -H 'Accept: application/vnd.github+json' \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/read-only-disk-diagnostic.yml/runs?status=${state}&per_page=100" \
+              --jq '.workflow_runs[].id' 2>/dev/null | while read -r run_id; do
+                [[ -n "$run_id" ]] || continue
+                echo "Cancelling read-only disk diagnostic ${run_id} (${state})"
+                gh api --method POST -H 'Accept: application/vnd.github+json' \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/cancel" >/dev/null 2>&1 || true
+              done
+          done
+          exit 0
