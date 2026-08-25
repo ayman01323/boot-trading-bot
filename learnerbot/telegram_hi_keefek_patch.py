@@ -87,8 +87,9 @@ _cli._app = _app_with_hiiii
 from . import backup_telegram_alert_patch  # noqa: E402,F401
 # Harden failure alerts so marker-write errors cannot turn the one-minute poll into a one-minute Telegram storm.
 from . import backup_alert_hourly_reason_patch  # noqa: E402,F401
-# Warn ACTIVE MASTER accounts every 30 minutes while an AI reporting agent is unhealthy.
+# Monitor ACTIVE MASTER AI-agent health; unresolved warning repeats every 4 hours.
 from . import ai_agent_health_warning_patch  # noqa: E402,F401
+from . import ai_agent_health_4h_patch  # noqa: E402,F401
 # AI bus reply notifications are event-driven in GitHub Actions; no 60-second ai-reviews poller is loaded here.
 # Reconcile stale primary Strategy status with the resilient per-cycle Master/assignment artifacts.
 from . import ai_agent_health_master_reconcile_patch  # noqa: E402,F401
