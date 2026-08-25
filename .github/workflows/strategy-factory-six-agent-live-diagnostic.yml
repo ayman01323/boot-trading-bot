@@ -2,6 +2,10 @@ name: Strategy Factory Seven-Agent Live Diagnostic
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
   pull_request:
     paths:
       - '.github/workflows/strategy-factory-six-agent-live-diagnostic.yml'
@@ -95,9 +99,6 @@ jobs:
           assert value.get('delivered') is True, (target,value)
           assert value.get('acknowledged') is True, (target,value)
           assert not str(value.get('error') or ''), (target,value.get('error'))
-          # Providers sometimes wrap a one-token health response in Markdown.
-          # Accept only the same HEALTH_OK token after removing harmless emphasis
-          # wrappers; do not weaken transport/error checks or accept extra prose.
           body=str(value.get('body') or '').strip().strip('*_`').strip()
           assert body == 'HEALTH_OK', (target,value.get('body'))
           print(f'{target}_provider_health=HEALTH_OK')
