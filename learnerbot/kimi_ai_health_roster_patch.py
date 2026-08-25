@@ -32,8 +32,3 @@ def install() -> None:
 
 
 install()
-
-# The SiBot 1 sidecar is SHADOW/PAPER only and deliberately starts after a short
-# delay so the final trading-runtime integrity checks complete first. It neither
-# patches trading hooks nor exposes signer/broadcast capability.
-from . import sibot1_shadow_runtime_patch as _sibot1_shadow_runtime  # noqa: E402,F401
