@@ -80,8 +80,6 @@ def _scrub_duplicate(app, message, *, kind: str) -> bool:
         "❌ <b>SECURE DELETE FAILED</b>\n"
         "The repeated private-key message is still visible. Delete it manually now.",
     )
-    # Intentionally keep the warning visible when Telegram did not delete the
-    # secret; disappearing the warning would falsely suggest the key was removed.
     return True
 
 
@@ -90,9 +88,6 @@ def handle_update(app, update):
     tid = (message.get("chat") or {}).get("id")
     text = str(message.get("text") or "").strip()
 
-    # An active SiBot 1 import is already handled by the signer module, which
-    # deletes the incoming secret before validation/persistence. This layer is
-    # only for accidental re-entry after the import session has ended.
     if tid is not None and str(tid) not in _signer._PENDING_SIGNER and text:
         chat_type = str((message.get("chat") or {}).get("type") or "")
         if chat_type == "private" and _ui._auth(app, tid):
@@ -119,3 +114,9 @@ def install() -> None:
 
 
 install()
+
+# Final SiBot 1 stage: add a separate protected Base/EVM execution bridge. The AI
+# sidecar remains SHADOW/PAPER and has no signer. This bridge defaults OFF and can
+# execute only after the user manually confirms ARMED + LIVE + AUTO in Telegram,
+# while the pre-existing platform/user LIVE and AUTO gates are also already ON.
+from . import sibot1_live_bridge_patch as _sibot1_live_bridge  # noqa: E402,F401
