@@ -1,0 +1,127 @@
+name: Google Server Daily Backup
+
+on:
+  schedule:
+    - cron: '15 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-server-daily-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Daily protected Google-server folders backup
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 120
+    env:
+      DEST: /home/ayman01323/GoogleServerBuckup
+      PROD: /root/multichain-learning-bot-v2.2-fast-direct-market
+      CLAUDE: /home/ayman01323/ClaudeServer
+      SIRISKY: /root/SiRisky
+      RETENTION_DAYS: '14'
+    steps:
+      - name: Verify Google runner and source folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          sudo -n true
+          sudo -n test -d "$PROD"
+          test -d "$CLAUDE"
+          sudo -n test -d "$SIRISKY"
+          mkdir -p "$DEST"
+          chmod 700 "$DEST"
+          echo "production=$PROD"
+          echo "claude=$CLAUDE"
+          echo "sirisky=$SIRISKY"
+          echo "destination=$DEST"
+          df -h "$DEST"
+
+      - name: Create verified daily archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          STAMP="$(date -u +%Y-%m-%d_%H-%M-%SZ)"
+          WORK="$(mktemp -d /tmp/google-daily-backup.XXXXXX)"
+          trap 'rm -rf "$WORK"' EXIT
+
+          make_root_archive() {
+            label="$1"
+            source="$2"
+            parent="$(dirname "$source")"
+            base="$(basename "$source")"
+            out="$WORK/${label}-${STAMP}.tar.gz"
+            sudo -n tar -C "$parent" -czf "$out" "$base"
+            sudo -n chown "$(id -u):$(id -g)" "$out"
+            chmod 600 "$out"
+            tar -tzf "$out" >/dev/null
+            sha256sum "$out" > "$out.sha256"
+            chmod 600 "$out.sha256"
+          }
+
+          make_user_archive() {
+            label="$1"
+            source="$2"
+            parent="$(dirname "$source")"
+            base="$(basename "$source")"
+            out="$WORK/${label}-${STAMP}.tar.gz"
+            tar -C "$parent" -czf "$out" "$base"
+            chmod 600 "$out"
+            tar -tzf "$out" >/dev/null
+            sha256sum "$out" > "$out.sha256"
+            chmod 600 "$out.sha256"
+          }
+
+          make_root_archive production-bot "$PROD"
+          make_user_archive claude-server "$CLAUDE"
+          make_root_archive sirisky "$SIRISKY"
+
+          cat > "$WORK/manifest-${STAMP}.txt" <<EOF
+          created_utc=$STAMP
+          hostname=$(hostname)
+          production_source=$PROD
+          claude_source=$CLAUDE
+          sirisky_source=$SIRISKY
+          destination=$DEST
+          retention_days=$RETENTION_DAYS
+          EOF
+          chmod 600 "$WORK/manifest-${STAMP}.txt"
+
+          mv "$WORK"/* "$DEST"/
+          chmod 600 "$DEST"/*-${STAMP}.*
+
+          echo 'Created:'
+          ls -lh "$DEST"/*-${STAMP}.*
+
+      - name: Apply local retention policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$DEST" -maxdepth 1 -type f \
+            \( -name 'production-bot-*.tar.gz' -o \
+               -name 'production-bot-*.tar.gz.sha256' -o \
+               -name 'claude-server-*.tar.gz' -o \
+               -name 'claude-server-*.tar.gz.sha256' -o \
+               -name 'sirisky-*.tar.gz' -o \
+               -name 'sirisky-*.tar.gz.sha256' -o \
+               -name 'manifest-*.txt' \) \
+            -mtime +"$RETENTION_DAYS" -print -delete
+          echo "retention_days=$RETENTION_DAYS"
+          df -h "$DEST"
+
+      - name: Backup summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Google server daily backup sources:'
+          echo "- $PROD"
+          echo "- $CLAUDE"
+          echo "- $SIRISKY"
+          echo "Destination: $DEST"
+          echo 'Schedule: daily at 03:15 UTC'
