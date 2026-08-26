@@ -13,6 +13,10 @@ if str(ROOT) not in sys.path:
 # observed market evidence when the very narrow primary source windows are quiet.
 # This patch cannot sign/broadcast and does not change PoolCheck or LIVE gates.
 from sibot1_engines._shared import market_relaxation_patch as _market_relaxation_patch  # noqa: F401,E402
+# Bounded nomination-only flexibility.  This changes no signing/broadcast/live
+# permission and keeps unknown developer flow fail-closed; the protected bridge
+# still owns PoolCheck, reverse/stress and signed-simulation approval.
+from sibot1_engines._shared import deep_nomination_relaxation_patch as _deep_nomination_relaxation_patch  # noqa: F401,E402
 # The exporter observes only paper-filled SiBot 1 intents and writes sanitized
 # candidate records for the separate protected execution bridge. It does not
 # attach a signer or change the SHADOW/PAPER runtime boundary.
