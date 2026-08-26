@@ -22,6 +22,10 @@ from . import sibot_evm_worker_reliability_patch as _evm_reliability
 from . import sibot_leader_quality_hard_floor_patch as _evm_quality
 from . import sibot_legacy_error_sweep_patch as _legacy
 from . import sibot_legacy_backlog_drainer_patch as _legacy_drainer
+# Compose only after the existing serial/progressive history layers so bounded
+# endpoint failover wraps the already-audited reconstruction path rather than
+# bypassing it.
+from . import sibot_alchemy_endpoint_pool_patch as _endpoint_pool
 from . import solana_atomic_close_fallback_patch as _atomic
 from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_efficiency_patch as _efficiency
@@ -78,7 +82,8 @@ def composition_checks() -> dict[str, bool]:
         "solana_leader_edge_metrics": _sol_guard.quality_metrics is _leader_edge.quality_metrics,
         "solana_leader_edge_gate": _sol_guard._historical_ok is _leader_edge.historical_ok,
         "solana_stuck_monitor_outer": _sol.monitor_positions is _stuck.monitor_positions_with_stuck_owner_resolution,
-        "evm_alchemy_refresh": _sibot.refresh_wallet_history is _trace.refresh_wallet_history,
+        "evm_alchemy_refresh": _sibot.refresh_wallet_history is _endpoint_pool.refresh_wallet_history_with_endpoint_pool,
+        "evm_alchemy_endpoint_pool_inner": _endpoint_pool._PREV_REFRESH is _trace.refresh_wallet_history,
         "evm_history_legacy_outer": _sibot._next_history_wallet is _legacy._next_history_wallet,
         "evm_history_legacy_to_context": _legacy._PREV_NEXT_HISTORY_WALLET is _context._next_history_wallet,
         "evm_history_context_to_trace": _context._PREV_NEXT_HISTORY_WALLET is _trace._next_history_wallet,
