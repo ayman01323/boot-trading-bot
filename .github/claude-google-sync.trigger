@@ -1,6 +1,5 @@
-sync_requested_at=2026-08-26T10:11:29Z
+sync_requested_at=2026-08-26T11:03:00Z
 requested_by=gpt
-reason=sync_deterministic_runtime_dirs_after_merge
-source_branch=claude/deterministic-runtime-dirs
-source_sha=3b9acc8143d0a5623ed5ddfe12735803fdf675cd
-merge_sha=0f4605e7ac0e0d37d74a768a26a727e5e643d10e
+reason=sync_10_position_3pct_each_20pct_drawdown_owner_latch
+source_branch=main
+source_sha=548bd979d3c2189417acc59f467c0c7bf54fff6d
