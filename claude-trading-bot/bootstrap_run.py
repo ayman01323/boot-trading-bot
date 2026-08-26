@@ -9,11 +9,15 @@ Telegram message run.py sends before exec gets the Claude prefix; nothing
 the actual trading loop sends would have.
 
 This script IS the exec target instead of `python -m learnerbot run`
-directly: it installs the required patches first, in this process, then runs
-learnerbot exactly the way `-m` would (runpy.run_module with
-run_name="__main__" is what `-m` does internally) -- so the patch chain in
-learnerbot/__main__.py still runs unmodified and in full, just with these two
-patches already in place before it starts.
+directly: it quarantines historical production migrations and blocks
+production-.env fallback (claude_bot_quarantine.py), installs the identity
+and risk-guard patches, all in this process, THEN runs learnerbot exactly
+the way `-m` would (runpy.run_module with run_name="__main__" is what `-m`
+does internally) -- so the patch chain in learnerbot/__main__.py still runs
+unmodified and in full, just with all of the above already in place before
+it starts. Order matters: quarantine markers must exist and secrets must be
+blanked before that chain is ever imported, or the migrations they're meant
+to neutralize would already have run.
 """
 
 from __future__ import annotations
@@ -29,8 +33,9 @@ for path in (THIS_DIR, REPO_ROOT):
         sys.path.insert(0, str(path))
 
 import claude_bot_patches
+from learnerbot.config import AppSettings
 
-claude_bot_patches.install_all()
+claude_bot_patches.install_all(AppSettings.load())
 
 sys.argv = ["learnerbot", "run"]
 import runpy

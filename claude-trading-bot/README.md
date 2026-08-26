@@ -30,16 +30,24 @@ key their encrypted keyring off `DATA_DIR`, so a distinct `DATA_DIR` automatical
 gives a distinct, non-overlapping wallet keyring — no code changes needed for that.
 
 **Hazard this design has to defend against:** `learnerbot/config.py` calls
-`load_dotenv(BOT_ROOT / ".env")` where `BOT_ROOT` is wherever the `learnerbot`
-package physically lives on disk — i.e. the *production* bot's own `.env`, since
-this folder currently reuses the same package install (see "Known limitation:
-separate checkout" below). `load_dotenv` does not override variables already
-present in the process environment, so as long as every sensitive variable this
-bot needs is explicitly set before `learnerbot` is imported, nothing falls through
-to production values. [`run.py`](run.py) enforces this: it loads *only*
-`claude-trading-bot/.env`, checks every required variable is present, and refuses
-to start (fail closed) if any are missing — it never silently inherits a
-production Telegram token, chat id, or wallet secret.
+`load_dotenv(BOT_ROOT / ".env")` (no `override=True`) where `BOT_ROOT` is
+wherever the `learnerbot` package physically lives on disk — i.e. the
+*production* bot's own `.env`, since this folder currently reuses the same
+package install (see "Known limitation: separate checkout" below).
+`load_dotenv` only fills a var that is not already present in `os.environ` at
+all — present-but-blank still counts as present — so two layers close this:
+(1) [`run.py`](run.py) loads this instance's own runtime env file first, with
+`override=True`, checks every required identity/risk variable is present, and
+refuses to start (fail closed) if any are missing; (2)
+[`claude_bot_quarantine.py`](claude_bot_quarantine.py)'s
+`block_production_env_fallback()` additionally blanks every other
+secret-shaped variable `learnerbot` might read anywhere in its ~230 files
+(found by an actual audit, not just the ones this bot explicitly uses) —
+`LIVE_WALLET_PRIVATE_KEY`, `GITHUB_TOKEN`, `OPENAI_API_KEY`, the `HELIUS_*`
+vars, `SOLANA_RPC_URLS`/`SOLANA_RPC_FALLBACK_URLS`, `SOLANA_EXPLORER_URL` —
+before `learnerbot` is ever imported, so none of them can silently inherit a
+production value either. `verify_bootstrap_composition.py` checks this stayed
+true after a full chain run, not just at the moment it's set.
 
 ## What's reused as-is vs. new in this folder
 
@@ -53,6 +61,28 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
 
 **New in this folder:**
 - [`run.py`](run.py) — fail-closed env isolation + entrypoint.
+- [`claude_bot_quarantine.py`](claude_bot_quarantine.py) — pre-creates the
+  marker files for every known historical production migration in
+  `learnerbot`'s patch chain (12 found by audit — see the module's own
+  docstring for the full list and why each is included or, in two cases,
+  deliberately excluded) so none of them run their mutation logic against
+  this instance, and blanks every secret-shaped env var this bot doesn't
+  need so `learnerbot/config.py`'s un-overridden
+  `load_dotenv(BOT_ROOT/.env)` can never silently fill one in from
+  production's real `.env`. Not hypothetical: a real test run before this
+  module existed proved `telegram_account_roles_patch.py` and
+  `polygon_live_enable_migration.py` both replay against a fresh instance —
+  see "Known limitations" and `verify_bootstrap_composition.py`, which
+  actively checks (not just trusts) that quarantine actually worked.
+- [`evm_execution_guard_patch.py`](evm_execution_guard_patch.py) — wraps
+  every `LiveTrader` signing/broadcast entry point (`buy`, `sell`,
+  `execute_cycle`, `execute_v3_cycle`) to unconditionally refuse. EVM has no
+  execution guard with the same properties as Solana's yet (identity check,
+  `SIGNER_READY`, risk limits), so no `AUTHORISED_CHAINS` value can make an
+  EVM chain actually tradeable through this bot — that variable only
+  authorises a chain that also has a real guard enforcing something, and
+  none exists for EVM. This is what "fail closed" means here: refusal is
+  unconditional, not merely default-off.
 - [`bootstrap_run.py`](bootstrap_run.py) — the actual exec target `run.py` hands
   off to (see "Why bootstrap_run.py exists" below). Calls
   `claude_bot_patches.install_all()` in the child process before running
@@ -73,7 +103,13 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
   constructed, signed, or broadcast by this script.
 - [`risk_engine_guard.py`](risk_engine_guard.py) — pure config validation plus
   `check_new_position()` (capital/exposure/position caps) and
-  `check_daily_loss_and_drawdown()` (realized loss today, running drawdown).
+  `check_daily_loss_and_drawdown()`. The latter is a running-peak drawdown
+  over this instance's own *closed*-position history only — realized P&L,
+  not mark-to-market: an open position's unrealized loss does not count
+  toward `MAX_DRAWDOWN_PCT` until it's actually closed. Documented as an
+  approximation, not hidden as one — see the function's own docstring and
+  `solana_execution_risk_patch.py`'s query functions for exactly what's
+  measured.
   By itself this file only validates config and holds pure functions;
   [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py) is what
   actually calls them before every Solana LIVE buy — see below for why these
@@ -151,8 +187,14 @@ already active before `learnerbot/__main__.py`'s own chain begins.
   and are unaffected by anything in this folder.
 - `risk_engine_guard.py` additionally refuses to start if `MAX_CAPITAL_USD`,
   `MAX_POSITION_USD`, `MAX_TOTAL_EXPOSURE_USD`, `MAX_OPEN_POSITIONS`,
-  `MAX_DAILY_LOSS_USD`, `MAX_DRAWDOWN_PCT`, `MAX_SLIPPAGE_PCT`,
-  `MAX_PRICE_IMPACT_PCT`, or `MIN_POOL_LIQUIDITY_USD` are absent or invalid.
+  `MAX_DAILY_LOSS_USD`, or `MAX_DRAWDOWN_PCT` are absent or invalid — and
+  `solana_execution_risk_patch.py` actually checks the daily-loss and
+  drawdown values (computed from this instance's own closed-position
+  history, priced via a live Jupiter quote) before every guarded buy, not
+  just at startup. Slippage, price-impact, and minimum-liquidity are
+  intentionally not part of this contract — see `risk_engine_guard.py`'s
+  module docstring for exactly which reused, already-reviewed `learnerbot`
+  code governs each instead.
 - `run.py` refuses to start at all if any required identity/config variable is
   missing from its runtime env file (see "Runtime config location" below).
 
@@ -224,21 +266,22 @@ verified-write kill-switch conventions.
    `env.example`'s EVM section for detail; not resolved here since the fix
    (move the file, symlink it, or designate an explicit alternate path) is an
    operator decision, not something to route around in code.
-7. **Operator identity must be verified, not assumed, after a real full-chain
-   run.** Discovered by actually running `verify_bootstrap_composition.py`
-   against `learnerbot`'s complete patch chain (not by inspection):
-   `telegram_account_roles_patch.py`, a marker-gated one-time migration meant
-   for the production deployment, replays against any fresh `DATA_DIR`
-   lacking its marker file — including this isolated instance's — and
-   creates its own hardcoded user row independent of `TELEGRAM_CHAT_IDS`.
-   Other marker-gated migrations in the ~60-module chain may behave
-   similarly and have not all been individually audited. Consequence: don't
-   assume `CLAUDE_BOT_WALLET_OWNER_ID = TELEGRAM_CHAT_IDS[0]` is correct just
-   because `ensure_master_seed()` suggests it should be — run the full-chain
-   test (or `run.py start` once) against this instance's real isolated
-   `CSV_DIR`/`DATA_DIR` first and read back
-   `learnerbot.user_registry.all_users()` to see which identity actually
-   ends up as the sole enabled user, then configure that.
-   `signing_interface.py`'s identity-consistency check correctly fails
-   closed on a mismatch here — confirmed directly, not assumed, when this
-   was first discovered mid-test.
+7. **Operator identity: the original problem is now fixed by quarantine, not
+   just documented.** Discovered by actually running
+   `verify_bootstrap_composition.py` against `learnerbot`'s complete patch
+   chain (not by inspection): `telegram_account_roles_patch.py`, a
+   marker-gated one-time migration meant for the production deployment,
+   replayed against a fresh `DATA_DIR` lacking its marker file — including
+   this isolated instance's — and created its own hardcoded user row
+   independent of `TELEGRAM_CHAT_IDS`. `claude_bot_quarantine.py` now
+   pre-creates that migration's marker (and 11 others found by a systematic
+   audit — see that module's docstring) before `learnerbot`'s chain ever
+   imports, so this specific replay no longer happens.
+   `verify_bootstrap_composition.py` actively re-checks this every run
+   rather than trusting the fix once made. `CLAUDE_BOT_WALLET_OWNER_ID`
+   should now correctly equal `TELEGRAM_CHAT_IDS[0]` via
+   `ensure_master_seed()`, as originally intended — but the quarantine list
+   is audit-based, not proven exhaustive for all future `learnerbot`
+   changes, so `signing_interface.py`'s identity-consistency check stays in
+   place as the real safety net regardless: it fails closed on any mismatch,
+   quarantined or not.
