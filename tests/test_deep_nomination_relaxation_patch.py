@@ -1,8 +1,33 @@
 from __future__ import annotations
 
-from decimal import Decimal
+import json
+import subprocess
+import sys
 
+
+def _run_loader(kind: str, path) -> dict:
+    code = r'''
+import json, sys
 from sibot1_engines._shared import deep_nomination_relaxation_patch as patch
+s = patch._gemini_load(sys.argv[2]) if sys.argv[1] == "gemini" else patch._grok_load(sys.argv[2])
+print(json.dumps({
+    "min_liquidity_usd": str(getattr(s, "min_liquidity_usd", "")),
+    "min_volume_usd": str(getattr(s, "min_volume_usd", "")),
+    "min_volume_liquidity_ratio": str(getattr(s, "min_volume_liquidity_ratio", "")),
+    "max_volume_liquidity_ratio": str(getattr(s, "max_volume_liquidity_ratio", "")),
+    "min_confidence": str(getattr(s, "min_confidence", "")),
+    "min_volume_velocity": str(getattr(s, "min_volume_velocity", "")),
+    "reject_dev_selling": bool(getattr(s, "reject_dev_selling", False)),
+    "max_source_age_ms": int(getattr(s, "max_source_age_ms", 0)),
+}))
+'''
+    proc = subprocess.run(
+        [sys.executable, "-c", code, kind, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 def test_gemini_nomination_caps_strict_source_settings(tmp_path):
@@ -12,12 +37,12 @@ def test_gemini_nomination_caps_strict_source_settings(tmp_path):
         "gemini,1.1.0,Gemini-PulseFlow,solana,1.5,5000,200,0.02,10,-35,25,300000,0.05,750\n",
         encoding="utf-8",
     )
-    s = patch._gemini_load(p)
-    assert s.min_liquidity_usd == Decimal("3000")
-    assert s.min_volume_usd == Decimal("100")
-    assert s.min_volume_liquidity_ratio == Decimal("0.01")
-    assert s.max_volume_liquidity_ratio == Decimal("10")
-    assert s.max_source_age_ms == 750
+    s = _run_loader("gemini", p)
+    assert s["min_liquidity_usd"] == "3000"
+    assert s["min_volume_usd"] == "100"
+    assert s["min_volume_liquidity_ratio"] == "0.01"
+    assert s["max_volume_liquidity_ratio"] == "10"
+    assert s["max_source_age_ms"] == 750
 
 
 def test_gemini_does_not_raise_already_more_flexible_values(tmp_path):
@@ -27,10 +52,10 @@ def test_gemini_does_not_raise_already_more_flexible_values(tmp_path):
         "gemini,1.1.0,Gemini-PulseFlow,solana,1.5,2000,80,0.005,10,-35,25,300000,0.05,750\n",
         encoding="utf-8",
     )
-    s = patch._gemini_load(p)
-    assert s.min_liquidity_usd == Decimal("2000")
-    assert s.min_volume_usd == Decimal("80")
-    assert s.min_volume_liquidity_ratio == Decimal("0.005")
+    s = _run_loader("gemini", p)
+    assert s["min_liquidity_usd"] == "2000"
+    assert s["min_volume_usd"] == "80"
+    assert s["min_volume_liquidity_ratio"] == "0.005"
 
 
 def test_grok_relaxes_nomination_but_keeps_dev_unknown_fail_closed(tmp_path):
@@ -40,8 +65,8 @@ def test_grok_relaxes_nomination_but_keeps_dev_unknown_fail_closed(tmp_path):
         "solana,CompactFlow-v1,1,0.55,0.02,0.035,-0.018,true,750\n",
         encoding="utf-8",
     )
-    s = patch._grok_load(p)
-    assert s.min_confidence == Decimal("0.52")
-    assert s.min_volume_velocity == Decimal("0.005")
-    assert s.reject_dev_selling is True
-    assert s.max_source_age_ms == 750
+    s = _run_loader("grok", p)
+    assert s["min_confidence"] == "0.52"
+    assert s["min_volume_velocity"] == "0.005"
+    assert s["reject_dev_selling"] is True
+    assert s["max_source_age_ms"] == 750
