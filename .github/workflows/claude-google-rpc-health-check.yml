@@ -1,0 +1,53 @@
+name: Claude Google RPC Health Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-rpc-health-check.yml'
+      - '.github/claude-google-rpc-health-check.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-rpc-health-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Verify Google runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+
+      - name: Check Claude service and recent RPC errors
+        shell: bash
+        run: |
+          set -euo pipefail
+          service=claude-trading-bot.service
+          active="$(systemctl is-active "$service" || true)"
+          echo "service_active=$active"
+          systemctl show "$service" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+          log="$(sudo -n journalctl -u "$service" --since '10 minutes ago' --no-pager || true)"
+          rpc429="$(printf '%s\n' "$log" | grep -Ec 'Solana RPC .*HTTP 429|HTTP 429' || true)"
+          rpcerrs="$(printf '%s\n' "$log" | grep -Ec 'SolanaRpcEndpointError|Solana RPC .*HTTP [45][0-9][0-9]' || true)"
+          leadercalls="$(printf '%s\n' "$log" | grep -Ec '\[sibot-solana-leader-signature\]' || true)"
+          align="$(printf '%s\n' "$log" | grep '\[solana-leader-edge-alignment\]' | tail -1 || true)"
+          echo "recent_10m_rpc_429_count=$rpc429"
+          echo "recent_10m_rpc_error_count=$rpcerrs"
+          echo "recent_10m_leader_signature_events=$leadercalls"
+          if [[ -n "$align" ]]; then
+            printf 'latest_alignment=%s\n' "$align" | sed -E 's/[A-Za-z0-9]{32,}/[redacted]/g'
+          else
+            echo 'latest_alignment=NONE'
+          fi
+          echo 'rpc_urls_logged=false'
+          echo 'live_state_changed=false'
+          test "$active" = active
