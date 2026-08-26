@@ -32,6 +32,11 @@ sys.excepthook = _startup_excepthook
 # master controls and must not be defeated by stale per-chain CSV rows.
 from . import user_trading_global_kill_patch as _user_trading_global_kill_patch  # noqa: E402,F401
 
+# The full-power graph scanner used a deterministic tiny prefix of already-known
+# routes on every pass. Rotate discovery across the larger verified pool graph and
+# raise only the read-only candidate sampling budget; execution safety is unchanged.
+from . import full_power_candidate_rotation_patch as _full_power_candidate_rotation_patch  # noqa: E402,F401
+
 # Supervise the independent SiBot 1 SHADOW/PAPER sidecar only for `learnerbot run`.
 # Its child launch is delayed so MAIN BOOT can finish its audited fail-closed
 # composition checks first. This import never enables signing or broadcast.
