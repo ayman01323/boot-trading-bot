@@ -1,0 +1,93 @@
+name: SiRisky HTTP Diagnostic
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-http-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Check RPC and Jupiter status without secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n /root/SiRisky/.venv/bin/python - <<'PY'
+          from pathlib import Path
+          from urllib.parse import urlparse
+          import csv, requests
+
+          def env_read(path):
+              d={}
+              for raw in Path(path).read_text(encoding='utf-8',errors='replace').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#') or '=' not in raw:
+                      continue
+                  k,v=raw.split('=',1)
+                  d[k.strip()]=v.strip().strip('"').strip("'")
+              return d
+
+          def safe_body(resp):
+              try:
+                  j=resp.json()
+                  if isinstance(j,dict):
+                      for key in ('apiKey','api_key','key','token','authorization'):
+                          j.pop(key,None)
+                      return str(j)[:500]
+              except Exception:
+                  pass
+              return (resp.text or '')[:500]
+
+          env=env_read('/root/SiRisky/.env')
+          rpc=env.get('SOLANA_RPC_URL','')
+          key=env.get('JUPITER_API_KEY','')
+          print('=== RPC ===')
+          print('rpc_host=' + (urlparse(rpc).hostname or 'MISSING' if rpc else 'MISSING'))
+          try:
+              r=requests.post(rpc,json={'jsonrpc':'2.0','id':1,'method':'getLatestBlockhash','params':[]},timeout=15,headers={'User-Agent':'SiRisky-diagnostic'})
+              print('rpc_http_status='+str(r.status_code))
+              print('rpc_body='+safe_body(r))
+          except Exception as e:
+              print('rpc_exception='+type(e).__name__)
+
+          wallet=''
+          try:
+              rows=list(csv.DictReader(open('/root/SiRisky/CSV/wallets.csv',encoding='utf-8-sig',newline='')))
+              if rows: wallet=(rows[0].get('address') or '').strip()
+          except Exception:
+              pass
+
+          headers={'User-Agent':'SiRisky-diagnostic'}
+          if key: headers['x-api-key']=key
+          wsol='So11111111111111111111111111111111111111112'
+          usdc='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+
+          print('=== JUPITER V1 ===')
+          try:
+              r=requests.get('https://api.jup.ag/swap/v1/quote',params={'inputMint':wsol,'outputMint':usdc,'amount':'100000','slippageBps':'100'},headers=headers,timeout=20)
+              print('jupiter_v1_http_status='+str(r.status_code))
+              print('jupiter_v1_body='+safe_body(r))
+          except Exception as e:
+              print('jupiter_v1_exception='+type(e).__name__)
+
+          print('=== JUPITER V2 ===')
+          if wallet:
+              try:
+                  r=requests.get('https://api.jup.ag/swap/v2/order',params={'inputMint':wsol,'outputMint':usdc,'amount':'100000','taker':wallet,'excludeRouters':'jupiterz'},headers=headers,timeout=20)
+                  print('jupiter_v2_http_status='+str(r.status_code))
+                  print('jupiter_v2_body='+safe_body(r))
+              except Exception as e:
+                  print('jupiter_v2_exception='+type(e).__name__)
+          else:
+              print('jupiter_v2=SKIP_NO_WALLET')
+
+          print('live_broadcast=OFF')
+          PY
