@@ -1,0 +1,77 @@
+name: Claude Google Telegram Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-telegram-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  telegram-smoke:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_MASTER_CHAT_ID: ${{ vars.TELEGRAM_MASTER_CHAT_ID || '5923828381' }}
+    steps:
+      - name: Verify Google runner and send Claude connectivity test
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          token = (os.environ.get('TELEGRAM_BOT_TOKEN') or '').strip()
+          chat_id = (os.environ.get('TELEGRAM_MASTER_CHAT_ID') or '').strip()
+          if not token:
+              raise SystemExit('telegram_secret_configured=false')
+          if not re.fullmatch(r'-?[0-9]{5,20}', chat_id):
+              raise SystemExit('telegram_chat_configured=false')
+
+          text = (
+              '🤖 CLAUDE TRADING BOT — test message. '
+              'STATUS=SIMULATED, LIVE=OFF, ARMED=OFF. '
+              'This is a connectivity/format check only, no trade action taken.'
+          )
+          payload = json.dumps({
+              'chat_id': chat_id,
+              'text': text,
+              'disable_notification': False,
+              'protect_content': True,
+              'link_preview_options': {'is_disabled': True},
+          }).encode('utf-8')
+          req = urllib.request.Request(
+              f'https://api.telegram.org/bot{token}/sendMessage',
+              data=payload,
+              method='POST',
+              headers={'Content-Type': 'application/json', 'User-Agent': 'claude-google-telegram-smoke'},
+          )
+          with urllib.request.urlopen(req, timeout=15) as response:
+              result = json.loads(response.read().decode('utf-8', errors='replace') or '{}')
+          if not result.get('ok'):
+              raise SystemExit('telegram_sent=false')
+          print('telegram_configured=true')
+          print('telegram_sent=true')
+          print('message_kind=claude_connectivity_smoke')
+          print('live_state_changed=false')
+          print('signer_state_changed=false')
+          PY
+
+      - name: Safety summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo 'Claude Telegram smoke test only.'
+            echo 'Telegram credential is process-scoped from GitHub Actions and is not written to disk.'
+            echo 'No getUpdates polling, no webhook changes, no trading start, no LIVE/ARM/AUTO change, no signer/wallet access.'
+          } >> "$GITHUB_STEP_SUMMARY"
