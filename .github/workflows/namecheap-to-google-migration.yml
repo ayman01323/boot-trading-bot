@@ -1,10 +1,6 @@
 name: Staged Namecheap to Google Bot Migration
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/namecheap-to-google-migration.yml'
   workflow_dispatch:
 
 permissions:
@@ -15,53 +11,57 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE: /root/multichain-learning-bot-v2.2-fast-direct-market
   STAGING_ROOT: /home/ayman01323/NamecheapMigration
   STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
+  HANDOFF: /var/tmp/namecheap-google-migration-handoff
+  PREPARE_WRAPPER: /usr/local/sbin/prepare-namecheap-google-migration
+  TRANSFER_WRAPPER: /usr/local/sbin/transfer-namecheap-google-migration
+  KEY_MARKER: namecheap-google-live-migration
 
 jobs:
   prepare-source:
-    name: Prepare old Namecheap source
+    name: Prepare old Namecheap source safely
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Verify source is readable without stopping production
+      - name: Verify restricted migration wrappers
         shell: bash
         run: |
           set -euo pipefail
-          test -d "$SOURCE"
-          test -x /root || { echo 'SOURCE_ROOT_NOT_TRAVERSABLE_BY_RUNNER'; exit 20; }
-          test -r "$SOURCE" || { echo 'SOURCE_NOT_READABLE_BY_RUNNER'; exit 21; }
-          echo "source=$SOURCE"
-          echo "source_size=$(du -sh "$SOURCE" | awk '{print $1}')"
-          echo "source_files=$(find "$SOURCE" -xdev -type f 2>/dev/null | wc -l)"
-          systemctl is-active --quiet learnerbot.service || { echo 'learnerbot_not_active'; exit 22; }
-          echo 'learnerbot_kept_running=true'
+          test -x "$PREPARE_WRAPPER" || {
+            echo 'Restricted migration wrapper is not installed on Namecheap.' >&2
+            exit 20
+          }
+          test -x "$TRANSFER_WRAPPER" || {
+            echo 'Restricted transfer wrapper is not installed on Namecheap.' >&2
+            exit 21
+          }
+          sudo -n -l "$PREPARE_WRAPPER" >/dev/null 2>&1 || {
+            echo 'github-runner is not authorised for prepare wrapper.' >&2
+            exit 22
+          }
+          sudo -n -l "$TRANSFER_WRAPPER" >/dev/null 2>&1 || {
+            echo 'github-runner is not authorised for transfer wrapper.' >&2
+            exit 23
+          }
 
-      - name: Generate one-time migration SSH key
+      - name: Prepare one-time key and source inventory without stopping learnerbot
         shell: bash
         run: |
           set -euo pipefail
-          KEY_DIR="/tmp/namecheap-google-migration-${GITHUB_RUN_ID}"
-          rm -rf "$KEY_DIR"
-          mkdir -p "$KEY_DIR"
-          chmod 700 "$KEY_DIR"
-          ssh-keygen -q -t ed25519 -N '' \
-            -C "namecheap-google-migration-${GITHUB_RUN_ID}" \
-            -f "$KEY_DIR/id_ed25519"
-          chmod 600 "$KEY_DIR/id_ed25519"
-          SOURCE_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
-          test -n "$SOURCE_IP" || { echo 'Could not determine Namecheap public IP'; exit 23; }
-          printf '%s\n' "$SOURCE_IP" > "$KEY_DIR/source-ip.txt"
-          chmod 600 "$KEY_DIR/source-ip.txt"
+          sudo -n "$PREPARE_WRAPPER"
+          test -s "$HANDOFF/public-key.txt"
+          test -s "$HANDOFF/source-ip.txt"
+          test -w "$HANDOFF/google-ip.txt"
+          echo 'NAMECHEAP_MIGRATION_PREPARE_OK=true' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload public key and source IP only
         uses: actions/upload-artifact@v4
         with:
           name: migration-source-public-${{ github.run_id }}
           path: |
-            /tmp/namecheap-google-migration-${{ github.run_id }}/id_ed25519.pub
-            /tmp/namecheap-google-migration-${{ github.run_id }}/source-ip.txt
+            /var/tmp/namecheap-google-migration-handoff/public-key.txt
+            /var/tmp/namecheap-google-migration-handoff/source-ip.txt
           retention-days: 1
           if-no-files-found: error
 
@@ -69,20 +69,20 @@ jobs:
     name: Prepare Google staging destination
     needs: prepare-source
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Verify Google destination
+      - name: Verify Google destination and capacity
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          mkdir -p "$STAGING_DIR"
+          mkdir -p "$STAGING_ROOT" "$STAGING_DIR"
           chmod 700 "$STAGING_ROOT" "$STAGING_DIR"
           echo "staging=$STAGING_DIR"
           df -h "$STAGING_ROOT"
 
-      - name: Download one-time public key
+      - name: Download one-time public material
         uses: actions/download-artifact@v4
         with:
           name: migration-source-public-${{ github.run_id }}
@@ -93,14 +93,19 @@ jobs:
         run: |
           set -euo pipefail
           WORK="/tmp/namecheap-google-authorise-${GITHUB_RUN_ID}"
-          PUB="$WORK/id_ed25519.pub"
-          SOURCE_IP="$(cat "$WORK/source-ip.txt")"
+          PUB="$WORK/public-key.txt"
+          SOURCE_IP="$(tr -d '[:space:]' < "$WORK/source-ip.txt")"
           test -s "$PUB"
+          [[ "$SOURCE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+            echo 'Invalid Namecheap source IPv4.' >&2
+            exit 30
+          }
+
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
           touch "$HOME/.ssh/authorized_keys"
           chmod 600 "$HOME/.ssh/authorized_keys"
-          grep -v "namecheap-google-migration-${GITHUB_RUN_ID}$" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+          grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
           mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
           chmod 600 "$HOME/.ssh/authorized_keys"
           printf 'from="%s",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' \
@@ -111,8 +116,12 @@ jobs:
           if [[ -z "$GOOGLE_IP" ]]; then
             GOOGLE_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
           fi
-          test -n "$GOOGLE_IP" || { echo 'Could not determine Google public IP'; exit 30; }
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+            echo 'Could not resolve a valid Google external IPv4.' >&2
+            exit 31
+          }
           printf '%s\n' "$GOOGLE_IP" > "$WORK/google-ip.txt"
+          chmod 600 "$WORK/google-ip.txt"
           echo 'one_time_google_ssh_authorisation=ready'
 
       - name: Upload Google endpoint only
@@ -129,63 +138,76 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 180
     steps:
-      - name: Download Google endpoint
+      - name: Download fixed Google endpoint
         uses: actions/download-artifact@v4
         with:
           name: migration-google-endpoint-${{ github.run_id }}
-          path: /tmp/namecheap-google-migration-${{ github.run_id }}
+          path: /tmp/namecheap-google-endpoint-${{ github.run_id }}
 
-      - name: Verify direct SSH and rsync the complete folder
+      - name: Hand validated endpoint to restricted root wrapper
         shell: bash
         run: |
           set -euo pipefail
-          KEY_DIR="/tmp/namecheap-google-migration-${GITHUB_RUN_ID}"
-          KEY="$KEY_DIR/id_ed25519"
-          GOOGLE_IP="$(cat "$KEY_DIR/google-ip.txt")"
-          test -s "$KEY"
-          command -v rsync >/dev/null
+          SRC="/tmp/namecheap-google-endpoint-${GITHUB_RUN_ID}/google-ip.txt"
+          test -s "$SRC"
+          test -w "$HANDOFF/google-ip.txt"
+          GOOGLE_IP="$(tr -d '[:space:]' < "$SRC")"
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+            echo 'Invalid Google endpoint handoff.' >&2
+            exit 40
+          }
+          printf '%s\n' "$GOOGLE_IP" > "$HANDOFF/google-ip.txt"
+          chmod 600 "$HANDOFF/google-ip.txt"
 
-          SSH="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15"
-          $SSH ayman01323@"$GOOGLE_IP" 'echo GOOGLE_SSH_READY'
+      - name: Run fixed live source-to-Google rsync
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n "$TRANSFER_WRAPPER"
+          echo 'FIRST_PASS_LIVE_MIGRATION_OK=true' >> "$GITHUB_STEP_SUMMARY"
 
-          # First pass is intentionally live: do not stop learnerbot. Mutable DB/state
-          # will be reconciled in a short final delta pass at cutover.
-          rsync -aH --partial --human-readable \
-            --no-owner --no-group \
-            --info=stats2,progress2 \
-            -e "$SSH" \
-            "$SOURCE/" \
-            "ayman01323@$GOOGLE_IP:$STAGING_DIR/"
-
-          systemctl is-active --quiet learnerbot.service
-          echo 'FIRST_PASS_RSYNC_COMPLETE=true'
-          echo 'learnerbot_remained_active=true'
-
-      - name: Remove Namecheap one-time private key
+      - name: Remove runner-owned migration handoff
         if: always()
         shell: bash
-        run: rm -rf "/tmp/namecheap-google-migration-${GITHUB_RUN_ID}"
+        run: |
+          rm -rf "/tmp/namecheap-google-endpoint-${GITHUB_RUN_ID}"
+          rm -rf "$HANDOFF"
 
   verify-google:
     name: Verify staged folder on Google
     needs: first-pass-transfer
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Verify staged copy without running it
         shell: bash
         run: |
           set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
           test -d "$STAGING_DIR"
           test -d "$STAGING_DIR/learnerbot"
           test -f "$STAGING_DIR/systemd/learnerbot.service"
-          echo "staged_size=$(du -sh "$STAGING_DIR" | awk '{print $1}')"
-          echo "staged_files=$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
-          echo "git_present=$([[ -d "$STAGING_DIR/.git" ]] && echo true || echo false)"
+          test -d "$STAGING_DIR/.git"
+
+          STAGED_SIZE="$(du -sh "$STAGING_DIR" | awk '{print $1}')"
+          STAGED_FILES="$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
+          STAGED_SHA="$(git -C "$STAGING_DIR" rev-parse HEAD 2>/dev/null || true)"
+
+          echo "staged_size=$STAGED_SIZE"
+          echo "staged_files=$STAGED_FILES"
+          echo "staged_git_sha=$STAGED_SHA"
           echo "venv_present=$([[ -d "$STAGING_DIR/.venv" ]] && echo true || echo false)"
           echo 'staged_bot_started=false'
           echo 'GOOGLE_FIRST_PASS_STAGED=true'
           df -h "$STAGING_ROOT"
+
+          # The copied virtualenv is retained as source evidence only; it will be
+          # rebuilt on Google before production cutover.
+          if pgrep -af "$STAGING_DIR" >/dev/null 2>&1; then
+            echo 'A process appears to be running from the staging directory; refusing verification.' >&2
+            pgrep -af "$STAGING_DIR" || true
+            exit 50
+          fi
 
   cleanup-google-key:
     name: Remove one-time Google SSH authorisation
@@ -194,12 +216,12 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Remove migration key and temporary endpoint material
+      - name: Remove one-time migration key and endpoint material
         shell: bash
         run: |
           set -euo pipefail
           if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
-            grep -v "namecheap-google-migration-${GITHUB_RUN_ID}$" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+            grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
             mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
             chmod 600 "$HOME/.ssh/authorized_keys"
           fi
