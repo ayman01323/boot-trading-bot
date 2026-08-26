@@ -34,9 +34,9 @@ jobs:
     if: >-
       github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
-    # This is a GitHub/provider API relay only; keeping it off boot-vps prevents
-    # communication work from starving production deploy/status operations.
-    runs-on: ubuntu-latest
+    # Communication/provider traffic now originates from the dedicated Google
+    # self-hosted runner, not the production boot-vps and not GitHub-hosted Ubuntu.
+    runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -63,6 +63,15 @@ jobs:
           else
             echo 'run=true' >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Verify Google relay runner identity
+        if: steps.selected.outputs.run == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          echo 'provider_relay_runner=boot-google' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check out trusted current main without persisted credentials
         if: steps.selected.outputs.run == 'true'
@@ -96,6 +105,19 @@ jobs:
           rm -rf "$RELAY_VENV"
           python3 -m venv "$RELAY_VENV"
           "$RELAY_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+
+      - name: Verify communication-only provider imports
+        if: steps.mailbox.outputs.pending == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RELAY_VENV/bin/python" - <<'PY'
+          import runpy
+          ns = runpy.run_path('scripts/ai_mailbox_provider_relay.py', run_name='ai_mailbox_provider_relay_import_check')
+          if 'call_provider' not in ns:
+              raise SystemExit('provider relay import check failed')
+          print('provider_relay_import=ok')
+          PY
 
       - name: Install standalone Copilot CLI only when needed
         if: steps.mailbox.outputs.pending == 'true' && matrix.provider == 'copilot'
@@ -189,6 +211,7 @@ jobs:
           {
             echo "## ${PROVIDER} Strategy Factory fallback relay"
             echo
+            echo 'Runner: **Google self-hosted (`boot-google`)**'
             echo "Pending message: **${PENDING:-false}**"
             echo "Message ID: \`${MESSAGE_ID:-none}\`"
             echo "Provider return code: **${ROUTER_RC:-not-run}**"
