@@ -1,4 +1,4 @@
-name: Google Production Staging Validation
+name: Namecheap to Google Final Production Cutover
 
 on:
   push:
@@ -10,99 +10,235 @@ permissions:
   contents: read
 
 concurrency:
-  group: google-production-staging-validation
-  cancel-in-progress: true
+  group: namecheap-google-final-production-cutover
+  cancel-in-progress: false
+
+env:
+  HANDOFF: /var/tmp/namecheap-google-cutover-handoff
+  KEY_MARKER: namecheap-google-final-cutover
+  STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
+  FINAL_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market
 
 jobs:
-  validate:
-    runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 45
-    env:
-      STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
-      FINAL_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market
-      TEST_VENV: /home/ayman01323/NamecheapMigration/.google-preflight-venv
-      PREPARE_WRAPPER: /usr/local/sbin/prepare-google-production-bot
-      VERIFY_WRAPPER: /usr/local/sbin/verify-google-production-bot
+  quiesce-namecheap:
+    name: Stop Namecheap and prepare final-sync key
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
     steps:
-      - name: Validate Google host and staged source
+      - name: Verify restricted cutover bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          for w in \
+            /usr/local/sbin/quiesce-namecheap-for-google-cutover \
+            /usr/local/sbin/final-sync-namecheap-to-google \
+            /usr/local/sbin/verify-namecheap-cutover-stopped \
+            /usr/local/sbin/resume-namecheap-after-cutover-failure; do
+            test -x "$w"
+            sudo -n -l "$w" >/dev/null 2>&1
+          done
+      - name: Quiesce Namecheap production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/quiesce-namecheap-for-google-cutover
+          test -s "$HANDOFF/public-key.txt"
+          test -s "$HANDOFF/source-ip.txt"
+          test -w "$HANDOFF/google-ip.txt"
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+      - name: Upload one-time public material
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-cutover-source-${{ github.run_id }}
+          path: |
+            /var/tmp/namecheap-google-cutover-handoff/public-key.txt
+            /var/tmp/namecheap-google-cutover-handoff/source-ip.txt
+          retention-days: 1
+          if-no-files-found: error
+
+  authorise-google:
+    name: Authorise one-time final-sync key on Google
+    needs: quiesce-namecheap
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify Google is not running production
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
-          test "$(id -un)" = 'ayman01323'
+          sudo -n -l /usr/local/sbin/status-google-production-cutover >/dev/null 2>&1
+          if sudo -n /usr/local/sbin/status-google-production-cutover | grep -q '^google_service_active=active$'; then
+            echo 'Refusing: Google learnerbot is already active before cutover.' >&2
+            exit 30
+          fi
+          test -d "$STAGING_DIR"
+      - name: Download one-time public material
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cutover-source-${{ github.run_id }}
+          path: /tmp/final-cutover-auth-${{ github.run_id }}
+      - name: Authorise fixed Namecheap source key
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="/tmp/final-cutover-auth-${GITHUB_RUN_ID}"
+          PUB="$WORK/public-key.txt"
+          SOURCE_IP="$(tr -d '[:space:]' < "$WORK/source-ip.txt")"
+          test -s "$PUB"
+          [[ "$SOURCE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+          mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          printf 'from="%s",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' \
+            "$SOURCE_IP" "$(cat "$PUB")" >> "$HOME/.ssh/authorized_keys"
+          GOOGLE_IP="$(curl -fsS -H 'Metadata-Flavor: Google' --max-time 5 http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null || true)"
+          if [[ -z "$GOOGLE_IP" ]]; then GOOGLE_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"; fi
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          printf '%s\n' "$GOOGLE_IP" > "$WORK/google-ip.txt"
+          chmod 600 "$WORK/google-ip.txt"
+      - name: Upload Google endpoint only
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-cutover-google-endpoint-${{ github.run_id }}
+          path: /tmp/final-cutover-auth-${{ github.run_id }}/google-ip.txt
+          retention-days: 1
+          if-no-files-found: error
+
+  final-sync:
+    name: Final stopped-state sync to Google staging
+    needs: authorise-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 180
+    steps:
+      - name: Download fixed Google endpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cutover-google-endpoint-${{ github.run_id }}
+          path: /tmp/final-cutover-endpoint-${{ github.run_id }}
+      - name: Hand endpoint to restricted root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="/tmp/final-cutover-endpoint-${GITHUB_RUN_ID}/google-ip.txt"
+          GOOGLE_IP="$(tr -d '[:space:]' < "$SRC")"
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          test -w "$HANDOFF/google-ip.txt"
+          printf '%s\n' "$GOOGLE_IP" > "$HANDOFF/google-ip.txt"
+          chmod 600 "$HANDOFF/google-ip.txt"
+      - name: Run final sync while Namecheap is stopped
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          sudo -n /usr/local/sbin/final-sync-namecheap-to-google
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+      - name: Remove runner-owned endpoint material
+        if: always()
+        shell: bash
+        run: rm -rf "/tmp/final-cutover-endpoint-${GITHUB_RUN_ID}"
+
+  verify-staging:
+    name: Verify final staging snapshot on Google
+    needs: final-sync
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify final stopped-state snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
           test -d "$STAGING_DIR/.git"
           test -f "$STAGING_DIR/requirements.txt"
           test -d "$STAGING_DIR/learnerbot"
-          echo "hostname=$(hostname)"
-          echo "user=$(id -un)"
-          echo "python=$(python3 --version 2>&1)"
-          echo "os=$( . /etc/os-release && printf '%s %s' "$ID" "$VERSION_ID" )"
-          echo "sudo_noninteractive=$({ sudo -n true >/dev/null 2>&1 && echo true; } || echo false)"
-          echo "root_traverse=$({ test -x /root && echo true; } || echo false)"
-          echo "final_dir_visible=$({ test -d "$FINAL_DIR" && echo true; } || echo false)"
-          echo "staging_size=$(du -sh "$STAGING_DIR" | awk '{print $1}')"
-          echo "staging_files=$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
-          echo "staging_sha=$(git -C "$STAGING_DIR" rev-parse HEAD)"
-          echo "claude_root_present=$([[ -d /home/ayman01323/ClaudeServer ]] && echo true || echo false)"
-          echo "staging_processes=$(pgrep -af "$STAGING_DIR" 2>/dev/null | wc -l)"
-          df -h /
-
-      - name: Inspect bounded sudo permissions and use migration bridge if already installed
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo '=== sudo permissions ==='
-          sudo -n -l 2>&1 || true
-          echo "prepare_wrapper_present=$([[ -x "$PREPARE_WRAPPER" ]] && echo true || echo false)"
-          echo "verify_wrapper_present=$([[ -x "$VERIFY_WRAPPER" ]] && echo true || echo false)"
-          if [[ -x "$PREPARE_WRAPPER" ]] && sudo -n -l "$PREPARE_WRAPPER" >/dev/null 2>&1; then
-            echo 'restricted_prepare_permission=true'
-            sudo -n "$PREPARE_WRAPPER"
-            sudo -n "$VERIFY_WRAPPER"
-            echo 'GOOGLE_FINAL_PATH_PREPARED=true'
-          else
-            echo 'restricted_prepare_permission=false'
-            echo 'GOOGLE_FINAL_PATH_PREPARED=false'
-            echo 'ROOT_BOOTSTRAP_REQUIRED=true'
-          fi
-
-      - name: Build clean temporary Google virtualenv
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "$TEST_VENV"
-          python3 -m venv "$TEST_VENV"
-          "$TEST_VENV/bin/python" -m pip install -q --upgrade pip
-          "$TEST_VENV/bin/python" -m pip install -q -r "$STAGING_DIR/requirements.txt"
-          echo "dependency_install=PASS"
-
-      - name: Compile and import migrated code
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$STAGING_DIR"
-          "$TEST_VENV/bin/python" -m compileall -q learnerbot scripts
-          PYTHONPATH="$STAGING_DIR" "$TEST_VENV/bin/python" - <<'PY'
-          import learnerbot
-          print('learnerbot_import=PASS')
-          print('learnerbot_version=' + str(getattr(learnerbot, '__version__', 'unknown')))
-          PY
-          echo "compileall=PASS"
-
-      - name: Confirm no Google production process was started
-        shell: bash
-        run: |
-          set -euo pipefail
           if pgrep -af "$STAGING_DIR" | grep -v -E 'grep|Actions.Runner|Runner.Worker' >/dev/null 2>&1; then
-            echo 'Unexpected process from staging directory.' >&2
-            pgrep -af "$STAGING_DIR" || true
+            echo 'Refusing: process is running from staging.' >&2
             exit 40
           fi
-          echo 'google_production_started=false'
+          echo "staging_sha=$(git -C "$STAGING_DIR" rev-parse HEAD)"
+          echo "staging_size=$(du -sh "$STAGING_DIR" | awk '{print $1}')"
+          echo "staging_files=$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
 
-      - name: Remove temporary validation virtualenv
-        if: always()
+  refresh-google:
+    name: Refresh final Google production path
+    needs: verify-staging
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 30
+    steps:
+      - name: Refresh and verify Google final path while stopped
         shell: bash
         run: |
-          rm -rf "$TEST_VENV"
-          echo 'temporary_preflight_venv_removed=true'
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/refresh-google-production-bot >/dev/null 2>&1
+          sudo -n -l /usr/local/sbin/verify-google-production-bot >/dev/null 2>&1
+          sudo -n /usr/local/sbin/refresh-google-production-bot
+          sudo -n /usr/local/sbin/verify-google-production-bot
+
+  activate-google:
+    name: Start Google production learnerbot
+    needs: refresh-google
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Activate Google production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/activate-google-production-bot >/dev/null 2>&1
+          sudo -n /usr/local/sbin/activate-google-production-bot
+          sudo -n /usr/local/sbin/status-google-production-cutover
+
+  verify-namecheap-stopped:
+    name: Confirm old Namecheap bot remains stopped
+    needs: activate-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Verify old production remains inactive
+        shell: bash
+        run: sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+
+  rollback-before-activation:
+    name: Roll back to Namecheap if pre-activation cutover fails
+    if: ${{ always() && needs.quiesce-namecheap.result == 'success' && needs.activate-google.result != 'success' }}
+    needs: [quiesce-namecheap, authorise-google, final-sync, verify-staging, refresh-google, activate-google]
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Resume Namecheap production
+        shell: bash
+        run: sudo -n /usr/local/sbin/resume-namecheap-after-cutover-failure
+
+  dual-run-safety:
+    name: Stop Google if old Namecheap unexpectedly remains active
+    if: ${{ always() && needs.activate-google.result == 'success' && needs.verify-namecheap-stopped.result != 'success' }}
+    needs: [activate-google, verify-namecheap-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Stop Google to avoid dual production
+        shell: bash
+        run: sudo -n /usr/local/sbin/stop-google-production-after-failed-cutover
+
+  cleanup-google-key:
+    name: Remove one-time final-sync SSH authorisation
+    if: always()
+    needs: [authorise-google, final-sync, activate-google, verify-namecheap-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Remove one-time key and endpoint material
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+            grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+            mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+            chmod 600 "$HOME/.ssh/authorized_keys"
+          fi
+          rm -rf "/tmp/final-cutover-auth-${GITHUB_RUN_ID}"
+          echo 'FINAL_CUTOVER_SSH_KEY_REMOVED=true'
