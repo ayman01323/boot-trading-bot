@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Show current SiRisky automatic candidates and approval integration points
+      - name: Test current SiRisky live connectivity safely
         shell: bash
         run: |
           set -euo pipefail
@@ -22,26 +22,27 @@ jobs:
           sudo -n true
           echo '=== SERVICE ==='
           systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          test "$(systemctl is-active sirisky.service)" = 'active'
+          echo '=== RPC HOSTS ONLY ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+from urllib.parse import urlparse
+from sirisky.config import Settings
+s=Settings.load()
+for label in ("http","ws"):
+    u=s.resolve_rpc(label)
+    p=urlparse(u)
+    print(label+"_scheme="+str(p.scheme))
+    print(label+"_host="+str(p.hostname or "MISSING"))
+    print(label+"_configured="+str(bool(u)).lower())
+PY'
+          echo '=== SAFE LIVE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
           echo '=== AUTO SETTINGS ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_discovery_interval_seconds|auto_candidate_limit|auto_min_liquidity_usd|auto_max_age_seconds|auto_promote_to_selected)$/' /root/SiRisky/CSV/runtime.csv
-          echo '=== STAGE 1 CANDIDATES ==='
-          sudo -n head -n 8 /root/SiRisky/CSV/stage1_candidates.csv
-          echo '=== FILE LIST ==='
-          sudo -n find /root/SiRisky/sirisky -maxdepth 1 -type f -printf '%f\n' | sort
-          echo '=== ENGINE ==='
-          sudo -n sed -n '1,260p' /root/SiRisky/sirisky/engine.py
-          echo '=== STAGE4 ==='
-          sudo -n sed -n '1,260p' /root/SiRisky/sirisky/stage4_dispatch.py
-          echo '=== STAGE5 ==='
-          sudo -n sed -n '1,340p' /root/SiRisky/sirisky/stage5_trade.py
-          echo '=== TELEGRAM ==='
-          sudo -n sed -n '1,300p' /root/SiRisky/sirisky/telegram.py || true
-          echo '=== MODELS ==='
-          sudo -n sed -n '1,300p' /root/SiRisky/sirisky/models.py
-          echo '=== CONFIG ==='
-          sudo -n sed -n '1,320p' /root/SiRisky/sirisky/config.py
-          echo '=== RUN ==='
-          sudo -n sed -n '1,360p' /root/SiRisky/run.py
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|auto_discovery_enabled|auto_discovery_interval_seconds)$/' /root/SiRisky/CSV/runtime.csv
+          echo '=== CANDIDATE COUNT ==='
+          sudo -n awk 'END{print NR-1}' /root/SiRisky/CSV/stage1_candidates.csv
           echo '=== SAFETY ==='
+          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
           test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'live_monitoring_test=PASS'
           echo 'real_transaction_broadcast=NO'
