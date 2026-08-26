@@ -1,0 +1,3 @@
+requested_at=2026-08-26T00:18:00Z
+requested_by=gpt
+purpose=secure_copy_of_runtime_rpc_endpoints_to_botgoogle
