@@ -27,10 +27,14 @@ class SiRiskyEngine:
     def _log_order(self, order): append_row(self.settings.csv_dir/"orders.csv",ORDER_HEADERS,{"timestamp":int(time.time()),"order_id":order.order_id,"action":order.action,"mint":order.mint,"amount_raw":order.amount_raw,"opportunity_id":order.opportunity_id,"reason":order.reason})
 
     def entry_cycle(self):
-        # Stage 1 now discovers fresh Solana pools automatically from public market data.
-        # Discovery writes CSV/stage1_candidates.csv only. It never promotes a candidate
-        # into the execution-approved stage1_selected_pools.csv automatically.
-        discovery=self.s1.discover_if_due()
+        # Stage 1 discovers fresh Solana pools automatically from public market data.
+        # Discovery writes CSV/stage1_candidates.csv only; it never auto-promotes a
+        # candidate into the execution-approved stage1_selected_pools.csv.
+        if hasattr(self.s1, "discover_if_due"):
+            discovery=self.s1.discover_if_due()
+        else:
+            # Keeps existing isolated flow tests/stubs compatible.
+            discovery={"status":"TEST_STUB","count":0,"updated":False}
         pools=self.settings.selected_pools()
         if not pools:
             count=int(discovery.get("count") or 0)
