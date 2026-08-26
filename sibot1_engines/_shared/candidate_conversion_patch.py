@@ -3,7 +3,7 @@ from __future__ import annotations
 """Bounded candidate-conversion fixes for SiBot 1.
 
 This module only expands which already-produced market opportunities are visible to
-SiBot's SHADOW strategy workers.  It does not alter PoolCheck, signing, broadcast,
+SiBot's SHADOW strategy workers. It does not alter PoolCheck, signing, broadcast,
 position limits, live controls, or protected-bridge revalidation.
 """
 
@@ -17,14 +17,19 @@ _ORIG_EVM_INIT = _market.EvmOpportunityCsvSource.__init__
 
 def _evm_init(self, csv_dir, evidence, max_age_seconds: int = 900) -> None:
     _ORIG_EVM_INIT(self, csv_dir, evidence, max_age_seconds=max_age_seconds)
-    full_power = Path(csv_dir) / "auto" / "full_power_opportunities.csv"
+    auto_dir = Path(csv_dir) / "auto"
+    base_full_power = auto_dir / "base_full_power_opportunities.csv"
+    full_power = auto_dir / "full_power_opportunities.csv"
     paths = list(self.paths)
-    if full_power not in paths:
-        # The fast/full-power scanner is the production writer used when
-        # fast_market_enabled=true.  Treat it as an additional read-only source;
-        # the GPT engine and protected bridge still independently reject anything
-        # that lacks exact route/liquidity evidence or final LIVE preflight.
-        paths.insert(1, full_power)
+    # The dedicated Base feed is written from the same existing Base scan and is
+    # not overwritten by slower chains. It carries the original quote timestamp,
+    # so GPT's independent <=15s freshness gate remains authoritative.
+    for candidate in (base_full_power, full_power):
+        if candidate in paths:
+            paths.remove(candidate)
+    # Put Base first among fast-market sources so a duplicated route is observed
+    # from the durable fresh Base feed before the slower combined file.
+    paths[1:1] = [base_full_power, full_power]
     self.paths = tuple(paths)
 
 

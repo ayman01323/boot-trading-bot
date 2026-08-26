@@ -2,17 +2,17 @@ from __future__ import annotations
 
 """Keep GPT/Base full-power discovery broad and fresh without more quote calls.
 
-Two starvation modes are addressed:
+Three starvation modes are addressed:
 1. deterministic graph helpers repeatedly returned the same small route prefix;
-2. the combined EVM scanner waited for every chain before publishing Base rows,
-   so a valid Base quote could age past GPT's 15-second nomination window while
-   an unrelated EVM chain was still scanning.
+2. the combined EVM scanner waits for every chain before its final shared publish;
+3. a short-lived Base-only write to that shared file can be overwritten before the
+   independent SiBot runtime reaches its next bounded poll.
 
 This patch rotates already-discovered route templates while preserving the existing
-quote-call budget, and atomically publishes the Base result as soon as its existing
-scan finishes. It never rewrites the row's original observed_at_epoch, so quote
-freshness is not fabricated. The normal combined file is still written at the end
-of the pass.
+quote-call budget, and atomically publishes the Base result to a dedicated read-only
+feed as soon as its existing scan finishes. It never rewrites the row's original
+observed_at_epoch, so quote freshness is not fabricated. The normal combined file
+is still written at the end of the pass.
 
 It does not change gross-profit rules, GPT's net-edge floor, PoolCheck/rug checks,
 liquidity/sellability/slippage checks, wallet simulation, signing, broadcast,
@@ -80,14 +80,15 @@ def _rotating_v3_triangles(pool_rows, wrapped: str, max_paths: int):
 
 
 def _scan_full_power_hot_routes(app, contexts):
-    """Mirror the existing scanner but publish Base immediately on completion.
+    """Mirror the existing scanner but persist Base immediately on completion.
 
-    No additional chain scan or quote is performed. The partial Base write uses the
-    same atomic CSV path that GPT already consumes. The final combined write remains
-    authoritative for the normal fast-market loop.
+    No additional chain scan or quote is performed. The Base-only file is separate
+    from the normal combined file, so slower EVM chains cannot overwrite it before
+    SiBot's next poll. Both files carry the genuine original quote timestamp.
     """
     settings = _fp.load_kv_scoped(_fp.Path(app.csv_dir) / "auto_trading_settings.csv", 0)
     out = _fp.Path(app.csv_dir) / "auto" / "full_power_opportunities.csv"
+    base_out = _fp.Path(app.csv_dir) / "auto" / "base_full_power_opportunities.csv"
     rej_path = _fp.Path(app.csv_dir) / "auto" / "full_power_rejections.csv"
     if not _fp._bool(settings.get("full_power_enabled", "true"), True):
         return out, [], []
@@ -127,7 +128,7 @@ def _scan_full_power_hot_routes(app, contexts):
                     )[:max_routes]
                     # Important: observed_at_epoch is left untouched. If the Base
                     # scan itself is too slow, GPT will still reject the stale row.
-                    _fp._atomic_write(out, base_rows, _fp.LIVE_HEADERS)
+                    _fp._atomic_write(base_out, base_rows, _fp.LIVE_HEADERS)
             except Exception as exc:
                 rejected.append({
                     "observed_at_epoch": int(_fp.time.time()),
@@ -139,7 +140,7 @@ def _scan_full_power_hot_routes(app, contexts):
                     "reason": f"{type(exc).__name__}:{exc}",
                 })
                 if str(getattr(ctx.config, "slug", "")).strip().lower() == "base":
-                    _fp._atomic_write(out, [], _fp.LIVE_HEADERS)
+                    _fp._atomic_write(base_out, [], _fp.LIVE_HEADERS)
 
     rows.sort(
         key=lambda row: _fp._dec(row.get("expected_gross_profit_base"), "0")
@@ -161,7 +162,7 @@ def install() -> None:
     _fp._candidate_rotation_installed = True
     print(
         "[full-power-candidate-rotation] installed=true rotating=true "
-        "base_early_publish=true quote_budget_unchanged=true freshness_unchanged=true "
+        "base_dedicated_feed=true quote_budget_unchanged=true freshness_unchanged=true "
         "safety_unchanged=true",
         flush=True,
     )

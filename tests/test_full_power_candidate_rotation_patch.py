@@ -56,7 +56,7 @@ def test_install_does_not_patch_settings_or_quote_budget():
     assert "_discovery_settings" not in patch.__dict__
 
 
-def test_base_result_is_published_before_slower_other_chain_without_retimestamp(monkeypatch, tmp_path):
+def test_base_result_uses_dedicated_feed_without_retimestamp_or_extra_scan(monkeypatch, tmp_path):
     app = SimpleNamespace(csv_dir=tmp_path)
     base = SimpleNamespace(config=SimpleNamespace(slug="base", chain_id=8453))
     eth = SimpleNamespace(config=SimpleNamespace(slug="ethereum", chain_id=1))
@@ -106,7 +106,10 @@ def test_base_result_is_published_before_slower_other_chain_without_retimestamp(
 
     assert scan_calls.count(("base", "v2")) == 1
     assert scan_calls.count(("ethereum", "v2")) == 1
-    assert writes[0][0] == "full_power_opportunities.csv"
+    # First write is the durable Base-only feed; final combined write remains separate.
+    assert writes[0][0] == "base_full_power_opportunities.csv"
     assert writes[0][1] == [base_row]
     assert writes[0][1][0]["observed_at_epoch"] == observed
+    assert writes[-1][0] == "full_power_opportunities.csv"
+    assert writes[-1][1] == [base_row]
     assert rows == [base_row]

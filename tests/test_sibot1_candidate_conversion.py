@@ -11,9 +11,14 @@ from sibot1_engines.grok.strategy import CompactFlowStrategy
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_evm_source_reads_full_power_fast_market_feed(tmp_path):
+def test_evm_source_reads_full_power_fast_market_feeds(tmp_path):
     source = EvmOpportunityCsvSource(tmp_path, MarketEvidenceBook())
+    assert tmp_path / "auto" / "base_full_power_opportunities.csv" in source.paths
     assert tmp_path / "auto" / "full_power_opportunities.csv" in source.paths
+    # Dedicated Base feed must be checked before the combined full-power feed.
+    assert source.paths.index(tmp_path / "auto" / "base_full_power_opportunities.csv") < source.paths.index(
+        tmp_path / "auto" / "full_power_opportunities.csv"
+    )
 
 
 def test_relaxed_nomination_settings_are_bounded():
