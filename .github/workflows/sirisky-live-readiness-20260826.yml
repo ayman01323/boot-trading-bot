@@ -1,0 +1,67 @@
+name: SiRisky Live Readiness 20260826
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-live-readiness-20260826.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify live readiness without broadcasting
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory -p ExecStart --no-pager
+
+          echo '=== RUNTIME CSV ==='
+          sudo -n cat /root/SiRisky/CSV/runtime.csv
+          echo '=== STAGE1 SELECTED POOLS ==='
+          sudo -n cat /root/SiRisky/CSV/stage1_selected_pools.csv
+          echo '=== STAGE2 STRATEGY ==='
+          sudo -n cat /root/SiRisky/CSV/stage2_strategy.csv
+          echo '=== STAGE3 RISK ==='
+          sudo -n cat /root/SiRisky/CSV/stage3_risk.csv
+          echo '=== OPEN POSITIONS ==='
+          sudo -n cat /root/SiRisky/CSV/open_positions.csv
+
+          echo '=== SELFTEST ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py selftest'
+          echo '=== SAFE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check || true'
+
+          echo '=== V2 KEYLESS ORDER TEST (NO EXECUTE) ==='
+          sudo -n /root/SiRisky/.venv/bin/python - <<'PY'
+          import csv, requests
+          rows=list(csv.DictReader(open('/root/SiRisky/CSV/wallets.csv',encoding='utf-8-sig',newline='')))
+          wallet=(rows[0].get('address') or '').strip() if rows else ''
+          wsol='So11111111111111111111111111111111111111112'
+          usdc='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+          if not wallet:
+              print('v2_keyless_order=SKIP_NO_WALLET')
+          else:
+              try:
+                  r=requests.get('https://api.jup.ag/swap/v2/order',params={'inputMint':wsol,'outputMint':usdc,'amount':'100000','taker':wallet,'excludeRouters':'jupiterz'},headers={'User-Agent':'SiRisky-readiness'},timeout=20)
+                  print('v2_keyless_http_status='+str(r.status_code))
+                  try:
+                      j=r.json()
+                      print('v2_keyless_transaction_present='+str(bool(j.get('transaction'))).lower())
+                      print('v2_keyless_request_id_present='+str(bool(j.get('requestId'))).lower())
+                      if r.status_code != 200:
+                          print('v2_keyless_error='+str(j.get('message') or j.get('errorMessage') or j.get('error') or '')[:300])
+                  except Exception:
+                      print('v2_keyless_nonjson=true')
+              except Exception as e:
+                  print('v2_keyless_exception='+type(e).__name__)
+          print('real_transaction_broadcast=NO')
+          PY
