@@ -49,6 +49,19 @@ class RiskGuardConfigError(RuntimeError):
     """Raised when the hard risk engine config is missing or invalid. Fail closed."""
 
 
+class DrawdownLimitBreached(RiskGuardConfigError):
+    """Specific drawdown breach used by the execution layer to latch trading off."""
+
+    def __init__(self, *, drawdown_pct: float, limit_pct: float, drawdown_usd: float):
+        self.drawdown_pct = float(drawdown_pct)
+        self.limit_pct = float(limit_pct)
+        self.drawdown_usd = float(drawdown_usd)
+        super().__init__(
+            f"Drawdown {self.drawdown_pct:.2f}% of MAX_CAPITAL_USD reached/exceeded "
+            f"MAX_DRAWDOWN_PCT {self.limit_pct:.2f}%"
+        )
+
+
 @dataclass(frozen=True)
 class RiskLimits:
     max_capital_usd: float
@@ -131,8 +144,8 @@ class RiskLimits:
         positions closed since the start of the current UTC day) and
         peak_to_current_drawdown_usd (running peak of cumulative realized
         P&L minus current cumulative realized P&L, i.e. how far below the
-        best-ever point this instance's equity has fallen) from this
-        instance's own isolated position history — see
+        active risk baseline's best point this instance's equity has fallen)
+        from this instance's own isolated position history — see
         solana_execution_risk_patch.py.
         """
         if realized_pnl_usd_today < 0 and -realized_pnl_usd_today > self.max_daily_loss_usd:
@@ -141,8 +154,9 @@ class RiskLimits:
                 f"MAX_DAILY_LOSS_USD ${self.max_daily_loss_usd:.2f}"
             )
         drawdown_pct = (peak_to_current_drawdown_usd / self.max_capital_usd) * 100 if self.max_capital_usd else 0.0
-        if drawdown_pct > self.max_drawdown_pct:
-            raise RiskGuardConfigError(
-                f"Drawdown {drawdown_pct:.2f}% of MAX_CAPITAL_USD exceeds "
-                f"MAX_DRAWDOWN_PCT {self.max_drawdown_pct:.2f}%"
+        if drawdown_pct >= self.max_drawdown_pct:
+            raise DrawdownLimitBreached(
+                drawdown_pct=drawdown_pct,
+                limit_pct=self.max_drawdown_pct,
+                drawdown_usd=peak_to_current_drawdown_usd,
             )
