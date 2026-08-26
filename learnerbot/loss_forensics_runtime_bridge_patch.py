@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+from . import claude_rpc_runtime_bridge_patch as _claude_rpc_bridge  # noqa: F401
 from . import loss_forensics_github_export as _export
 from . import transaction_audit_worker_patch as _worker
 
