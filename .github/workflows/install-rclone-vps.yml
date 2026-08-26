@@ -1,98 +1,242 @@
-name: Install rclone on BOOT VPS
+name: Namecheap to Google Final Production Cutover
 
 on:
   push:
-    branches: [main]
-    paths:
-      - .github/workflows/install-rclone-vps.yml
   workflow_dispatch:
 
 permissions:
   contents: read
-  statuses: write
 
 concurrency:
-  group: boot-vps-rclone-install
+  group: namecheap-google-final-production-cutover
   cancel-in-progress: false
 
+env:
+  HANDOFF: /var/tmp/namecheap-google-cutover-handoff
+  KEY_MARKER: namecheap-google-final-cutover
+  STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
+  FINAL_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market
+
 jobs:
-  install:
-    name: Install and verify rclone
+  quiesce-namecheap:
+    name: Stop Namecheap and prepare final-sync key
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 15
+    steps:
+      - name: Verify restricted cutover bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          for w in \
+            /usr/local/sbin/quiesce-namecheap-for-google-cutover \
+            /usr/local/sbin/final-sync-namecheap-to-google \
+            /usr/local/sbin/verify-namecheap-cutover-stopped \
+            /usr/local/sbin/resume-namecheap-after-cutover-failure; do
+            test -x "$w"
+            sudo -n -l "$w" >/dev/null 2>&1
+          done
+      - name: Quiesce Namecheap production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/quiesce-namecheap-for-google-cutover
+          test -s "$HANDOFF/public-key.txt"
+          test -s "$HANDOFF/source-ip.txt"
+          test -w "$HANDOFF/google-ip.txt"
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+      - name: Upload one-time public material
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-cutover-source-${{ github.run_id }}
+          path: |
+            /var/tmp/namecheap-google-cutover-handoff/public-key.txt
+            /var/tmp/namecheap-google-cutover-handoff/source-ip.txt
+          retention-days: 1
+          if-no-files-found: error
+
+  authorise-google:
+    name: Authorise one-time final-sync key on Google
+    needs: quiesce-namecheap
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify Google is not running production
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n -l /usr/local/sbin/status-google-production-cutover >/dev/null 2>&1
+          if sudo -n /usr/local/sbin/status-google-production-cutover | grep -q '^google_service_active=active$'; then
+            echo 'Refusing: Google learnerbot is already active before cutover.' >&2
+            exit 30
+          fi
+          test -d "$STAGING_DIR"
+      - name: Download one-time public material
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cutover-source-${{ github.run_id }}
+          path: /tmp/final-cutover-auth-${{ github.run_id }}
+      - name: Authorise fixed Namecheap source key
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="/tmp/final-cutover-auth-${GITHUB_RUN_ID}"
+          PUB="$WORK/public-key.txt"
+          SOURCE_IP="$(tr -d '[:space:]' < "$WORK/source-ip.txt")"
+          test -s "$PUB"
+          [[ "$SOURCE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+          mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          printf 'from="%s",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' \
+            "$SOURCE_IP" "$(cat "$PUB")" >> "$HOME/.ssh/authorized_keys"
+          GOOGLE_IP="$(curl -fsS -H 'Metadata-Flavor: Google' --max-time 5 http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null || true)"
+          if [[ -z "$GOOGLE_IP" ]]; then GOOGLE_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"; fi
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          printf '%s\n' "$GOOGLE_IP" > "$WORK/google-ip.txt"
+          chmod 600 "$WORK/google-ip.txt"
+      - name: Upload Google endpoint only
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-cutover-google-endpoint-${{ github.run_id }}
+          path: /tmp/final-cutover-auth-${{ github.run_id }}/google-ip.txt
+          retention-days: 1
+          if-no-files-found: error
+
+  final-sync:
+    name: Final stopped-state sync to Google staging
+    needs: authorise-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 180
+    steps:
+      - name: Download fixed Google endpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cutover-google-endpoint-${{ github.run_id }}
+          path: /tmp/final-cutover-endpoint-${{ github.run_id }}
+      - name: Hand endpoint to restricted root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="/tmp/final-cutover-endpoint-${GITHUB_RUN_ID}/google-ip.txt"
+          GOOGLE_IP="$(tr -d '[:space:]' < "$SRC")"
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          test -w "$HANDOFF/google-ip.txt"
+          printf '%s\n' "$GOOGLE_IP" > "$HANDOFF/google-ip.txt"
+          chmod 600 "$HANDOFF/google-ip.txt"
+      - name: Run final sync while Namecheap is stopped
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          sudo -n /usr/local/sbin/final-sync-namecheap-to-google
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+      - name: Remove runner-owned endpoint material
+        if: always()
+        shell: bash
+        run: rm -rf "/tmp/final-cutover-endpoint-${GITHUB_RUN_ID}"
+
+  verify-staging:
+    name: Verify final staging snapshot on Google
+    needs: final-sync
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify final stopped-state snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$STAGING_DIR/.git"
+          test -f "$STAGING_DIR/requirements.txt"
+          test -d "$STAGING_DIR/learnerbot"
+          if pgrep -af "$STAGING_DIR" | grep -v -E 'grep|Actions.Runner|Runner.Worker' >/dev/null 2>&1; then
+            echo 'Refusing: process is running from staging.' >&2
+            exit 40
+          fi
+          echo "staging_sha=$(git -C "$STAGING_DIR" rev-parse HEAD)"
+          echo "staging_size=$(du -sh "$STAGING_DIR" | awk '{print $1}')"
+          echo "staging_files=$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
+
+  refresh-google:
+    name: Refresh final Google production path
+    needs: verify-staging
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 30
+    steps:
+      - name: Refresh and verify Google final path while stopped
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/refresh-google-production-bot >/dev/null 2>&1
+          sudo -n -l /usr/local/sbin/verify-google-production-bot >/dev/null 2>&1
+          sudo -n /usr/local/sbin/refresh-google-production-bot
+          sudo -n /usr/local/sbin/verify-google-production-bot
+
+  activate-google:
+    name: Start Google production learnerbot
+    needs: refresh-google
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Activate Google production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/activate-google-production-bot >/dev/null 2>&1
+          sudo -n /usr/local/sbin/activate-google-production-bot
+          sudo -n /usr/local/sbin/status-google-production-cutover
+
+  verify-namecheap-stopped:
+    name: Confirm old Namecheap bot remains stopped
+    needs: activate-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Verify old production remains inactive
+        shell: bash
+        run: sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+
+  rollback-before-activation:
+    name: Roll back to Namecheap if pre-activation cutover fails
+    if: ${{ always() && needs.quiesce-namecheap.result == 'success' && needs.activate-google.result != 'success' }}
+    needs: [quiesce-namecheap, authorise-google, final-sync, verify-staging, refresh-google, activate-google]
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 10
     steps:
-      - name: Install rclone if missing
+      - name: Resume Namecheap production
+        shell: bash
+        run: sudo -n /usr/local/sbin/resume-namecheap-after-cutover-failure
+
+  dual-run-safety:
+    name: Stop Google if old Namecheap unexpectedly remains active
+    if: ${{ always() && needs.activate-google.result == 'success' && needs.verify-namecheap-stopped.result != 'success' }}
+    needs: [activate-google, verify-namecheap-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Stop Google to avoid dual production
+        shell: bash
+        run: sudo -n /usr/local/sbin/stop-google-production-after-failed-cutover
+
+  cleanup-google-key:
+    name: Remove one-time final-sync SSH authorisation
+    if: always()
+    needs: [authorise-google, final-sync, activate-google, verify-namecheap-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Remove one-time key and endpoint material
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "Runner user: $(id -un)"
-          echo "Kernel: $(uname -srmo)"
-
-          if command -v rclone >/dev/null 2>&1; then
-            echo "rclone is already installed"
-            rclone version
-            exit 0
+          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+            grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+            mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+            chmod 600 "$HOME/.ssh/authorized_keys"
           fi
-
-          installer="$(mktemp)"
-          trap 'rm -f "$installer"' EXIT
-          curl -fsSL https://rclone.org/install.sh -o "$installer"
-
-          if [ "$(id -u)" -eq 0 ]; then
-            bash "$installer"
-          else
-            sudo -n bash "$installer"
-          fi
-
-          command -v rclone
-          rclone version
-
-      - name: Show config location
-        shell: bash
-        run: |
-          set -euo pipefail
-          rclone config file
-
-      - name: Report rclone install status
-        if: always()
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-          JOB_STATUS: ${{ job.status }}
-        run: |
-          set -euo pipefail
-
-          if [ "$JOB_STATUS" = "success" ]; then
-            api_state="success"
-          else
-            api_state="failure"
-          fi
-
-          if command -v rclone >/dev/null 2>&1; then
-            version="$(rclone version | head -n 1 | tr -d '\r')"
-          else
-            version="rclone unavailable"
-          fi
-
-          export API_STATE="$api_state"
-          export DESCRIPTION="$version; job=$JOB_STATUS"
-          python3 - <<'PY' > /tmp/rclone-status.json
-import json
-import os
-print(json.dumps({
-    "state": os.environ["API_STATE"],
-    "context": "server/rclone-install",
-    "description": os.environ["DESCRIPTION"][:140],
-}))
-PY
-
-          curl -fsS \
-            -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/$REPO/statuses/$SHA" \
-            --data-binary @/tmp/rclone-status.json
+          rm -rf "/tmp/final-cutover-auth-${GITHUB_RUN_ID}"
+          echo 'FINAL_CUTOVER_SSH_KEY_REMOVED=true'
