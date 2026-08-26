@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import csv
 import json
+from collections import Counter
 from pathlib import Path
 
 from . import sibot1_runtime_diag_export_patch as _diag
@@ -13,6 +15,106 @@ def _safe_int(value):
         return int(value) if value is not None else None
     except Exception:
         return None
+
+
+def _csv_rows(path: Path) -> list[dict]:
+    try:
+        if not path.exists():
+            return []
+        with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+            return [dict(row) for row in csv.DictReader(handle)]
+    except Exception:
+        return []
+
+
+def _safe_rejection_code(stage: str, reason: str) -> str:
+    """Return a bounded non-secret diagnostic class, never raw provider text."""
+    s = str(stage or "unknown").strip().lower() or "unknown"
+    r = str(reason or "").strip().lower()
+    known = (
+        ("no_complete_v2_triangle_in_persisted_registry", "no_complete_v2_triangle"),
+        ("no_complete_v3_triangle", "no_complete_v3_triangle"),
+        ("missing_quoter", "missing_quoter"),
+        ("factory_has_no_code", "factory_no_code"),
+        ("router_has_no_code", "router_no_code"),
+        ("quoter_has_no_code", "quoter_no_code"),
+        ("price_impact", "price_impact"),
+        ("product", "product_policy"),
+        ("quarantine", "quarantine"),
+        ("edge", "edge_floor"),
+        ("profit", "profit_floor"),
+        ("timeout", "provider_timeout"),
+        ("429", "provider_rate_limit"),
+        ("rate limit", "provider_rate_limit"),
+        ("connection", "provider_connection"),
+        ("rpc", "provider_rpc"),
+    )
+    for needle, code in known:
+        if needle in r:
+            return code
+    # Stage is repository-controlled and useful even when the raw reason is unsafe.
+    return f"stage_{s[:40]}"
+
+
+def _fast_market_health(app) -> dict:
+    auto_dir = Path(app.csv_dir) / "auto"
+    rows = _csv_rows(auto_dir / "fast_market_status.csv")
+    latest = rows[-1] if rows else {}
+    result = {
+        "available": bool(rows),
+        "redacted": True,
+        "updated_epoch": _safe_int(latest.get("updated_epoch")),
+        "duration_seconds": str(latest.get("duration_seconds") or "")[:24],
+        "routes": _safe_int(latest.get("routes")) or 0,
+        "merged_routes": _safe_int(latest.get("merged_routes")) or 0,
+        "eligible": _safe_int(latest.get("eligible")) or 0,
+        "auto_events": _safe_int(latest.get("auto_events")) or 0,
+        "status": str(latest.get("status") or "UNKNOWN")[:32],
+    }
+    note = str(latest.get("note") or "")
+    if note:
+        # Do not export exception/provider text. A normal success note is only a path.
+        result["note_class"] = "output_file" if note.endswith(".csv") else "error_detail_redacted"
+    return result
+
+
+def _registry_health(app) -> dict:
+    auto_dir = Path(app.csv_dir) / "auto"
+    out = {}
+    for name in ("pool_registry.csv", "v3_pool_registry.csv"):
+        rows = _csv_rows(auto_dir / name)
+        by_chain = Counter(str(r.get("chain_id") or "unknown") for r in rows)
+        out[name] = {
+            "exists": (auto_dir / name).exists(),
+            "rows": len(rows),
+            "rows_by_chain": dict(sorted(by_chain.items())),
+        }
+    return out
+
+
+def _rejection_health(app) -> dict:
+    auto_dir = Path(app.csv_dir) / "auto"
+    out = {}
+    for name in ("full_power_rejections.csv", "power_discovery_rejections.csv"):
+        rows = _csv_rows(auto_dir / name)
+        stage_counts = Counter()
+        code_counts = Counter()
+        chain_counts = Counter()
+        for row in rows[-500:]:
+            stage = str(row.get("stage") or "unknown").strip().lower() or "unknown"
+            reason = str(row.get("reason") or "")
+            stage_counts[stage[:40]] += 1
+            code_counts[_safe_rejection_code(stage, reason)] += 1
+            chain_counts[str(row.get("chain_id") or "unknown")] += 1
+        out[name] = {
+            "exists": (auto_dir / name).exists(),
+            "rows_tail": min(500, len(rows)),
+            "stage_counts": dict(stage_counts.most_common(12)),
+            "reason_class_counts": dict(code_counts.most_common(12)),
+            "rows_by_chain": dict(sorted(chain_counts.items())),
+            "raw_reasons_exported": False,
+        }
+    return out
 
 
 def _market_source_health(app) -> dict:
@@ -102,7 +204,6 @@ def _engine_nomination_health(app) -> dict:
         }
         rejects = row.get("prefilter_rejections")
         if isinstance(rejects, dict):
-            # Keys are fixed strategy reason labels; values are aggregate counts.
             item["prefilter_rejections"] = {
                 str(k)[:80]: max(0, _safe_int(v) or 0)
                 for k, v in rejects.items()
@@ -122,9 +223,12 @@ def _engine_nomination_health(app) -> dict:
 
 def snapshot(app) -> dict:
     out = _PREV_SNAPSHOT(app)
-    out["schema_version"] = max(6, int(out.get("schema_version") or 0))
+    out["schema_version"] = max(7, int(out.get("schema_version") or 0))
     out["market_source_health"] = _market_source_health(app)
     out["engine_nomination_health"] = _engine_nomination_health(app)
+    out["evm_fast_market_health"] = _fast_market_health(app)
+    out["evm_pool_registry_health"] = _registry_health(app)
+    out["evm_rejection_health"] = _rejection_health(app)
     return out
 
 
@@ -133,7 +237,7 @@ def install() -> None:
         return
     _diag.snapshot = snapshot
     _diag._sibot1_market_source_diag_installed = True
-    print("[sibot1-market-source-diag] redacted=true source-health=true nomination-health=true")
+    print("[sibot1-market-source-diag] redacted=true source-health=true nomination-health=true evm-funnel=true")
 
 
 install()
