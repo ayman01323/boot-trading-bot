@@ -1,0 +1,161 @@
+name: SiRisky Root Repair
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-root-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Repair SiRisky root service safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n bash -lc '
+            set -euo pipefail
+            TARGET=/root/SiRisky
+            test -d "$TARGET"
+            test -x "$TARGET/.venv/bin/python"
+
+            # Keep trading disabled while repairing infrastructure.
+            "$TARGET/.venv/bin/python" - <<"PY"
+import csv
+from pathlib import Path
+p=Path("/root/SiRisky/CSV/runtime.csv")
+rows=list(csv.DictReader(p.open(encoding="utf-8-sig", newline="")))
+for r in rows:
+    if r.get("setting") in {"live_enabled","broadcast_enabled","telegram_manual_run_enabled"}:
+        r["value"]="0"
+with p.open("w",encoding="utf-8",newline="") as f:
+    w=csv.DictWriter(f,fieldnames=["setting","value","notes"])
+    w.writeheader(); w.writerows(rows)
+PY
+
+            # Correct standalone data paths without exposing or replacing secret values.
+            "$TARGET/.venv/bin/python" - <<"PY"
+from pathlib import Path
+p=Path("/root/SiRisky/.env")
+lines=p.read_text(encoding="utf-8",errors="replace").splitlines() if p.exists() else []
+replace={
+ "CSV_DIR":"/root/SiRisky/CSV",
+ "DATA_DIR":"/root/SiRisky/data",
+ "LOG_DIR":"/root/SiRisky/logs",
+ "AUTHORISED_CHAINS":"solana",
+}
+out=[]; seen=set()
+for raw in lines:
+    s=raw.strip()
+    if not s or s.startswith("#") or "=" not in raw:
+        out.append(raw); continue
+    k=raw.split("=",1)[0].strip()
+    if k in replace:
+        if k not in seen:
+            out.append(f"{k}={replace[k]}"); seen.add(k)
+        continue
+    out.append(raw)
+for k,v in replace.items():
+    if k not in seen: out.append(f"{k}={v}")
+p.write_text("\n".join(out).rstrip()+"\n",encoding="utf-8")
+p.chmod(0o600)
+PY
+
+            # If root env lacks RPC/Jupiter values, import last non-empty values from known local copies.
+            "$TARGET/.venv/bin/python" - <<"PY"
+from pathlib import Path
+keys=("SOLANA_RPC_URL","SOLANA_WS_URL","JUPITER_API_KEY")
+root=Path("/root/SiRisky/.env")
+
+def assignments(path):
+    vals={k:[] for k in keys}
+    if not path.is_file(): return vals
+    for raw in path.read_text(encoding="utf-8",errors="replace").splitlines():
+        s=raw.strip()
+        if not s or s.startswith("#") or "=" not in raw: continue
+        k,v=raw.split("=",1); k=k.strip(); v=v.strip().strip("\"").strip("'")
+        if k in vals and v: vals[k].append(v)
+    return vals
+
+current=assignments(root)
+candidates=[
+ Path("/home/ayman01323/ClaudeServer/SiRisky/.env"),
+ Path("/root/multichain-learning-bot-v2.2-fast-direct-market/.env"),
+ Path("/var/tmp/ai_council_runtime.env"),
+ Path("/var/tmp/boot/ai_council_runtime.env"),
+]
+chosen={k:(current[k][-1] if current[k] else "") for k in keys}
+for c in candidates:
+    vals=assignments(c)
+    for k in keys:
+        if not chosen[k] and vals[k]: chosen[k]=vals[k][-1]
+
+lines=root.read_text(encoding="utf-8",errors="replace").splitlines()
+out=[]
+for raw in lines:
+    if "=" in raw and not raw.lstrip().startswith("#"):
+        k=raw.split("=",1)[0].strip()
+        if k in keys: continue
+    out.append(raw)
+for k in keys:
+    if chosen[k]: out.append(f"{k}={chosen[k]}")
+root.write_text("\n".join(out).rstrip()+"\n",encoding="utf-8")
+root.chmod(0o600)
+print("rpc_present="+str(bool(chosen["SOLANA_RPC_URL"])).lower())
+print("ws_present="+str(bool(chosen["SOLANA_WS_URL"])).lower())
+print("jupiter_key_present="+str(bool(chosen["JUPITER_API_KEY"])).lower())
+PY
+
+            # Correct the known old USDC mint constant if present.
+            sed -i "s#EPjFWdd5AufqSSqeM2qPZo2mrQSSrSLRYhNACTM1v#EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v#g" "$TARGET/sirisky/jupiter.py" || true
+
+            # Replace the stale service that pointed at /root/ClaudeServer/SiRisky.
+            if [ -f /etc/systemd/system/sirisky.service ]; then
+              cp -a /etc/systemd/system/sirisky.service /etc/systemd/system/sirisky.service.pre-root-repair
+            fi
+            cat >/etc/systemd/system/sirisky.service <<"UNIT"
+[Unit]
+Description=SiRisky standalone staged trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/SiRisky
+ExecStart=/root/SiRisky/.venv/bin/python /root/SiRisky/run.py start
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+            systemctl daemon-reload
+            systemctl enable sirisky.service >/dev/null
+            systemctl restart sirisky.service
+            sleep 4
+
+            echo "=== SERVICE ==="
+            systemctl show sirisky.service -p ActiveState -p SubState -p Result -p NRestarts -p WorkingDirectory -p ExecStart --no-pager
+            echo "=== SAFE CHECK ==="
+            cd /root/SiRisky
+            set +e
+            PYTHONPATH=. .venv/bin/python run.py check
+            rc=$?
+            set -e
+            echo "check_exit_code=$rc"
+            echo "=== LIVE GATES ==="
+            awk -F, "NR==1 || \\$1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled)\$/" CSV/runtime.csv
+            echo "real_transaction_broadcast=NO"
+          '
