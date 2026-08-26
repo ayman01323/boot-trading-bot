@@ -1,0 +1,36 @@
+name: SiRisky Auto Discovery Inspect
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-auto-discovery-inspect.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect current SiRisky Stage 1 integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          echo '=== stage1_data.py ==='
+          sudo -n sed -n '1,260p' /root/SiRisky/sirisky/stage1_data.py
+          echo '=== engine.py ==='
+          sudo -n sed -n '1,320p' /root/SiRisky/sirisky/engine.py
+          echo '=== models.py ==='
+          sudo -n sed -n '1,260p' /root/SiRisky/sirisky/models.py
+          echo '=== config.py ==='
+          sudo -n sed -n '1,320p' /root/SiRisky/sirisky/config.py
+          echo '=== jupiter.py ==='
+          sudo -n sed -n '1,340p' /root/SiRisky/sirisky/jupiter.py
+          echo '=== runtime.csv ==='
+          sudo -n cat /root/SiRisky/CSV/runtime.csv
+          echo '=== stage1_selected_pools.csv ==='
+          sudo -n cat /root/SiRisky/CSV/stage1_selected_pools.csv
