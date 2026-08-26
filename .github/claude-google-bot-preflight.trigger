@@ -1,7 +1,7 @@
 Claude Google Bot Preflight trigger.
 
-requested_at=2026-08-26T11:06:00Z
+requested_at=2026-08-26T22:39:30Z
 requested_by=gpt
-reason=validate_10_position_3pct_each_20pct_drawdown_owner_latch_after_sync
-risk_profile=max_capital_500,max_position_15,total_exposure_150,daily_loss_50,drawdown_20,open_positions_10,solana_only
+reason=validate_new_solana_rpc_runtime_configuration_after_operator_change
 validation_scope=non_trading_preflight_only
+privacy=do_not_print_rpc_urls_or_api_keys
