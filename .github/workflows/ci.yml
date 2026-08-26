@@ -1,4 +1,4 @@
-name: Start Only Migrated Google Learnerbot
+name: Diagnose Google SSH Key Access
 
 on:
   push:
@@ -10,40 +10,29 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: start-only-google-production-learnerbot
-  cancel-in-progress: false
-
 jobs:
-  start-google-learnerbot:
-    name: Ensure only migrated Google learnerbot is running
+  diagnose-google-ssh:
+    name: Read-only SSH key diagnostics on Google
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Verify Google boundary
+      - name: Inspect SSH account safely
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          sudo -n -l /usr/local/sbin/status-google-production-cutover >/dev/null 2>&1
-          sudo -n -l /usr/local/sbin/activate-google-production-bot >/dev/null 2>&1
-
-      - name: Start migrated learnerbot only if needed
-        shell: bash
-        run: |
-          set -euo pipefail
-          BEFORE="$(sudo -n /usr/local/sbin/status-google-production-cutover)"
-          printf '%s\n' "$BEFORE"
-          if grep -q '^google_service_active=active$' <<<"$BEFORE"; then
-            echo 'GOOGLE_PRODUCTION_ALREADY_RUNNING=true'
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo "home=$HOME"
+          stat -c 'ssh_dir_mode=%a owner=%U:%G' "$HOME/.ssh"
+          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+            stat -c 'authorized_keys_mode=%a owner=%U:%G size=%s' "$HOME/.ssh/authorized_keys"
+            echo "authorized_key_lines=$(grep -cve '^[[:space:]]*$' "$HOME/.ssh/authorized_keys" || true)"
+            echo "migration_key_lines=$(grep -c 'namecheap-google-final-cutover' "$HOME/.ssh/authorized_keys" || true)"
+            echo 'AUTHORIZED_KEY_FINGERPRINTS_BEGIN'
+            ssh-keygen -lf "$HOME/.ssh/authorized_keys" || true
+            echo 'AUTHORIZED_KEY_FINGERPRINTS_END'
           else
-            sudo -n /usr/local/sbin/activate-google-production-bot
+            echo 'AUTHORIZED_KEYS_MISSING=true'
           fi
-          sleep 5
-          AFTER="$(sudo -n /usr/local/sbin/status-google-production-cutover)"
-          printf '%s\n' "$AFTER"
-          grep -q '^google_service_active=active$' <<<"$AFTER"
-          grep -q '^google_service_enabled=enabled$' <<<"$AFTER"
-          grep -q '^google_process_cwd=/root/multichain-learning-bot-v2.2-fast-direct-market$' <<<"$AFTER"
-          echo 'GOOGLE_PRODUCTION_RUN_VERIFIED=true'
