@@ -275,13 +275,28 @@ rejected that: it missed unrealised (open-position) losses entirely and
 mixed a fixed USD basis against a SOL amount re-priced at read time. The
 current model:
 - `current_equity_usd` = capital basis + a running `cumulative_realized_pnl_usd`
-  total (each trade priced in USD once, at its own close time — see
-  `solana_execution_risk_patch.py`'s `record_realized_pnl()` call site —
-  never re-derived later from a different day's price) + today's
+  total (each *closed position* accounted exactly once, in USD, at the
+  price current when it was accounted — see `claude_state.account_closed_position()`
+  and its only caller, `solana_execution_risk_patch.reconcile_realized_pnl()`
+  — never re-derived later from a different day's price) + today's
   mark-to-market of open positions (`unrealised_net_sol`, a column
   learnerbot's own scanner loop already maintains, reused not
   re-implemented, priced once at read time since it's inherently a "now"
   value).
+- **Crash-safe, idempotent accounting** (review, 2026-08-26): an earlier
+  version took a before/after `SUM(realised_net_sol)` snapshot around a
+  single sell call — a real crash window existed if the process died after
+  the sell committed to the positions DB but before the USD delta was
+  persisted, permanently losing that P&L from Claude's accounting.
+  `reconcile_realized_pnl()` instead asks "which of this instance's closed
+  positions, by `position_id`, does the ledger (`accounted_position_ids` in
+  `claude_bot_state.json`) not have yet" — called from three places (right
+  after every sell, every monitor tick, and once at process startup via
+  `claude_state.install()`'s `_app` wrapper) so it always converges to the
+  same complete, no-double-counted total no matter when a crash happened.
+  `account_closed_position()` is itself idempotent per `position_id`: once
+  written, an entry's `pnl_usd`/`price_usd_used` is immutable, never
+  recomputed even if reconciliation runs again later at a different price.
 - `high_water_equity_usd` seeds at the capital basis on the first-ever
   measurement, and is otherwise monotonically non-decreasing during normal
   operation. `drawdown_pct = (HWM − current) / HWM × 100`.
@@ -300,13 +315,29 @@ started the same way `learnerbot/telegram_ai_ops_patch.py`'s own watcher
 is — wrapping `learnerbot.cli._app`, one hook, not a second one). Added
 because the previous design only rejected the *next* entry attempt if a
 critical precondition failed while sitting `ARMED` — review required an
-*active* transition instead. Every tick: re-evaluates drawdown (can latch
-with no trade involved) and, if `ARMED`, calls the same `armed_health_check()`
-`/claude_arm_live` uses; on any failure (signer not ready, risk config
-invalid, chain no longer authorised, kill-switch active, or the Claude
-execution guard no longer installed on `SolanaLiveExecutor`) it calls
+*active* transition instead. Every tick: reconciles+re-evaluates drawdown
+(can latch with no trade involved) and, if `ARMED`, calls the same
+`armed_health_check()` `/claude_arm_live` uses; on any failure it calls
 `claude_state.force_off()` — an active, system-triggered `→ OFF` — and
-sends the owner a one-time alert. This module has no code path to arm,
+sends the owner a one-time alert.
+
+`armed_health_check()` (strengthened per review, 2026-08-26) checks, in
+order: risk config valid, signer ready, chain authorised, the **real**
+operator kill switch (`app.operator_settings()['engine_enabled']` — the
+exact key `learnerbot/cli.py`, `telegram_ui.py`, and `fast_market.py` all
+read; an earlier version read `app.general()`, a different CSV that
+doesn't carry this key at all, so the check was silently always-on
+regardless of the actual switch — caught by review), Claude quarantine
+intact (`learnerbot.config.load_dotenv is claude_bot_quarantine._noop_load_dotenv`),
+the Claude state machine installed, the one authoritative Telegram router
+installed (`learnerbot.telegram_ui.handle_update is telegram_control_patch.handle_update`),
+both Solana execution guards still the effective wrapper on
+`SolanaLiveExecutor.buy`/`.sell`, and EVM still denied
+(`LiveTrader.buy is evm_execution_guard_patch._guarded_buy`) — buy/sell
+identity alone was reviewed as insufficient proof the whole runtime
+composition was intact. Signer fail-closed behaviour is proven by the
+signer/identity check itself, not a second redundant check. This module
+has no code path to arm,
 clear `HALTED_DRAWDOWN`, sign, or broadcast — structurally proven (not just
 behaviorally) in `tests/test_claude_execution_and_telegram.py`.
 

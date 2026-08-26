@@ -325,13 +325,41 @@ def test_hwm_persists_across_reload_and_restart(app):
 
 
 def test_no_currency_artifact_from_repricing_historical_realised_pnl(app):
-    # record_realized_pnl takes an already-USD-priced delta -- adding two
-    # trades priced at different (simulated) historical rates must simply
-    # sum, never get re-derived from a later/current price.
-    claude_state.record_realized_pnl(app, pnl_usd=Decimal("50"))   # trade #1, priced at its own close time
-    claude_state.record_realized_pnl(app, pnl_usd=Decimal("-20"))  # trade #2, priced at a different close time
+    # account_closed_position takes an already-USD-priced trade -- two
+    # positions priced at different (simulated) historical rates must
+    # simply sum, never get re-derived from a later/current price.
+    claude_state.account_closed_position(app, position_id="pos-1", realised_net_sol=Decimal("1"), price_usd_used=Decimal("50"))
+    claude_state.account_closed_position(app, position_id="pos-2", realised_net_sol=Decimal("-1"), price_usd_used=Decimal("20"))
     state = claude_state.load_state(app)
     assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("30")
+
+
+def test_account_closed_position_idempotent_per_position_id(app):
+    first = claude_state.account_closed_position(app, position_id="pos-1", realised_net_sol=Decimal("1"), price_usd_used=Decimal("100"))
+    assert first == Decimal("100")
+    # replay -- same position_id, even with a DIFFERENT (later) price -- must be a no-op
+    second = claude_state.account_closed_position(app, position_id="pos-1", realised_net_sol=Decimal("1"), price_usd_used=Decimal("999"))
+    assert second is None
+    state = claude_state.load_state(app)
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("100")  # unchanged by the replay
+    assert state["accounted_position_ids"]["pos-1"]["price_usd_used"] == "100"  # immutable, not overwritten
+
+
+def test_two_closed_positions_independently_accounted(app):
+    claude_state.account_closed_position(app, position_id="pos-1", realised_net_sol=Decimal("1"), price_usd_used=Decimal("100"))
+    claude_state.account_closed_position(app, position_id="pos-2", realised_net_sol=Decimal("-2"), price_usd_used=Decimal("50"))
+    state = claude_state.load_state(app)
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("0")  # 100 - 100
+    assert set(state["accounted_position_ids"]) == {"pos-1", "pos-2"}
+
+
+def test_historical_realised_usd_value_immutable_when_price_changes_later(app):
+    claude_state.account_closed_position(app, position_id="pos-1", realised_net_sol=Decimal("2"), price_usd_used=Decimal("100"))
+    recorded = Decimal(claude_state.load_state(app)["accounted_position_ids"]["pos-1"]["pnl_usd"])
+    # simulate "today's price" moving a lot, then replay accounting for the same position
+    claude_state.account_closed_position(app, position_id="pos-1", realised_net_sol=Decimal("2"), price_usd_used=Decimal("400"))
+    still_recorded = Decimal(claude_state.load_state(app)["accounted_position_ids"]["pos-1"]["pnl_usd"])
+    assert still_recorded == recorded == Decimal("200")
 
 
 def test_reset_high_water_to_current_establishes_fresh_baseline(app):
@@ -419,6 +447,9 @@ def test_old_handler_fully_removed_from_execution_guard():
     # exercised in test_claude_execution_and_telegram.py, which asserts its
     # COMMANDS set directly. This is the platform-independent half: the old
     # module must no longer define or install a handler at all.
+    # armed_health_check() legitimately READS _ui.handle_update (a composition
+    # check, added 2026-08-26) -- what must never come back is an ASSIGNMENT.
     guard_text = (BOT_DIR / "solana_execution_risk_patch.py").read_text(encoding="utf-8")
     assert "def handle_update" not in guard_text
-    assert "_ui.handle_update" not in guard_text
+    assert "_ui.handle_update =" not in guard_text
+    assert "_ui.handle_update is not _router.handle_update" in guard_text  # the read-only composition check

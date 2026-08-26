@@ -56,11 +56,15 @@ def _env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _guard_installed():
-    """armed_health_check() (added in the 2026-08-26 review fix) proves
-    guard composition by checking SolanaLiveExecutor.buy/sell ARE
-    guard._guarded_buy/_guarded_sell -- install() is idempotent, so this is
-    cheap to call before every test regardless of module import order."""
-    guard.install()
+    """armed_health_check() (review, 2026-08-26, strengthened same day)
+    proves FULL composition -- quarantine, claude_state, telegram router,
+    both execution guards, EVM denial -- not just buy/sell identity.
+    claude_bot_patches.install_all() is idempotent, so installing everything
+    before every test (matching real runtime order) is cheap and correct
+    regardless of module import order."""
+    import claude_bot_patches
+
+    claude_bot_patches.install_all()
 
 
 @pytest.fixture
@@ -71,7 +75,7 @@ def app(tmp_path):
         data_dir=str(data_dir),
         csv_dir=str(tmp_path / "CSVbot"),
         telegram_bot_token="TESTTOKEN",
-        general=lambda: {"engine_enabled": "true"},
+        operator_settings=lambda: {"engine_enabled": "true"},
     )
 
 
@@ -264,29 +268,146 @@ def test_sell_realising_a_loss_latches_immediately_without_a_buy(executor, app, 
     assert len(sent) == 1
 
 
-def test_sell_updates_cumulative_realized_pnl_from_db_delta(executor, app, equity, monkeypatch):
-    """The USD amount added to cumulative_realized_pnl_usd comes from the
-    actual before/after DB delta of realised_net_sol around this specific
-    sell call, priced once at the moment it's realised -- not from the
-    `equity` test fixture (which only controls the drawdown-check inputs)."""
-    calls = {"n": 0}
-    deltas = iter([Decimal("0"), Decimal("-2")])  # before, after (a 2 SOL loss)
+def _insert_closed_live_position(app, *, position_id: str, telegram_id: str, realised_net_sol: Decimal, closed_at: int = 1700000000) -> None:
+    """Minimal valid row in the REAL positions table (real schema, real
+    connect()) -- these reconciliation tests exercise the actual SQL, not a
+    mocked stand-in, since the query itself (identity by position_id) is
+    exactly what review asked to be proven crash-safe."""
+    from contextlib import closing as _closing
 
-    def _fake_cumulative(app, telegram_id):
-        return next(deltas)
+    from learnerbot import solana_sibot as _sol
 
+    with _closing(_sol.connect(app)) as conn:
+        conn.execute(
+            "INSERT INTO positions (position_id, telegram_id, leader_wallet, mint, mode, status, "
+            "token_amount_raw, entry_cost_sol, entry_ts, realised_net_sol, closed_at, updated_at) "
+            "VALUES (?, ?, 'LEADER', 'MINT', 'LIVE', 'CLOSED', '0', '1', 1699999000, ?, ?, ?)",
+            (position_id, str(telegram_id), str(realised_net_sol), closed_at, closed_at),
+        )
+        conn.commit()
+
+
+def test_reconcile_accounts_a_real_closed_position_from_the_db(app, monkeypatch):
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-2"))
+
+    newly = guard.reconcile_realized_pnl(app, OWNER_ID)
+
+    assert len(newly) == 1
+    assert newly[0]["position_id"] == "pos-A"
+    state = claude_state.load_state(app)
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-200")  # -2 SOL * $100
+    assert "pos-A" in state["accounted_position_ids"]
+
+
+def test_reconcile_is_idempotent_second_call_does_not_double_count(app, monkeypatch):
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-2"))
+
+    guard.reconcile_realized_pnl(app, OWNER_ID)
+    second = guard.reconcile_realized_pnl(app, OWNER_ID)  # nothing new closed since
+
+    assert second == []
+    assert Decimal(claude_state.load_state(app)["cumulative_realized_pnl_usd"]) == Decimal("-200")
+
+
+def test_reconcile_accounts_two_closed_positions_independently(app, monkeypatch):
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("1"))
+    _insert_closed_live_position(app, position_id="pos-B", telegram_id=OWNER_ID, realised_net_sol=Decimal("-3"))
+
+    newly = guard.reconcile_realized_pnl(app, OWNER_ID)
+
+    assert {n["position_id"] for n in newly} == {"pos-A", "pos-B"}
+    state = claude_state.load_state(app)
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-200")  # (1 - 3) * 100
+    assert set(state["accounted_position_ids"]) == {"pos-A", "pos-B"}
+
+
+def test_reconcile_historical_usd_value_unaffected_by_later_price_change(app, monkeypatch):
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("2"))
+    guard.reconcile_realized_pnl(app, OWNER_ID)
+    recorded = Decimal(claude_state.load_state(app)["accounted_position_ids"]["pos-A"]["pnl_usd"])
+
+    # SOL price moves a lot, then reconciliation runs again (e.g. next
+    # monitor tick) -- pos-A is already accounted, so it must be skipped
+    # entirely, not re-priced at the new rate.
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("9999"))
+    guard.reconcile_realized_pnl(app, OWNER_ID)
+    still_recorded = Decimal(claude_state.load_state(app)["accounted_position_ids"]["pos-A"]["pnl_usd"])
+
+    assert still_recorded == recorded == Decimal("200")
+
+
+def test_crash_after_db_close_before_claude_accounting_is_recovered_on_next_reconcile(app, monkeypatch):
+    """Simulates the exact crash window review flagged: the SELL committed
+    to the real positions DB (a real CLOSED row exists), but the process
+    died before any Claude-side accounting ran at all -- no call to
+    reconcile_realized_pnl happened yet for this position. The very next
+    reconciliation pass (what claude_monitor's tick, or the next sell, or
+    process startup would trigger) must recover it completely, exactly
+    once, not lose it."""
+    _insert_closed_live_position(app, position_id="pos-crash", telegram_id=OWNER_ID, realised_net_sol=Decimal("-5"))
+    # nothing has run reconcile_realized_pnl yet -- this IS the crash state
+    assert claude_state.load_state(app)["accounted_position_ids"] == {}
+
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("50"))
+    recovered = guard.reconcile_realized_pnl(app, OWNER_ID)  # e.g. the next monitor tick
+
+    assert len(recovered) == 1
+    state = claude_state.load_state(app)
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-250")  # -5 * 50
+    # a second recovery pass (e.g. process restart right after) must not double-count
+    second = guard.reconcile_realized_pnl(app, OWNER_ID)
+    assert second == []
+    assert Decimal(claude_state.load_state(app)["cumulative_realized_pnl_usd"]) == Decimal("-250")
+
+
+def test_guarded_sell_reconciles_and_latches_via_real_db(executor, app, equity, monkeypatch):
+    """End-to-end through the actual guarded_sell call path (not just
+    reconcile_realized_pnl directly): a real closed position appearing in
+    the DB after _original_sell returns is accounted before the drawdown
+    check runs."""
     def _fake_original_sell(self, input_mint, amount_raw):
-        calls["n"] += 1
+        _insert_closed_live_position(app, position_id="pos-live", telegram_id=OWNER_ID, realised_net_sol=Decimal("-1"))
         return {"ok": True}
 
-    monkeypatch.setattr(guard, "_cumulative_realized_sol", _fake_cumulative)
     monkeypatch.setattr(guard, "_original_sell", _fake_original_sell)
     monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
 
     guard._guarded_sell(executor, "MINT", 1000)
 
     state = claude_state.load_state(app)
-    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-200")  # -2 SOL * $100
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-100")
+    assert "pos-live" in state["accounted_position_ids"]
+
+
+def test_startup_reconciliation_runs_via_app_wrapper(monkeypatch, tmp_path):
+    """claude_state.install()'s _app wrapper must call reconcile_realized_pnl
+    once at startup (review requirement: "on startup ... reconcile any
+    closed positions not yet reflected"), independent of the periodic
+    monitor's own tick."""
+    import claude_state as cs
+    from learnerbot import cli as _cli
+
+    data_dir = tmp_path / "startup_data"
+    data_dir.mkdir()
+    fake_app = SimpleNamespace(
+        data_dir=str(data_dir), csv_dir=str(tmp_path / "startup_csv"),
+        telegram_bot_token="", operator_settings=lambda: {"engine_enabled": "true"},
+    )
+
+    calls = []
+    monkeypatch.setattr(guard, "reconcile_realized_pnl", lambda app, tid: calls.append((app, tid)) or [])
+    monkeypatch.setattr(_cli, "_app", lambda: fake_app)  # the "real" loader this test simulates
+    monkeypatch.setattr(cs, "_INSTALLED", False)
+
+    cs.install()  # must capture OUR fake loader as _PREV_APP, then install the real wrapper on top
+    _cli._app()  # simulates the real first AppSettings.load() at process start
+
+    assert len(calls) == 1
+    assert calls[0][0] is fake_app
 
 
 def test_buy_refused_when_chain_not_authorised(executor, app, snapshot, monkeypatch):
@@ -437,10 +558,80 @@ def test_armed_health_check_fails_when_signer_not_ready(app, monkeypatch):
 
 
 def test_armed_health_check_fails_when_kill_switch_active(app):
-    app.general = lambda: {"engine_enabled": "false"}
+    # operator_settings(), not general() -- the real bug review caught
+    # (2026-08-26): the check used to read a CSV that doesn't carry
+    # engine_enabled at all, so it was silently always-on.
+    app.operator_settings = lambda: {"engine_enabled": "false"}
     reason = guard.armed_health_check(app, OWNER_ID)
     assert reason is not None
     assert "kill-switch" in reason
+
+
+def test_armed_health_check_ignores_general_and_only_reads_operator_settings(app):
+    # A stale/irrelevant engine_enabled=false sitting in general() (the
+    # wrong file) must have zero effect -- proves the fix isn't reading both.
+    app.general = lambda: {"engine_enabled": "false"}
+    app.operator_settings = lambda: {"engine_enabled": "true"}
+    assert guard.armed_health_check(app, OWNER_ID) is None
+
+
+@pytest.mark.parametrize(
+    "break_it,expected_fragment",
+    [
+        ("quarantine", "quarantine"),
+        ("state_machine", "state machine"),
+        ("router", "Telegram router"),
+        ("buy_guard", "BUY guard"),
+        ("sell_guard", "SELL guard"),
+        ("evm_guard", "EVM execution"),
+    ],
+)
+def test_armed_health_check_fails_when_any_composition_component_breaks(app, monkeypatch, break_it, expected_fragment):
+    """Review, 2026-08-26: buy/sell identity alone wasn't proof the whole
+    Claude runtime composition was intact. Each of these must independently
+    fail the check."""
+    import claude_bot_quarantine
+    import evm_execution_guard_patch as evm_guard
+    from learnerbot import config as _learnerbot_config
+    from learnerbot import live_executor as _evm_executor
+    from learnerbot import solana_live_executor as _executor
+
+    if break_it == "quarantine":
+        monkeypatch.setattr(_learnerbot_config, "load_dotenv", lambda *a, **k: None)
+    elif break_it == "state_machine":
+        monkeypatch.setattr(claude_state, "_INSTALLED", False)
+    elif break_it == "router":
+        monkeypatch.setattr(_ui, "handle_update", lambda app, u: None)
+    elif break_it == "buy_guard":
+        monkeypatch.setattr(_executor.SolanaLiveExecutor, "buy", guard._original_buy)
+    elif break_it == "sell_guard":
+        monkeypatch.setattr(_executor.SolanaLiveExecutor, "sell", guard._original_sell)
+    elif break_it == "evm_guard":
+        monkeypatch.setattr(_evm_executor.LiveTrader, "buy", evm_guard._original_buy)
+
+    reason = guard.armed_health_check(app, OWNER_ID)
+    assert reason is not None
+    assert expected_fragment.lower() in reason.lower()
+
+
+def test_monitor_actively_disarms_when_composition_breaks_while_armed(app, snapshot, equity, monkeypatch):
+    """Same as test_monitor_actively_disarms_when_armed_and_health_check_fails
+    but exercising a REAL composition break (router displaced) through the
+    real armed_health_check(), not a monkeypatched stand-in for it."""
+    import claude_monitor
+
+    claude_state.arm(app, owner_id=OWNER_ID)
+    monkeypatch.setattr(_ui, "handle_update", lambda app, u: None)  # displace the router
+
+    sent = []
+    monkeypatch.setattr(guard, "_send_owner_health_alert", lambda app, **kw: sent.append(kw))
+
+    claude_monitor.check_once(app)
+
+    state = claude_state.load_state(app)
+    assert state["operating_state"] == claude_state.OFF
+    assert "router" in state["last_forced_off_reason"].lower()
+    assert len(sent) == 1
 
 
 def test_monitor_actively_disarms_when_armed_and_health_check_fails(app, snapshot, equity, monkeypatch):

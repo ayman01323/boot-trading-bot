@@ -89,9 +89,9 @@ def check_chain_authorised(chain: str) -> None:
 
 def armed_health_check(app, telegram_id) -> str | None:
     """THE one authoritative "is it still safe to be ARMED" check (review,
-    2026-08-26): used before every entry, by /claude_arm_live and
-    /claude_restart_confirm's precondition recheck, and by
-    claude_monitor.py's periodic loop while ARMED -- never re-derived
+    2026-08-26, strengthened 2026-08-26): used before every entry, by
+    /claude_arm_live and /claude_restart_confirm's precondition recheck, and
+    by claude_monitor.py's periodic loop while ARMED -- never re-derived
     independently at any of those call sites. Returns None if every
     critical precondition holds, else a human-readable reason. Never raises."""
     try:
@@ -107,14 +107,49 @@ def armed_health_check(app, telegram_id) -> str | None:
     except ExecutionGuardError as exc:
         return f"chain: {exc}"
     try:
-        general = app.general()
-        engine_on = str(general.get("engine_enabled", "true")).strip().lower() in {"1", "true", "yes", "on"}
+        # The real operator pause/kill switch the running bot actually reads
+        # (learnerbot/cli.py, telegram_ui.py, fast_market.py all read this
+        # exact key from operator_settings.csv). An earlier version of this
+        # check read app.general() instead -- a different CSV that doesn't
+        # carry engine_enabled at all, so the check was silently always-on
+        # regardless of the real switch. Caught by review, 2026-08-26.
+        op = app.operator_settings()
+        engine_on = str(op.get("engine_enabled", "true")).strip().lower() in {"1", "true", "yes", "on"}
         if not engine_on:
-            return "kill-switch active (this instance's own engine_enabled=false)"
+            return "kill-switch active (operator_settings.engine_enabled=false)"
     except Exception as exc:  # noqa: BLE001
         return f"kill-switch state unreadable: {type(exc).__name__}: {exc}"
-    if _executor.SolanaLiveExecutor.buy is not _guarded_buy or _executor.SolanaLiveExecutor.sell is not _guarded_sell:
-        return "Claude execution guard is no longer installed on SolanaLiveExecutor"
+
+    # Composition checks (review, 2026-08-26): buy/sell identity alone isn't
+    # proof the whole Claude runtime is intact. Each of these is the exact
+    # same structural proof verify_bootstrap_composition.py already
+    # established as correct -- reused here, not re-derived differently.
+    import claude_bot_quarantine
+    import claude_state as _state
+    import evm_execution_guard_patch as _evm_guard
+    import telegram_control_patch as _router
+    from learnerbot import config as _learnerbot_config
+    from learnerbot import live_executor as _evm_executor
+    from learnerbot import telegram_ui as _ui
+
+    if _learnerbot_config.load_dotenv is not claude_bot_quarantine._noop_load_dotenv:
+        return "Claude quarantine is not intact: learnerbot.config.load_dotenv is not the no-op"
+    if not _state._INSTALLED:
+        return "Claude state machine (claude_state.install()) is not installed"
+    if _ui.handle_update is not _router.handle_update:
+        return "Telegram router is not installed (learnerbot.telegram_ui.handle_update mismatch)"
+    if _executor.SolanaLiveExecutor.buy is not _guarded_buy:
+        return "Claude Solana BUY guard is no longer the effective wrapper on SolanaLiveExecutor.buy"
+    if _executor.SolanaLiveExecutor.sell is not _guarded_sell:
+        return "Claude Solana SELL guard is no longer the effective wrapper on SolanaLiveExecutor.sell"
+    if _evm_executor.LiveTrader.buy is not _evm_guard._guarded_buy:
+        return "EVM execution is no longer denied (evm_execution_guard_patch guard displaced)"
+    # Signer path fail-closed: already proven by the check_identity_and_signer()
+    # call above -- a second, module-identity-based check here would be both
+    # redundant and actively wrong in any test (or future code) that
+    # legitimately substitutes signing_interface.get_signer_status for a
+    # specific ready/not-ready scenario, which is a normal and correct thing
+    # to do, not tampering.
     return None
 
 
@@ -161,22 +196,52 @@ def _current_unrealised_pnl_sol(app, telegram_id) -> Decimal:
         return Decimal(str(row["total"] or 0))
 
 
-def _cumulative_realized_sol(app, telegram_id) -> Decimal:
-    """Sum of realised_net_sol across ALL this instance's own CLOSED LIVE
-    positions, ever. Used ONLY as a before/after snapshot around a single
-    sell call (see _guarded_sell) to isolate that one trade's own
-    contribution -- never used directly as a drawdown figure itself, which
-    is exactly the "reprice history at today's price" mistake review
-    flagged. The isolated delta is priced once, immediately, at the moment
-    it is realised (see record_realized_pnl's call site), then permanently
-    fixed in claude_state's running USD total."""
+def reconcile_realized_pnl(app, telegram_id) -> list[dict]:
+    """Idempotent, identity-based (position_id) reconciliation of this
+    instance's own closed LIVE positions into claude_state's realised-P&L
+    ledger. Crash-safe by construction (review, 2026-08-26): replaces an
+    earlier before/after SUM(realised_net_sol) snapshot taken around a
+    single sell call, which had a real crash window -- if the process died
+    after the sell committed to the positions DB but before the USD delta
+    was persisted, that realised P&L would never enter Claude's equity/HWM
+    accounting, permanently.
+
+    This function instead asks "which of this instance's closed positions,
+    by position_id, does the ledger not have yet" -- so it converges to the
+    same complete, no-double-counted total no matter when or how many times
+    it's called: immediately after a sell (the normal path, where "now" IS
+    the trade's own close time, so pricing at read time here is accurate,
+    not an artifact), every claude_monitor.py tick, and once at process
+    startup (claude_state.py's _app wrapper) to pick up anything a crash
+    left un-accounted. claude_state.account_closed_position() is itself
+    idempotent per position_id, so calling this redundantly from multiple
+    places is always safe -- there is exactly one ledger entry per
+    position_id, ever, and it is never rewritten once written."""
+    if not telegram_id:
+        return []
     with closing(_sol.connect(app)) as conn:
-        row = conn.execute(
-            "SELECT COALESCE(SUM(realised_net_sol), 0) AS total FROM positions "
+        rows = conn.execute(
+            "SELECT position_id, realised_net_sol FROM positions "
             "WHERE telegram_id=? AND status='CLOSED' AND mode='LIVE'",
             (str(telegram_id),),
-        ).fetchone()
-        return Decimal(str(row["total"] or 0))
+        ).fetchall()
+    state = claude_state.load_state(app)
+    accounted = state.get("accounted_position_ids") or {}
+    pending = [row for row in rows if str(row["position_id"]) not in accounted]
+    if not pending:
+        return []
+    price = sol_usd_price()  # one fetch for this whole reconciliation pass
+    newly_accounted = []
+    for row in pending:
+        pnl_usd = claude_state.account_closed_position(
+            app,
+            position_id=str(row["position_id"]),
+            realised_net_sol=Decimal(str(row["realised_net_sol"] or 0)),
+            price_usd_used=price,
+        )
+        if pnl_usd is not None:
+            newly_accounted.append({"position_id": row["position_id"], "pnl_usd": pnl_usd})
+    return newly_accounted
 
 
 def position_snapshot(app, telegram_id) -> dict:
@@ -195,11 +260,12 @@ def position_snapshot(app, telegram_id) -> dict:
 
 def compute_current_equity_usd(app, telegram_id, *, capital_basis_usd: Decimal) -> dict:
     """THE one authoritative current-equity function (review, 2026-08-26):
-    capital basis + a running realised-P&L-in-USD total (each trade priced
-    once, at its own close time -- see claude_state.record_realized_pnl)
-    + today's mark-to-market of open positions (inherently a "now" value,
-    priced once at read time). No component here re-derives a historical
-    value using a different day's price."""
+    capital basis + a running realised-P&L-in-USD total (each closed
+    position accounted exactly once via reconcile_realized_pnl() /
+    claude_state.account_closed_position() -- idempotent and crash-safe,
+    see those functions) + today's mark-to-market of open positions
+    (inherently a "now" value, priced once at read time). No component
+    here re-derives a historical value using a different day's price."""
     price = sol_usd_price()
     unrealized_pnl_usd = _current_unrealised_pnl_sol(app, telegram_id) * price
     cumulative_realized_pnl_usd = Decimal(claude_state.load_state(app).get("cumulative_realized_pnl_usd") or "0")
@@ -270,11 +336,13 @@ def _send_owner_health_alert(app, *, reason: str) -> None:
 
 
 def _check_and_latch_drawdown(app, telegram_id, *, limits, open_positions: int) -> None:
-    """Shared by the pre-buy check and the post-sell recheck -- one call
-    site for "evaluate equity/HWM, latch + alert if breached". Never raises
-    on its own; callers that must block on a breach do so via
-    _guarded_buy's own control flow, not this helper (the post-sell caller
-    must NOT block the already-completed exit)."""
+    """Shared by the pre-buy check, the post-sell recheck, /claude_status,
+    and claude_monitor.py's periodic tick -- one call site for "reconcile
+    any newly-closed positions into the ledger, evaluate equity/HWM, latch
+    + alert if breached". Never raises on its own; callers that must block
+    on a breach do so via their own control flow, not this helper (the
+    post-sell caller must NOT block the already-completed exit)."""
+    reconcile_realized_pnl(app, telegram_id)
     equity = compute_current_equity_usd(app, telegram_id, capital_basis_usd=limits.capital_basis_usd)
     result = claude_state.evaluate_drawdown(
         app,
@@ -338,18 +406,13 @@ def _guarded_sell(self, input_mint: str, amount_raw: int) -> dict:
     # Exits remain possible during a drawdown halt or while not armed: reducing
     # risk must never be blocked by an entry-only circuit breaker.
     check_identity_and_signer(self.app, self.telegram_id)
-    before_realized_sol = _cumulative_realized_sol(self.app, self.telegram_id)
     result = _original_sell(self, input_mint, amount_raw)
-    # Post-sell drawdown recheck (review, 2026-08-26): a loss-realising sell
-    # must latch+alert immediately, not wait for the next buy attempt. Never
-    # allowed to block or undo the exit that already completed above.
+    # Post-sell reconciliation + drawdown recheck (review, 2026-08-26): a
+    # loss-realising sell must be accounted and latch+alert immediately, not
+    # wait for the next buy attempt or a crash-recovery pass. Never allowed
+    # to block or undo the exit that already completed above.
     try:
-        after_realized_sol = _cumulative_realized_sol(self.app, self.telegram_id)
-        delta_sol = after_realized_sol - before_realized_sol
         limits = risk_engine_guard.RiskLimits.load()
-        if delta_sol != 0:
-            price = sol_usd_price()
-            claude_state.record_realized_pnl(self.app, pnl_usd=delta_sol * price)
         open_positions = _current_live_open_count(self.app, self.telegram_id)
         _check_and_latch_drawdown(self.app, self.telegram_id, limits=limits, open_positions=open_positions)
     except Exception as exc:  # noqa: BLE001

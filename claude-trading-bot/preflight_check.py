@@ -221,8 +221,14 @@ def check_kill_switch_state() -> None:
         from learnerbot.config import AppSettings
 
         app = AppSettings.load()
-        general = app.general()
-        engine_on = str(general.get("engine_enabled", "true")).lower() in {"1", "true", "yes", "on"}
+        # operator_settings.csv, not general.csv -- the actual running bot
+        # (learnerbot/cli.py, telegram_ui.py, fast_market.py) reads
+        # engine_enabled from operator_settings() exclusively. Reading
+        # general() here was a real bug (review, 2026-08-26): that CSV
+        # doesn't carry this key at all, so the check was silently
+        # always-on regardless of the real switch.
+        op = app.operator_settings()
+        engine_on = str(op.get("engine_enabled", "true")).lower() in {"1", "true", "yes", "on"}
         _record(name, "PASS", f"engine_enabled={engine_on} (this instance's own CSVbot, not production's)")
     except Exception as exc:  # noqa: BLE001
         _record(name, "FAIL", str(exc))

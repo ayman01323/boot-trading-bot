@@ -88,12 +88,19 @@ def _default_state() -> dict:
         # see that function for how "0" is treated as "not yet seeded".
         "high_water_equity_usd": "0",
         "current_equity_usd": "0",
-        # Running total of realised P&L, each trade priced in USD ONCE at
-        # its own close time (see solana_execution_risk_patch.py's
-        # record_realized_pnl() call site) -- never re-derived later from a
-        # different day's price. Only record_realized_pnl() ever adds to
-        # this; nothing else may write it.
+        # Running total of realised P&L, each closed position accounted
+        # exactly once (see account_closed_position() below and
+        # solana_execution_risk_patch.reconcile_realized_pnl(), its only
+        # caller) -- never re-derived later from a different day's price.
+        # Only account_closed_position() ever writes this field.
         "cumulative_realized_pnl_usd": "0",
+        # Idempotency ledger (review, 2026-08-26): {position_id: {...}} for
+        # every closed position already folded into cumulative_realized_pnl_usd
+        # above. This is what makes reconciliation crash-safe -- calling it
+        # again after a crash (or redundantly from multiple call sites) can
+        # never double-count, because a position_id present here is always
+        # skipped.
+        "accounted_position_ids": {},
         "last_forced_off_reason": "",
         "last_forced_off_at": 0,
     }
@@ -269,18 +276,36 @@ def reset_high_water_to_current(app, *, current_equity_usd: Decimal) -> dict:
         return state
 
 
-def record_realized_pnl(app, *, pnl_usd: Decimal) -> Decimal:
-    """Adds pnl_usd (already priced in USD at the moment this specific trade
-    closed -- see solana_execution_risk_patch.py's call site) to the running
-    cumulative_realized_pnl_usd total. This is the ONLY function that may
-    write that field -- it is a pure running sum, never re-derived from
-    SOL amounts at a later price."""
+def account_closed_position(app, *, position_id: str, realised_net_sol: Decimal, price_usd_used: Decimal) -> Decimal | None:
+    """Idempotent per position_id (review, 2026-08-26, replacing an earlier
+    before/after-delta approach that had a real crash window -- see
+    solana_execution_risk_patch.reconcile_realized_pnl(), the only caller).
+
+    Returns the pnl_usd added if this position_id was not already
+    accounted, or None if it was (a safe no-op) -- this is what makes
+    repeated/redundant calls (immediately after a sell, every monitor tick,
+    once at startup) always converge correctly with no double-counting,
+    regardless of when a crash happened relative to any one of those calls.
+    Once written, a position's accounted pnl_usd/price_usd_used is
+    immutable: this function never recomputes or overwrites an existing
+    entry, even if called again for the same position_id."""
     with _STATE_LOCK:
         state = load_state(app)
+        accounted = dict(state.get("accounted_position_ids") or {})
+        if position_id in accounted:
+            return None
+        pnl_usd = realised_net_sol * price_usd_used
+        accounted[position_id] = {
+            "realised_net_sol": str(realised_net_sol),
+            "price_usd_used": str(price_usd_used),
+            "pnl_usd": str(pnl_usd),
+            "accounted_at": int(time.time()),
+        }
+        state["accounted_position_ids"] = accounted
         total = Decimal(state.get("cumulative_realized_pnl_usd") or "0") + pnl_usd
         state["cumulative_realized_pnl_usd"] = str(total)
         _save_state(app, state)
-        return total
+        return pnl_usd
 
 
 def latch_drawdown(app, *, drawdown_pct, drawdown_usd) -> bool:
@@ -374,12 +399,15 @@ _INSTALLED = False
 
 
 def install() -> None:
-    """Wraps learnerbot.cli._app so reset_on_startup() runs exactly once,
-    the first time this process constructs its AppSettings, and starts the
-    periodic drawdown/health monitor thread (claude_monitor.py) -- mirrors
-    the existing _app-wrapping convention already used in this codebase
-    (learnerbot/telegram_ai_ops_patch.py's own watcher thread) rather than
-    inventing a second wrapping mechanism or a second _app hook."""
+    """Wraps learnerbot.cli._app so reset_on_startup() and a one-time
+    startup realised-P&L reconciliation (review, 2026-08-26 -- picks up any
+    closed position a crash left un-accounted before this process last
+    exited) both run exactly once, the first time this process constructs
+    its AppSettings, and starts the periodic drawdown/health monitor thread
+    (claude_monitor.py) -- mirrors the existing _app-wrapping convention
+    already used in this codebase (learnerbot/telegram_ai_ops_patch.py's
+    own watcher thread) rather than inventing a second wrapping mechanism
+    or a second _app hook."""
     global _PREV_APP, _INSTALLED
     if _INSTALLED:
         return
@@ -390,6 +418,12 @@ def install() -> None:
     def _app_with_state_reset():
         app = _PREV_APP()
         reset_on_startup(app)
+        import solana_execution_risk_patch as _guard
+
+        try:
+            _guard.reconcile_realized_pnl(app, _guard._owner_id())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[claude-startup-reconcile] {type(exc).__name__}: {exc}")
         import claude_monitor
 
         claude_monitor.start(app)
