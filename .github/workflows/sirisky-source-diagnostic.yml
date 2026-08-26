@@ -1,0 +1,29 @@
+name: SiRisky Source Diagnostic
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-source-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Show non-secret RPC and Jupiter implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          echo '=== RPC.PY ==='
+          sudo -n sed -n '1,240p' /root/SiRisky/sirisky/rpc.py
+          echo '=== JUPITER.PY ==='
+          sudo -n sed -n '1,320p' /root/SiRisky/sirisky/jupiter.py
+          echo '=== RUN CHECK REFERENCES ==='
+          sudo -n grep -n -B8 -A40 -E 'buy-side|round-trip|safe_check|quote' /root/SiRisky/run.py | head -260 || true
+          echo 'live_broadcast=OFF'
