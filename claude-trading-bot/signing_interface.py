@@ -26,6 +26,7 @@ import re
 from dataclasses import dataclass
 
 from learnerbot.solana_wallet_store import SolanaWalletError, SolanaWalletStore
+from learnerbot.user_registry import all_users
 
 _OWNER_ID_PATTERN = re.compile(r"-?\d{1,24}")
 
@@ -51,10 +52,39 @@ def _owner_id() -> str:
     return owner_id
 
 
+def _check_owner_is_sole_operative_identity(app, owner_id: str) -> None:
+    """Verify CLAUDE_BOT_WALLET_OWNER_ID is actually the identity execution will use.
+
+    solana_live_patch.process_leader_event() iterates
+    learnerbot.user_registry.all_users(app.csv_dir, enabled_only=True) and
+    builds SolanaLiveExecutor(app, tid) from whatever telegram_id that yields
+    -- a value this module does not otherwise control. Without this check,
+    SIGNER_READY could describe a wallet execution never actually uses (GPT
+    review caught this). Enforce, not just assume: exactly one enabled user,
+    and it must be this owner_id.
+    """
+    users = all_users(app.csv_dir, enabled_only=True)
+    if len(users) != 1:
+        raise SolanaWalletError(
+            f"expected exactly 1 enabled user in this instance's isolated CSVbot, "
+            f"found {len(users)} -- SIGNER_READY cannot be trusted to describe the "
+            f"wallet execution will actually use until this instance has exactly "
+            f"one operator identity"
+        )
+    actual_tid = str(users[0].get("telegram_id") or "").strip()
+    if actual_tid != owner_id:
+        raise SolanaWalletError(
+            f"CLAUDE_BOT_WALLET_OWNER_ID={owner_id} does not match this instance's "
+            f"sole registered user telegram_id={actual_tid} -- execution would use "
+            f"a different wallet than this status describes"
+        )
+
+
 def get_signer_status(app) -> SignerStatus:
     """Check signing readiness. Never raises -- always returns a SignerStatus."""
     try:
         owner_id = _owner_id()
+        _check_owner_is_sole_operative_identity(app, owner_id)
     except SolanaWalletError as exc:
         return SignerStatus(ready=False, reason=f"SIGNER_READY=false: {exc}")
 

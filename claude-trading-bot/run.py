@@ -160,8 +160,8 @@ def cmd_start() -> int:
     )
     send_to_chats(app.telegram_bot_token, app.telegram_chat_ids, startup_text)
 
-    # Hand off to the existing, unmodified bot via `python -m learnerbot run` —
-    # deliberately a subprocess/exec, NOT `from learnerbot.cli import main`.
+    # Hand off via bootstrap_run.py — deliberately a subprocess/exec, NOT
+    # `from learnerbot.cli import main`.
     #
     # learnerbot/__main__.py imports ~60 *_patch.py modules (the hard-floor
     # quality gates, profit guards, drawdown protections, and the final
@@ -170,11 +170,18 @@ def cmd_start() -> int:
     # — it is a process entry point, not an importable library call. Importing
     # `learnerbot.cli` directly would skip that entire patch chain and silently
     # run the strategy WITHOUT the hardened gates this project depends on, which
-    # is exactly what this bot must never do. `python -m learnerbot run` is the
-    # only invocation that reproduces production's exact behaviour — it's the
-    # same command in systemd/learnerbot.service's ExecStart.
+    # is exactly what this bot must never do.
+    #
+    # bootstrap_run.py (not a bare `python -m learnerbot run`) is the exec
+    # target because os.execvpe() replaces the process image entirely — the
+    # identity_patch/risk-guard patches installed above in THIS process are
+    # gone the instant exec happens. bootstrap_run.py installs them again
+    # inside the child, before it runs learnerbot exactly the way `-m` would
+    # (runpy.run_module(..., run_name="__main__")), so the effect is
+    # equivalent to `python -m learnerbot run` plus those two patches, not a
+    # different invocation.
     os.chdir(REPO_ROOT)
-    os.execvpe(sys.executable, [sys.executable, "-m", "learnerbot", "run"], os.environ)
+    os.execvpe(sys.executable, [sys.executable, str(THIS_DIR / "bootstrap_run.py")], os.environ)
 
 
 def main() -> int:

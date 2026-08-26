@@ -53,14 +53,39 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
 
 **New in this folder:**
 - [`run.py`](run.py) — fail-closed env isolation + entrypoint.
-- [`risk_engine_guard.py`](risk_engine_guard.py) — an *additional* hard-limit layer
-  (capital/exposure/position caps) that sits in front of the reused execution
-  engines. It only ever adds a tighter check; it cannot loosen anything reused
-  from `learnerbot`.
+- [`bootstrap_run.py`](bootstrap_run.py) — the actual exec target `run.py` hands
+  off to (see "Why bootstrap_run.py exists" below). Installs `identity_patch`
+  and `solana_execution_risk_patch` in the child process before running
+  `learnerbot` exactly the way `python -m learnerbot run` would.
+- [`risk_engine_guard.py`](risk_engine_guard.py) — pure config validation and a
+  `check_new_position()` gate (capital/exposure/position caps). By itself this
+  file only validates config; [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py)
+  is what actually calls `check_new_position()` before every Solana LIVE buy —
+  see below for why these are separate files.
+- [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py) — wraps
+  `SolanaLiveExecutor.buy` (the real signing/broadcast entry point) to convert
+  the proposed trade and current open exposure to USD (live Jupiter quote) and
+  call `risk_engine_guard.check_new_position()` before allowing the call
+  through. Only tightens; cannot loosen anything reused from `learnerbot`.
+  EVM is not wired yet — all 5 EVM chains currently fail connectivity, so
+  there's nothing live there to guard (see Known limitations).
 - [`identity_patch.py`](identity_patch.py) — prefixes every outgoing Telegram
   message with `🤖 CLAUDE TRADING BOT` and sends the startup status message,
   following this codebase's existing `*_patch.py` convention rather than editing
   `learnerbot/telegram.py` directly.
+
+**Why `bootstrap_run.py` exists, not just `python -m learnerbot run`:**
+`os.execvpe()` replaces the process image entirely — any monkey-patching done
+in `run.py`'s process before exec (identity prefix, risk guard) is gone in a
+freshly-exec'd `python -m learnerbot run`, since that starts a brand new
+interpreter with no memory of what the parent process did. Earlier versions of
+this folder called `os.execvpe` directly on `-m learnerbot run` and both
+patches silently only affected the one startup message sent before exec, never
+the actual trading loop — caught in review before anything was armed.
+`bootstrap_run.py` is the fix: it *is* the exec target, installs both patches
+first, then runs `learnerbot` via `runpy.run_module(..., run_name="__main__")`
+— functionally identical to `-m learnerbot run`, just with the patches
+already active before `learnerbot/__main__.py`'s own chain begins.
 - [`preflight_check.py`](preflight_check.py) — the non-trading readiness checklist
   (RPC, WebSocket, market data, both-side quotes, pool/token safety dry-run,
   wallet balance read, DB init, Telegram delivery, kill-switch state,
@@ -70,8 +95,15 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
   question, SIGNER_READY true/false, by checking whether an encrypted
   signing key exists in `learnerbot.solana_wallet_store.SolanaWalletStore`
   (the existing, reviewed keystore — reused, not reimplemented) for this
-  instance's isolated wallet-owner id. Until GPT/operator provisions a
-  dedicated wallet on the Google server, this reports `false` and every
+  instance's isolated wallet-owner id. Also verifies — not just assumes —
+  that `CLAUDE_BOT_WALLET_OWNER_ID` is actually the identity execution will
+  use: `solana_live_patch.process_leader_event()` builds its executor from
+  whatever `learnerbot.user_registry.all_users()` yields, a value this module
+  doesn't otherwise control, so it fails closed unless this instance has
+  exactly one enabled user and that user's `telegram_id` matches the owner id
+  (caught in review — without this, SIGNER_READY could describe a different
+  wallet than the one execution actually uses). Until GPT/operator provisions
+  a dedicated wallet on the Google server, this reports `false` and every
   caller treats that as broadcast-unavailable. It does not itself decide to
   broadcast anything — that still requires the existing ARMED/LIVE_TRADING
   platform gates plus `risk_engine_guard.py`, unchanged.

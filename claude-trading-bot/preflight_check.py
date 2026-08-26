@@ -229,16 +229,32 @@ def check_signer_readiness() -> None:
 
 
 def check_wallet_balance() -> None:
-    name = "wallet balance read"
+    name = "wallet balance read (live on-chain getBalance, not just file presence)"
     try:
         from learnerbot.config import AppSettings
+        from learnerbot.solana_wallet_store import SolanaWalletError, SolanaWalletStore
 
         app = AppSettings.load()
-        wallets_csv = app.data_dir.parent / "CSVbot" / "auto" / "solana_user_wallets.csv"
-        if not wallets_csv.exists():
+        owner_id = os.environ.get("CLAUDE_BOT_WALLET_OWNER_ID", "").strip()
+        if not owner_id:
+            _record(name, "SKIP", "CLAUDE_BOT_WALLET_OWNER_ID not configured")
+            return
+        store = SolanaWalletStore(csv_dir=app.csv_dir, data_dir=app.data_dir)
+        try:
+            meta = store.get_meta(owner_id)
+        except SolanaWalletError:
             _record(name, "SKIP", "no wallet provisioned yet for this instance")
             return
-        _record(name, "PASS", f"wallet registry present at {wallets_csv}")
+        address = meta.get("address")
+        if not address:
+            _record(name, "FAIL", "wallet metadata present but has no address")
+            return
+        result = _solana_rpc_call("getBalance", [address])
+        lamports = (result.get("result") or {}).get("value")
+        if lamports is None:
+            _record(name, "FAIL", f"getBalance returned no value: {result}")
+            return
+        _record(name, "PASS", f"address={address} balance={lamports / 1_000_000_000:.9f} SOL")
     except Exception as exc:  # noqa: BLE001
         _record(name, "FAIL", str(exc))
 
