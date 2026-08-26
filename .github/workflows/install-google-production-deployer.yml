@@ -1,0 +1,49 @@
+name: Install Google Production Deployer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/install-google-production-deployer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-google-production-deployer
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify Google runner and sudo boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          sudo -n true
+          echo 'GOOGLE_RUNNER_SUDO_READY=true'
+
+      - name: Install restricted production deploy bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/migration/google-production-cutover/scripts/install_google_production_deployer.sh \
+            -o "$tmp"
+          sudo -n bash "$tmp"
+
+      - name: Verify restricted deploy bridge and current bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/deploy-google-production-bot >/dev/null
+          sudo -n -l /usr/local/sbin/status-google-production-bot >/dev/null
+          sudo -n -l /usr/local/sbin/restart-google-production-bot >/dev/null
+          sudo -n /usr/local/sbin/status-google-production-bot
