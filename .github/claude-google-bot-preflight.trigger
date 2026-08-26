@@ -1,3 +1,6 @@
 Claude Google Bot Preflight trigger.
 
-Touch this file on main only after the controlled Google sync has completed successfully. This intentionally separates sync from preflight so the check cannot race the managed checkout update.
+requested_at=2026-08-26T09:33:00Z
+requested_by=gpt
+synced_server_sha=d9d7b21ca461c3969518c33081e81b9fdf8912cd
+reason=authoritative_post_sync_preflight
