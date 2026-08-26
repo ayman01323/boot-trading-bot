@@ -1,4 +1,4 @@
-# provider resync requested after JUPITER_API_KEY update: 2026-08-26T00:11Z
+# Provider + owner-notification runtime sync. Secret values are never printed.
 name: Claude Google Provider Sync
 
 on:
@@ -25,6 +25,8 @@ jobs:
       SECRET_SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
       SECRET_SOLANA_WS_URL: ${{ secrets.SOLANA_WS_URL }}
       SECRET_JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+      SECRET_TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      MASTER_TELEGRAM_ID: ${{ vars.TELEGRAM_MASTER_CHAT_ID || '5923828381' }}
     steps:
       - name: Verify Google runner identity
         shell: bash
@@ -33,7 +35,16 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
 
-      - name: Write Claude provider runtime without logging secrets
+      - name: Validate owner-notification inputs without revealing them
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${SECRET_TELEGRAM_BOT_TOKEN:-}" || { echo 'telegram_bot_token=missing' >&2; exit 10; }
+          [[ "${MASTER_TELEGRAM_ID:-}" =~ ^-?[0-9]{5,20}$ ]] || { echo 'telegram_master_id=invalid' >&2; exit 11; }
+          echo 'telegram_bot_token=present'
+          echo 'telegram_master_id=present_valid'
+
+      - name: Merge provider and owner-notification runtime without logging secrets
         shell: bash
         run: |
           set -euo pipefail
@@ -52,16 +63,53 @@ jobs:
           fi
 
           umask 077
-          tmp="${RUNTIME_ENV}.tmp"
-          {
-            printf 'SOLANA_RPC_URL=%s\n' "$SECRET_SOLANA_RPC_URL"
-            printf 'SOLANA_WS_URL=%s\n' "$SECRET_SOLANA_WS_URL"
-            if [ -n "${SECRET_JUPITER_API_KEY:-}" ]; then
-              printf 'JUPITER_API_KEY=%s\n' "$SECRET_JUPITER_API_KEY"
-            fi
-          } > "$tmp"
-          mv "$tmp" "$RUNTIME_ENV"
-          chmod 600 "$RUNTIME_ENV"
+          RUNTIME_ENV="$RUNTIME_ENV" \
+          SOLANA_RPC_URL="$SECRET_SOLANA_RPC_URL" \
+          SOLANA_WS_URL="$SECRET_SOLANA_WS_URL" \
+          JUPITER_API_KEY="${SECRET_JUPITER_API_KEY:-}" \
+          TELEGRAM_BOT_TOKEN="$SECRET_TELEGRAM_BOT_TOKEN" \
+          TELEGRAM_OWNER_ID="$MASTER_TELEGRAM_ID" \
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ['RUNTIME_ENV'])
+          desired = {
+              'SOLANA_RPC_URL': os.environ['SOLANA_RPC_URL'],
+              'SOLANA_WS_URL': os.environ['SOLANA_WS_URL'],
+              'TELEGRAM_BOT_TOKEN': os.environ['TELEGRAM_BOT_TOKEN'],
+              'TELEGRAM_CHAT_IDS': os.environ['TELEGRAM_OWNER_ID'],
+              # The same private Telegram identity receives the drawdown alert
+              # and is the only identity allowed to clear the persistent latch.
+              'CLAUDE_BOT_WALLET_OWNER_ID': os.environ['TELEGRAM_OWNER_ID'],
+          }
+          if os.environ.get('JUPITER_API_KEY', '').strip():
+              desired['JUPITER_API_KEY'] = os.environ['JUPITER_API_KEY']
+
+          lines = path.read_text(encoding='utf-8').splitlines() if path.exists() else []
+          seen = set()
+          out = []
+          for line in lines:
+              stripped = line.lstrip()
+              if not stripped or stripped.startswith('#') or '=' not in line:
+                  out.append(line)
+                  continue
+              key = line.split('=', 1)[0].strip()
+              if key in desired:
+                  if key not in seen:
+                      out.append(f'{key}={desired[key]}')
+                      seen.add(key)
+                  continue
+              out.append(line)
+          for key, value in desired.items():
+              if key not in seen:
+                  out.append(f'{key}={value}')
+          tmp = path.with_suffix(path.suffix + '.tmp')
+          tmp.write_text('\n'.join(out).rstrip() + '\n', encoding='utf-8')
+          tmp.chmod(0o600)
+          tmp.replace(path)
+          path.chmod(0o600)
+          PY
 
           {
             echo 'CLAUDE_GOOGLE_PROVIDER_SYNC_OK'
@@ -72,10 +120,14 @@ jobs:
             else
               echo 'jupiter_api_key=absent_optional'
             fi
+            echo 'telegram_bot_token=present_persisted'
+            echo 'wallet_owner_id=present_persisted'
+            echo 'telegram_chat_ids=present_persisted'
+            echo 'existing_risk_profile=preserved'
             echo "runtime_env=$RUNTIME_ENV"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Connectivity checks without exposing provider URLs
+      - name: Connectivity checks without exposing provider URLs or Telegram IDs
         shell: bash
         run: |
           set -euo pipefail
@@ -91,6 +143,7 @@ jobs:
           if data.get('result') != 'ok':
               raise SystemExit(f"Solana RPC health failed: {data.get('error') or data.get('result')}")
           print('solana_rpc_health=ok')
+          print('owner_notification_config=present')
           PY
 
       - name: Safety summary
@@ -99,7 +152,8 @@ jobs:
         run: |
           {
             echo
-            echo 'No secret values are printed.'
+            echo 'No secret values or Telegram IDs are printed.'
             echo 'Writes only under /home/ayman01323/ClaudeServer/runtime.'
+            echo 'Existing risk variables are merged/preserved rather than overwritten.'
             echo 'No sudo, /root, wallet/signing, service restart, trading, risk/capital or LIVE/ARMED authority.'
           } >> "$GITHUB_STEP_SUMMARY"
