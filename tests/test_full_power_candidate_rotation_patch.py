@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from types import SimpleNamespace
+
 import learnerbot.full_power_candidate_rotation_patch as patch
 
 
@@ -47,8 +50,63 @@ def test_v3_wrapper_rotates_by_chain_factory_without_changing_batch_size(monkeyp
 
 
 def test_install_does_not_patch_settings_or_quote_budget():
-    # The patch must only replace graph candidate selection. The configured
-    # fast_market_max_candidate_checks value remains owned by the existing settings.
     assert patch._fp._graph_triangles is patch._rotating_graph_triangles
     assert patch._fp._v3_triangles is patch._rotating_v3_triangles
+    assert patch._fp.scan_full_power_hot_routes is patch._scan_full_power_hot_routes
     assert "_discovery_settings" not in patch.__dict__
+
+
+def test_base_result_is_published_before_slower_other_chain_without_retimestamp(monkeypatch, tmp_path):
+    app = SimpleNamespace(csv_dir=tmp_path)
+    base = SimpleNamespace(config=SimpleNamespace(slug="base", chain_id=8453))
+    eth = SimpleNamespace(config=SimpleNamespace(slug="ethereum", chain_id=1))
+    observed = 1234567890
+    base_row = {
+        "chain_slug": "base",
+        "observed_at_epoch": observed,
+        "expected_gross_profit_base": "0.001",
+        "slippage_reserve_base": "0.0001",
+    }
+    scan_calls = []
+    writes = []
+
+    monkeypatch.setattr(
+        patch._fp,
+        "load_kv_scoped",
+        lambda path, chain_id: {
+            "full_power_enabled": "true",
+            "fast_market_max_candidate_checks": "10",
+            "fast_market_max_routes_per_pass": "4",
+            "full_power_parallel_chains": "2",
+        },
+    )
+
+    def fake_v2(app_arg, ctx, settings, checks_budget, routes_budget):
+        scan_calls.append((ctx.config.slug, "v2"))
+        if ctx.config.slug == "base":
+            return [dict(base_row)], []
+        time.sleep(0.05)
+        return [], []
+
+    def fake_empty(app_arg, ctx, settings, *args):
+        scan_calls.append((ctx.config.slug, "other"))
+        return [], []
+
+    monkeypatch.setattr(patch._fp, "_scan_v2_hot_chain", fake_v2)
+    monkeypatch.setattr(patch._fp, "_scan_v3_chain", fake_empty)
+    monkeypatch.setattr(patch._fp, "_scan_cross_v2_chain", fake_empty)
+    monkeypatch.setattr(
+        patch._fp,
+        "_atomic_write",
+        lambda path, rows, headers: writes.append((path.name, [dict(r) for r in rows])),
+    )
+    monkeypatch.setattr(patch._fp, "_atomic_rows", lambda path, rows, headers: None)
+
+    _, rows, _ = patch._scan_full_power_hot_routes(app, [base, eth])
+
+    assert scan_calls.count(("base", "v2")) == 1
+    assert scan_calls.count(("ethereum", "v2")) == 1
+    assert writes[0][0] == "full_power_opportunities.csv"
+    assert writes[0][1] == [base_row]
+    assert writes[0][1][0]["observed_at_epoch"] == observed
+    assert rows == [base_row]
