@@ -1,303 +1,246 @@
-name: BOOT Python Tests
+name: Namecheap to Google Final Production Cutover
 
 on:
-  pull_request:
   push:
     branches:
-      - main
-      - 'agent/**'
+      - migration/google-production-cutover
+    paths:
+      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: boot-python-tests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: namecheap-google-final-production-cutover
+  cancel-in-progress: false
+
+env:
+  HANDOFF: /var/tmp/namecheap-google-cutover-handoff
+  KEY_MARKER: namecheap-google-final-cutover
+  STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
+  FINAL_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market
 
 jobs:
-  test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+  quiesce-namecheap:
+    name: Stop Namecheap and prepare final-sync key
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 30
-    env:
-      CI_VENV: /tmp/boot-python-ci-${{ github.run_id }}
+    timeout-minutes: 15
     steps:
-      - name: Check out tested ref without persisted credentials
-        uses: actions/checkout@v4
+      - name: Verify restricted cutover bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          for w in \
+            /usr/local/sbin/quiesce-namecheap-for-google-cutover \
+            /usr/local/sbin/final-sync-namecheap-to-google \
+            /usr/local/sbin/verify-namecheap-cutover-stopped \
+            /usr/local/sbin/resume-namecheap-after-cutover-failure; do
+            test -x "$w"
+            sudo -n -l "$w" >/dev/null 2>&1
+          done
+      - name: Quiesce Namecheap production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/quiesce-namecheap-for-google-cutover
+          test -s "$HANDOFF/public-key.txt"
+          test -s "$HANDOFF/source-ip.txt"
+          test -w "$HANDOFF/google-ip.txt"
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+      - name: Upload one-time public material
+        uses: actions/upload-artifact@v4
         with:
-          fetch-depth: 1
-          persist-credentials: false
+          name: final-cutover-source-${{ github.run_id }}
+          path: |
+            /var/tmp/namecheap-google-cutover-handoff/public-key.txt
+            /var/tmp/namecheap-google-cutover-handoff/source-ip.txt
+          retention-days: 1
+          if-no-files-found: error
 
-      - name: Prepare isolated Python environment
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "$CI_VENV"
-          python3 -c 'import sys; print(sys.version); assert sys.version_info >= (3, 11), sys.version'
-          python3 -m venv "$CI_VENV"
-          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
-          "$CI_VENV/bin/python" -m pip install --disable-pip-version-check -q -r requirements.txt pytest
-
-      - name: Compile Python
-        run: "$CI_VENV/bin/python" -m compileall -q learnerbot scripts tests
-
-      - name: Module import and production-order startup sweep
-        run: "$CI_VENV/bin/python" -m pytest -x -vv tests/test_imports.py tests/test_main_import_order.py
-
-      - name: Solana LIVE safety regression tests
-        shell: bash
-        run: |
-          "$CI_VENV/bin/python" -m pytest -x -vv \
-            tests/test_solana_live_canary.py \
-            tests/test_solana_execution_safety.py \
-            tests/test_solana_execution_validation.py \
-            tests/test_solana_position_wallet_binding.py \
-            tests/test_solana_low_capital_limits.py \
-            tests/test_solana_overhead_gate_correction.py \
-            tests/test_solana_entry_capacity_reconcile.py \
-            tests/test_solana_quote_execution_consistency.py \
-            tests/test_solana_preflight_cache.py \
-            tests/test_solana_profit_accounting_epoch.py \
-            tests/test_solana_worker_reliability.py \
-            tests/test_solana_leader_cursor_reliability.py \
-            tests/test_solana_token_account_reclaim.py \
-            tests/test_solana_refundable_rent_accounting.py \
-            tests/test_solana_simulated_reserve_guard.py \
-            tests/test_solana_execution_efficiency.py \
-            tests/test_solana_jupiter_order_recovery.py \
-            tests/test_solana_emergency_liquidity_unwind.py \
-            tests/test_solana_atomic_close_fallback.py \
-            tests/test_solana_liquidity_fail_closed.py \
-            tests/test_solana_profit_first_live_correction.py \
-            tests/test_solana_partial_sell_profit_guard.py \
-            tests/test_solana_positive_edge_entry_gate.py \
-            tests/test_solana_first_day_executable_edge.py \
-            tests/test_solana_exit_circuit_breaker.py \
-            tests/test_transaction_audit.py \
-            tests/test_loss_forensics_github_export.py \
-            tests/test_profit_control_loop.py \
-            tests/test_profit_control_master_summary.py \
-            tests/test_solana_runtime_composition.py
-
-      - name: SiBot and Telegram UI tests
-        shell: bash
-        run: |
-          "$CI_VENV/bin/python" -m pytest -x -vv \
-            tests/test_sibot.py \
-            tests/test_sibot_pending_commands.py \
-            tests/test_ai_council_gemini_retry.py \
-            tests/test_telegram_visual_ui.py \
-            tests/test_sibot_reasonable_top20.py \
-            tests/test_telegram_wallet_links.py \
-            tests/test_sibot_intelligence_solana.py \
-            tests/test_profit_research_hourly_capital.py \
-            tests/test_telegram_solana_visibility.py \
-            tests/test_sibot_readiness_alerts.py \
-            tests/test_telegram_mobile_divider.py \
-            tests/test_solana_wallet_telegram.py \
-            tests/test_telegram_multi_wallet_manager.py \
-            tests/test_telegram_solana_chains.py \
-            tests/test_telegram_solana_everywhere.py \
-            tests/test_live_reporting_all_chains.py \
-            tests/test_telegram_solana_send.py \
-            tests/test_telegram_usd_everywhere.py \
-            tests/test_telegram_order_usd.py \
-            tests/test_sibot_profit_guard.py \
-            tests/test_solana_profit_guard.py \
-            tests/test_sibot_evm_worker_reliability.py \
-            tests/test_polygon_focus.py \
-            tests/test_telegram_capital_readiness.py \
-            tests/test_solana_balanced_frequency.py \
-            tests/test_telegram_roles_and_command_scope.py \
-            tests/test_telegram_user_menu_compact.py \
-            tests/test_user_report_loss_alerts.py \
-            tests/test_deepseek_telegram_bridge.py \
-            tests/test_deepseek_controlled_access.py
-
-      - name: Legacy full suite when runtime CSV fixtures are present
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -f CSVbot/chains.csv && -f CSVbot/auto_trading_settings.csv && -f CSVbot/live_trading_settings.csv && -f CSVbot/dex_registry.csv ]]; then
-            "$CI_VENV/bin/python" -m pytest -x -vv
-          else
-            echo "Skipping legacy config-bound tests: runtime CSVbot fixtures are not stored in this checkout."
-          fi
-
-      - name: Clean isolated Python environment
-        if: always()
-        shell: bash
-        run: rm -rf "$CI_VENV"
-
-  gemini_connectivity:
-    name: Optional Gemini connectivity check
-    needs: test
-    if: github.event_name != 'pull_request'
-    continue-on-error: true
-    runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 5
-    env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GEMINI_CI_MODEL: ${{ vars.GEMINI_CI_MODEL }}
+  authorise-google:
+    name: Authorise one-time final-sync key on Google
+    needs: quiesce-namecheap
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
     steps:
-      - name: Check Gemini with bounded 429 retry
+      - name: Verify Google is not running production
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${GEMINI_API_KEY:-}" ]; then
-            echo "Skipping Gemini call: GEMINI_API_KEY is not available in this run context."
-            exit 0
+          test "$(hostname)" = 'botgoogle'
+          sudo -n -l /usr/local/sbin/status-google-production-cutover >/dev/null 2>&1
+          if sudo -n /usr/local/sbin/status-google-production-cutover | grep -q '^google_service_active=active$'; then
+            echo 'Refusing: Google learnerbot is already active before cutover.' >&2
+            exit 30
           fi
-          python3 - <<'PY'
-          import json
-          import os
-          import random
-          import sys
-          import time
-          import urllib.error
-          import urllib.request
+          test -d "$STAGING_DIR"
+      - name: Download one-time public material
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cutover-source-${{ github.run_id }}
+          path: /tmp/final-cutover-auth-${{ github.run_id }}
+      - name: Authorise fixed Namecheap source key
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="/tmp/final-cutover-auth-${GITHUB_RUN_ID}"
+          PUB="$WORK/public-key.txt"
+          SOURCE_IP="$(tr -d '[:space:]' < "$WORK/source-ip.txt")"
+          test -s "$PUB"
+          [[ "$SOURCE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+          mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          printf 'from="%s",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-pty %s\n' \
+            "$SOURCE_IP" "$(cat "$PUB")" >> "$HOME/.ssh/authorized_keys"
+          GOOGLE_IP="$(curl -fsS -H 'Metadata-Flavor: Google' --max-time 5 http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip 2>/dev/null || true)"
+          if [[ -z "$GOOGLE_IP" ]]; then GOOGLE_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"; fi
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          printf '%s\n' "$GOOGLE_IP" > "$WORK/google-ip.txt"
+          chmod 600 "$WORK/google-ip.txt"
+      - name: Upload Google endpoint only
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-cutover-google-endpoint-${{ github.run_id }}
+          path: /tmp/final-cutover-auth-${{ github.run_id }}/google-ip.txt
+          retention-days: 1
+          if-no-files-found: error
 
-          api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-          model = os.environ.get("GEMINI_CI_MODEL", "").strip() or "gemini-3.7-flash"
-          url = (
-              "https://generativelanguage.googleapis.com/v1beta/models/"
-              + model
-              + ":generateContent?key="
-              + api_key
-          )
-          payload = {
-              "contents": [{"parts": [{"text": "Reply with exactly: BOOT_GEMINI_OK"}]}],
-              "generationConfig": {"temperature": 0},
-          }
-          data = json.dumps(payload).encode("utf-8")
-          body = None
-          for attempt in range(4):
-              req = urllib.request.Request(
-                  url,
-                  data=data,
-                  headers={"Content-Type": "application/json"},
-                  method="POST",
-              )
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as resp:
-                      body = json.loads(resp.read().decode("utf-8"))
-                  break
-              except urllib.error.HTTPError as exc:
-                  raw = exc.read().decode("utf-8", errors="replace")
-                  print(f"Gemini connectivity HTTP {exc.code} using model {model}", file=sys.stderr)
-                  try:
-                      print(json.dumps(json.loads(raw), indent=2), file=sys.stderr)
-                  except Exception:
-                      print(raw[:4000], file=sys.stderr)
-                  if exc.code != 429 or attempt == 3:
-                      raise
-                  retry_after = exc.headers.get("Retry-After", "").strip()
-                  try:
-                      delay = float(retry_after)
-                  except Exception:
-                      delay = min(2 ** (attempt + 1), 30) + random.uniform(0.0, 0.75)
-                  delay = max(1.0, min(delay, 60.0))
-                  print(f"Gemini 429; retrying in {delay:.1f}s (attempt {attempt + 2}/4)", file=sys.stderr)
-                  time.sleep(delay)
-
-          if body is None:
-              sys.exit(2)
-          try:
-              text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
-          except Exception:
-              print("Unexpected Gemini response:")
-              print(json.dumps(body, indent=2))
-              sys.exit(2)
-          if text != "BOOT_GEMINI_OK":
-              print("Unexpected Gemini text:", repr(text))
-              sys.exit(2)
-          print(f"Gemini connectivity OK using {model}")
-          PY
-
-  deploy_current_main:
-    name: Deploy current main to VPS
-    needs: test
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.head_ref == 'agent/deploy-current-main' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+  final-sync:
+    name: Final stopped-state sync to Google staging
+    needs: authorise-google
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 20
+    timeout-minutes: 180
     steps:
-      - name: Deploy tested current main
+      - name: Download fixed Google endpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cutover-google-endpoint-${{ github.run_id }}
+          path: /tmp/final-cutover-endpoint-${{ github.run_id }}
+      - name: Hand endpoint to restricted root wrapper
         shell: bash
-        env:
-          TARGET_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          sudo /usr/local/sbin/deploy-boot-trading-bot "$TARGET_SHA"
-
-      - name: Server status
-        if: always()
-        shell: bash
-        run: sudo /usr/local/sbin/status-boot-trading-bot
-
-      - name: Captured learnerbot startup exception
-        if: always()
+          SRC="/tmp/final-cutover-endpoint-${GITHUB_RUN_ID}/google-ip.txt"
+          GOOGLE_IP="$(tr -d '[:space:]' < "$SRC")"
+          [[ "$GOOGLE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+          test -w "$HANDOFF/google-ip.txt"
+          printf '%s\n' "$GOOGLE_IP" > "$HANDOFF/google-ip.txt"
+          chmod 600 "$HANDOFF/google-ip.txt"
+      - name: Run final sync while Namecheap is stopped
         shell: bash
         run: |
-          if [[ -r /tmp/learnerbot-startup-error.txt ]]; then
-            cat /tmp/learnerbot-startup-error.txt
-          else
-            echo "no readable /tmp/learnerbot-startup-error.txt"
-          fi
-
-      - name: Recent learnerbot journal after deploy attempt
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          sudo -n /usr/local/sbin/final-sync-namecheap-to-google
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+      - name: Remove runner-owned endpoint material
         if: always()
         shell: bash
-        run: journalctl -u learnerbot.service --since '10 minutes ago' -n 350 --no-pager || true
+        run: rm -rf "/tmp/final-cutover-endpoint-${GITHUB_RUN_ID}"
 
-      - name: Deployment wrapper log tail
-        if: always()
+  verify-staging:
+    name: Verify final staging snapshot on Google
+    needs: final-sync
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify final stopped-state snapshot
         shell: bash
         run: |
-          if [[ -r /var/log/boot-github-deploy.log ]]; then
-            tail -n 120 /var/log/boot-github-deploy.log
-          else
-            echo "deploy log is not readable by github-runner"
+          set -euo pipefail
+          test -d "$STAGING_DIR/.git"
+          test -f "$STAGING_DIR/requirements.txt"
+          test -d "$STAGING_DIR/learnerbot"
+          if pgrep -af "$STAGING_DIR" | grep -v -E 'grep|Actions.Runner|Runner.Worker' >/dev/null 2>&1; then
+            echo 'Refusing: process is running from staging.' >&2
+            exit 40
           fi
+          echo "staging_sha=$(git -C "$STAGING_DIR" rev-parse HEAD)"
+          echo "staging_size=$(du -sh "$STAGING_DIR" | awk '{print $1}')"
+          echo "staging_files=$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
 
-  server_diagnostics:
-    name: Read VPS learnerbot diagnostics
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.head_ref == 'agent/server-diagnostics' &&
-      github.event.pull_request.head.repo.full_name == github.repository
+  refresh-google:
+    name: Refresh final Google production path
+    needs: verify-staging
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 30
+    steps:
+      - name: Refresh and verify Google final path while stopped
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/refresh-google-production-bot >/dev/null 2>&1
+          sudo -n -l /usr/local/sbin/verify-google-production-bot >/dev/null 2>&1
+          sudo -n /usr/local/sbin/refresh-google-production-bot
+          sudo -n /usr/local/sbin/verify-google-production-bot
+
+  activate-google:
+    name: Start Google production learnerbot
+    needs: refresh-google
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Activate Google production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n -l /usr/local/sbin/activate-google-production-bot >/dev/null 2>&1
+          sudo -n /usr/local/sbin/activate-google-production-bot
+          sudo -n /usr/local/sbin/status-google-production-cutover
+
+  verify-namecheap-stopped:
+    name: Confirm old Namecheap bot remains stopped
+    needs: activate-google
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 5
     steps:
-      - name: Current status
+      - name: Verify old production remains inactive
         shell: bash
-        run: sudo /usr/local/sbin/status-boot-trading-bot
+        run: sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
 
-      - name: Captured learnerbot startup exception
+  rollback-before-activation:
+    name: Roll back to Namecheap if pre-activation cutover fails
+    if: ${{ always() && needs.quiesce-namecheap.result == 'success' && needs.activate-google.result != 'success' }}
+    needs: [quiesce-namecheap, authorise-google, final-sync, verify-staging, refresh-google, activate-google]
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Resume Namecheap production
+        shell: bash
+        run: sudo -n /usr/local/sbin/resume-namecheap-after-cutover-failure
+
+  dual-run-safety:
+    name: Stop Google if old Namecheap unexpectedly remains active
+    if: ${{ always() && needs.activate-google.result == 'success' && needs.verify-namecheap-stopped.result != 'success' }}
+    needs: [activate-google, verify-namecheap-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Stop Google to avoid dual production
+        shell: bash
+        run: sudo -n /usr/local/sbin/stop-google-production-after-failed-cutover
+
+  cleanup-google-key:
+    name: Remove one-time final-sync SSH authorisation
+    if: always()
+    needs: [authorise-google, final-sync, activate-google, verify-namecheap-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Remove one-time key and endpoint material
         shell: bash
         run: |
-          if [[ -r /tmp/learnerbot-startup-error.txt ]]; then
-            cat /tmp/learnerbot-startup-error.txt
-          else
-            echo "no readable /tmp/learnerbot-startup-error.txt"
+          set -euo pipefail
+          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+            grep -v "$KEY_MARKER" "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+            mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+            chmod 600 "$HOME/.ssh/authorized_keys"
           fi
-
-      - name: Service unit metadata
-        shell: bash
-        run: systemctl show learnerbot.service -p FragmentPath -p WorkingDirectory -p ExecStart --no-pager || true
-
-      - name: Recent learnerbot journal
-        shell: bash
-        run: journalctl -u learnerbot.service --since '20 minutes ago' -n 400 --no-pager || true
-
-      - name: Deployment wrapper log tail
-        shell: bash
-        run: |
-          if [[ -r /var/log/boot-github-deploy.log ]]; then
-            tail -n 160 /var/log/boot-github-deploy.log
-          else
-            echo "deploy log is not readable by github-runner"
-          fi
+          rm -rf "/tmp/final-cutover-auth-${GITHUB_RUN_ID}"
+          echo 'FINAL_CUTOVER_SSH_KEY_REMOVED=true'
