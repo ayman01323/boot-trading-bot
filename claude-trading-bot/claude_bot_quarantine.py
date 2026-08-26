@@ -152,13 +152,58 @@ def block_production_env_fallback() -> list[str]:
     overwrites a value this instance's own .env explicitly provided.
     Returns the list of names actually blanked. Safe to call multiple times
     (idempotent) and safe to call before any learnerbot import (no
-    dependency on it)."""
+    dependency on it).
+
+    Kept as defense-in-depth, but NOT the primary protection -- see
+    disable_root_dotenv_load() below, which review correctly pointed out is
+    the only deterministic fix. An enumerated blocklist can always miss a
+    name (e.g. JUPITER_API_KEY, GOPLUS_ACCESS_TOKEN -- vars this instance
+    legitimately DOES want to set from its own env, so they were never
+    candidates for blanking, but if this instance's own env omitted one,
+    the old design would have let it silently fall through to production's
+    value). Disabling the root .env load entirely removes that whole class
+    of gap regardless of which name is missing."""
     blanked: list[str] = []
     for name in _PRODUCTION_ONLY_SECRETS:
         if name not in os.environ:
             os.environ[name] = ""
             blanked.append(name)
     return blanked
+
+
+def disable_root_dotenv_load() -> None:
+    """Deterministically make learnerbot/config.py's
+    `load_dotenv(BOT_ROOT / ".env")` call a no-op, instead of trying to
+    enumerate every var name it might fill in.
+
+    learnerbot/config.py does `from dotenv import load_dotenv` then calls
+    it unconditionally at module level with no override=True. Python's
+    `from X import Y` binds the name to whatever `X.Y` currently is at the
+    moment that import statement executes -- so replacing the `dotenv`
+    package's own `load_dotenv` attribute with a no-op BEFORE
+    `learnerbot.config` is ever imported means `learnerbot.config`'s local
+    `load_dotenv` name binds to this no-op instead of the real function.
+    This has nothing to do with which env var names exist; it makes the
+    root .env file impossible to read at all in this process, for any name,
+    known or not.
+
+    Must run after this instance's own env has already been loaded (by
+    run.py's _load_own_env(), which imports and calls the REAL
+    python-dotenv load_dotenv directly, not through this no-op) and before
+    the first learnerbot import -- same ordering constraint as everything
+    else in this module.
+    """
+    import dotenv
+
+    dotenv.load_dotenv = _noop_load_dotenv
+
+
+def _noop_load_dotenv(*_args, **_kwargs):
+    """Module-level (not a local closure) so tests can assert
+    `learnerbot.config.load_dotenv is claude_bot_quarantine._noop_load_dotenv`
+    -- programmatic proof root .env loading is disabled, not just that
+    specific var names stayed blank."""
+    return False
 
 
 def quarantine_before_any_learnerbot_import() -> None:
@@ -174,3 +219,4 @@ def quarantine_before_any_learnerbot_import() -> None:
         )
     stub_out_historical_migrations()
     block_production_env_fallback()
+    disable_root_dotenv_load()

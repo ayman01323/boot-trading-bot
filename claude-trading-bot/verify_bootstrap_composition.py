@@ -11,7 +11,7 @@ CLAUDE_BOT_WALLET_OWNER_ID, MAX_* risk vars, AUTHORISED_CHAINS). Must run on
 Linux (the target OS, matching botgoogle) -- some patches in learnerbot's
 chain import POSIX-only modules (fcntl) that don't exist on Windows.
 
-Seven things are proven, each by actually running the chain and checking the
+Nine things are proven, each by actually running the chain and checking the
 result -- not by inspection, assumption, or console text:
 
   1. ZERO repo-root writes: REPO_ROOT/CSVbot and REPO_ROOT/data are
@@ -32,21 +32,43 @@ result -- not by inspection, assumption, or console text:
   4. No production-secret inheritance: every name in
      claude_bot_quarantine._PRODUCTION_ONLY_SECRETS is confirmed still
      blank in os.environ after the chain runs.
-  5. Full composition survives the ENTIRE chain, behaviorally, not by object
+  5. Root .env loading is DETERMINISTICALLY disabled, not inferred from (4):
+     an enumerated blocklist can always miss a name (review named
+     JUPITER_API_KEY/GOPLUS_ACCESS_TOKEN as examples this instance
+     legitimately sets itself, so they were never on that blocklist -- if
+     this instance's own env omitted one, the old design would silently
+     leak production's value). Asserts
+     `learnerbot.config.load_dotenv is claude_bot_quarantine._noop_load_dotenv`
+     -- proof the load_dotenv(BOT_ROOT/.env) call itself cannot read
+     anything, for any name, not just that specific names stayed blank.
+  6. Full composition survives the ENTIRE chain, behaviorally, not by object
      identity, and completion is checked programmatically (re-importing
      trading_runtime_invariant_patch/final_runtime_integrity_patch after the
      chain "finishes" -- if either failed earlier and got silently absorbed
      by the broad except around runpy.run_module, re-importing here
      re-executes them from scratch and raises for real, since CPython drops
      a module from sys.modules on a failed import).
-  6. Solana SIGNER_READY=false and a mismatched runtime identity both refuse
+  7. Solana SIGNER_READY=false and a mismatched runtime identity both refuse
      before reaching the deepest real implementation, for both buy and sell,
      via the LIVE post-chain call path (not the guard function called
      directly -- several later learnerbot patches legitimately wrap
      SolanaLiveExecutor.buy/sell again after this bot's guard installs).
-  7. EVM execution is refused via the LIVE post-chain LiveTrader.buy/sell/
-     execute_cycle/execute_v3_cycle attributes, proving evm_execution_guard_patch
-     survives the same way the Solana guard does, not just at install time.
+  8. EVM guard survival is proven STRUCTURALLY, not behaviorally: a prior
+     version treated "any non-sentinel exception" as proof, which review
+     correctly rejected -- evm_pool_rug_gate.py legitimately wraps
+     LiveTrader.buy with its own outer pre-checks that can fail first in a
+     test env with no real EVM RPC, proving nothing about the guard itself.
+     Real proof: asserts `evm_pool_rug_gate._ORIG_BUY is
+     evm_guard._guarded_buy` (the exact captured-inner relationship GPT
+     specified) for buy, and direct identity
+     (`LiveTrader.sell/execute_cycle/execute_v3_cycle is evm_guard._guarded_*`)
+     for the other three, confirmed by grep that nothing else in learnerbot
+     reassigns them.
+  9. sell/execute_cycle/execute_v3_cycle are ALSO exercised behaviorally
+     (unlike buy, they're unwrapped, so the call reaches this bot's guard
+     directly): each must raise EvmExecutionGuardError specifically, not
+     merely "some exception" -- an unrelated outer exception now fails the
+     test rather than counting as a pass.
 """
 
 from __future__ import annotations
@@ -192,6 +214,20 @@ def main() -> int:
         assert value == "", f"REGRESSION: {name} is {value!r} after the chain ran -- production .env leaked in"
     print(f"PASS: all {len(claude_bot_quarantine._PRODUCTION_ONLY_SECRETS)} quarantined secret names still blank")
 
+    # Deterministic proof, not the enumerated blocklist above: root .env
+    # loading must be structurally impossible, not merely observed to have
+    # left 10 particular names blank (review correctly rejected the latter
+    # as insufficient -- learnerbot reads other credential vars, e.g.
+    # JUPITER_API_KEY/GOPLUS_ACCESS_TOKEN, that were never on that list
+    # because this instance legitimately sets them itself).
+    import learnerbot.config as _learnerbot_config
+
+    assert _learnerbot_config.load_dotenv is claude_bot_quarantine._noop_load_dotenv, (
+        "REGRESSION: learnerbot.config.load_dotenv is not the no-op -- root .env "
+        "loading is NOT disabled, any missing var name could still leak in from production"
+    )
+    print("PASS: learnerbot.config.load_dotenv is the no-op -- root .env loading is structurally impossible, not just observed-blank")
+
     print("\nNow testing the LIVE SolanaLiveExecutor and LiveTrader class attributes behaviorally (not by identity).")
 
     class _Sentinel(RuntimeError):
@@ -287,19 +323,57 @@ def main() -> int:
         except guard.ExecutionGuardError as exc:
             print(f"PASS: Solana buy refused for mismatched runtime identity: {exc}")
 
-        _print("Step 7: EVM execution refused via the LIVE post-chain LiveTrader call path")
-        print(
-            "Note: evm_pool_rug_gate.py legitimately wraps LiveTrader.buy/sell OUTSIDE "
-            "this bot's guard and does its own pre-work (quote_buy etc.) needing real "
-            "chain/network state this test env doesn't have. The property that actually "
-            "matters -- the sentinel standing in for the deepest real signing/broadcast "
-            "call is NEVER reached -- holds regardless of which layer raises first, so "
-            "any non-sentinel exception here is a pass, not just EvmExecutionGuardError."
-        )
+        _print("Step 7: EVM guard survives composition -- structural proof, not behavioral inference")
+        # Review correctly rejected "any non-sentinel exception is a pass":
+        # evm_pool_rug_gate.py legitimately wraps LiveTrader.buy specifically
+        # (confirmed: grep across every learnerbot/*.py for `LiveTrader.buy =`/
+        # `.sell =`/`.execute_cycle =`/`.execute_v3_cycle =` finds only that one
+        # reassignment, of .buy) and can fail in its OWN outer quote/security
+        # pre-check before ever reaching this bot's guard -- an exception there
+        # proves nothing about whether the guard itself is still in the chain.
+        #
+        # Real proof: evm_pool_rug_gate.py captures "whatever LiveTrader.buy was
+        # at install time" into its own module-level _ORIG_BUY before replacing
+        # LiveTrader.buy with its own wrapper. Since this bot's guard installs
+        # BEFORE learnerbot's chain runs, _ORIG_BUY must be exactly
+        # evm_guard._guarded_buy -- if it's anything else, the guard was bypassed
+        # or displaced, structurally, regardless of what any call raises.
+        import learnerbot.evm_pool_rug_gate as _evm_rug
 
+        assert _evm_rug._ORIG_BUY is evm_guard._guarded_buy, (
+            f"REGRESSION: evm_pool_rug_gate._ORIG_BUY is {_evm_rug._ORIG_BUY!r}, "
+            f"not evm_guard._guarded_buy -- the EVM guard was bypassed or displaced "
+            f"in the wrapper chain, even though LiveTrader.buy itself may still "
+            f"raise something"
+        )
+        print("PASS: evm_pool_rug_gate._ORIG_BUY is exactly evm_guard._guarded_buy (buy's captured-inner call graph proven, not inferred)")
+
+        # sell/execute_cycle/execute_v3_cycle: confirmed by the same grep that
+        # nothing else in learnerbot reassigns these, so the LIVE class
+        # attribute must still be exactly this bot's guard function -- a
+        # direct identity check is the correct proof here, not a behavioral one.
+        assert live_evm_sell is evm_guard._guarded_sell, "REGRESSION: LiveTrader.sell is no longer the Claude EVM guard"
+        assert live_evm_cycle is evm_guard._guarded_execute_cycle, "REGRESSION: LiveTrader.execute_cycle is no longer the Claude EVM guard"
+        assert live_evm_v3_cycle is evm_guard._guarded_execute_v3_cycle, "REGRESSION: LiveTrader.execute_v3_cycle is no longer the Claude EVM guard"
+        print("PASS: LiveTrader.sell / execute_cycle / execute_v3_cycle are exactly the Claude EVM guard functions (direct identity, nothing else wraps them)")
+
+        # Behavioral test for sell/execute_cycle/execute_v3_cycle ONLY --
+        # these are unwrapped (confirmed above), so the call reaches this
+        # bot's guard directly and must raise EvmExecutionGuardError
+        # specifically. An unrelated exception is NOT a pass here.
+        #
+        # buy is deliberately NOT behaviorally exercised: evm_pool_rug_gate's
+        # wrapper calls quote_buy() -> external_pool_rug_check() ->
+        # _manual_roundtrip_check() before ever reaching this bot's guard,
+        # each doing real GoPlus/DexScreener network calls this test env has
+        # no EVM RPC configured for. Mocking all of that just to observe
+        # EvmExecutionGuardError would mean re-implementing large parts of
+        # evm_pool_rug_gate.py's own logic as test doubles -- fragile, and
+        # provides no additional assurance beyond the structural proof above,
+        # which conclusively shows the guard is the wrapper's captured inner
+        # call regardless of what its own pre-checks do first.
         evm_double = _BareEvmExecutor()
         for label, fn, call_args in (
-            ("buy", live_evm_buy, ("0xTOKEN", "0.001", "CONFIRM")),
             ("sell", live_evm_sell, ("0xTOKEN", "all", "CONFIRM")),
             ("execute_cycle", live_evm_cycle, (["0xA", "0xB"], "0.001", "0")),
             ("execute_v3_cycle", live_evm_v3_cycle, (["0xA", "0xB"], [3000], "0.001", "0", "0xROUTER", "0xQUOTER")),
@@ -311,8 +385,14 @@ def main() -> int:
                 raise AssertionError(f"EVM {label} reached the deepest real implementation -- guard did not block")
             except AssertionError:
                 raise
-            except Exception as exc:  # noqa: BLE001 -- see note above: any non-sentinel is a pass
-                print(f"PASS: EVM {label} did not reach broadcast ({type(exc).__name__}): {exc}")
+            except evm_guard.EvmExecutionGuardError as exc:
+                print(f"PASS: EVM {label} raised EvmExecutionGuardError before broadcast: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                raise AssertionError(
+                    f"EVM {label} raised {type(exc).__name__} ({exc}) instead of "
+                    f"EvmExecutionGuardError -- an unrelated outer exception is not proof "
+                    f"the guard itself blocked this call"
+                ) from exc
     finally:
         guard._original_buy = original_solana_buy
         guard._original_sell = original_solana_sell
