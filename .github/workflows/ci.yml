@@ -1,37 +1,104 @@
-name: BOOT Python Tests
+name: Continue Namecheap to Google Production Cutover
 
 on:
-  pull_request:
   push:
     branches:
-      - 'agent/**'
-  workflow_dispatch:
+      - 'agent/current-trade-status'
+    paths:
+      - '.github/workflows/ci.yml'
 
 permissions:
   contents: read
 
+concurrency:
+  group: final-google-cutover-continuation
+  cancel-in-progress: false
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  final-sync:
+    name: Final stopped-state sync from Namecheap
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: pip install -r requirements.txt pytest
-      - name: Compile Python
-        run: python -m compileall -q learnerbot scripts tests
-      - name: SiBot and Telegram UI tests
-        run: pytest -q tests/test_sibot.py tests/test_sibot_pending_commands.py tests/test_telegram_visual_ui.py tests/test_sibot_reasonable_top20.py tests/test_telegram_wallet_links.py tests/test_sibot_intelligence_solana.py tests/test_profit_research_hourly_capital.py tests/test_telegram_solana_visibility.py tests/test_sibot_readiness_alerts.py tests/test_telegram_mobile_divider.py tests/test_solana_wallet_telegram.py tests/test_telegram_multi_wallet_manager.py tests/test_telegram_solana_chains.py tests/test_solana_live_canary.py tests/test_telegram_solana_everywhere.py tests/test_live_reporting_all_chains.py tests/test_telegram_solana_send.py tests/test_telegram_usd_everywhere.py tests/test_sibot_profit_guard.py tests/test_solana_profit_guard.py
-      - name: Legacy full suite when runtime CSV fixtures are present
+      - name: Verify only production learnerbot is quiesced
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f CSVbot/chains.csv && -f CSVbot/auto_trading_settings.csv && -f CSVbot/live_trading_settings.csv && -f CSVbot/dex_registry.csv ]]; then
-            pytest -q
-          else
-            echo 'Skipping legacy config-bound tests: runtime CSVbot fixtures are not stored in this GitHub checkout.'
+          case "$(hostname)" in mint|mint.yesgoodwill.com) ;; *) echo "Wrong host: $(hostname)" >&2; exit 10;; esac
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          SHA="$(git -C /root/multichain-learning-bot-v2.2-fast-direct-market rev-parse HEAD)"
+          test "$SHA" = 'dd3f00bbc4744235b98b866a62992633866f0db8'
+          echo "namecheap_source_sha=$SHA"
+          echo 'other_namecheap_services_touched=false'
+      - name: Set fixed Google endpoint and run final stopped-state sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' '35.234.74.46' > /var/tmp/namecheap-google-cutover-handoff/google-ip.txt
+          chmod 600 /var/tmp/namecheap-google-cutover-handoff/google-ip.txt
+          sudo -n /usr/local/sbin/final-sync-namecheap-to-google
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+
+  refresh-google:
+    name: Refresh and verify Google production path
+    needs: final-sync
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 45
+    steps:
+      - name: Confirm Google production is still stopped
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n /usr/local/sbin/status-google-production-cutover
+          ! sudo -n /usr/local/sbin/status-google-production-cutover | grep -q '^google_service_active=active$'
+      - name: Refresh exact production path from final staging snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/refresh-google-production-bot
+          sudo -n /usr/local/sbin/verify-google-production-bot
+
+  activate-google:
+    name: Activate Google production learnerbot only
+    needs: refresh-google
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Start and verify learnerbot.service
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/activate-google-production-bot
+          sudo -n /usr/local/sbin/status-google-production-cutover
+
+  verify-old-stopped:
+    name: Confirm old production learnerbot remains stopped
+    needs: activate-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Verify Namecheap learnerbot only
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          echo 'other_namecheap_services_touched=false'
+
+  cleanup-key:
+    name: Remove one-time cutover SSH key
+    if: always()
+    needs: [final-sync, refresh-google, activate-google, verify-old-stopped]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Remove only the migration key
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+            grep -v 'namecheap-google-final-cutover' "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
+            mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
+            chmod 600 "$HOME/.ssh/authorized_keys"
           fi
+          echo 'FINAL_CUTOVER_SSH_KEY_REMOVED=true'
