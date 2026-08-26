@@ -78,15 +78,23 @@ def _quality_failure_reason(metrics: dict, cfg: dict) -> str:
     return "quality gate failed"
 
 
+def _selection_lookback_days(cfg: dict) -> int:
+    """Use more evidence for nomination without changing recent/LIVE quality gates."""
+    strategy_lookback = max(1, min(365, _sol._int(cfg.get("lookback_days"), 60)))
+    requested = _sol._int(cfg.get("leader_selection_lookback_days"), max(180, strategy_lookback))
+    return max(strategy_lookback, min(365, max(30, requested)))
+
+
 def _broad_positive_candidates(app, cfg):
     """Return a bounded pool of profitable reconstructed wallets, not only Top-20.
 
     The public/research Top-20 remains produced by the original ranking function.
-    This pool exists only so strict LIVE gates are applied *before* the final leader
-    slots are chosen. Quality thresholds are unchanged and are still evaluated by
-    quality_metrics()/historical_ok() below.
+    Candidate discovery may use a longer bounded evidence window so wallets with a
+    genuine history are not excluded merely because the short strategy lookback has
+    too few closes. Quality thresholds, recent metrics, copied-performance guards and
+    LIVE preflight are unchanged and are still evaluated below.
     """
-    lookback = max(1, min(365, _sol._int(cfg.get("lookback_days"), 60)))
+    lookback = _selection_lookback_days(cfg)
     cutoff = int(time.time()) - lookback * 86400
     cap = max(20, min(1000, _sol._int(cfg.get("leader_selection_candidate_cap"), 500)))
     with closing(_sol.connect(app)) as conn:
@@ -140,11 +148,12 @@ def _qualified_candidates(app, cfg, candidates):
 def _write_bridge(pool: int, qualified: int, selected: int, failures: Counter, cfg: dict) -> None:
     try:
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "generated_epoch": int(time.time()),
             "pool": int(pool),
             "qualified": int(qualified),
             "selected": int(selected),
+            "candidate_lookback_days": _selection_lookback_days(cfg),
             "first_failure_counts": dict(sorted((str(k), int(v)) for k, v in failures.items())),
             "thresholds": {
                 "min_closed_trades": max(1, _sol._int(cfg.get("min_closed_trades"), 10)),
@@ -170,15 +179,7 @@ def _write_bridge(pool: int, qualified: int, selected: int, failures: Counter, c
 
 
 def refresh_rankings(app, telegram_id=None):
-    """Keep Top-20 reporting, but search beyond it for genuinely qualified leaders.
-
-    Previously the broad profitability ranking was truncated to Top-20 first and
-    the stricter PF/win-rate/drawdown/recent/median-return gates were applied only
-    afterwards. Twenty failures therefore produced zero leaders even when a wallet
-    outside that display shortlist could satisfy every LIVE gate. This function
-    preserves the original Top-20 output, then evaluates a bounded broader pool with
-    the same unchanged gates before filling leader slots.
-    """
+    """Keep Top-20 reporting, but search broadly for genuinely qualified leaders."""
     top = _PREV_REFRESH(app, telegram_id)
     cfg = _sol.settings(app)
 
@@ -263,8 +264,8 @@ def refresh_rankings(app, telegram_id=None):
     _write_bridge(len(candidates), len(qualified), total_selected, failures, cfg)
     print(
         "[solana-leader-edge-alignment] broader_pool=%d qualified=%d selected=%d "
-        "thresholds=unchanged"
-        % (len(candidates), len(qualified), total_selected)
+        "candidate_lookback_days=%d thresholds=unchanged"
+        % (len(candidates), len(qualified), total_selected, _selection_lookback_days(cfg))
     )
     return top
 
@@ -272,18 +273,13 @@ def refresh_rankings(app, telegram_id=None):
 def install() -> None:
     if getattr(_guard, "_leader_edge_alignment_installed", False):
         return
-    # solana_profit_guard_patch.refresh_rankings resolves these module globals at
-    # runtime, so its existing ranking/copy-performance logic stays intact while
-    # the qualified pool is narrowed to candidates the LIVE gate can actually use.
     _guard.quality_metrics = quality_metrics
     _guard._historical_ok = historical_ok
-    # Preserve the Top-20 research list but do not restrict LIVE leader discovery
-    # to those 20 rows before the stricter quality/edge checks have run.
     _sol.refresh_rankings = refresh_rankings
     _guard._leader_edge_alignment_installed = True
     print(
         "[solana-leader-edge-alignment] selector_matches_live_edge=true "
-        "broader_qualified_search=true thresholds=unchanged"
+        "broader_qualified_search=true longer_candidate_evidence=true thresholds=unchanged"
     )
 
 
