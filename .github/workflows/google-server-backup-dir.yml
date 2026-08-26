@@ -27,7 +27,7 @@ jobs:
           stat -c 'mode=%a owner=%U group=%G path=%n' "$target"
           ls -ld "$target"
 
-      - name: Publish verification marker
+      - name: Publish verification marker and SSH diagnostics
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,12 +37,50 @@ jobs:
           test -d "$target"
           mode="$(stat -c '%a' "$target")"
           owner="$(stat -c '%U:%G' "$target")"
+          external_ip="$(curl -fsS -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip' 2>/dev/null || true)"
+          internal_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+          ssh_service="$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || true)"
+          ssh_listen="$(ss -lnt 2>/dev/null | awk '$4 ~ /:22$/ {print $4}' | paste -sd, -)"
+          oslogin_instance="$(curl -fsS -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/attributes/enable-oslogin' 2>/dev/null || true)"
+          oslogin_project="$(curl -fsS -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/project/attributes/enable-oslogin' 2>/dev/null || true)"
+          ak="$HOME/.ssh/authorized_keys"
+          if [[ -f "$ak" ]]; then
+            ak_exists=true
+            ak_lines="$(grep -cve '^\s*$' "$ak" || true)"
+            ak_mode="$(stat -c '%a' "$ak" 2>/dev/null || true)"
+            ak_owner="$(stat -c '%U:%G' "$ak" 2>/dev/null || true)"
+          else
+            ak_exists=false
+            ak_lines=0
+            ak_mode=""
+            ak_owner=""
+          fi
+          ssh_dir_mode="$(stat -c '%a' "$HOME/.ssh" 2>/dev/null || true)"
+          ssh_dir_owner="$(stat -c '%U:%G' "$HOME/.ssh" 2>/dev/null || true)"
+          password_auth="$(grep -Ehi '^\s*PasswordAuthentication\s+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | tail -1 | awk '{print $2}' || true)"
+          pubkey_auth="$(grep -Ehi '^\s*PubkeyAuthentication\s+' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | tail -1 | awk '{print $2}' || true)"
           cat > /tmp/google-server-backup-dir.txt <<EOF
           hostname=$(hostname)
+          username=$(whoami)
+          home=$HOME
           backup_dir=$target
           exists=true
           mode=$mode
           owner=$owner
+          internal_ip=$internal_ip
+          external_ip=$external_ip
+          ssh_service=$ssh_service
+          ssh_listen=$ssh_listen
+          password_auth=${password_auth:-default}
+          pubkey_auth=${pubkey_auth:-default}
+          authorized_keys_exists=$ak_exists
+          authorized_keys_lines=$ak_lines
+          authorized_keys_mode=$ak_mode
+          authorized_keys_owner=$ak_owner
+          ssh_dir_mode=$ssh_dir_mode
+          ssh_dir_owner=$ssh_dir_owner
+          oslogin_instance=${oslogin_instance:-unset}
+          oslogin_project=${oslogin_project:-unset}
           verified_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           EOF
 
