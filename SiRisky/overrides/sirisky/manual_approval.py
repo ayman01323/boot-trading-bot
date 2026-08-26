@@ -266,3 +266,5 @@ class ManualApprovalGate:
             f"Expires in: {seconds}s\n"
             "External/manual signature required. Server-side transaction broadcast remains locked."
         )
+
+# Deployment trigger: armed automatic candidate evaluation with manual signing.
