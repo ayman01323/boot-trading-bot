@@ -46,6 +46,10 @@ jobs:
     env:
       RELAY_VENV: /tmp/strategy-factory-provider-${{ matrix.provider }}-${{ github.run_id }}
       PYTHONPATH: ${{ github.workspace }}
+      # The normal BOOT runtime DB is root-owned. Mailbox calls use a separate,
+      # persistent Google-runner cost ledger so the communication relay retains
+      # budget accounting without needing root access or touching trading state.
+      AI_COST_DB_PATH: /var/tmp/boot-google-ai-cost-router.sqlite3
 
     steps:
       - name: Respect manual provider selection
