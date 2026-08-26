@@ -1,0 +1,167 @@
+name: Claude Google Bot Preflight
+
+# Bounded, non-broadcast preflight for claude-trading-bot -- runs the bot's
+# OWN run.py check against the already-synced managed checkout and the
+# operator-provisioned runtime env on botgoogle. Closes the same access gap
+# claude-google-runtime-check.yml closed for RPC connectivity: Claude has no
+# SSH/filesystem access to this server and no gh/API access to read
+# workflow_dispatch logs, so results MUST be published to a git-readable
+# branch or Claude has no way to ever see the outcome.
+#
+# No transaction is constructed, signed, or broadcast by this workflow --
+# it only runs `python run.py check`, which never imports the live trading
+# loop (see claude-trading-bot/run.py / preflight_check.py).
+#
+# Secrets discipline: run.py check reads the real runtime env
+# (/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env, per
+# run.py's own DEFAULT_ENV_FILE), but preflight_check.py was written to
+# never print raw secret values -- only presence/absence, PASS/FAIL/SKIP,
+# and non-secret derived data (quote amounts, public addresses, balances).
+# This workflow additionally runs the captured output through a redaction
+# pass before publishing, as defense-in-depth, and separately reports which
+# required runtime variables are missing by NAME only, never by value.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-bot-preflight.yml'
+      - '.github/claude-google-bot-preflight.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: claude-google-bot-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 20
+    env:
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      RUNTIME_ENV: /home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env
+      RUNTIME_DIR: /home/ayman01323/ClaudeServer/runtime
+    steps:
+      - name: Verify Google runner boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          test -d "$MANAGED_REPO/.git"
+          test -d "$MANAGED_REPO/claude-trading-bot"
+
+      - name: Report managed checkout SHA and isolation-path structure (no secret values)
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=/tmp/claude-google-bot-preflight.txt
+          : > "$result"
+          echo "managed_repo_sha=$(git -C "$MANAGED_REPO" rev-parse HEAD)" >> "$result"
+          if [[ -f "$RUNTIME_ENV" ]]; then
+            echo "runtime_env_present=true" >> "$result"
+          else
+            echo "runtime_env_present=false" >> "$result"
+            echo "MISSING: $RUNTIME_ENV" >> "$result"
+          fi
+          # CSV_DIR/DATA_DIR must resolve outside the git checkout -- report
+          # only whether that structural invariant holds, never the raw
+          # values (paths aren't secret, but keeping this workflow's output
+          # shape consistent with "names/booleans only, no raw config dump"
+          # avoids setting a bad precedent for a workflow that touches the
+          # real runtime file).
+          if [[ -f "$RUNTIME_ENV" ]]; then
+            csv_dir="$(grep -m1 '^CSV_DIR=' "$RUNTIME_ENV" | cut -d= -f2- || true)"
+            data_dir="$(grep -m1 '^DATA_DIR=' "$RUNTIME_ENV" | cut -d= -f2- || true)"
+            csv_outside_checkout=false
+            data_outside_checkout=false
+            [[ -n "$csv_dir" && "$csv_dir" != "$MANAGED_REPO"* ]] && csv_outside_checkout=true
+            [[ -n "$data_dir" && "$data_dir" != "$MANAGED_REPO"* ]] && data_outside_checkout=true
+            echo "csv_dir_outside_git_checkout=$csv_outside_checkout" >> "$result"
+            echo "data_dir_outside_git_checkout=$data_outside_checkout" >> "$result"
+          fi
+          cat "$result"
+
+      - name: Set up isolated venv and install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$MANAGED_REPO"
+          python3 -m venv /tmp/claude-preflight-venv
+          /tmp/claude-preflight-venv/bin/python -m pip install --quiet --disable-pip-version-check -r requirements.txt
+
+      - name: Run claude-trading-bot/run.py check (non-broadcast, no live loop import)
+        id: run_check
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$MANAGED_REPO/claude-trading-bot"
+          result=/tmp/claude-google-bot-preflight.txt
+          set +e
+          /tmp/claude-preflight-venv/bin/python run.py check > /tmp/preflight-raw.txt 2>&1
+          check_exit=$?
+          set -e
+          # Redact defensively: drop any line that looks like it could carry
+          # a secret value even though preflight_check.py wasn't designed to
+          # print one -- belt and suspenders on a workflow that touches the
+          # real runtime file.
+          python3 - "$check_exit" >> "$result" <<'PY'
+          import re
+          import sys
+
+          check_exit = sys.argv[1]
+          SECRET_LIKE = re.compile(r'(key|token|secret|password)\s*[:=]\s*\S{6,}', re.IGNORECASE)
+          with open('/tmp/preflight-raw.txt', encoding='utf-8', errors='replace') as f:
+              lines = f.readlines()
+          print(f'run_py_check_exit_code={check_exit}')
+          for line in lines:
+              line = line.rstrip('\n')
+              if SECRET_LIKE.search(line):
+                  print('[REDACTED LINE -- matched secret-like pattern]')
+              else:
+                  print(line)
+          PY
+          cat "$result"
+
+      - name: Publish redacted bot preflight report
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result=/tmp/claude-google-bot-preflight.txt
+          [[ -s "$result" ]] || printf 'preflight=NOT_RUN\n' > "$result"
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "hostname=$(hostname)"
+            echo "checked_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            cat "$result"
+          } > /tmp/claude-google-bot-preflight-publish.txt
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/claude-google-bot-preflight.txt"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/claude-google-bot-preflight-publish.txt)"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Update Claude Google bot preflight','content':sys.argv[1],'sha':sys.argv[2],'branch':'server-diagnostics'}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Create Claude Google bot preflight','content':sys.argv[1],'branch':'server-diagnostics'}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$api" -d "$payload" >/dev/null
+          cat /tmp/claude-google-bot-preflight-publish.txt
+
+      - name: Clean up preflight venv (no persistent state left behind)
+        if: always()
+        shell: bash
+        run: rm -rf /tmp/claude-preflight-venv /tmp/preflight-raw.txt
