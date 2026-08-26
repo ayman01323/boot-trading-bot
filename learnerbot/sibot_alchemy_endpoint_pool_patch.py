@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-"""Bounded endpoint failover for EVM history reconstruction.
+"""Bounded endpoint failover inside the audited EVM history pipeline.
 
-The EVM history pipeline already serialises expensive work and progressively yields
-large transaction/trace contexts. Its remaining failure mode is provider pressure:
-a configured Alchemy endpoint can return 429 repeatedly and every chain then retries
-the same endpoint. This layer keeps the existing progressive reconstruction intact,
-but selects from all enabled Alchemy HTTP endpoints for the chain, applies a local
-per-endpoint circuit breaker, and retries only a small bounded number of alternate
-endpoints when the failure is clearly transient/provider-related.
+The final SiBot history refresher remains exactly
+``sibot_alchemy_trace_progress_patch.refresh_wallet_history``. This module changes
+only the two dynamic inner calls owned by that wrapper: the non-trace history path
+and the progressive BSC/Arbitrum path. Each may select from all already-configured
+Alchemy HTTP endpoints for the chain, apply a local per-endpoint circuit breaker,
+and retry a small number of distinct endpoints only for clear transient/provider
+failures.
 
-This is research/history plumbing only. It never signs, broadcasts, changes LIVE or
-AUTO state, changes leader-quality gates, or alters trade amounts. Raw RPC URLs are
-never logged or persisted by this module.
+Progressive ``AlchemyHistoryProgress`` yields never switch endpoints. Raw RPC URLs
+remain in-process only and are never logged or persisted here. This is history and
+research plumbing only: it never signs, broadcasts, changes LIVE/AUTO/ARMED, changes
+trade size, or changes any leader/execution risk gate.
 """
 
 import csv
@@ -27,8 +28,8 @@ from . import sibot_alchemy_retry_queue_patch as _retry
 from . import sibot_alchemy_trace_progress_patch as _trace
 from . import sibot_legacy_backlog_drainer_patch as _drainer
 
-_PREV_REFRESH = _sibot.refresh_wallet_history
-_PREV_ALCHEMY_RPC_URL = _alchemy.alchemy_rpc_url
+_PREV_NONTRACE_REFRESH = _trace._PREV_REFRESH_WALLET_HISTORY
+_PREV_PROGRESSIVE_REFRESH = _trace._refresh_progressive
 _TLS = threading.local()
 _STATE_LOCK = threading.Lock()
 _COOLDOWN_UNTIL: dict[tuple[int, str], float] = {}
@@ -59,10 +60,7 @@ def _endpoint_id(url: str) -> str:
 
 
 def alchemy_rpc_urls(app, chain_id: int) -> list[str]:
-    """Return enabled Alchemy HTTP endpoints in configured priority order.
-
-    The returned values stay in-process. Callers must not log or persist them.
-    """
+    """Return enabled Alchemy HTTP endpoints in configured priority order."""
     path = Path(app.csv_dir) / "rpc_endpoints.csv"
     try:
         with path.open("r", encoding="utf-8-sig", newline="") as fh:
@@ -83,9 +81,7 @@ def alchemy_rpc_urls(app, chain_id: int) -> list[str]:
         low = url.lower()
         if not low.startswith(("https://", "http://")):
             continue
-        if "$" in url or "alchemy.com" not in low:
-            continue
-        if url in seen:
+        if "$" in url or "alchemy.com" not in low or url in seen:
             continue
         seen.add(url)
         candidates.append((_priority(row.get("priority")), url))
@@ -108,27 +104,24 @@ def _ordered_available_urls(app, chain_id: int) -> list[str]:
         preferred_id = _LAST_SUCCESS.get(int(chain_id), "")
     if preferred_id:
         urls.sort(key=lambda url: 0 if _endpoint_id(url) == preferred_id else 1)
-    available = [url for url in urls if not _cooling(chain_id, url)]
-    return available
+    return [url for url in urls if not _cooling(chain_id, url)]
 
 
 def alchemy_rpc_url(app, chain_id: int) -> str:
-    """Compatibility selector used by the existing progressive history layers."""
+    """Compatibility selector resolved dynamically by existing history code."""
     forced = str(getattr(_TLS, "forced_url", "") or "")
     if forced:
         return forced
     available = _ordered_available_urls(app, int(chain_id))
     if available:
         return available[0]
-    # Preserve provider-availability semantics while all endpoints cool down.
+    # Keep provider/config detection truthful even during a temporary circuit.
     urls = alchemy_rpc_urls(app, int(chain_id))
     return urls[0] if urls else ""
 
 
 def _error_text(result) -> str:
-    if not isinstance(result, dict):
-        return ""
-    return str(result.get("error") or "")
+    return str(result.get("error") or "") if isinstance(result, dict) else ""
 
 
 def _provider_pressure(error: str) -> bool:
@@ -169,12 +162,11 @@ def _transport_failure(error: str) -> bool:
 
 def _mark_pressure(chain_id: int, url: str) -> int:
     key = (int(chain_id), _endpoint_id(url))
-    now = time.monotonic()
     with _STATE_LOCK:
         count = int(_PRESSURE_COUNT.get(key, 0)) + 1
         _PRESSURE_COUNT[key] = count
         delay = min(_RATE_LIMIT_MAX_SECONDS, _RATE_LIMIT_BASE_SECONDS * (2 ** max(0, count - 1)))
-        _COOLDOWN_UNTIL[key] = now + delay
+        _COOLDOWN_UNTIL[key] = time.monotonic() + delay
     return int(delay)
 
 
@@ -194,7 +186,7 @@ def _mark_success(chain_id: int, url: str) -> None:
 
 
 def endpoint_pool_health(app, chain_id: int) -> dict:
-    """Return redacted endpoint-pool telemetry only."""
+    """Return only redacted endpoint-pool telemetry."""
     urls = alchemy_rpc_urls(app, int(chain_id))
     cooling = sum(1 for url in urls if _cooling(int(chain_id), url))
     with _STATE_LOCK:
@@ -208,20 +200,19 @@ def endpoint_pool_health(app, chain_id: int) -> dict:
     }
 
 
-def refresh_wallet_history_with_endpoint_pool(app, chain, wallet: str):
-    """Retry a history reconstruction only across distinct healthy endpoints."""
+def _with_endpoint_pool(original, app, chain, wallet: str):
+    """Run one existing history stage with bounded distinct-endpoint failover."""
     chain_id = int(chain.chain_id)
     urls = _ordered_available_urls(app, chain_id)
     if not urls:
         configured = alchemy_rpc_urls(app, chain_id)
         if not configured:
-            return _PREV_REFRESH(app, chain, wallet)
-        fetched_at = int(time.time())
+            return original(app, chain, wallet)
         return _alchemy._store_error(
             app,
             chain,
             wallet,
-            fetched_at,
+            int(time.time()),
             "AlchemyHistoryError: endpoint pool cooling down after provider rate limiting",
         )
 
@@ -231,7 +222,7 @@ def refresh_wallet_history_with_endpoint_pool(app, chain, wallet: str):
         attempts += 1
         _TLS.forced_url = url
         try:
-            result = _PREV_REFRESH(app, chain, wallet)
+            result = original(app, chain, wallet)
         finally:
             _TLS.forced_url = ""
 
@@ -245,11 +236,10 @@ def refresh_wallet_history_with_endpoint_pool(app, chain, wallet: str):
                 result["endpoint_identifiers_redacted"] = True
             return result
 
-        # Progress is expected cooperative yielding, not provider failure. Keeping
-        # the same endpoint/cache identity avoids throwing away partial context.
-        if str(error).startswith("AlchemyHistoryProgress:"):
+        # Cooperative progress is not an endpoint failure. Keep using its cached
+        # context/trace evidence on the next scheduled wallet turn.
+        if error.startswith("AlchemyHistoryProgress:"):
             return result
-
         if _provider_pressure(error):
             _mark_pressure(chain_id, url)
             continue
@@ -258,21 +248,29 @@ def refresh_wallet_history_with_endpoint_pool(app, chain, wallet: str):
             continue
         return result
 
-    return last_result if last_result is not None else _PREV_REFRESH(app, chain, wallet)
+    return last_result if last_result is not None else original(app, chain, wallet)
+
+
+def refresh_nontrace_with_endpoint_pool(app, chain, wallet: str):
+    return _with_endpoint_pool(_PREV_NONTRACE_REFRESH, app, chain, wallet)
+
+
+def refresh_progressive_with_endpoint_pool(app, chain, wallet: str):
+    return _with_endpoint_pool(_PREV_PROGRESSIVE_REFRESH, app, chain, wallet)
 
 
 def install() -> None:
     if getattr(_sibot, "_alchemy_endpoint_pool_patch_installed", False):
         return
 
-    # Existing trace/context layers resolve _alchemy.alchemy_rpc_url dynamically,
-    # so the thread-local forced endpoint applies throughout one reconstruction.
+    # Keep the final audited refresher identity unchanged. Only its dynamic inner
+    # stages and endpoint resolver are replaced.
     _alchemy.alchemy_rpc_url = alchemy_rpc_url
-    _sibot.refresh_wallet_history = refresh_wallet_history_with_endpoint_pool
+    _trace._PREV_REFRESH_WALLET_HISTORY = refresh_nontrace_with_endpoint_pool
+    _trace._refresh_progressive = refresh_progressive_with_endpoint_pool
 
-    # When every configured endpoint is throttled, both the ranked queue and the
-    # background drainer must wait long enough for the provider bucket to recover.
-    # This changes only research/backfill scheduling.
+    # Both ranked and background recovery queues should wait long enough after an
+    # account/provider 429. This changes history scheduling only.
     _retry._TRANSIENT_RETRY_COOLDOWN_SECONDS = max(
         int(getattr(_retry, "_TRANSIENT_RETRY_COOLDOWN_SECONDS", 60)), 180
     )
@@ -290,9 +288,9 @@ def install() -> None:
     _sibot.alchemy_history_endpoint_pool_health = endpoint_pool_health
     _sibot._alchemy_endpoint_pool_patch_installed = True
     print(
-        "[sibot-alchemy-endpoint-pool] installed=true failover<=3 "
-        "per_endpoint_circuit_breaker=true retry_cooldown>=180s "
-        "progressive_history_preserved=true rpc_identifiers_redacted=true "
+        "[sibot-alchemy-endpoint-pool] installed=true placement=inside_trace_progress "
+        "failover<=3 per_endpoint_circuit_breaker=true retry_cooldown>=180s "
+        "rpc_identifiers_redacted=true final_refresh_identity_unchanged=true "
         "execution_safety=unchanged",
         flush=True,
     )
