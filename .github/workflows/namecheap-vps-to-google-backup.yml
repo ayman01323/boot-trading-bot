@@ -1,0 +1,254 @@
+name: Backup Namecheap VPS to Google Server
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/namecheap-vps-to-google-backup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: namecheap-vps-to-google-backup
+  cancel-in-progress: false
+
+jobs:
+  prepare-google:
+    name: Prepare protected Google backup destination
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      DEST_DIR: /home/ayman01323/NamcheapBuckup
+      KEY_DIR: /home/ayman01323/.namecheap-backup-transfer-${{ github.run_id }}
+    steps:
+      - name: Verify Google runner and destination
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          mkdir -p "$DEST_DIR"
+          chmod 700 "$DEST_DIR"
+          mkdir -p "$KEY_DIR"
+          chmod 700 "$KEY_DIR"
+          echo "destination=$DEST_DIR"
+          df -h "$DEST_DIR"
+          stat -c 'mode=%a owner=%U:%G path=%n' "$DEST_DIR"
+
+      - name: Generate one-time transfer key
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+            -out "$KEY_DIR/private.pem" >/dev/null 2>&1
+          chmod 600 "$KEY_DIR/private.pem"
+          openssl pkey -in "$KEY_DIR/private.pem" -pubout \
+            -out "$KEY_DIR/public.pem" >/dev/null 2>&1
+          echo 'GOOGLE_BACKUP_TRANSFER_KEY_READY' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload public key only
+        uses: actions/upload-artifact@v4
+        with:
+          name: namecheap-backup-public-${{ github.run_id }}
+          path: /home/ayman01323/.namecheap-backup-transfer-${{ github.run_id }}/public.pem
+          retention-days: 1
+          if-no-files-found: error
+
+  export-namecheap:
+    name: Create encrypted backup on old Namecheap VPS
+    needs: prepare-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 90
+    env:
+      SOURCE: /root/multichain-learning-bot-v2.2-fast-direct-market
+      WORK: /tmp/namecheap-backup-${{ github.run_id }}
+      SERVICE: learnerbot.service
+    steps:
+      - name: Download Google public key
+        uses: actions/download-artifact@v4
+        with:
+          name: namecheap-backup-public-${{ github.run_id }}
+          path: /tmp/namecheap-backup-${{ github.run_id }}
+
+      - name: Create consistent encrypted old-server backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$WORK"
+          STAMP="$(date -u +%Y-%m-%d_%H-%M-%SZ)"
+          NAME="namecheap-old-server-${STAMP}.tar.gz"
+          ARCHIVE="$WORK/$NAME"
+          ENC="$ARCHIVE.enc"
+          PASS="$WORK/aes.pass"
+          PASS_ENC="$WORK/aes.pass.enc"
+          SHA="$WORK/$NAME.sha256"
+          META="$WORK/backup-metadata.env"
+          STOPPED=0
+
+          cleanup_service() {
+            rc=$?
+            if [ "$STOPPED" -eq 1 ]; then
+              sudo -n systemctl start "$SERVICE" || true
+            fi
+            exit "$rc"
+          }
+          trap cleanup_service EXIT
+
+          command -v openssl >/dev/null
+          sudo -n test -d "$SOURCE"
+
+          echo 'Stopping learnerbot briefly for a consistent backup.'
+          sudo -n systemctl stop "$SERVICE"
+          STOPPED=1
+
+          sudo -n tar -C /root -czf "$ARCHIVE" multichain-learning-bot-v2.2-fast-direct-market
+          sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
+
+          echo 'Restarting learnerbot immediately after archive creation.'
+          sudo -n systemctl start "$SERVICE"
+          STOPPED=0
+          sudo -n systemctl is-active --quiet "$SERVICE"
+
+          sha256sum "$ARCHIVE" > "$SHA"
+          SIZE="$(stat -c%s "$ARCHIVE")"
+          HASH="$(awk '{print $1}' "$SHA")"
+          tar -tzf "$ARCHIVE" >/dev/null
+
+          openssl rand -base64 48 > "$PASS"
+          chmod 600 "$PASS"
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -in "$ARCHIVE" -out "$ENC" -pass file:"$PASS"
+          openssl pkeyutl -encrypt -pubin -inkey "$WORK/public.pem" \
+            -in "$PASS" -out "$PASS_ENC" \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+
+          printf 'BACKUP_NAME=%q\nBACKUP_SIZE=%q\nBACKUP_SHA256=%q\nSOURCE_HOST=%q\nCREATED_UTC=%q\n' \
+            "$NAME" "$SIZE" "$HASH" "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$META"
+
+          rm -f "$ARCHIVE" "$PASS" "$WORK/public.pem"
+          chmod 600 "$ENC" "$PASS_ENC" "$META"
+          echo "encrypted_bytes=$(stat -c%s "$ENC")"
+          echo "backup_name=$NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "plaintext_bytes=$SIZE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload encrypted backup bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: namecheap-backup-encrypted-${{ github.run_id }}
+          path: |
+            /tmp/namecheap-backup-${{ github.run_id }}/*.tar.gz.enc
+            /tmp/namecheap-backup-${{ github.run_id }}/aes.pass.enc
+            /tmp/namecheap-backup-${{ github.run_id }}/backup-metadata.env
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Remove temporary old-server backup files
+        if: always()
+        shell: bash
+        run: rm -rf "$WORK"
+
+  import-google:
+    name: Store and verify backup on Google server
+    needs: export-namecheap
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 90
+    env:
+      DEST_DIR: /home/ayman01323/NamcheapBuckup
+      KEY_DIR: /home/ayman01323/.namecheap-backup-transfer-${{ github.run_id }}
+      WORK: /tmp/namecheap-backup-import-${{ github.run_id }}
+    steps:
+      - name: Verify Google runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          test -s "$KEY_DIR/private.pem"
+          mkdir -p "$DEST_DIR" "$WORK"
+          chmod 700 "$DEST_DIR" "$WORK"
+
+      - name: Download encrypted old-server backup
+        uses: actions/download-artifact@v4
+        with:
+          name: namecheap-backup-encrypted-${{ github.run_id }}
+          path: /tmp/namecheap-backup-import-${{ github.run_id }}
+
+      - name: Decrypt, verify and install backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          source "$WORK/backup-metadata.env"
+          ENC="$WORK/${BACKUP_NAME}.enc"
+          PASS="$WORK/aes.pass"
+          FINAL="$DEST_DIR/$BACKUP_NAME"
+          PART="$DEST_DIR/.${BACKUP_NAME}.part"
+
+          test -s "$ENC"
+          ENC_SIZE="$(stat -c%s "$ENC")"
+          AVAIL="$(df -PB1 "$DEST_DIR" | awk 'NR==2 {print $4}')"
+          NEED=$(( ENC_SIZE * 2 + 1073741824 ))
+          if [ "$AVAIL" -lt "$NEED" ]; then
+            echo "Insufficient Google-server disk space. available=$AVAIL required=$NEED" >&2
+            exit 30
+          fi
+
+          openssl pkeyutl -decrypt -inkey "$KEY_DIR/private.pem" \
+            -in "$WORK/aes.pass.enc" -out "$PASS" \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          chmod 600 "$PASS"
+
+          rm -f "$PART"
+          openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+            -in "$ENC" -out "$PART" -pass file:"$PASS"
+          chmod 600 "$PART"
+
+          ACTUAL_SIZE="$(stat -c%s "$PART")"
+          ACTUAL_HASH="$(sha256sum "$PART" | awk '{print $1}')"
+          test "$ACTUAL_SIZE" = "$BACKUP_SIZE"
+          test "$ACTUAL_HASH" = "$BACKUP_SHA256"
+          tar -tzf "$PART" >/dev/null
+
+          mv -f "$PART" "$FINAL"
+          chmod 600 "$FINAL"
+          printf '%s  %s\n' "$BACKUP_SHA256" "$BACKUP_NAME" > "$FINAL.sha256"
+          chmod 600 "$FINAL.sha256"
+
+          cat > "$DEST_DIR/latest-backup.txt" <<EOF
+          backup_name=$BACKUP_NAME
+          source_host=$SOURCE_HOST
+          created_utc=$CREATED_UTC
+          size_bytes=$BACKUP_SIZE
+          sha256=$BACKUP_SHA256
+          verified_on_google_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          destination=$FINAL
+          EOF
+          chmod 600 "$DEST_DIR/latest-backup.txt"
+
+          echo "BACKUP_VERIFIED_ON_GOOGLE=true"
+          echo "destination=$FINAL"
+          echo "size_bytes=$BACKUP_SIZE"
+          df -h "$DEST_DIR"
+          ls -lh "$FINAL" "$FINAL.sha256" "$DEST_DIR/latest-backup.txt"
+
+      - name: Clean encrypted transfer material
+        if: always()
+        shell: bash
+        run: rm -rf "$WORK" "$KEY_DIR"
+
+  cleanup-google-key:
+    name: Remove one-time Google transfer key
+    if: always()
+    needs: [prepare-google, export-namecheap, import-google]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    env:
+      KEY_DIR: /home/ayman01323/.namecheap-backup-transfer-${{ github.run_id }}
+    steps:
+      - name: Remove ephemeral transfer key
+        shell: bash
+        run: rm -rf "$KEY_DIR"
