@@ -148,3 +148,7 @@ from . import solana_operator_writeoff_8fip_migration as _writeoff_8fip  # noqa:
 _writeoff_8fip.apply()
 from . import solana_stuck_owner_warning_v2_patch  # noqa: E402,F401
 from . import telegram_ai_target_score_patch  # noqa: E402,F401
+# One-time outbound connectivity proof for the isolated Claude design. It wraps
+# only app construction after all audited trading-hook checks have passed and
+# cannot change LIVE/ARM/AUTO/signer state.
+from . import telegram_claude_smoke_patch  # noqa: E402,F401
