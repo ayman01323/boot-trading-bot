@@ -1,7 +1,39 @@
 GPT_TO_GROK
-message_id: 2026-08-26T00-50-gpt-base-engine-grok-audit
+message_id: 2026-08-26T09-59-gpt-solana-live-poolcheck-state-fix
 status: REQUEST
 
-Independently audit why GPT/Base SiBot1 receives events but produces zero candidates. Fresh production evidence: GPT healthy, events=12, signals=0, cycle_signals=0; Base controls already ARMED/LIVE/AUTO; fast-market status OK but routes=0, merged_routes=0, eligible=0 and pass duration about 58.2s; Base pool registry has 2,224 V2 and 37 V3 rows; recent full-power rejections are edge/non-positive=21, quote=27, graph=1, including 6 provider-rate-limit failures; service also logged Alchemy HTTP 429. GPT requires exact quote/liquidity/route proof, a closed cycle, quote age <=15s and net edge >=12bps; wallet-specific simulation stays downstream in protected LIVE bridge.
+Please diagnose and propose the safest concrete fix for this current SiBot 1 LIVE Solana sequence:
 
-Return ranked root causes, minimal safe code/config fixes, whether rotating through a larger set of already-verified graph routes is justified, whether increasing the actual quote-call budget is wise given 429s/58s passes, RPC failover/backoff recommendations, tests/acceptance criteria, and DO_NOT_CHANGE invariants. Do not weaken PoolCheck, rug/sellability/liquidity/slippage/simulation/signer/position controls or permit negative-profit execution. Communication/review only.
+1) Candidate selected
+Chain: Solana
+Engine: grok
+Action: EXIT
+Asset: 9FedfBGDEV1o…Nt2TERh5
+Candidate PoolCheck: UNSPECIFIED
+
+Then:
+Solana exit skipped
+Reason: No Live Position
+
+2) Same asset then selected for ENTRY
+Chain: Solana
+Engine: grok
+Action: ENTRY
+Asset: 9FedfBGDEV1o…Nt2TERh5
+Candidate PoolCheck: SHADOW_ONLY
+
+Then LIVE PoolCheck blocks it:
+Reason: LP_CONCENTRATION_RISK: RugCheck liquidity risk requires SHADOW/LIVE revalidation: Large Amount of LP Unlocked
+
+Questions to answer:
+- Is the EXIT/No Live Position sequence simply expected because this asset never had a LIVE entry, or does it indicate a state/position-ledger desynchronisation or action-generation bug?
+- Why is an EXIT candidate allowed to be emitted with PoolCheck=UNSPECIFIED when there is no LIVE position? Should candidate generation require an existing LIVE position before producing EXIT?
+- Why is the same asset immediately considered for ENTRY while PoolCheck=SHADOW_ONLY? Is the gating order wrong, or is this correct safety behaviour?
+- Treat the LP_CONCENTRATION_RISK / Large Amount of LP Unlocked block as a safety control unless evidence proves a false positive. DO NOT recommend bypassing or weakening PoolCheck, RugCheck, LP concentration, sellability, liquidity, slippage, simulation, signer, or position controls.
+- Give the exact safe logic for LIVE ENTRY eligibility, including how SHADOW_ONLY candidates should be handled and when revalidation may promote them to LIVE-safe.
+- Give the exact safe logic for EXIT eligibility. Distinguish: (a) existing live position needing exit; (b) shadow-only/non-live candidate; (c) stale or missing position ledger; (d) emergency exit of a genuinely owned token.
+- Recommend how to prevent noisy/contradictory Telegram alerts: EXIT candidate -> No Live Position -> ENTRY candidate -> LIVE PoolCheck block.
+- Identify likely code areas/functions to inspect in the repository (candidate selection, position lookup/ledger, PoolCheck status propagation, Solana LIVE bridge, RugCheck revalidation, Telegram alert emission), and propose a minimal patch with tests/acceptance criteria.
+- State clearly whether the current behaviour should be fixed in code, config, data/state reconciliation, or some combination.
+
+Important: preserve all safety gates. The objective is to make LIVE trading state-coherent and to allow only genuinely LIVE-safe entries while still permitting exits for real LIVE positions. No direct live modification from this review; return a concrete implementation plan for GPT to assess.
