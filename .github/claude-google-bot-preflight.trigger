@@ -1,9 +1,8 @@
 Claude Google Bot Preflight trigger.
 
-requested_at=2026-08-26T10:17:00Z
+requested_at=2026-08-26T10:47:00Z
 requested_by=gpt
-synced_server_sha=591a254e199e771852e452b8e377f03fa24c5fc6
-source_branch=claude/deterministic-runtime-dirs
-source_sha=3b9acc8143d0a5623ed5ddfe12735803fdf675cd
-merge_sha=0f4605e7ac0e0d37d74a768a26a727e5e643d10e
-reason=post_sync_deterministic_runtime_dirs_validation
+reason=validate_claude_bounded_risk_profile_after_server_sync
+risk_profile=max_capital_500,max_position_50,total_exposure_200,daily_loss_50,drawdown_10,open_positions_1,solana_only
+expected_signer_ready=false
+expected_live_state=off
