@@ -34,8 +34,13 @@ from . import user_trading_global_kill_patch as _user_trading_global_kill_patch 
 
 # The full-power graph scanner used a deterministic tiny prefix of already-known
 # routes on every pass. Rotate discovery across the larger verified pool graph and
-# raise only the read-only candidate sampling budget; execution safety is unchanged.
+# redistribute the same bounded read-only quote budget; execution safety is unchanged.
 from . import full_power_candidate_rotation_patch as _full_power_candidate_rotation_patch  # noqa: E402,F401
+
+# A throttled first RPC must not starve read-only full-power discovery when another
+# configured endpoint is healthy. This patches only full_power_scanner's local
+# trader binding; the real execution/signing LiveTrader remains unchanged.
+from . import full_power_scanner_rpc_failover_patch as _full_power_scanner_rpc_failover_patch  # noqa: E402,F401
 
 # Supervise the independent SiBot 1 SHADOW/PAPER sidecar only for `learnerbot run`.
 # Its child launch is delayed so MAIN BOOT can finish its audited fail-closed
