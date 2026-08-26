@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import urllib.request
 from contextlib import closing
 from decimal import Decimal
@@ -41,6 +42,34 @@ _USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 
 _original_buy = _executor.SolanaLiveExecutor.buy
 _original_sell = _executor.SolanaLiveExecutor.sell
+
+
+def _connect_with_retry(app, *, attempts: int = 20, base_delay: float = 0.05, max_delay: float = 0.5):
+    """learnerbot.solana_sibot.connect() re-runs `PRAGMA journal_mode=WAL`
+    on every single call -- even for a plain read -- which can raise
+    sqlite3.OperationalError("database is locked") under genuinely
+    concurrent connection opens on the same file, independent of the
+    busy_timeout PRAGMA connect() already sets (WAL-mode transition isn't
+    always covered by it on every SQLite build). Observed directly under
+    this module's own concurrent-sell tests (review, 2026-08-26): with
+    several connect() calls per guarded sell and two sells genuinely
+    racing, occasional contention is expected, not a sign of a logic bug.
+    Retried here, in Claude-owned code only -- NOT a change to learnerbot's
+    shared connect() implementation, which stays untouched -- with capped
+    exponential backoff generous enough to ride out realistic contention."""
+    import sqlite3
+    import time as _time
+
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return _sol.connect(app)
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            last_exc = exc
+            _time.sleep(min(base_delay * (2**attempt), max_delay))
+    raise last_exc
 
 
 class ExecutionGuardError(RuntimeError):
@@ -179,7 +208,7 @@ def restart_preconditions(app) -> None:
 
 
 def _current_live_exposure_sol(app, telegram_id) -> Decimal:
-    with closing(_sol.connect(app)) as conn:
+    with closing(_connect_with_retry(app)) as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(entry_cost_sol), 0) AS total FROM positions "
             "WHERE telegram_id=? AND status='OPEN' AND mode='LIVE'",
@@ -189,7 +218,7 @@ def _current_live_exposure_sol(app, telegram_id) -> Decimal:
 
 
 def _current_live_open_count(app, telegram_id) -> int:
-    with closing(_sol.connect(app)) as conn:
+    with closing(_connect_with_retry(app)) as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS n FROM positions WHERE telegram_id=? AND status='OPEN' AND mode='LIVE'",
             (str(telegram_id),),
@@ -204,7 +233,7 @@ def _current_unrealised_pnl_sol(app, telegram_id) -> Decimal:
     periodic UPDATE), reused here rather than re-implemented. This is
     inherently a "right now" value, so pricing it at the current SOL/USD
     rate (once, at read time) introduces no historical-repricing artifact."""
-    with closing(_sol.connect(app)) as conn:
+    with closing(_connect_with_retry(app)) as conn:
         row = conn.execute(
             "SELECT COALESCE(SUM(unrealised_net_sol), 0) AS total FROM positions "
             "WHERE telegram_id=? AND status='OPEN' AND mode='LIVE'",
@@ -213,27 +242,59 @@ def _current_unrealised_pnl_sol(app, telegram_id) -> Decimal:
         return Decimal(str(row["total"] or 0))
 
 
-def _closed_live_position_ids(app, telegram_id) -> set[str]:
-    with closing(_sol.connect(app)) as conn:
+def _closed_live_position_ids_for_mint(app, telegram_id, mint: str) -> set[str]:
+    """Scoped to telegram_id + mint (review, 2026-08-26, correcting a real
+    race): the earlier version queried every CLOSED position for the owner,
+    unscoped. SolanaLiveExecutor.sell() has no execution lock, so a second,
+    concurrent sell of a DIFFERENT position could close and appear in this
+    call's before/after diff, getting priced with THIS call's sampled rate
+    instead of its own -- the exact per-close valuation guarantee this
+    whole mechanism exists for. Scoping by mint (all a single sell call can
+    ever affect) plus the per-(telegram_id, mint) lock in _guarded_sell()
+    together make the diff exact, not merely usually-correct."""
+    with closing(_connect_with_retry(app)) as conn:
         rows = conn.execute(
-            "SELECT position_id FROM positions WHERE telegram_id=? AND status='CLOSED' AND mode='LIVE'",
-            (str(telegram_id),),
+            "SELECT position_id FROM positions WHERE telegram_id=? AND mint=? AND status='CLOSED' AND mode='LIVE'",
+            (str(telegram_id), str(mint)),
         ).fetchall()
     return {str(row["position_id"]) for row in rows}
 
 
+_SELL_LOCKS_GUARD = threading.RLock()
+_SELL_LOCKS: dict = {}
+
+
+def _sell_lock_for(telegram_id, mint: str) -> threading.Lock:
+    """One lock per (telegram_id, mint) -- serialises only the narrow
+    before-state -> _original_sell -> after-state -> price-capture ->
+    account sequence for the SAME mint (review, 2026-08-26). Exits of
+    different mints never share a lock and proceed independently; this
+    deliberately does not serialise every Claude exit globally."""
+    key = (str(telegram_id), str(mint))
+    with _SELL_LOCKS_GUARD:
+        lock = _SELL_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _SELL_LOCKS[key] = lock
+        return lock
+
+
 def _account_positions_synchronously(app, telegram_id, position_ids, *, price: Decimal) -> list[dict]:
-    """Trustworthy path (review, 2026-08-26, blocker A): called ONLY from
-    _guarded_sell(), for the exact set of position_ids that call's own
-    SELECT-before/SELECT-after id-diff proved closed JUST NOW, in this same
-    function call -- so `price`, fetched immediately after, genuinely IS
-    this trade's close-time price, not an approximation. This is the only
-    function in this module allowed to price a close and call
-    claude_state.account_closed_position() with that price."""
+    """Trustworthy path (review, 2026-08-26, blocker A; correlation fixed
+    2026-08-26): called ONLY from _guarded_sell(), for the exact set of
+    position_ids its own mint-scoped, lock-serialised SELECT-before/
+    SELECT-after id-diff proved closed during THIS call, so `price`,
+    fetched immediately after, is close-adjacent -- not a guess made later
+    at an arbitrary time, but also not claimed to be mathematically exact
+    close-time pricing: no timestamped price is persisted at the execution
+    boundary itself (no such column/table exists anywhere in this
+    codebase), so a small, bounded gap between broadcast and this sample
+    remains. This is the only function in this module allowed to price a
+    close and call claude_state.account_closed_position() with that price."""
     if not position_ids:
         return []
     placeholders = ",".join("?" for _ in position_ids)
-    with closing(_sol.connect(app)) as conn:
+    with closing(_connect_with_retry(app)) as conn:
         rows = conn.execute(
             f"SELECT position_id, realised_net_sol FROM positions "
             f"WHERE telegram_id=? AND position_id IN ({placeholders})",
@@ -275,7 +336,7 @@ def reconcile_realized_pnl(app, telegram_id) -> list[dict]:
     called: an id already in either ledger is always skipped."""
     if not telegram_id:
         return []
-    with closing(_sol.connect(app)) as conn:
+    with closing(_connect_with_retry(app)) as conn:
         rows = conn.execute(
             "SELECT position_id, realised_net_sol FROM positions "
             "WHERE telegram_id=? AND status='CLOSED' AND mode='LIVE'",
@@ -463,22 +524,47 @@ def _guarded_sell(self, input_mint: str, amount_raw: int) -> dict:
     # Exits remain possible during a drawdown halt or while not armed: reducing
     # risk must never be blocked by an entry-only circuit breaker.
     check_identity_and_signer(self.app, self.telegram_id)
-    before_closed_ids = _closed_live_position_ids(self.app, self.telegram_id)
-    result = _original_sell(self, input_mint, amount_raw)
-    # Post-sell accounting + drawdown recheck (review, 2026-08-26): whatever
-    # this specific call just closed is identified precisely (id-set diff,
-    # not an aggregate SUM delta -- immune to another close happening
-    # concurrently) and priced trustworthily, right now, since "now" IS this
-    # trade's own close time. A loss-realising sell must latch+alert
-    # immediately, not wait for the next buy attempt or a crash-recovery
-    # pass. Never allowed to block or undo the exit that already completed
-    # above.
+    # Correlated capture (review, 2026-08-26, correcting a real race the
+    # prior version claimed to be immune to but wasn't): scoped to this
+    # mint, AND lock-serialised against any other concurrent sell of the
+    # SAME mint, so the before/after id-diff below can only ever contain
+    # positions THIS call closed -- SolanaLiveExecutor.sell() has no
+    # execution lock of its own, and a second thread closing an unrelated
+    # position between the two SELECTs would otherwise get swept into this
+    # call's price sample. Exits of different mints never share a lock.
+    lock = _sell_lock_for(self.telegram_id, input_mint)
+    with lock:
+        before_closed_ids = _closed_live_position_ids_for_mint(self.app, self.telegram_id, input_mint)
+        result = _original_sell(self, input_mint, amount_raw)
+        newly_closed_ids: set = set()
+        try:
+            after_closed_ids = _closed_live_position_ids_for_mint(self.app, self.telegram_id, input_mint)
+            newly_closed_ids = after_closed_ids - before_closed_ids
+            if newly_closed_ids:
+                # Close-adjacent, not mathematically exact close-time pricing --
+                # no timestamped price is persisted at the execution boundary
+                # itself (checked: no such column/table exists anywhere in this
+                # codebase). This is the closest available sample: fetched
+                # immediately after the lock-serialised, mint-scoped diff above
+                # proves these specific ids closed during this call.
+                price = sol_usd_price()
+                _account_positions_synchronously(self.app, self.telegram_id, newly_closed_ids, price=price)
+        except Exception as exc:  # noqa: BLE001
+            # Price capture (or the accounting write) failed after a successful
+            # sell -- deliberately NOT retried here and NOT swallowed silently
+            # into a guess. Any id in newly_closed_ids that didn't make it into
+            # accounted_position_ids stays absent from BOTH ledgers, so the
+            # next reconcile_realized_pnl() sweep (monitor tick or startup)
+            # will find it and correctly mark it unpriced -- fail closed, not
+            # fail silent.
+            print("[claude-post-sell-account]", type(exc).__name__, str(exc)[:240])
+    # Drawdown recheck (review, 2026-08-26): a loss-realising sell must
+    # latch+alert immediately, not wait for the next buy attempt or a
+    # crash-recovery pass. Deliberately OUTSIDE the mint lock (no per-mint
+    # race concern here, and holding a lock across this would serialise
+    # unrelated mints' drawdown checks for no reason) and never allowed to
+    # block or undo the exit that already completed above.
     try:
-        after_closed_ids = _closed_live_position_ids(self.app, self.telegram_id)
-        newly_closed_ids = after_closed_ids - before_closed_ids
-        if newly_closed_ids:
-            price = sol_usd_price()
-            _account_positions_synchronously(self.app, self.telegram_id, newly_closed_ids, price=price)
         limits = risk_engine_guard.RiskLimits.load()
         open_positions = _current_live_open_count(self.app, self.telegram_id)
         _check_and_latch_drawdown(self.app, self.telegram_id, limits=limits, open_positions=open_positions)

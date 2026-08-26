@@ -297,7 +297,18 @@ def account_closed_position(app, *, position_id: str, realised_net_sol: Decimal,
     regardless of when a crash happened relative to any one of those calls.
     Once written, a position's accounted pnl_usd/price_usd_used is
     immutable: this function never recomputes or overwrites an existing
-    entry, even if called again for the same position_id."""
+    entry, even if called again for the same position_id.
+
+    Promotes a stale unpriced_closed_position_ids entry, if one exists
+    (review, 2026-08-26, correcting a real race found under genuinely
+    concurrent multi-mint sells: reconcile_realized_pnl()'s sweep is
+    per-owner, not per-mint-locked, so it can momentarily observe a
+    position as CLOSED-but-not-yet-accounted while a different mint's
+    synchronous capture for that SAME position is still mid-flight, and
+    mark it unpriced a moment before the real trustworthy write lands here.
+    That marking never contributed to cumulative_realized_pnl_usd -- see
+    mark_unpriced_closed_position() -- so removing it once the real value
+    arrives is always safe, never a double-count.)"""
     with _STATE_LOCK:
         state = load_state(app)
         accounted = dict(state.get("accounted_position_ids") or {})
@@ -311,6 +322,10 @@ def account_closed_position(app, *, position_id: str, realised_net_sol: Decimal,
             "accounted_at": int(time.time()),
         }
         state["accounted_position_ids"] = accounted
+        unpriced = dict(state.get("unpriced_closed_position_ids") or {})
+        if position_id in unpriced:
+            del unpriced[position_id]
+            state["unpriced_closed_position_ids"] = unpriced
         total = Decimal(state.get("cumulative_realized_pnl_usd") or "0") + pnl_usd
         state["cumulative_realized_pnl_usd"] = str(total)
         _save_state(app, state)

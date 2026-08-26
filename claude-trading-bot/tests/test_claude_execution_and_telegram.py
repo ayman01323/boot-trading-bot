@@ -20,6 +20,7 @@ version of this file (see README.md) and are not re-tested here.
 from __future__ import annotations
 
 import sys
+import threading
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -276,21 +277,24 @@ def test_sell_realising_a_loss_latches_immediately_without_a_buy(executor, app, 
     assert len(sent) == 1
 
 
-def _insert_closed_live_position(app, *, position_id: str, telegram_id: str, realised_net_sol: Decimal, closed_at: int = 1700000000) -> None:
+def _insert_closed_live_position(app, *, position_id: str, telegram_id: str, realised_net_sol: Decimal, mint: str = "MINT", closed_at: int = 1700000000) -> None:
     """Minimal valid row in the REAL positions table (real schema, real
     connect()) -- these reconciliation tests exercise the actual SQL, not a
     mocked stand-in, since the query itself (identity by position_id) is
-    exactly what review asked to be proven crash-safe."""
+    exactly what review asked to be proven crash-safe. Uses the same
+    retry-on-locked wrapper solana_execution_risk_patch.py's own queries
+    use, since this simulates the real close write that would happen
+    inside _original_sell, under genuine concurrent test threads."""
     from contextlib import closing as _closing
 
-    from learnerbot import solana_sibot as _sol
+    import solana_execution_risk_patch as _guard
 
-    with _closing(_sol.connect(app)) as conn:
+    with _closing(_guard._connect_with_retry(app)) as conn:
         conn.execute(
             "INSERT INTO positions (position_id, telegram_id, leader_wallet, mint, mode, status, "
             "token_amount_raw, entry_cost_sol, entry_ts, realised_net_sol, closed_at, updated_at) "
-            "VALUES (?, ?, 'LEADER', 'MINT', 'LIVE', 'CLOSED', '0', '1', 1699999000, ?, ?, ?)",
-            (position_id, str(telegram_id), str(realised_net_sol), closed_at, closed_at),
+            "VALUES (?, ?, 'LEADER', ?, 'LIVE', 'CLOSED', '0', '1', 1699999000, ?, ?, ?)",
+            (position_id, str(telegram_id), mint, str(realised_net_sol), closed_at, closed_at),
         )
         conn.commit()
 
@@ -447,6 +451,132 @@ def test_guarded_sell_synchronously_accounts_and_latches_via_real_db(executor, a
     assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-100")
     assert "pos-live" in state["accounted_position_ids"]
     assert state["unpriced_closed_position_ids"] == {}
+
+
+def test_concurrent_sells_different_mints_never_absorb_each_others_close(app, monkeypatch):
+    """Review, 2026-08-26: two genuinely concurrent sells for DIFFERENT
+    mints must each account only their own close -- SolanaLiveExecutor.sell()
+    has no execution lock, so an earlier, unscoped before/after diff could
+    have swept the other thread's close into this call's price sample.
+    Scoping the diff query by mint (this test) is what prevents that,
+    independent of the per-mint lock (which only serialises the SAME mint)."""
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+    start = threading.Barrier(2, timeout=5)
+
+    def _fake_sell(self, input_mint, amount_raw):
+        start.wait()
+        if input_mint == "MINT_A":
+            _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-1"), mint="MINT_A")
+        else:
+            _insert_closed_live_position(app, position_id="pos-B", telegram_id=OWNER_ID, realised_net_sol=Decimal("2"), mint="MINT_B")
+        return {"ok": True}
+
+    monkeypatch.setattr(guard, "_original_sell", _fake_sell)
+    exec_a = SimpleNamespace(app=app, telegram_id=OWNER_ID)
+    exec_b = SimpleNamespace(app=app, telegram_id=OWNER_ID)
+
+    t_a = threading.Thread(target=lambda: guard._guarded_sell(exec_a, "MINT_A", 1000))
+    t_b = threading.Thread(target=lambda: guard._guarded_sell(exec_b, "MINT_B", 1000))
+    t_a.start()
+    t_b.start()
+    t_a.join(timeout=5)
+    t_b.join(timeout=5)
+
+    state = claude_state.load_state(app)
+    assert set(state["accounted_position_ids"]) == {"pos-A", "pos-B"}
+    assert Decimal(state["accounted_position_ids"]["pos-A"]["pnl_usd"]) == Decimal("-100")
+    assert Decimal(state["accounted_position_ids"]["pos-B"]["pnl_usd"]) == Decimal("200")
+    assert state["unpriced_closed_position_ids"] == {}
+
+
+def test_concurrent_sells_same_mint_serialised_no_mispriced_capture(app, monkeypatch):
+    """Review, 2026-08-26: two overlapping sells for the SAME mint must be
+    fully serialised by the per-(telegram_id, mint) lock -- the second
+    call's before-state read must not start until the first call's whole
+    capture-and-account sequence (including _original_sell itself) has
+    finished, so neither call's diff can ever see the other's close.
+
+    No barrier here deliberately: since both calls share the SAME lock, the
+    lock itself -- not external synchronisation -- is what has to force
+    serialisation. Starting t2 immediately after t1 (no stagger) still
+    proves it: t2's own before-state read cannot even begin until t1
+    releases the lock, which only happens after t1's entire capture-and-
+    account sequence has completed."""
+    import itertools
+
+    # sol_usd_price() is called more than once per _guarded_sell() call (the
+    # synchronous capture, then again inside the drawdown recheck's own
+    # equity computation) -- an infinite, ever-increasing sequence avoids
+    # exhausting a short fixed list under that multiplicity.
+    price_seq = itertools.count(100)
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal(next(price_seq)))
+    counter = {"n": 0}
+    lock_for_counter = threading.Lock()
+
+    def _fake_sell(self, input_mint, amount_raw):
+        with lock_for_counter:
+            counter["n"] += 1
+            n = counter["n"]
+        pos_id = f"pos-{n}"
+        _insert_closed_live_position(app, position_id=pos_id, telegram_id=OWNER_ID, realised_net_sol=Decimal("-1"), mint="MINT_SAME")
+        return {"ok": True}
+
+    monkeypatch.setattr(guard, "_original_sell", _fake_sell)
+    executor = SimpleNamespace(app=app, telegram_id=OWNER_ID)
+
+    t1 = threading.Thread(target=lambda: guard._guarded_sell(executor, "MINT_SAME", 1000))
+    t2 = threading.Thread(target=lambda: guard._guarded_sell(executor, "MINT_SAME", 1000))
+    t1.start()
+    t2.start()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    state = claude_state.load_state(app)
+    # Both ids present, exactly once each -- proof the lock genuinely
+    # serialised the two calls rather than letting them interleave; had
+    # either call's diff absorbed the other's close, one id would be
+    # missing entirely (absorbed into the other's accounting) rather than
+    # this clean 1:1 split with two distinct entries.
+    assert set(state["accounted_position_ids"]) == {"pos-1", "pos-2"}
+    prices_used = [Decimal(v["price_usd_used"]) for v in state["accounted_position_ids"].values()]
+    assert len(set(prices_used)) == 2  # each captured its own distinct sample, never shared/duplicated
+    assert state["unpriced_closed_position_ids"] == {}
+
+
+def test_price_capture_failure_after_sell_is_recovered_unpriced_by_next_sweep(executor, app, equity, monkeypatch):
+    """Review, 2026-08-26, required test 3: if price capture (or the
+    accounting write) fails right after a successful sell, the close must
+    not be silently lost -- a reconciliation sweep must find it and mark it
+    unpriced (never guess a price), and ARMED health must fail closed while
+    it's pending. In practice this recovers within the SAME _guarded_sell()
+    call: the drawdown recheck that always runs afterward calls
+    _check_and_latch_drawdown(), whose first step is exactly this sweep --
+    no separate later call is required, though the sweep is equally correct
+    if one never happens until the next monitor tick or process startup."""
+    def _fake_original_sell(self, input_mint, amount_raw):
+        _insert_closed_live_position(app, position_id="pos-flaky", telegram_id=OWNER_ID, realised_net_sol=Decimal("-1"))
+        return {"ok": True}
+
+    def _raise_price():
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(guard, "_original_sell", _fake_original_sell)
+    monkeypatch.setattr(guard, "sol_usd_price", _raise_price)
+
+    guard._guarded_sell(executor, "MINT", 1000)  # must not raise despite the price fetch failing
+
+    state = claude_state.load_state(app)
+    assert "pos-flaky" not in state["accounted_position_ids"]
+    assert "pos-flaky" in state["unpriced_closed_position_ids"]  # the drawdown-recheck's own sweep already recovered it
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("0")  # never guessed, not even the restart-time-analogue price
+
+    # a later sweep (e.g. the next monitor tick) at a very different price
+    # must still be a pure no-op -- already known, never (re)priced
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("999"))
+    guard.reconcile_realized_pnl(app, OWNER_ID)
+    assert Decimal(claude_state.load_state(app)["cumulative_realized_pnl_usd"]) == Decimal("0")
+
+    assert guard.armed_health_check(app, OWNER_ID) is not None
 
 
 def test_startup_reconciliation_runs_via_app_wrapper(monkeypatch, tmp_path):

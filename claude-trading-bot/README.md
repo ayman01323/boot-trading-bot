@@ -297,19 +297,27 @@ current model:
   `account_closed_position()` is itself idempotent per `position_id`: once
   written, an entry's `pnl_usd`/`price_usd_used` is immutable, never
   recomputed even if reconciliation runs again later at a different price.
-- **Two-tier accounting** (strengthened per review, 2026-08-26): the
-  learnerbot positions schema has no close-time USD column, and no
-  price-history table exists anywhere in this codebase (checked) — so a
-  close discovered *after the fact* cannot be retroactively priced
-  accurately. `_guarded_sell()` diffs the set of `CLOSED` position ids
-  before/after its own call (id-set diff, not an aggregate `SUM` delta —
-  immune to a concurrent close elsewhere) and, for whatever it just closed,
-  calls `_account_positions_synchronously()` with the price fetched
-  immediately after — genuinely the close-time price. `reconcile_realized_pnl()`
+- **Two-tier accounting** (strengthened per review, 2026-08-26, correlation
+  corrected 2026-08-26): the learnerbot positions schema has no close-time
+  USD column, and no price-history table exists anywhere in this codebase
+  (checked) — so a close discovered *after the fact* cannot be
+  retroactively priced accurately. `_guarded_sell()` diffs the set of
+  `CLOSED` position ids for this specific mint, before/after its own call,
+  under a per-`(telegram_id, mint)` lock (`_sell_lock_for()`) — `SolanaLiveExecutor.sell()`
+  has no execution lock of its own, so an unscoped, unlocked diff could
+  have swept a *different*, concurrently-closed position into this call's
+  price sample; scoping by mint plus the lock together make the diff exact
+  for that mint, while exits of different mints never share a lock and
+  proceed independently. `_account_positions_synchronously()` then prices
+  whatever this call closed with the SOL/USD rate fetched immediately
+  after — close-adjacent, the best available sample, but not claimed to be
+  mathematically exact close-time pricing (no timestamped price is
+  persisted at the execution boundary itself). `reconcile_realized_pnl()`
   (the generic sweep used by the monitor and at startup) NEVER prices a
   close itself: anything it finds that isn't in either ledger yet is, by
   construction, one the synchronous path never saw (most likely a crash
-  between the DB commit and that capture), so it's recorded in
+  between the DB commit and that capture, or a price/accounting failure
+  right after a successful sell), so it's recorded in
   `unpriced_closed_position_ids` with no price at all rather than guessed
   at the sweep's own read-time rate — the exact "reprice at today's rate"
   artifact review flagged, now impossible by construction rather than

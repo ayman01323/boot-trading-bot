@@ -407,6 +407,24 @@ def test_mark_unpriced_closed_position_skipped_if_already_trustworthily_accounte
     assert "pos-Y" not in claude_state.load_state(app)["unpriced_closed_position_ids"]
 
 
+def test_account_closed_position_promotes_a_stale_unpriced_entry(app):
+    """Review, 2026-08-26: fixes a real race found under genuinely
+    concurrent multi-mint sells -- reconcile_realized_pnl()'s sweep can
+    momentarily mark a position unpriced a moment before its own real
+    synchronous capture completes. The trustworthy write must win and
+    clean up the stale marking, never leave a position in both ledgers."""
+    claude_state.mark_unpriced_closed_position(app, position_id="pos-Z", realised_net_sol=Decimal("-1"))
+    assert "pos-Z" in claude_state.load_state(app)["unpriced_closed_position_ids"]
+
+    pnl = claude_state.account_closed_position(app, position_id="pos-Z", realised_net_sol=Decimal("-1"), price_usd_used=Decimal("100"))
+
+    assert pnl == Decimal("-100")
+    state = claude_state.load_state(app)
+    assert "pos-Z" in state["accounted_position_ids"]
+    assert "pos-Z" not in state["unpriced_closed_position_ids"]  # stale marking removed
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-100")  # not double-counted
+
+
 def test_is_armed_false_when_halted_even_if_operating_state_stale(app):
     state = claude_state.arm(app, owner_id="owner1")
     assert claude_state.is_armed(state) is True
