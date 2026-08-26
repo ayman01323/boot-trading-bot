@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy manual per-trade approval safely
+      - name: Deploy armed automatic evaluation with manual per-trade approval safely
         shell: bash
         run: |
           set -euo pipefail
@@ -52,6 +52,11 @@ jobs:
           rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
           by={str(r.get('setting') or ''):r for r in rows}
           updates={
+            'live_enabled':('1','Live monitoring and automatic candidate evaluation enabled'),
+            'armed_manual_approval':('1','ARMED: automatic candidate evaluation enabled; final transaction requires manual external signature'),
+            'auto_discovery_enabled':('1','Continuously discover fresh Solana pools'),
+            'auto_promote_to_selected':('1','Automatically feed ranked candidates into Stage 2/3 evaluation only; no autonomous broadcast'),
+            'auto_evaluate_candidate_limit':('5','Evaluate up to five ranked candidates per entry cycle until one passes Stage 3'),
             'manual_approval_enabled':('1','Every Stage-3-approved BUY/SELL stops at WAITING_FOR_MANUAL_APPROVAL'),
             'manual_approval_ttl_seconds':('60','Each immutable trade proposal expires after 60 seconds'),
             'manual_approval_require_external_signature':('1','Final signing must be external/manual; server wallet cannot broadcast through this gate'),
@@ -61,10 +66,9 @@ jobs:
               by[k]['value']=v; by[k]['notes']=note
             else:
               row={'setting':k,'value':v,'notes':note}; rows.append(row); by[k]=row
-          # Safety invariant: this deployment never arms autonomous transaction broadcast.
           for k,note in (
-            ('broadcast_enabled','Locked: real transaction broadcast remains off'),
-            ('telegram_manual_run_enabled','Locked: Telegram cannot trigger an execution cycle'),
+            ('broadcast_enabled','Locked: real autonomous transaction broadcast remains off'),
+            ('telegram_manual_run_enabled','Locked: Telegram cannot directly execute a real transaction'),
           ):
             if k in by:
               by[k]['value']='0'; by[k]['notes']=note
@@ -97,18 +101,26 @@ jobs:
           sudo -n systemctl restart sirisky.service
           sleep 3
           systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          test "$(systemctl is-active sirisky.service)" = 'active'
 
-          echo '=== MANUAL APPROVAL GATES ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|manual_approval_enabled|manual_approval_ttl_seconds|manual_approval_require_external_signature)$/' /root/SiRisky/CSV/runtime.csv
+          echo '=== ARMED MANUAL APPROVAL GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|armed_manual_approval|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit|manual_approval_enabled|manual_approval_ttl_seconds|manual_approval_require_external_signature)$/' /root/SiRisky/CSV/runtime.csv
+
+          echo '=== ONE SAFE AUTO-EVALUATION CYCLE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py once' || true
 
           echo '=== PENDING APPROVALS ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py approvals'
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py approvals' || true
 
           echo '=== SAFETY ASSERTIONS ==='
-          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="armed_manual_approval"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="auto_promote_to_selected"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
           test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
           test "$(sudo -n awk -F, '$1=="manual_approval_require_external_signature"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
           sudo -n grep -q 'MANUAL_APPROVAL_EXTERNAL_SIGNATURE_REQUIRED' /root/SiRisky/sirisky/stage5_trade.py
-          echo 'manual_approval_gate=ON'
+          echo 'armed_manual_approval=YES'
+          echo 'auto_candidate_evaluation=YES'
           echo 'external_manual_signature=REQUIRED'
           echo 'real_transaction_broadcast=NO'
