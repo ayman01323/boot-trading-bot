@@ -42,6 +42,16 @@ from . import full_power_candidate_rotation_patch as _full_power_candidate_rotat
 # trader binding; the real execution/signing LiveTrader remains unchanged.
 from . import full_power_scanner_rpc_failover_patch as _full_power_scanner_rpc_failover_patch  # noqa: E402,F401
 
+# EVM history repair: fetch transaction/receipt context only for hashes with wallet
+# ERC20 movement, and pace the remaining batches. This is research/history plumbing
+# only and leaves the audited final history wrapper identity unchanged.
+from . import sibot_alchemy_context_rate_patch as _sibot_alchemy_context_rate_patch  # noqa: E402,F401
+
+# Learn unknown universal-router/aggregator destinations for historical reconstruction
+# only after repeated strict closed-trade evidence from independent wallets. Learned
+# destinations never enter the execution DEX/router registry.
+from . import sibot_history_router_learning_patch as _sibot_history_router_learning_patch  # noqa: E402,F401
+
 # Supervise the independent SiBot 1 SHADOW/PAPER sidecar only for `learnerbot run`.
 # Its child launch is delayed so MAIN BOOT can finish its audited fail-closed
 # composition checks first. This import never enables signing or broadcast.
