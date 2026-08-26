@@ -28,11 +28,9 @@ for path in (THIS_DIR, REPO_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import identity_patch
-import solana_execution_risk_patch
+import claude_bot_patches
 
-identity_patch.install()
-solana_execution_risk_patch.install()
+claude_bot_patches.install_all()
 
 sys.argv = ["learnerbot", "run"]
 import runpy

@@ -1,11 +1,33 @@
 """Additional hard risk limits for claude-trading-bot.
 
-This sits IN FRONT OF the reused learnerbot execution engines. It only ever adds
-a tighter constraint on top of the existing, unmodified gates in
-learnerbot/live_executor.py, learnerbot/solana_live_executor.py,
-evm_pool_rug_gate.py and solana_pool_risk_gate.py — it never loosens or replaces
-any of them. If a required limit is missing or invalid, load() raises and the
-caller (run.py) must refuse to start LIVE mode.
+This sits IN FRONT OF the reused learnerbot execution engines — actually
+consulted by solana_execution_risk_patch.py before every Solana LIVE buy,
+not just validated at startup (that gap was flagged in review and fixed).
+It only ever adds a tighter constraint on top of the existing, unmodified
+gates in learnerbot/live_executor.py, learnerbot/solana_live_executor.py,
+evm_pool_rug_gate.py and solana_pool_risk_gate.py — it never loosens or
+replaces any of them. If a required limit is missing or invalid, load()
+raises and the caller must refuse to start LIVE mode.
+
+Scope note (per review): this contract intentionally does NOT include
+slippage, price-impact, or minimum-liquidity limits. Those dimensions are
+already governed by the reused, already-reviewed code this bot runs
+unmodified:
+  - price impact: solana_pool_risk_gate.py's reference_reverse_depth_check(),
+    hard-capped at 200 bps
+  - minimum liquidity / LP lock: solana_pool_risk_gate.py's
+    evaluate_rugcheck() (LP-locked-pct floor) and evaluate_dexscreener()
+    (liquidity floor, pool-age cooling, liquidity-collapse detection)
+  - slippage: solana_live_executor.py's Jupiter slippageBps parameter plus
+    its mandatory post-execution economic validation (rejects if executed
+    input/output don't reconcile)
+A second, Claude-specific implementation of the same checks would either be
+redundant with those or, worse, subtly inconsistent with logic that's
+already been reviewed — so this module does not attempt it. What IS unique
+to this contract (nothing reused already tracks these in absolute USD terms
+for this specific instance) is daily loss and drawdown, which
+check_daily_loss_and_drawdown() enforces for real against this instance's
+own closed-position history.
 """
 
 from __future__ import annotations
@@ -19,9 +41,6 @@ REQUIRED_FLOAT_VARS = (
     "MAX_TOTAL_EXPOSURE_USD",
     "MAX_DAILY_LOSS_USD",
     "MAX_DRAWDOWN_PCT",
-    "MAX_SLIPPAGE_PCT",
-    "MAX_PRICE_IMPACT_PCT",
-    "MIN_POOL_LIQUIDITY_USD",
 )
 REQUIRED_INT_VARS = ("MAX_OPEN_POSITIONS",)
 
@@ -38,9 +57,6 @@ class RiskLimits:
     max_open_positions: int
     max_daily_loss_usd: float
     max_drawdown_pct: float
-    max_slippage_pct: float
-    max_price_impact_pct: float
-    min_pool_liquidity_usd: float
 
     @classmethod
     def load(cls) -> "RiskLimits":
@@ -75,10 +91,6 @@ class RiskLimits:
             raise RiskGuardConfigError("MAX_TOTAL_EXPOSURE_USD cannot exceed MAX_CAPITAL_USD")
         if not (0 < values["MAX_DRAWDOWN_PCT"] <= 100):
             raise RiskGuardConfigError("MAX_DRAWDOWN_PCT must be within (0, 100]")
-        if not (0 < values["MAX_SLIPPAGE_PCT"] <= 100):
-            raise RiskGuardConfigError("MAX_SLIPPAGE_PCT must be within (0, 100]")
-        if not (0 < values["MAX_PRICE_IMPACT_PCT"] <= 100):
-            raise RiskGuardConfigError("MAX_PRICE_IMPACT_PCT must be within (0, 100]")
 
         return cls(
             max_capital_usd=values["MAX_CAPITAL_USD"],
@@ -87,9 +99,6 @@ class RiskLimits:
             max_open_positions=max_open_positions,
             max_daily_loss_usd=values["MAX_DAILY_LOSS_USD"],
             max_drawdown_pct=values["MAX_DRAWDOWN_PCT"],
-            max_slippage_pct=values["MAX_SLIPPAGE_PCT"],
-            max_price_impact_pct=values["MAX_PRICE_IMPACT_PCT"],
-            min_pool_liquidity_usd=values["MIN_POOL_LIQUIDITY_USD"],
         )
 
     def check_new_position(self, *, proposed_usd: float, current_exposure_usd: float, open_positions: int) -> None:
@@ -111,4 +120,29 @@ class RiskLimits:
         if open_positions >= self.max_open_positions:
             raise RiskGuardConfigError(
                 f"Already at MAX_OPEN_POSITIONS ({self.max_open_positions})"
+            )
+
+    def check_daily_loss_and_drawdown(
+        self, *, realized_pnl_usd_today: float, peak_to_current_drawdown_usd: float
+    ) -> None:
+        """Raise RiskGuardConfigError if realized daily loss or drawdown breach limits.
+
+        Callers compute realized_pnl_usd_today (sum of realized P&L for
+        positions closed since the start of the current UTC day) and
+        peak_to_current_drawdown_usd (running peak of cumulative realized
+        P&L minus current cumulative realized P&L, i.e. how far below the
+        best-ever point this instance's equity has fallen) from this
+        instance's own isolated position history — see
+        solana_execution_risk_patch.py.
+        """
+        if realized_pnl_usd_today < 0 and -realized_pnl_usd_today > self.max_daily_loss_usd:
+            raise RiskGuardConfigError(
+                f"Realized loss today ${-realized_pnl_usd_today:.2f} exceeds "
+                f"MAX_DAILY_LOSS_USD ${self.max_daily_loss_usd:.2f}"
+            )
+        drawdown_pct = (peak_to_current_drawdown_usd / self.max_capital_usd) * 100 if self.max_capital_usd else 0.0
+        if drawdown_pct > self.max_drawdown_pct:
+            raise RiskGuardConfigError(
+                f"Drawdown {drawdown_pct:.2f}% of MAX_CAPITAL_USD exceeds "
+                f"MAX_DRAWDOWN_PCT {self.max_drawdown_pct:.2f}%"
             )

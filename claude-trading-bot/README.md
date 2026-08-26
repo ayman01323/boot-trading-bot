@@ -54,21 +54,53 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
 **New in this folder:**
 - [`run.py`](run.py) — fail-closed env isolation + entrypoint.
 - [`bootstrap_run.py`](bootstrap_run.py) — the actual exec target `run.py` hands
-  off to (see "Why bootstrap_run.py exists" below). Installs `identity_patch`
-  and `solana_execution_risk_patch` in the child process before running
+  off to (see "Why bootstrap_run.py exists" below). Calls
+  `claude_bot_patches.install_all()` in the child process before running
   `learnerbot` exactly the way `python -m learnerbot run` would.
-- [`risk_engine_guard.py`](risk_engine_guard.py) — pure config validation and a
-  `check_new_position()` gate (capital/exposure/position caps). By itself this
-  file only validates config; [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py)
-  is what actually calls `check_new_position()` before every Solana LIVE buy —
-  see below for why these are separate files.
+- [`claude_bot_patches.py`](claude_bot_patches.py) — the single list of what
+  must be installed before `learnerbot`'s own patch chain runs. Imported by
+  both `bootstrap_run.py` and `verify_bootstrap_composition.py` so the real
+  exec path and the test that proves it can never silently diverge.
+- [`verify_bootstrap_composition.py`](verify_bootstrap_composition.py) — a
+  non-broadcast test proving two things end to end: (1) the Claude guard
+  survives `learnerbot/__main__.py`'s complete ~60-module patch chain (run
+  for real via `runpy.run_module`, argv forced to the harmless `chains`
+  subcommand so the chain executes without ever starting the trading loop),
+  and (2) `SIGNER_READY=false` and a mismatched runtime identity both refuse
+  *before* reaching the real executor — proven by monkeypatching the
+  underlying buy/sell to a sentinel that fails loudly if ever called, then
+  confirming the guard raises first in both cases. No transaction is
+  constructed, signed, or broadcast by this script.
+- [`risk_engine_guard.py`](risk_engine_guard.py) — pure config validation plus
+  `check_new_position()` (capital/exposure/position caps) and
+  `check_daily_loss_and_drawdown()` (realized loss today, running drawdown).
+  By itself this file only validates config and holds pure functions;
+  [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py) is what
+  actually calls them before every Solana LIVE buy — see below for why these
+  are separate files. Does **not** cover slippage, price-impact, or minimum
+  liquidity — see the module's own docstring for exactly which reused,
+  already-reviewed `learnerbot` code governs those instead; a second
+  Claude-specific implementation risked being redundant or inconsistent with
+  logic already reviewed.
 - [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py) — wraps
-  `SolanaLiveExecutor.buy` (the real signing/broadcast entry point) to convert
-  the proposed trade and current open exposure to USD (live Jupiter quote) and
-  call `risk_engine_guard.check_new_position()` before allowing the call
-  through. Only tightens; cannot loosen anything reused from `learnerbot`.
-  EVM is not wired yet — all 5 EVM chains currently fail connectivity, so
-  there's nothing live there to guard (see Known limitations).
+  both `SolanaLiveExecutor.buy` and `.sell` (the real signing/broadcast entry
+  points). Every call checks the *runtime* identity the executor was actually
+  constructed with against `CLAUDE_BOT_WALLET_OWNER_ID` and `SIGNER_READY`
+  (closes a gap review found: a mismatched identity with its own key could
+  otherwise reach the executor even though `SIGNER_READY` described a
+  different wallet). Buys additionally check `AUTHORISED_CHAINS` (fails
+  closed — no chain authorised by default) and
+  `risk_engine_guard`'s position/exposure/daily-loss/drawdown limits, priced
+  via a live Jupiter quote and this instance's own closed-position history.
+  Sells skip the chain/risk checks deliberately — closing a position reduces
+  risk, and revoking authorisation or hitting a cap mid-position shouldn't
+  trap capital in a position this bot can no longer exit. Only tightens;
+  cannot loosen anything reused from `learnerbot`.
+  EVM is not wired here — no equivalent guard exists for `LiveTrader`, and
+  `AUTHORISED_CHAINS` defaults to nothing authorised regardless, so EVM
+  cannot execute through this bot yet even where its RPCs are reachable (see
+  Known limitations for current EVM connectivity, which is partial, not
+  total, failure).
 - [`identity_patch.py`](identity_patch.py) — prefixes every outgoing Telegram
   message with `🤖 CLAUDE TRADING BOT` and sends the startup status message,
   following this codebase's existing `*_patch.py` convention rather than editing
@@ -159,7 +191,7 @@ verified-write kill-switch conventions.
    `claude-trading-bot.env`. `run.py`'s `DEFAULT_ENV_FILE` reads its own runtime
    config from `/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env`
    directly (override with `CLAUDE_BOT_ENV_FILE` for local/off-server testing).
-3. **No running-service mechanism yet.** The Google sync workflow only performs
+4. **No running-service mechanism yet.** The Google sync workflow only performs
    `inspect` / `test` / `sync` against a git checkout — it has no systemd/process
    management and is explicitly barred from restarting production services. The
    `systemd/claude-trading-bot.service` file in this folder is ready, but nothing
@@ -168,9 +200,45 @@ verified-write kill-switch conventions.
    workflow (e.g. a bounded `install-service`/`restart` action limited to this
    one unit) — this is a decision for GPT/the operator, not something to bypass
    by adding broader server access here.
-4. **Wallet creation is intentionally not automated here.** Per the project's
+5. **Wallet creation is intentionally not automated here.** Per the project's
    existing pattern, wallet keys are never placed in `.env` or source — a Solana
    wallet is created/imported through the bot's own encrypted wallet-store command
    flow once it's running (keyed to this instance's isolated `DATA_DIR`), the same
    way production wallets are created. `env.example` documents which *secret
    references* (not values) are needed; no private key belongs in this repo.
+6. **EVM connectivity is partial, not total, failure — and not wired for
+   execution regardless.** `diagnostics/claude-google-runtime-check.txt` on
+   `server-diagnostics` (as of the latest botgoogle run) shows Ethereum 1/2
+   endpoints PASS and BSC 2/3 PASS; Polygon, Base, and Arbitrum are 0/2 with
+   HTTP 403/429 (rate-limit/auth issues on those specific providers, not a
+   network-wide problem — Solana/Jupiter connectivity from the same runner is
+   fully healthy). Regardless of endpoint health, no EVM chain can currently
+   execute through this bot: `AUTHORISED_CHAINS` defaults to nothing
+   authorised, and no execution guard equivalent to
+   `solana_execution_risk_patch.py` exists yet for `LiveTrader`. There is also
+   a real path mismatch to resolve before EVM config would even load: the
+   operator-provisioned `rpc_endpoints.csv` lives flat at
+   `/home/ayman01323/ClaudeServer/runtime/rpc_endpoints.csv`, while
+   `learnerbot/config.py::load_chains` reads it from `CSV_DIR/rpc_endpoints.csv`
+   — and `CSV_DIR` is `.../runtime/CSVbot`, a different directory. See
+   `env.example`'s EVM section for detail; not resolved here since the fix
+   (move the file, symlink it, or designate an explicit alternate path) is an
+   operator decision, not something to route around in code.
+7. **Operator identity must be verified, not assumed, after a real full-chain
+   run.** Discovered by actually running `verify_bootstrap_composition.py`
+   against `learnerbot`'s complete patch chain (not by inspection):
+   `telegram_account_roles_patch.py`, a marker-gated one-time migration meant
+   for the production deployment, replays against any fresh `DATA_DIR`
+   lacking its marker file — including this isolated instance's — and
+   creates its own hardcoded user row independent of `TELEGRAM_CHAT_IDS`.
+   Other marker-gated migrations in the ~60-module chain may behave
+   similarly and have not all been individually audited. Consequence: don't
+   assume `CLAUDE_BOT_WALLET_OWNER_ID = TELEGRAM_CHAT_IDS[0]` is correct just
+   because `ensure_master_seed()` suggests it should be — run the full-chain
+   test (or `run.py start` once) against this instance's real isolated
+   `CSV_DIR`/`DATA_DIR` first and read back
+   `learnerbot.user_registry.all_users()` to see which identity actually
+   ends up as the sole enabled user, then configure that.
+   `signing_interface.py`'s identity-consistency check correctly fails
+   closed on a mismatch here — confirmed directly, not assumed, when this
+   was first discovered mid-test.
