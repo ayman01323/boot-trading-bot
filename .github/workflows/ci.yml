@@ -1,4 +1,4 @@
-name: Continue Namecheap to Google Production Cutover
+name: Install Google Production Deployer and Run Bot
 
 on:
   push:
@@ -11,94 +11,45 @@ permissions:
   contents: read
 
 concurrency:
-  group: final-google-cutover-continuation
+  group: google-production-deployer-and-run
   cancel-in-progress: false
 
 jobs:
-  final-sync:
-    name: Final stopped-state sync from Namecheap
-    runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 180
-    steps:
-      - name: Verify only production learnerbot is quiesced
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$(hostname)" in mint|mint.yesgoodwill.com) ;; *) echo "Wrong host: $(hostname)" >&2; exit 10;; esac
-          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
-          SHA="$(git -C /root/multichain-learning-bot-v2.2-fast-direct-market rev-parse HEAD)"
-          test "$SHA" = 'dd3f00bbc4744235b98b866a62992633866f0db8'
-          echo "namecheap_source_sha=$SHA"
-          echo 'other_namecheap_services_touched=false'
-      - name: Set fixed Google endpoint and run final stopped-state sync
-        shell: bash
-        run: |
-          set -euo pipefail
-          printf '%s\n' '35.234.74.46' > /var/tmp/namecheap-google-cutover-handoff/google-ip.txt
-          chmod 600 /var/tmp/namecheap-google-cutover-handoff/google-ip.txt
-          sudo -n /usr/local/sbin/final-sync-namecheap-to-google
-          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
-
-  refresh-google:
-    name: Refresh and verify Google production path
-    needs: final-sync
+  install-and-run:
+    name: Install restricted deploy bridge and restart Google learnerbot
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 45
+    timeout-minutes: 15
     steps:
-      - name: Confirm Google production is still stopped
+      - name: Verify Google runner and sudo
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
-          sudo -n /usr/local/sbin/status-google-production-cutover
-          ! sudo -n /usr/local/sbin/status-google-production-cutover | grep -q '^google_service_active=active$'
-      - name: Refresh exact production path from final staging snapshot
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo -n /usr/local/sbin/refresh-google-production-bot
-          sudo -n /usr/local/sbin/verify-google-production-bot
+          test "$(id -un)" = 'ayman01323'
+          sudo -n true
+          echo 'GOOGLE_RUNNER_SUDO_READY=true'
 
-  activate-google:
-    name: Activate Google production learnerbot only
-    needs: refresh-google
-    runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
-    steps:
-      - name: Start and verify learnerbot.service
+      - name: Install restricted Google production deploy bridge
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n /usr/local/sbin/activate-google-production-bot
-          sudo -n /usr/local/sbin/status-google-production-cutover
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/migration/google-production-cutover/scripts/install_google_production_deployer.sh \
+            -o "$tmp"
+          sudo -n bash "$tmp"
 
-  verify-old-stopped:
-    name: Confirm old production learnerbot remains stopped
-    needs: activate-google
-    runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 5
-    steps:
-      - name: Verify Namecheap learnerbot only
+      - name: Restart only Google production learnerbot
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
-          echo 'other_namecheap_services_touched=false'
-
-  cleanup-key:
-    name: Remove one-time cutover SSH key
-    if: always()
-    needs: [final-sync, refresh-google, activate-google, verify-old-stopped]
-    runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
-    steps:
-      - name: Remove only the migration key
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
-            grep -v 'namecheap-google-final-cutover' "$HOME/.ssh/authorized_keys" > "$HOME/.ssh/authorized_keys.tmp" || true
-            mv "$HOME/.ssh/authorized_keys.tmp" "$HOME/.ssh/authorized_keys"
-            chmod 600 "$HOME/.ssh/authorized_keys"
-          fi
-          echo 'FINAL_CUTOVER_SSH_KEY_REMOVED=true'
+          sudo -n /usr/local/sbin/status-google-production-bot
+          sudo -n /usr/local/sbin/restart-google-production-bot
+          sleep 10
+          OUT="$(sudo -n /usr/local/sbin/status-google-production-bot)"
+          printf '%s\n' "$OUT"
+          grep -q '^google_service_active=active$' <<<"$OUT"
+          grep -q '^google_service_enabled=enabled$' <<<"$OUT"
+          grep -q '^google_process_cwd=/root/multichain-learning-bot-v2.2-fast-direct-market$' <<<"$OUT"
+          echo 'GOOGLE_PRODUCTION_RUN_VERIFIED=true'
