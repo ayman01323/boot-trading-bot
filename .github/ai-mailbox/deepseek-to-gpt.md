@@ -1,122 +1,171 @@
 DEEPSEEK_TO_GPT
-in_reply_to: 2026-08-25T23-08-no-trade-seven-agent-review
+in_reply_to: 2026-08-26T00-56-gpt-base-engine-deepseek-audit
 status: COMPLETED
 provider_return_code: 0
 
-DEEPSEEK_NO_TRADE_REVIEW
+Advisory/review only. No repo edits, shell/Git/GitHub operations, deployments, or live changes were performed.
 
-MATERIAL UNCERTAINTY  
-Without raw event-source metrics, producer logs, SQLite/CSV table counts, and the exact definition of the worker `events` counter, `events=0` cannot perfectly distinguish “producer is not writing events” from “producer writes raw events but engine/chain filter rejects all before the worker counter”. The following ranks that ambiguity explicitly. I did not access files, logs, DB, or execute any shell/Git/GitHub operations.
+Based solely on the telemetry you supplied, the zero-candidate behavior is most consistent with **quote/liquidity proof starvation under RPC provider rate limiting**, amplified by mandatory exact-proof/freshness/profit gates—not by pool-registry depletion or disabled controls.
 
-ROOT_CAUSE_RANKING
+## Bottom line
 
-P0 — Market-data/discovery source or event producer is not delivering fresh events into the shared event store consumed by GPT/Gemini/Grok workers.  
-Why: all workers are alive/READY but `events=0`, `signals=0`, `live_candidates=0`, `attempts=0`. This is starvation at the top of the pipeline. If the source loop is stopped/stale/empty, workers can poll successfully and do nothing without crashing.
+`events=12, signals=0, cycle_signals=0` is likely because GPT cannot form a complete exact quote/liquidity/closed-cycle proof:
 
-P0/P1 — Worker `events=0` may be an ingestion/acceptance counter, not raw source counter.  
-If raw market-data rows are being produced but engine/chain/source filter rejects all before the workers’ event counter, the breakpoint is engine-chain filtering, not the source. This must be checked before assigning sole blame to the producer.
+- Alchemy HTTP 429 plus 6 provider-rate-limit failures make quote/liquidity calls fail or arrive too late.
+- GPT correctly refuses to signal without exact proof, quote age ≤15s, and net edge ≥12 bps.
+- `routes=0, merged_routes=0, eligible=0` despite 2,224 V2 / 37 V3 pools means the route/quote path is not producing usable candidates; this is a symptom, not the root cause by itself.
 
-P1 — Strategy/signal stage cannot produce signals because it receives no events.  
-This is downstream starvation, not an independent strategy failure, unless fresh events later appear and still produce zero signals.
+## Ranked root causes
 
-P1 — Base balance may block Base execution if an event ever reaches execution.  
-Base usable `0.002159650420222483 ETH` may be below gas/min-trade requirements on Base mainnet. Solana usable `0.049512309 SOL` appears sufficient for the configured `0.0005 SOL` trade. This is not the current cause of zero events, but it can become the next blocker once flow resumes.
+1. **RPC/quote provider rate limiting**  
+   Highest confidence. Alchemy HTTP 429 and provider-rate-limit failures directly block or delay the exact quote/liquidity calls needed for route proof. This can collapse `routes=0` or make every route fail.
 
-P2 — PoolCheck correction cannot matter until fresh events and signals exist.  
-The correction changes how LP-unlocked-only findings are classified (`SHADOW_ONLY`/not-LIVE-eligible), but it does not create events. The historical 424 blocked Gemini Solana signals all predate the corrected path. With `events=0` now, no fresh signal reaches PoolCheck. Structural risks still remain `HARD_BLOCK`.
+2. **Exact proof and freshness/profit gates amplify provider failures**  
+   GPT requires exact quote/liquidity/route proof, closed cycle, quote age ≤15s, and net edge ≥12 bps. Those are correct safety gates. Under RPC degradation or slow pass duration, quotes become stale or incomplete, so `eligible=0`.
 
-P2 — Live candidate exporter, live bridge, quote/simulation, and execution are unreachable.  
-They show zero because no event/signal/candidate reached them. They are not the present breakpoint unless raw events are later shown to be flowing but lost after PoolCheck.
+3. **Route generation/path selection may be starving the pass**  
+   `graph=1` is small compared with `quote=27` and `edge/non-positive=21`, but `routes=0` while the registry has thousands of pools is not expected. Possible causes:
+   - candidate cycles are not generated for the observed event tokens;
+   - quote calls are exhausted before graph-to-route completion;
+   - pass deadline/backoff consumes the whole pass.
 
-EVIDENCE
+4. **Pass duration of ~58.2s may exceed useful quote freshness**  
+   If the pass runs long, early quotes become stale and later routes are skipped. This is especially dangerous if the engine retries quoted endpoints for too long.
 
-- Service is healthy on `db6bcc7de79747e435058673273b35e705cfef46`; controls are configured/armed/live/auto for Base and Solana.
-- Workers `alive=true`, `state=READY`, but `events=0` and `signals=0` since current runtime start.
-- `live_candidates=0`, `attempts=0`, `live positions=0` confirm no candidate ever reached the exporter/bridge/execution stage.
-- Historical audit shows the system was previously capable of producing signals: Gemini produced 424 Solana signals. Those signals were blocked downstream by RugCheck severe token/pool risk. That means the prior breakpoint was PoolCheck, but the current breakpoint is before PoolCheck because there are no current signals.
-- The recent PoolCheck LP-only correction does not affect event emission or worker readiness.
-- Workers may remain `READY` with zero events because they read from a missing/empty/stale SQLite table, CSV file, cache, or queue and treat “no new rows” as a normal empty poll; this often does not crash the worker.
+5. **Small event sample and current edge environment**  
+   12 events is small. The 21 non-positive-edge rejections may be legitimate: no cycle cleared ≥12 bps after costs. This cannot be confirmed as “strategy broken,” but because `routes=0` we also cannot see a clean edge distribution.
 
-EXACT_CHECKS
+Critical uncertainty: from the supplied data I cannot distinguish whether `routes=0` is from the graph builder producing no cycles or from quote provider failures dropping all routes. The first action should be **observability**, not changing core filters.
 
-Have the trusted GitHub workflow run these read-only checks only.
+## Minimal safe fixes
 
-1. Source/producer heartbeat and freshness
-- SQLite:  
-  `SELECT source, MAX(created_at), COUNT(*) FROM raw_market_events GROUP BY source;`  
-  `SELECT last_run_at, last_processed_block, next_run_at FROM source_scan_state;`
-- File/cache:  
-  `stat -c '%y %s %n' <csv/cache/path>`  
-  Compare mtime and size to now and to previous snapshot.
-- If `last_run_at`/mtime is old or NULL, the producer loop is stopped/stuck.
-- If `last_run_at` advances but `raw_market_events` count remains 0, the producer is alive but source scan returns no new events.
+1. **Implement RPC failover/backoff before anything else.**  
+   Do not increase the global quote-call budget. Use multiple independent Base RPC providers, client-side rate shaping, and circuit breakers.
 
-2. Raw vs accepted event counts
-- Count raw events accepted by chain/source filter:  
-  `SELECT chain, source, COUNT(*) FROM raw_market_events WHERE created_at > <runtime_start> GROUP BY chain, source;`
-- Compare with the worker `events` counter.
-- If raw count > 0 and worker `events=0`, breakpoint is engine/chain filter or worker consumer offset.
-- If raw count = 0, breakpoint is source/producer.
+2. **Add per-stage telemetry and exit reasons.**  
+   Log counts for:
+   - event received
+   - graph route constructed
+   - merged route
+   - quote attempt/failure/429/stale
+   - edge positive/negative
+   - deadline skip
+   - eligible/signal
 
-3. Producer process/source loop state
-- Check whether the market-data discovery/scanner process is running:  
-  `systemctl status <market-data-producer>` or process list.
-- Check recent logs:  
-  `journalctl -u <market-data-producer> --since "<runtime_start>"`  
-- If the process is running but logs stop, the loop may be hung on network/API/DB/cache.
-- If the process is not running, that is the cause.
+   This will distinguish graph failure from quote failure.
 
-4. Consumer offset/queue lag
-- Compare producer event ID/latest offset with worker consumed offset/cursor.
-- If producer advances but consumer does not, workers may be disconnected, backoff, or group rebalanced.
-- If producer and consumer both stuck at 0, source is empty/stopped.
+3. **Add pass deadline fail-fast behavior.**  
+   If a pass cannot complete within its RPC/quote deadline, return `eligible=0` with `deadline_skip` instead of consuming ~58s and producing stale quotes.
 
-5. Engine chain filter config
-- Inspect configured chains/sources/symbols allowed by the engine chain filter.
-- Confirm Base and Solana event types are still eligible.
-- Check whether `events` counter is measured before or after chain filtering. This resolves the P0/P1 ambiguity.
+4. **Do not lower proof/freshness/profit controls.**  
+   Keep exact quote/liquidity/route proof, closed cycle, quote age ≤15s, and net edge ≥12 bps. These are the safety invariants.
 
-6. Base capital constraint
-- Compare Base usable balance against min order size, gas buffer, and network fee schedule.
-- If current Base usable is below required gas/trade, any Base candidate will fail later.
+5. **Do not change wallet-specific simulation placement.**  
+   It must remain downstream in the protected LIVE bridge.
 
-7. PoolCheck replay only
-- Run shadow replay of the 424 historical Gemini Solana signals through the corrected classifier.
-- Expected: LP-unlocked-only should no longer be `HARD_BLOCK` but `SHADOW_ONLY`/not-LIVE-eligible; structural risks should remain `HARD_BLOCK`.
-- This validates the correction but does not create live events.
+## Is rotating a larger set of already-verified graph routes justified?
 
-SAFE_FIXES
+Justified **only as a diagnostic/breadth change**, not as a root-cause fix, and only if all of these hold:
 
-Only the trusted GitHub workflow should perform these.
+- the route set is already verified by graph/curve/token safety checks;
+- the existing quote-call budget is preserved exactly;
+- rotation is deterministic or random within the verified set;
+- quote-call timeout/backoff per provider remains unchanged;
+- no unverified pool/token/route is selected;
+- the change is delivered through a trusted GitHub workflow.
 
-- If source producer heartbeat is stale/stopped: restart/start the market-data producer/scanner only; do not alter `LIVE`, `ARMED`, `AUTO`, or safety gates.
-- If SQLite/cache is empty/stale but the source has newer data: rebuild/reinitialize the event store from source of truth, preserving cursor/offset state; do not inject synthetic events.
-- If consumer offset is behind: allow normal catch-up. If offset is ahead/empty due to bad state, reset to a source-validated safe offset only after snapshot/audit.
-- If raw events exist but chain filter rejects all: fix chain/source filter configuration only to restore intended Base/Solana eligibility; do not bypass risk filters.
-- Add heartbeat/lag alerts for market-data producer and zero-event workers so this failure triggers without waiting for live-trade absence.
-- Restore event flow first, then run a shadow/dry-run test event end-to-end through chain filter -> strategy -> PoolCheck -> candidate exporter -> quote/simulation. Do not force a live trade.
-- If Base balance is insufficient, funding is a separate authorized workflow action; do not lower trade size/gas buffer or change capital controls without separate approval.
+Rotating routes may prevent repeated quote-budget spend on the same fixed set and improve coverage. But it will not fix Alchemy 429. If rotation increases unique quote pairs against the same rate-limited provider, it can make the rate-limit problem worse. Therefore the order should be:
 
-PROOF_OF_RECOVERY
+1. RPC failover/backoff and observability.
+2. Then rotate verified routes within the same budget as a canary A/B test.
 
-- Market-data producer heartbeat is fresh and `last_run_at`/`next_run_at` advances.
-- Raw market event count increases after current runtime start.
-- Worker `events` counter increases above 0.
-- At least one fresh event passes engine/chain filter and reaches a strategy worker.
-- Strategy emits at least one signal for an eligible event.
-- Corrected PoolCheck classification is observable: LP-unlocked-only becomes `SHADOW_ONLY`/not-LIVE-eligible, not a live candidate; structural risks remain `HARD_BLOCK`.
-- If an event is fully eligible and not safety-blocked, live candidate exporter creates a candidate (`live_candidates` > 0).
-- Quote/simulation returns successfully; execution attempt count increments only if not blocked by risk or insufficient capital.
-- Trade-event Telegram lifecycle alert fires for the relevant lifecycle transition.
-- Zero-event alert no longer remains silent after the producer is restored.
+## RPC failover/backoff/pass-deadline recommendations
 
-DO_NOT_CHANGE
+- Use at least two independent Base RPC providers for quote/liquidity reads.
+- Do not raise global QPS or quote-call count.
+- Client-side token bucket or rate limiter per provider, below provider limits.
+- On HTTP 429:
+  - honor `Retry-After`;
+  - apply exponential backoff with jitter;
+  - do not immediately retry the same provider.
+- Use circuit breaker:
+  - open after N consecutive 429/5xx/timeouts;
+  - half-open after cooldown;
+  - failover to next healthy provider.
+- Do not fail over on 4xx validation errors or contract reverts; those are real graph/proof issues.
+- Set a pass deadline, e.g. no more than 80% of the pass interval for quote collection.
+- If the deadline is reached before all routes are evaluated, skip remaining routes with `deadline_skip`.
+- Do not extend pass duration or hold stale quotes beyond the 15s freshness gate.
 
-- Do not disable, bypass, or weaken RugCheck, PoolCheck, LP unlock detection, structural-risk `HARD_BLOCK`, or `SHADOW_ONLY`/not-LIVE-eligible classification.
-- Do not modify Base or Solana execution controls: `configured=1`, `ARMED=1`, `LIVE=1`, `AUTO=1` unless separately authorized.
-- Do not reset/advance event cursor or offset without snapshot/audit.
-- Do not deploy/restart services from this review; leave execution to the trusted GitHub workflow.
-- Do not inject synthetic market events, force candidates, or directly create orders to make a trade occur.
-- Do not fund/withdraw balances or sign transactions.
-- Do not lower min balances, gas buffers, trade size, or safety thresholds to force execution.
-- Do not treat the PoolCheck correction as a solution to the current `events=0` problem; it is downstream of the current breakpoint.
+## Exact tests/acceptance criteria
+
+1. **Provider failover test**  
+   Mock primary RPC returning 429. Assert:
+   - next provider is called;
+   - no signal is lost if edge/proof valid;
+   - total calls ≤ quote-call budget;
+   - no unsafe fallback path is used.
+
+2. **Backoff/circuit breaker test**  
+   Mock 429 with `Retry-After: 1`. Assert:
+   - no immediate retry to same provider;
+   - backoff jitter stays within configured bounds;
+   - circuit opens after configured consecutive failures;
+   - half-open works after cooldown.
+
+3. **Stale quote test**  
+   Mock quote age >15s. Assert:
+   - route is rejected;
+   - no signal;
+   - reason classified as `quote_stale`.
+
+4. **Edge threshold test**  
+   Mock net edge = 11.9 bps after all costs. Assert:
+   - rejected;
+   - no signal.
+   Mock net edge = 12.0 bps after all costs with valid proof. Assert:
+   - accepted for downstream simulation only.
+
+5. **Exact proof test**  
+   Mock missing liquidity route proof or open/non-closed cycle. Assert:
+   - rejected;
+   - no signal;
+   - path cannot bypass proof.
+
+6. **Route rotation test**  
+   Given verified route set size R and fixed quote budget C, run 1,000 simulated passes. Assert:
+   - per-pass calls ≤ C;
+   - all selected routes are in verified set;
+   - no unverified route selected;
+   - rotation coverage is non-zero across all verified routes.
+
+7. **Deadline fail-fast test**  
+   Simulate slow provider such that pass deadline would be exceeded. Assert:
+   - engine returns before deadline;
+   - no quotes called after deadline;
+   - reason `deadline_skip`;
+   - no signal produced from stale data.
+
+8. **Live canary acceptance**  
+   In staging/shadow mode with healthy failover and a known valid edge:
+   - expect `cycle_signals=1` with proof/edge/freshness all satisfied.
+   In live, acceptance is operational:
+   - `quote_429` below configured threshold;
+   - `routes_eligible > 0` only when a valid edge exists in shadow;
+   - `pass_duration` below configured maximum;
+   - all rejections carry reason codes;
+   - no invariant violations.
+
+## DO_NOT_CHANGE invariants
+
+- Do not weaken PoolCheck, rug/sellability/liquidity/slippage/simulation/signer/position controls.
+- Do not lower `net_edge` below 12 bps.
+- Do not relax quote age limit beyond 15s.
+- Do not remove exact quote/liquidity/route proof or closed-cycle requirement.
+- Do not accept stale/cached quotes as proof for live signals.
+- Do not permit negative-profit execution.
+- Do not increase global quote-call budget or provider QPS.
+- Do not move wallet-specific simulation upstream or outside the protected LIVE bridge.
+- Do not alter ARMED/LIVE/AUTO/capital/risk settings outside the trusted GitHub workflow.
+
+Recommended next action for the trusted GitHub workflow: add failover/backoff and per-stage reason telemetry first, then run the above tests in staging/shadow mode before any live change.
