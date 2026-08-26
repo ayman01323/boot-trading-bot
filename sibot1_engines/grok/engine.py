@@ -105,6 +105,7 @@ class GrokCompactFlowEngine:
             "developer_flow_known_safe": self._dev_known_safe,
             "developer_flow_selling": self._dev_selling,
             "developer_flow_unknown": self._dev_unknown,
+            "prefilter_rejections": self.strategy.rejection_counts(),
         }
 
 
