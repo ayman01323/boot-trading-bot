@@ -53,11 +53,17 @@ jobs:
   export-encrypted:
     needs: prepare-key
     runs-on: [self-hosted, linux, x64, boot-vps]
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       WORK: /tmp/claude-rpc-export-${{ github.run_id }}
       HANDOFF: /var/tmp/boot/claude_rpc_endpoints.csv
     steps:
+      - name: Deploy exact main through the existing restricted wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/deploy-boot-trading-bot "$GITHUB_SHA"
+
       - name: Download Google public key
         uses: actions/download-artifact@v4
         with:
@@ -71,7 +77,7 @@ jobs:
           mkdir -p "$WORK"
           chmod 700 "$WORK"
           if [ ! -r "$HANDOFF" ] || [ ! -s "$HANDOFF" ]; then
-            echo 'Protected RPC handoff is not ready on the VPS yet.' >&2
+            echo 'Protected RPC handoff was not staged by the deployed service.' >&2
             exit 1
           fi
           cat "$HANDOFF" > "$WORK/rpc_endpoints.csv"
