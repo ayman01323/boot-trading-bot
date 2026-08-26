@@ -95,7 +95,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "$HANDOFF"
           sudo -n "$WRAPPER"
           test -s "$HANDOFF/backup-metadata.env"
           test -s "$HANDOFF/aes.pass.enc"
@@ -120,11 +119,11 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      - name: Remove temporary old-server backup files
+      - name: Remove runner-owned temporary files
         if: always()
         shell: bash
         run: |
-          rm -rf "$WORK" "$HANDOFF"
+          rm -rf "$WORK"
           rm -f "$PUBLIC_KEY"
 
   import-google:
@@ -208,6 +207,7 @@ jobs:
           echo "BACKUP_VERIFIED_ON_GOOGLE=true"
           echo "destination=$FINAL"
           echo "size_bytes=$BACKUP_SIZE"
+          echo "sha256=$BACKUP_SHA256"
           df -h "$DEST_DIR"
           ls -lh "$FINAL" "$FINAL.sha256" "$DEST_DIR/latest-backup.txt"
 
