@@ -270,8 +270,12 @@ def install() -> None:
     _alchemy.alchemy_rpc_url = alchemy_rpc_url
     _sibot.refresh_wallet_history = refresh_wallet_history_with_endpoint_pool
 
-    # When every configured endpoint is throttled, do not spin the background
-    # drainer every minute. These remain bounded research/backfill controls only.
+    # When every configured endpoint is throttled, both the ranked queue and the
+    # background drainer must wait long enough for the provider bucket to recover.
+    # This changes only research/backfill scheduling.
+    _retry._TRANSIENT_RETRY_COOLDOWN_SECONDS = max(
+        int(getattr(_retry, "_TRANSIENT_RETRY_COOLDOWN_SECONDS", 60)), 180
+    )
     _drainer._DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = max(
         int(getattr(_drainer, "_DEFAULT_RATE_LIMIT_BACKOFF_SECONDS", 60)), 180
     )
@@ -287,8 +291,9 @@ def install() -> None:
     _sibot._alchemy_endpoint_pool_patch_installed = True
     print(
         "[sibot-alchemy-endpoint-pool] installed=true failover<=3 "
-        "per_endpoint_circuit_breaker=true progressive_history_preserved=true "
-        "rpc_identifiers_redacted=true execution_safety=unchanged",
+        "per_endpoint_circuit_breaker=true retry_cooldown>=180s "
+        "progressive_history_preserved=true rpc_identifiers_redacted=true "
+        "execution_safety=unchanged",
         flush=True,
     )
 
