@@ -1,0 +1,74 @@
+name: Claude Telegram Smoke Verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-telegram-smoke-verify.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 3
+    steps:
+      - name: Read only redacted Claude smoke evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=/tmp/claude-telegram-smoke-verify.txt
+          : > "$report"
+          echo "checked_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$report"
+          echo 'runner=boot-vps' >> "$report"
+
+          sent=false
+          if journalctl --no-pager -u learnerbot.service --since '2026-08-26 11:47:30' 2>/dev/null \
+             | grep -Fq '[claude-telegram-smoke] sent=true'; then
+            sent=true
+          fi
+          echo "telegram_smoke_sent=$sent" >> "$report"
+
+          # The marker path is under the production app DATA_DIR, whose exact
+          # value is intentionally not published. Ask Python/AppSettings for it
+          # and emit only the boolean result.
+          marker=false
+          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          if [[ -x "$repo/.venv/bin/python" ]]; then
+            set +e
+            marker="$($repo/.venv/bin/python - <<'PY' 2>/dev/null
+          try:
+              from learnerbot.config import AppSettings
+              app = AppSettings.load()
+              p = app.data_dir / '.claude_telegram_smoke_v1'
+              print('true' if p.is_file() else 'false')
+          except Exception:
+              print('false')
+          PY
+            )"
+            set -e
+          fi
+          [[ "$marker" == true ]] || marker=false
+          echo "telegram_smoke_marker=$marker" >> "$report"
+          cat "$report"
+
+      - name: Publish redacted result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          path='diagnostics/claude-telegram-smoke.txt'
+          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+          current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" 2>/dev/null || true)"
+          sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/claude-telegram-smoke-verify.txt)"
+          python3 - "$encoded" "$sha" <<'PY' >/tmp/claude-smoke-put.json
+          import json,sys
+          out={'message':'Update redacted Claude Telegram smoke verification','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: out['sha']=sys.argv[2]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/claude-smoke-put.json >/dev/null
