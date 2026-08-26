@@ -12,13 +12,20 @@ exactly one operator-provided number: the actual owner-approved Claude
 trading capital/equity basis (CLAUDE_CAPITAL_BASIS_USD). There is nothing
 left to independently misconfigure -- one basis in, everything else derived.
 
-This module only defines the numbers and the pure calculation. It does not
-decide what happens on breach (see claude_state.py for the persistent
-HALTED_DRAWDOWN latch) and it does not touch execution (see
-solana_execution_risk_patch.py, which consults both before every buy). It
-still sits in front of the reused, unmodified learnerbot execution engines
-and never loosens or replaces their own gates (PoolCheck/RugCheck, slippage,
-price-impact, liquidity -- see solana_pool_risk_gate.py / solana_live_executor.py).
+This module defines position/exposure/open-count limits and the threshold
+constants. It does NOT compute drawdown (see claude_state.evaluate_drawdown()
+for the equity/high-water-mark model -- an earlier version of this file
+computed drawdown itself from closed-position-only realised P&L, which
+review (2026-08-26) correctly rejected: it missed unrealised/open-position
+losses and mixed a fixed USD basis against a SOL amount priced at read time)
+and it does not decide what happens on breach (see claude_state.py for the
+persistent HALTED_DRAWDOWN latch) or touch execution (see
+solana_execution_risk_patch.py, which consults this module and claude_state
+before every buy, after every sell, and on a periodic health check while
+ARMED -- see claude_monitor.py). It still sits in front of the reused,
+unmodified learnerbot execution engines and never loosens or replaces their
+own gates (PoolCheck/RugCheck, slippage, price-impact, liquidity -- see
+solana_pool_risk_gate.py / solana_live_executor.py).
 """
 
 from __future__ import annotations
@@ -54,10 +61,12 @@ class DrawdownLimitBreached(RiskGuardConfigError):
         )
 
 
-def _quantize_pct(value: Decimal) -> Decimal:
+def quantize_pct(value: Decimal) -> Decimal:
     """Round to 2dp the same way for every percentage comparison in this
-    module -- a boundary value like exactly 20.00% must compare identically
-    everywhere, not drift between callers that round differently."""
+    codebase -- a boundary value like exactly 20.00% must compare identically
+    everywhere, not drift between callers that round differently. Public
+    (not _-prefixed): claude_state.py's equity/HWM/drawdown model reuses this
+    exact rounding rather than defining its own."""
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -109,7 +118,7 @@ class RiskLimits:
     def position_pct(self, position_usd: Decimal) -> Decimal:
         if self.capital_basis_usd == 0:
             return Decimal("0.00")
-        return _quantize_pct(position_usd / self.capital_basis_usd * Decimal(100))
+        return quantize_pct(position_usd / self.capital_basis_usd * Decimal(100))
 
     def check_new_position(
         self, *, proposed_usd: Decimal, current_exposure_usd: Decimal, open_positions: int
@@ -134,15 +143,15 @@ class RiskLimits:
                 f"limit (${self.max_total_exposure_usd:.2f})"
             )
 
-    def drawdown_pct(self, peak_to_current_drawdown_usd: Decimal) -> Decimal:
-        """The one place drawdown percentage is computed. Every caller
-        (execution guard, /claude_status, tests) must go through this --
-        never re-derive it independently."""
-        if self.capital_basis_usd == 0:
-            return Decimal("0.00")
-        return _quantize_pct(peak_to_current_drawdown_usd / self.capital_basis_usd * Decimal(100))
-
-    def check_drawdown(self, peak_to_current_drawdown_usd: Decimal) -> None:
-        pct = self.drawdown_pct(peak_to_current_drawdown_usd)
-        if pct >= OWNER_MAX_DRAWDOWN_PCT:
-            raise DrawdownLimitBreached(drawdown_pct=pct, drawdown_usd=peak_to_current_drawdown_usd)
+    # Drawdown is NOT computed here. Per review (2026-08-26), a
+    # closed-position-only, capital-basis-relative drawdown missed
+    # unrealised (open-position) losses entirely and mixed a fixed USD
+    # basis against a SOL-priced-at-read-time swing. The authoritative
+    # drawdown calculation is now claude_state.evaluate_drawdown(): a
+    # current-trading-equity-vs-persisted-high-water-mark model, fed by
+    # solana_execution_risk_patch.compute_current_equity_usd() (capital
+    # basis + a running realised-P&L-in-USD total priced once at each
+    # trade's own close time, never re-derived from today's price, plus
+    # today's mark-to-market of open positions). This class still owns
+    # max_drawdown_pct as the threshold constant; DrawdownLimitBreached
+    # below is still the exception type raised on breach.

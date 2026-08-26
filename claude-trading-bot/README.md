@@ -255,7 +255,7 @@ when the operator explicitly enables the reused platform LIVE gates *and* the ri
 guard's limits are satisfied, per the project's existing `CONFIRM`-word and
 verified-write kill-switch conventions.
 
-## Telegram control (2026-08-26)
+## Telegram control (2026-08-26, revised 2026-08-26 after review)
 
 State model (`claude_state.py`), two kinds of state kept deliberately separate:
 - Ordinary operating state: `OFF` → `ARMED` → `STOPPING` → `OFF`. Resets to
@@ -266,15 +266,60 @@ State model (`claude_state.py`), two kinds of state kept deliberately separate:
   mailbox message, an API call, or a scheduler. Only the two-step owner
   restart flow below can clear it.
 
+**Drawdown/equity model** (`claude_state.evaluate_drawdown()`, the one
+authoritative function — status, the periodic monitor, the pre-buy check,
+and the post-sell recheck all call this, never re-derive it independently).
+An earlier version computed drawdown from closed-position realised P&L
+only, against the fixed capital basis — review (2026-08-26) correctly
+rejected that: it missed unrealised (open-position) losses entirely and
+mixed a fixed USD basis against a SOL amount re-priced at read time. The
+current model:
+- `current_equity_usd` = capital basis + a running `cumulative_realized_pnl_usd`
+  total (each trade priced in USD once, at its own close time — see
+  `solana_execution_risk_patch.py`'s `record_realized_pnl()` call site —
+  never re-derived later from a different day's price) + today's
+  mark-to-market of open positions (`unrealised_net_sol`, a column
+  learnerbot's own scanner loop already maintains, reused not
+  re-implemented, priced once at read time since it's inherently a "now"
+  value).
+- `high_water_equity_usd` seeds at the capital basis on the first-ever
+  measurement, and is otherwise monotonically non-decreasing during normal
+  operation. `drawdown_pct = (HWM − current) / HWM × 100`.
+- Evaluated: before every buy, immediately after every sell (a
+  loss-realising sell latches+alerts right away, not on the next buy
+  attempt), by `/claude_status`, and every 60s by the periodic monitor
+  below — so an unrealised drawdown is caught even with the bot sitting
+  idle, no trade required.
+- On an owner-authorised restart, the OLD (higher, pre-drawdown) HWM is
+  discarded — `reset_equity_baseline_after_restart()` sets a fresh HWM at
+  current equity, not left as a ceiling that would make the very next tick
+  look like a smaller drawdown than it is.
+
+**Periodic health monitor** (`claude_monitor.py`, a 60s daemon thread
+started the same way `learnerbot/telegram_ai_ops_patch.py`'s own watcher
+is — wrapping `learnerbot.cli._app`, one hook, not a second one). Added
+because the previous design only rejected the *next* entry attempt if a
+critical precondition failed while sitting `ARMED` — review required an
+*active* transition instead. Every tick: re-evaluates drawdown (can latch
+with no trade involved) and, if `ARMED`, calls the same `armed_health_check()`
+`/claude_arm_live` uses; on any failure (signer not ready, risk config
+invalid, chain no longer authorised, kill-switch active, or the Claude
+execution guard no longer installed on `SolanaLiveExecutor`) it calls
+`claude_state.force_off()` — an active, system-triggered `→ OFF` — and
+sends the owner a one-time alert. This module has no code path to arm,
+clear `HALTED_DRAWDOWN`, sign, or broadcast — structurally proven (not just
+behaviorally) in `tests/test_claude_execution_and_telegram.py`.
+
 Commands (all owner-only — sender's Telegram id must exactly match
 `CLAUDE_BOT_WALLET_OWNER_ID`; a non-owner sender is flatly refused):
 - `/claude_status` — read-only: operating state, drawdown latch, current
-  drawdown %, open positions / 10, aggregate exposure % / 30% ceiling, per
-  position % / 3% ceiling, signer readiness, authorised chain(s). No
-  secrets.
+  drawdown %, high-water/current equity, open positions / 10, aggregate
+  exposure % / 30% ceiling, per position % / 3% ceiling, signer readiness,
+  authorised chain(s). No secrets.
 - `/claude_arm_live CONFIRM` — `OFF → ARMED`. Refused (with the specific
-  reason) if risk config is invalid, signer isn't ready, no chain is
-  authorised, or `HALTED_DRAWDOWN` is active.
+  reason) by `armed_health_check()` if risk config is invalid, signer isn't
+  ready, no chain is authorised, the kill-switch is active, or the guard is
+  not composed; separately refused if `HALTED_DRAWDOWN` is active.
 - `/claude_disarm` — immediate `→ OFF`, no confirmation required.
 - `/claude_stop` — immediate `→ STOPPING → OFF`, no confirmation required.
   New entries blocked at once; open positions remain exitable.
@@ -282,16 +327,18 @@ Commands (all owner-only — sender's Telegram id must exactly match
   single-use challenge that expires after
   `claude_state.RESTART_CHALLENGE_TTL_SECONDS` (300s).
 - `/claude_restart_confirm CONFIRM` — consumes the challenge (so a
-  stale/replayed confirm is always rejected), rechecks risk/signer/chain
-  preconditions, and only then clears `HALTED_DRAWDOWN` with a fresh
-  drawdown baseline. Operating state stays `OFF` afterward — resuming LIVE
-  entries still requires a separate `/claude_arm_live CONFIRM`.
+  stale/replayed confirm is always rejected), rechecks the same
+  `armed_health_check()` preconditions, clears `HALTED_DRAWDOWN`, and resets
+  the equity high-water-mark to a fresh baseline. Operating state stays
+  `OFF` afterward — resuming LIVE entries still requires a separate
+  `/claude_arm_live CONFIRM`.
 
-No command here can reach `SolanaLiveExecutor.buy`/`.sell` directly, bypass
-`risk_engine_guard`, bypass `signing_interface`, bypass `AUTHORISED_CHAINS`,
-or bypass the reused PoolCheck/RugCheck/slippage/liquidity gates in
-`learnerbot` — this router only ever flips the one `claude_state` flag those
-other, independent checks already consult on every guarded buy.
+No command or monitor tick here can reach `SolanaLiveExecutor.buy`/`.sell`
+directly, bypass `risk_engine_guard`, bypass `signing_interface`, bypass
+`AUTHORISED_CHAINS`, or bypass the reused PoolCheck/RugCheck/slippage/
+liquidity gates in `learnerbot` — this router and monitor only ever flip
+`claude_state` flags those other, independent checks already consult on
+every guarded buy/sell.
 
 ## Known limitations (reported, not worked around)
 

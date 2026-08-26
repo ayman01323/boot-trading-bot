@@ -39,9 +39,17 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import sys
 import threading
 import time
+from decimal import Decimal
 from pathlib import Path
+
+THIS_DIR = Path(__file__).resolve().parent
+if str(THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(THIS_DIR))
+
+from risk_engine_guard import quantize_pct
 
 STATE_FILENAME = "claude_bot_state.json"
 RESTART_CHALLENGE_TTL_SECONDS = 300
@@ -75,6 +83,19 @@ def _default_state() -> dict:
         "authorized_restart_at": 0,
         "authorized_restart_by": "",
         "restart_challenge": None,  # {"nonce": str, "issued_at": int, "issued_by": str}
+        # Equity/high-water-mark model (2026-08-26 review fix). Both are
+        # "0" until the first evaluate_drawdown() call establishes them --
+        # see that function for how "0" is treated as "not yet seeded".
+        "high_water_equity_usd": "0",
+        "current_equity_usd": "0",
+        # Running total of realised P&L, each trade priced in USD ONCE at
+        # its own close time (see solana_execution_risk_patch.py's
+        # record_realized_pnl() call site) -- never re-derived later from a
+        # different day's price. Only record_realized_pnl() ever adds to
+        # this; nothing else may write it.
+        "cumulative_realized_pnl_usd": "0",
+        "last_forced_off_reason": "",
+        "last_forced_off_at": 0,
     }
 
 
@@ -180,6 +201,88 @@ def stop(app) -> dict:
         return state
 
 
+def force_off(app, *, reason: str) -> dict:
+    """System-triggered (periodic health monitor or a guard's own pre-entry
+    check), NOT owner-triggered -- distinct from disarm()/stop(). Used when a
+    critical ARMED precondition (signer, risk config, authorised chain,
+    kill-switch, guard composition) fails while ARMED, per review (2026-08-26):
+    an active transition is required, not merely rejecting the next entry.
+    Never touches halted_drawdown -- this function must never arm, clear a
+    latch, or do anything except turn ARMED off with a recorded reason."""
+    with _STATE_LOCK:
+        state = load_state(app)
+        state["operating_state"] = OFF
+        state["armed_at"] = 0
+        state["armed_by"] = ""
+        state["last_forced_off_reason"] = str(reason)
+        state["last_forced_off_at"] = int(time.time())
+        _save_state(app, state)
+        return state
+
+
+def evaluate_drawdown(app, *, current_equity_usd: Decimal, capital_basis_usd: Decimal, max_drawdown_pct: Decimal) -> dict:
+    """THE one authoritative equity/high-water-mark/drawdown function.
+    /claude_status, the periodic monitor, the pre-buy check, and the
+    post-sell recheck all call this -- never re-derive drawdown
+    independently (review, 2026-08-26, rejected an earlier
+    closed-position-only/capital-basis-relative version for exactly that
+    reason: it missed unrealised losses and mixed currency bases).
+
+    high_water_equity_usd seeds at capital_basis_usd on the first-ever call
+    (before any P&L exists, equity IS the basis) and is otherwise
+    monotonically non-decreasing during normal operation -- the only way it
+    moves DOWN is reset_high_water_to_current() after an owner-authorised
+    restart. drawdown_pct is (high_water - current) / high_water * 100,
+    never negative (equity above the high-water mark simply raises the mark
+    to match, on this same call, before the percentage is computed)."""
+    with _STATE_LOCK:
+        state = load_state(app)
+        hwm = Decimal(state.get("high_water_equity_usd") or "0")
+        if hwm <= 0:
+            hwm = capital_basis_usd
+        hwm = max(hwm, current_equity_usd)
+        drawdown_usd = max(Decimal("0"), hwm - current_equity_usd)
+        drawdown_pct = quantize_pct(drawdown_usd / hwm * Decimal(100)) if hwm > 0 else Decimal("0.00")
+        state["high_water_equity_usd"] = str(hwm)
+        state["current_equity_usd"] = str(current_equity_usd)
+        _save_state(app, state)
+        return {
+            "high_water_equity_usd": hwm,
+            "current_equity_usd": current_equity_usd,
+            "drawdown_usd": drawdown_usd,
+            "drawdown_pct": drawdown_pct,
+            "breached": drawdown_pct >= max_drawdown_pct,
+        }
+
+
+def reset_high_water_to_current(app, *, current_equity_usd: Decimal) -> dict:
+    """Called only after a successful owner-authorised
+    /claude_restart_confirm CONFIRM -- establishes the fresh baseline the
+    owner instruction requires. The old (inflated, pre-drawdown) high-water
+    mark is deliberately discarded, not kept as a ceiling that would make
+    the very next tick look like a smaller drawdown than it is."""
+    with _STATE_LOCK:
+        state = load_state(app)
+        state["high_water_equity_usd"] = str(current_equity_usd)
+        state["current_equity_usd"] = str(current_equity_usd)
+        _save_state(app, state)
+        return state
+
+
+def record_realized_pnl(app, *, pnl_usd: Decimal) -> Decimal:
+    """Adds pnl_usd (already priced in USD at the moment this specific trade
+    closed -- see solana_execution_risk_patch.py's call site) to the running
+    cumulative_realized_pnl_usd total. This is the ONLY function that may
+    write that field -- it is a pure running sum, never re-derived from
+    SOL amounts at a later price."""
+    with _STATE_LOCK:
+        state = load_state(app)
+        total = Decimal(state.get("cumulative_realized_pnl_usd") or "0") + pnl_usd
+        state["cumulative_realized_pnl_usd"] = str(total)
+        _save_state(app, state)
+        return total
+
+
 def latch_drawdown(app, *, drawdown_pct, drawdown_usd) -> bool:
     """Persist HALTED_DRAWDOWN before allowing any further new entry.
     Returns True only the call that created the first latch (so callers know
@@ -272,10 +375,11 @@ _INSTALLED = False
 
 def install() -> None:
     """Wraps learnerbot.cli._app so reset_on_startup() runs exactly once,
-    the first time this process constructs its AppSettings -- mirrors the
-    existing _app-wrapping convention already used in this codebase (see
-    the removed telegram_claude_smoke_patch.py) rather than requiring every
-    caller to remember to call it explicitly."""
+    the first time this process constructs its AppSettings, and starts the
+    periodic drawdown/health monitor thread (claude_monitor.py) -- mirrors
+    the existing _app-wrapping convention already used in this codebase
+    (learnerbot/telegram_ai_ops_patch.py's own watcher thread) rather than
+    inventing a second wrapping mechanism or a second _app hook."""
     global _PREV_APP, _INSTALLED
     if _INSTALLED:
         return
@@ -286,6 +390,9 @@ def install() -> None:
     def _app_with_state_reset():
         app = _PREV_APP()
         reset_on_startup(app)
+        import claude_monitor
+
+        claude_monitor.start(app)
         return app
 
     _cli._app = _app_with_state_reset

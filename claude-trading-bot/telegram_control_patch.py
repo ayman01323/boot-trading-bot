@@ -97,13 +97,19 @@ def _status_text(app) -> str:
     if risk_ok:
         try:
             owner_id = _owner_id()
-            snapshot = _guard.position_snapshot(app, owner_id, baseline_epoch=state.get("baseline_epoch") or 0)
+            snapshot = _guard.position_snapshot(app, owner_id)
             exposure_pct = limits.position_pct(snapshot["exposure_usd"])
-            drawdown_pct = limits.drawdown_pct(snapshot["drawdown_usd"])
+            # Same authoritative call every other caller uses (guard, monitor,
+            # tests) -- if this read reveals a breach, it latches + alerts here too.
+            result = _guard._check_and_latch_drawdown(
+                app, owner_id, limits=limits, open_positions=snapshot["open_positions"]
+            )
             exposure_line = (
                 f"Open positions: {snapshot['open_positions']} / {limits.max_open_positions}\n"
                 f"Aggregate exposure: {exposure_pct:.2f}% (ceiling {limits.max_total_exposure_pct:.2f}%)\n"
-                f"Current drawdown: {drawdown_pct:.2f}% (latch at {limits.max_drawdown_pct:.2f}%)\n"
+                f"High-water equity: ${result['high_water_equity_usd']:.2f}\n"
+                f"Current equity: ${result['current_equity_usd']:.2f}\n"
+                f"Current drawdown: {result['drawdown_pct']:.2f}% (latch at {limits.max_drawdown_pct:.2f}%)\n"
             )
         except Exception as exc:  # noqa: BLE001
             exposure_line = f"Position/exposure data unavailable: {type(exc).__name__}\n"
@@ -140,12 +146,16 @@ def _handle_claude_command(app, chat_id: str, sender_id: str, cmd: str, parts: l
         if len(parts) != 2 or parts[1].upper() != "CONFIRM":
             _send(app, chat_id, "❌ To arm use exactly: <code>/claude_arm_live CONFIRM</code>")
             return
+        # Same authoritative precondition check the periodic monitor and
+        # restart-confirm use -- one function, not a third copy of the same
+        # signer/risk/chain checks.
+        reason = _guard.armed_health_check(app, sender_id)
+        if reason:
+            _send(app, chat_id, f"❌ <b>Arm refused.</b>\n<code>{reason}</code>")
+            return
         try:
-            risk_engine_guard.RiskLimits.load()
-            _guard.check_identity_and_signer(app, sender_id)
-            _guard.check_chain_authorised("solana")
             claude_state.arm(app, owner_id=sender_id)
-        except (risk_engine_guard.RiskGuardConfigError, _guard.ExecutionGuardError, claude_state.ClaudeStateError) as exc:
+        except claude_state.ClaudeStateError as exc:
             _send(app, chat_id, f"❌ <b>Arm refused.</b>\n<code>{exc}</code>")
             return
         _send(app, chat_id, "✅ <b>ARMED.</b> LIVE entries permitted, subject to every existing risk/signer/chain/pool control.")
@@ -187,6 +197,15 @@ def _handle_claude_command(app, chat_id: str, sender_id: str, cmd: str, parts: l
         except (claude_state.ClaudeStateError, risk_engine_guard.RiskGuardConfigError, _guard.ExecutionGuardError) as exc:
             _send(app, chat_id, f"❌ <b>Restart not authorised.</b>\n<code>{exc}</code>")
             return
+        # Establish the fresh high-water-mark baseline the owner instruction
+        # requires -- the old (inflated, pre-drawdown) HWM must not linger
+        # as a ceiling that makes the next tick look like a smaller
+        # drawdown than it really is.
+        try:
+            limits = risk_engine_guard.RiskLimits.load()
+            _guard.reset_equity_baseline_after_restart(app, sender_id, capital_basis_usd=limits.capital_basis_usd)
+        except Exception as exc:  # noqa: BLE001
+            print("[claude-restart-baseline-reset]", type(exc).__name__, str(exc)[:240])
         _send(
             app,
             chat_id,
