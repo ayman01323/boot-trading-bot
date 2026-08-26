@@ -61,13 +61,18 @@ def test_provider_relay_is_event_driven_without_schedule():
     trigger = workflow.get("on") or workflow.get(True)
     assert "schedule" not in trigger
     assert "workflow_run" in trigger
-    # This relay only needs GitHub/provider APIs. Keeping it on a hosted runner
-    # prevents communication work from starving the production boot-vps deploy queue.
-    assert workflow["jobs"]["relay"]["runs-on"] == "ubuntu-latest"
+    # Provider traffic runs on the dedicated Google communication runner and must
+    # never occupy the production boot-vps deployment queue.
+    assert workflow["jobs"]["relay"]["runs-on"] == ["self-hosted", "linux", "x64", "boot-google"]
+    assert "boot-vps" not in workflow["jobs"]["relay"]["runs-on"]
     assert workflow["jobs"]["relay"]["strategy"]["matrix"]["provider"] == [
         "deepseek", "gemini", "grok", "kimi", "copilot"
     ]
-    route_env = workflow["jobs"]["relay"]["steps"][5]["env"]
+    route_step = next(
+        step for step in workflow["jobs"]["relay"]["steps"]
+        if step.get("name") == "Ask provider once using fallback request content only"
+    )
+    route_env = route_step["env"]
     assert "XAI_API_KEY" in route_env
     assert "XAI_COUNCIL_MODEL" in route_env
     assert "KIMI_API_KEY" in route_env
