@@ -1,0 +1,87 @@
+name: Google Production Staging Validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/google-production-staging-preflight.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-production-staging-validation
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 45
+    env:
+      STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
+      FINAL_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market
+      TEST_VENV: /home/ayman01323/NamecheapMigration/.google-preflight-venv
+    steps:
+      - name: Validate Google host and staged source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          test -d "$STAGING_DIR/.git"
+          test -f "$STAGING_DIR/requirements.txt"
+          test -d "$STAGING_DIR/learnerbot"
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo "python=$(python3 --version 2>&1)"
+          echo "os=$( . /etc/os-release && printf '%s %s' "$ID" "$VERSION_ID" )"
+          echo "sudo_noninteractive=$({ sudo -n true >/dev/null 2>&1 && echo true; } || echo false)"
+          echo "root_traverse=$({ test -x /root && echo true; } || echo false)"
+          echo "final_dir_visible=$({ test -d "$FINAL_DIR" && echo true; } || echo false)"
+          echo "staging_size=$(du -sh "$STAGING_DIR" | awk '{print $1}')"
+          echo "staging_files=$(find "$STAGING_DIR" -xdev -type f 2>/dev/null | wc -l)"
+          echo "staging_sha=$(git -C "$STAGING_DIR" rev-parse HEAD)"
+          echo "claude_root_present=$([[ -d /home/ayman01323/ClaudeServer ]] && echo true || echo false)"
+          echo "staging_processes=$(pgrep -af "$STAGING_DIR" 2>/dev/null | wc -l)"
+          df -h /
+
+      - name: Build clean temporary Google virtualenv
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$TEST_VENV"
+          python3 -m venv "$TEST_VENV"
+          "$TEST_VENV/bin/python" -m pip install -q --upgrade pip
+          "$TEST_VENV/bin/python" -m pip install -q -r "$STAGING_DIR/requirements.txt"
+          echo "dependency_install=PASS"
+
+      - name: Compile and import migrated code
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$STAGING_DIR"
+          "$TEST_VENV/bin/python" -m compileall -q learnerbot scripts
+          PYTHONPATH="$STAGING_DIR" "$TEST_VENV/bin/python" - <<'PY'
+          import learnerbot
+          print('learnerbot_import=PASS')
+          print('learnerbot_version=' + str(getattr(learnerbot, '__version__', 'unknown')))
+          PY
+          echo "compileall=PASS"
+
+      - name: Confirm no Google production process was started
+        shell: bash
+        run: |
+          set -euo pipefail
+          if pgrep -af "$STAGING_DIR" | grep -v -E 'grep|Actions.Runner|Runner.Worker' >/dev/null 2>&1; then
+            echo 'Unexpected process from staging directory.' >&2
+            pgrep -af "$STAGING_DIR" || true
+            exit 40
+          fi
+          echo 'google_production_started=false'
+
+      - name: Remove temporary validation virtualenv
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$TEST_VENV"
+          echo 'temporary_preflight_venv_removed=true'
