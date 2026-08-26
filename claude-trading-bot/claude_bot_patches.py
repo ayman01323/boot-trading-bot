@@ -23,6 +23,7 @@ import evm_execution_guard_patch
 import solana_execution_risk_patch
 import claude_state
 import telegram_control_patch
+import claude_runtime_health_patch
 
 
 def install_all() -> None:
@@ -31,3 +32,8 @@ def install_all() -> None:
     evm_execution_guard_patch.install()
     claude_state.install()
     telegram_control_patch.install()
+    # Must run after every Claude-owned guard/router above is installed but
+    # before learnerbot adds its audited outer wrappers. This records an exact
+    # pre-chain attestation and replaces the brittle outermost-identity ARM
+    # health check with the composition-aware fail-closed gate.
+    claude_runtime_health_patch.install()
