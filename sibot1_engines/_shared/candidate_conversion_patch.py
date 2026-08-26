@@ -25,8 +25,11 @@ def _evm_init(self, csv_dir, evidence, max_age_seconds: int = 900) -> None:
     # not overwritten by slower chains. It carries the original quote timestamp,
     # so GPT's independent <=15s freshness gate remains authoritative.
     for candidate in (base_full_power, full_power):
-        if candidate not in paths:
-            paths.insert(1, candidate)
+        if candidate in paths:
+            paths.remove(candidate)
+    # Put Base first among fast-market sources so a duplicated route is observed
+    # from the durable fresh Base feed before the slower combined file.
+    paths[1:1] = [base_full_power, full_power]
     self.paths = tuple(paths)
 
 
