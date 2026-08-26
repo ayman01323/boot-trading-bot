@@ -1,0 +1,48 @@
+name: Prepare Google Production Root Path
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/google-production-root-prepare.trigger'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-production-root-prepare
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 60
+    steps:
+      - name: Verify restricted Google migration bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          test -x /usr/local/sbin/prepare-google-production-bot
+          test -x /usr/local/sbin/refresh-google-production-bot
+          test -x /usr/local/sbin/verify-google-production-bot
+          sudo -n -l /usr/local/sbin/prepare-google-production-bot >/dev/null
+          sudo -n -l /usr/local/sbin/refresh-google-production-bot >/dev/null
+          sudo -n -l /usr/local/sbin/verify-google-production-bot >/dev/null
+          echo 'restricted_bridge=PASS'
+
+      - name: Prepare exact production path without starting trading
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/prepare-google-production-bot
+
+      - name: Verify prepared production path
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-google-production-bot
+          test "$(systemctl is-active learnerbot.service 2>/dev/null || true)" != 'active'
+          echo 'GOOGLE_PRODUCTION_ROOT_PREPARED=true'
+          echo 'google_trading_started=false'
