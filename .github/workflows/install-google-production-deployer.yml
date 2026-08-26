@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/install-google-production-deployer.yml'
+      - '.github/google-gpt-credential-sync.trigger'
   workflow_dispatch:
 
 permissions:
@@ -40,11 +41,18 @@ jobs:
             -o "$tmp"
           sudo -n bash "$tmp"
 
-      - name: Verify restricted deploy bridge and current bot
+      - name: Verify restricted deploy bridge and run current bot
         shell: bash
         run: |
           set -euo pipefail
           sudo -n -l /usr/local/sbin/deploy-google-production-bot >/dev/null
           sudo -n -l /usr/local/sbin/status-google-production-bot >/dev/null
           sudo -n -l /usr/local/sbin/restart-google-production-bot >/dev/null
-          sudo -n /usr/local/sbin/status-google-production-bot
+          sudo -n /usr/local/sbin/restart-google-production-bot
+          sleep 10
+          OUT="$(sudo -n /usr/local/sbin/status-google-production-bot)"
+          printf '%s\n' "$OUT"
+          grep -q '^google_service_active=active$' <<<"$OUT"
+          grep -q '^google_service_enabled=enabled$' <<<"$OUT"
+          grep -q '^google_process_cwd=/root/multichain-learning-bot-v2.2-fast-direct-market$' <<<"$OUT"
+          echo 'GOOGLE_PRODUCTION_RUN_VERIFIED=true'
