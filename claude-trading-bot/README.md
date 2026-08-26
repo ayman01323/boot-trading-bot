@@ -251,6 +251,15 @@ verified-write kill-switch conventions.
    `claude-trading-bot.env`. `run.py`'s `DEFAULT_ENV_FILE` reads its own runtime
    config from `/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env`
    directly (override with `CLAUDE_BOT_ENV_FILE` for local/off-server testing).
+   **Update:** a real Google-server preflight run found `CSV_DIR`/`DATA_DIR`
+   simply left blank in the operator's runtime file — meaning correctness here
+   depended entirely on a manual step that was never actually taken.
+   `run.py`'s `_apply_deterministic_runtime_dir_defaults()` now fills both in
+   automatically from `DEFAULT_RUNTIME_DIR` (the same directory
+   `DEFAULT_ENV_FILE` lives in, structurally guaranteed outside the checkout)
+   whenever they're unset, so the common case needs no manual entry at all —
+   `env.example` now ships them blank. An explicit value in the operator's own
+   env file still always wins over the default.
 4. **No running-service mechanism yet.** The Google sync workflow only performs
    `inspect` / `test` / `sync` against a git checkout — it has no systemd/process
    management and is explicitly barred from restarting production services. The

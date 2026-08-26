@@ -49,19 +49,33 @@ def _record(name: str, status: str, detail: str = "") -> None:
 
 
 def check_env_isolation() -> None:
+    # Reuses run.py's _is_inside() rather than a separate, narrower
+    # equality check -- two independent implementations of "is this path
+    # safe" is exactly how the old exact-equality-only version here missed
+    # any unsafe path that wasn't literally REPO_ROOT/CSVbot (e.g.
+    # REPO_ROOT/claude-trading-bot/CSVbot), which has the identical
+    # sync-blocking consequence. CSV_DIR/DATA_DIR are expected to already be
+    # set by the time this runs -- run.py's cmd_check() calls
+    # _apply_deterministic_runtime_dir_defaults() before this module's
+    # main() -- so an absent var here means something upstream didn't run,
+    # not that this instance is unconfigured.
     name = "env isolation"
     try:
+        import run as _run
+
         csv_dir = Path(os.environ["CSV_DIR"]).resolve()
         data_dir = Path(os.environ["DATA_DIR"]).resolve()
     except KeyError as exc:
         _record(name, "FAIL", f"missing env var {exc}")
         return
-    prod_csv = (REPO_ROOT / "CSVbot").resolve()
-    prod_data = (REPO_ROOT / "data").resolve()
-    if csv_dir == prod_csv or data_dir == prod_data:
-        _record(name, "FAIL", "CSV_DIR/DATA_DIR must not equal production paths")
+    repo_root_resolved = _run.REPO_ROOT.resolve()
+    if _run._is_inside(csv_dir, repo_root_resolved):
+        _record(name, "FAIL", f"CSV_DIR={csv_dir} resolves inside the git-managed checkout ({repo_root_resolved})")
         return
-    _record(name, "PASS", f"csv_dir={csv_dir} data_dir={data_dir}")
+    if _run._is_inside(data_dir, repo_root_resolved):
+        _record(name, "FAIL", f"DATA_DIR={data_dir} resolves inside the git-managed checkout ({repo_root_resolved})")
+        return
+    _record(name, "PASS", f"csv_dir={csv_dir} data_dir={data_dir} (effective, outside checkout)")
 
 
 def check_risk_config() -> None:

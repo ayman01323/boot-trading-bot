@@ -68,7 +68,7 @@ jobs:
           echo "dependency_install_exit_code=$rc" >> "$REPORT"
           exit "$rc"
 
-      - name: Inspect runtime inputs by name only
+      - name: Inspect runtime inputs by name only (effective config, not raw file)
         if: always()
         shell: bash
         run: |
@@ -78,15 +78,22 @@ jobs:
             exit 0
           fi
           "$VENV/bin/python" - "$RUNTIME_ENV" "$MANAGED_REPO" >> "$REPORT" <<'PY'
+          import os
           import sys
           from pathlib import Path
           from dotenv import dotenv_values
 
           env_path = Path(sys.argv[1])
           managed_repo = Path(sys.argv[2]).resolve()
+
+          # CSV_DIR/DATA_DIR are handled separately below via run.py's own
+          # _apply_deterministic_runtime_dir_defaults() -- reporting them
+          # from the raw file would say "missing" even when the running
+          # application is correctly using a safe default, which is exactly
+          # what this diagnostic must not do: it has to reflect the same
+          # effective configuration run.py actually uses, not the file on
+          # disk.
           tracked = (
-              'CSV_DIR',
-              'DATA_DIR',
               'TELEGRAM_BOT_TOKEN',
               'TELEGRAM_CHAT_IDS',
               'MAX_CAPITAL_USD',
@@ -104,24 +111,42 @@ jobs:
 
           values = dotenv_values(env_path) if env_path.is_file() else {}
           missing = [name for name in tracked if not str(values.get(name) or '').strip()]
+
+          # Apply the raw file's values to this process's environment (same
+          # load order run.py itself uses: file first, then defaults fill
+          # gaps), then call run.py's REAL defaulting function -- not a
+          # reimplementation of its logic, the actual function -- so this
+          # diagnostic can never drift from what run.py actually does.
+          for key, val in values.items():
+              if val is not None:
+                  os.environ[key] = val
+          sys.path.insert(0, str(managed_repo / 'claude-trading-bot'))
+          import run as claude_run
+
+          claude_run._apply_deterministic_runtime_dir_defaults()
+          effective_csv_dir = os.environ.get('CSV_DIR', '')
+          effective_data_dir = os.environ.get('DATA_DIR', '')
+
+          if not effective_csv_dir:
+              missing.append('CSV_DIR')
+          if not effective_data_dir:
+              missing.append('DATA_DIR')
+
           print('runtime_input_scan=PASS')
           print('missing_runtime_vars=' + (','.join(missing) if missing else 'NONE'))
 
-          def outside_checkout(name: str) -> bool:
-              raw = str(values.get(name) or '').strip()
+          def outside_checkout(raw: str) -> bool:
               if not raw:
                   return False
               try:
-                  candidate = Path(raw).expanduser().resolve()
-                  candidate.relative_to(managed_repo)
-                  return False
-              except ValueError:
-                  return True
+                  return not claude_run._is_inside(Path(raw).expanduser().resolve(), managed_repo)
               except Exception:
                   return False
 
-          print(f"csv_dir_outside_git_checkout={str(outside_checkout('CSV_DIR')).lower()}")
-          print(f"data_dir_outside_git_checkout={str(outside_checkout('DATA_DIR')).lower()}")
+          print(f"csv_dir_outside_git_checkout={str(outside_checkout(effective_csv_dir)).lower()}")
+          print(f"data_dir_outside_git_checkout={str(outside_checkout(effective_data_dir)).lower()}")
+          print(f"csv_dir_source={'explicit' if str(values.get('CSV_DIR') or '').strip() else 'deterministic_default'}")
+          print(f"data_dir_source={'explicit' if str(values.get('DATA_DIR') or '').strip() else 'deterministic_default'}")
           PY
 
       - name: Run bot-owned preflight with raw output quarantined
