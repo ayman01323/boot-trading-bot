@@ -26,6 +26,12 @@ def _reset_pool():
         patch._LAST_SUCCESS.clear()
 
 
+def test_endpoint_pool_composes_inside_final_trace_wrapper():
+    assert patch._sibot.refresh_wallet_history is patch._trace.refresh_wallet_history
+    assert patch._trace._PREV_REFRESH_WALLET_HISTORY is patch.refresh_nontrace_with_endpoint_pool
+    assert patch._trace._refresh_progressive is patch.refresh_progressive_with_endpoint_pool
+
+
 def test_endpoint_pool_orders_enabled_alchemy_urls_and_health_is_redacted(tmp_path):
     _write_rpc_csv(tmp_path)
     _reset_pool()
@@ -48,7 +54,7 @@ def test_endpoint_pool_orders_enabled_alchemy_urls_and_health_is_redacted(tmp_pa
     assert "secret-b" not in text
 
 
-def test_rate_limit_fails_over_once_to_distinct_endpoint(monkeypatch, tmp_path):
+def test_rate_limit_fails_over_once_to_distinct_endpoint(tmp_path):
     _write_rpc_csv(tmp_path)
     _reset_pool()
     app = SimpleNamespace(csv_dir=tmp_path)
@@ -66,8 +72,7 @@ def test_rate_limit_fails_over_once_to_distinct_endpoint(monkeypatch, tmp_path):
             }
         return {"wallet": wallet, "complete": True, "trades": 2, "error": ""}
 
-    monkeypatch.setattr(patch, "_PREV_REFRESH", fake_refresh)
-    result = patch.refresh_wallet_history_with_endpoint_pool(app, chain, "0xabc")
+    result = patch._with_endpoint_pool(fake_refresh, app, chain, "0xabc")
 
     assert len(calls) == 2
     assert "first.alchemy.com" in calls[0]
@@ -82,7 +87,7 @@ def test_rate_limit_fails_over_once_to_distinct_endpoint(monkeypatch, tmp_path):
     assert health["has_preferred_success"] is True
 
 
-def test_progress_yield_does_not_switch_endpoint(monkeypatch, tmp_path):
+def test_progress_yield_does_not_switch_endpoint(tmp_path):
     _write_rpc_csv(tmp_path)
     _reset_pool()
     app = SimpleNamespace(csv_dir=tmp_path)
@@ -97,8 +102,7 @@ def test_progress_yield_does_not_switch_endpoint(monkeypatch, tmp_path):
             "error": "AlchemyHistoryProgress: context progress pending 30/100; worker yielded for cross-chain fairness",
         }
 
-    monkeypatch.setattr(patch, "_PREV_REFRESH", fake_refresh)
-    result = patch.refresh_wallet_history_with_endpoint_pool(app, chain, "0xabc")
+    result = patch._with_endpoint_pool(fake_refresh, app, chain, "0xabc")
     assert len(calls) == 1
     assert result["error"].startswith("AlchemyHistoryProgress:")
     assert patch.endpoint_pool_health(app, 8453)["cooling"] == 0
