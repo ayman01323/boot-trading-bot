@@ -1,6 +1,24 @@
 from __future__ import annotations
 
 import re
+import sys
+import types
+from pathlib import Path
+
+# This module is used by communication-only AI bus/mailbox workflows that run
+# in deliberately tiny virtual environments. Importing ``learnerbot`` normally
+# executes learnerbot/__init__.py, which bootstraps the trading runtime and pulls
+# in dependencies such as Web3 that these message relays neither need nor should
+# load. Create only the package namespace so the provider modules can use their
+# normal relative imports without executing the trading package initialiser.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_LEARNERBOT_DIR = _REPO_ROOT / "learnerbot"
+if "learnerbot" not in sys.modules:
+    package = types.ModuleType("learnerbot")
+    package.__path__ = [str(_LEARNERBOT_DIR)]
+    package.__package__ = "learnerbot"
+    package.__file__ = str(_LEARNERBOT_DIR / "__init__.py")
+    sys.modules["learnerbot"] = package
 
 from learnerbot import ai_council_http_patch as _http
 from learnerbot import grok_provider as _grok  # noqa: F401  # installs Grok on the shared provider hook
