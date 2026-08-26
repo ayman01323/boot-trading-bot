@@ -62,9 +62,10 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 90
     env:
-      SOURCE: /root/multichain-learning-bot-v2.2-fast-direct-market
       WORK: /tmp/namecheap-backup-${{ github.run_id }}
-      SERVICE: learnerbot.service
+      PUBLIC_KEY: /var/tmp/namecheap-google-backup-public.pem
+      HANDOFF: /var/tmp/namecheap-google-backup-export
+      WRAPPER: /usr/local/sbin/export-namecheap-google-backup
     steps:
       - name: Download Google public key
         uses: actions/download-artifact@v4
@@ -72,67 +73,40 @@ jobs:
           name: namecheap-backup-public-${{ github.run_id }}
           path: /tmp/namecheap-backup-${{ github.run_id }}
 
-      - name: Create consistent encrypted old-server backup
+      - name: Stage public key and verify restricted backup permission
         shell: bash
         run: |
           set -euo pipefail
           umask 077
           mkdir -p "$WORK"
-          STAMP="$(date -u +%Y-%m-%d_%H-%M-%SZ)"
-          NAME="namecheap-old-server-${STAMP}.tar.gz"
-          ARCHIVE="$WORK/$NAME"
-          ENC="$ARCHIVE.enc"
-          PASS="$WORK/aes.pass"
-          PASS_ENC="$WORK/aes.pass.enc"
-          SHA="$WORK/$NAME.sha256"
-          META="$WORK/backup-metadata.env"
-          STOPPED=0
-
-          cleanup_service() {
-            rc=$?
-            if [ "$STOPPED" -eq 1 ]; then
-              sudo -n systemctl start "$SERVICE" || true
-            fi
-            exit "$rc"
+          install -m 0600 "$WORK/public.pem" "$PUBLIC_KEY"
+          openssl pkey -pubin -in "$PUBLIC_KEY" -noout >/dev/null
+          test -x "$WRAPPER" || {
+            echo 'Restricted backup wrapper is not installed on the old VPS.' >&2
+            echo 'Install scripts/install_namecheap_google_backup_wrapper.sh once as root.' >&2
+            exit 20
           }
-          trap cleanup_service EXIT
+          sudo -n -l "$WRAPPER" >/dev/null 2>&1 || {
+            echo 'github-runner is not yet authorised for the restricted backup wrapper.' >&2
+            exit 21
+          }
 
-          command -v openssl >/dev/null
-          sudo -n test -d "$SOURCE"
-
-          echo 'Stopping learnerbot briefly for a consistent backup.'
-          sudo -n systemctl stop "$SERVICE"
-          STOPPED=1
-
-          sudo -n tar -C /root -czf "$ARCHIVE" multichain-learning-bot-v2.2-fast-direct-market
-          sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
-
-          echo 'Restarting learnerbot immediately after archive creation.'
-          sudo -n systemctl start "$SERVICE"
-          STOPPED=0
-          sudo -n systemctl is-active --quiet "$SERVICE"
-
-          sha256sum "$ARCHIVE" > "$SHA"
-          SIZE="$(stat -c%s "$ARCHIVE")"
-          HASH="$(awk '{print $1}' "$SHA")"
-          tar -tzf "$ARCHIVE" >/dev/null
-
-          openssl rand -base64 48 > "$PASS"
-          chmod 600 "$PASS"
-          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-            -in "$ARCHIVE" -out "$ENC" -pass file:"$PASS"
-          openssl pkeyutl -encrypt -pubin -inkey "$WORK/public.pem" \
-            -in "$PASS" -out "$PASS_ENC" \
-            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
-
-          printf 'BACKUP_NAME=%q\nBACKUP_SIZE=%q\nBACKUP_SHA256=%q\nSOURCE_HOST=%q\nCREATED_UTC=%q\n' \
-            "$NAME" "$SIZE" "$HASH" "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$META"
-
-          rm -f "$ARCHIVE" "$PASS" "$WORK/public.pem"
-          chmod 600 "$ENC" "$PASS_ENC" "$META"
-          echo "encrypted_bytes=$(stat -c%s "$ENC")"
-          echo "backup_name=$NAME" >> "$GITHUB_STEP_SUMMARY"
-          echo "plaintext_bytes=$SIZE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Create consistent encrypted old-server backup through restricted wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$HANDOFF"
+          sudo -n "$WRAPPER"
+          test -s "$HANDOFF/backup-metadata.env"
+          test -s "$HANDOFF/aes.pass.enc"
+          shopt -s nullglob
+          archives=("$HANDOFF"/*.tar.gz.enc)
+          test "${#archives[@]}" -eq 1
+          cp -a "$HANDOFF"/. "$WORK"/
+          source "$WORK/backup-metadata.env"
+          echo "backup_name=$BACKUP_NAME" >> "$GITHUB_STEP_SUMMARY"
+          echo "plaintext_bytes=$BACKUP_SIZE" >> "$GITHUB_STEP_SUMMARY"
+          echo 'old_server_archive_encrypted_before_runner_handoff=true' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload encrypted backup bundle
         uses: actions/upload-artifact@v4
@@ -149,7 +123,9 @@ jobs:
       - name: Remove temporary old-server backup files
         if: always()
         shell: bash
-        run: rm -rf "$WORK"
+        run: |
+          rm -rf "$WORK" "$HANDOFF"
+          rm -f "$PUBLIC_KEY"
 
   import-google:
     name: Store and verify backup on Google server
