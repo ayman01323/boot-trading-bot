@@ -90,7 +90,10 @@ def check_risk_config() -> None:
     _record(
         name,
         "PASS",
-        f"max_capital=${limits.max_capital_usd:,.2f} max_position=${limits.max_position_usd:,.2f}",
+        f"capital_basis=${limits.capital_basis_usd:,.2f} "
+        f"max_position={limits.max_position_pct:.2f}%(${limits.max_position_usd:,.2f}) "
+        f"max_exposure={limits.max_total_exposure_pct:.2f}%(${limits.max_total_exposure_usd:,.2f}) "
+        f"max_open_positions={limits.max_open_positions} max_drawdown={limits.max_drawdown_pct:.2f}%",
     )
 
 

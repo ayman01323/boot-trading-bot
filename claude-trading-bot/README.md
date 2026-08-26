@@ -119,23 +119,39 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
   underlying buy/sell to a sentinel that fails loudly if ever called, then
   confirming the guard raises first in both cases. No transaction is
   constructed, signed, or broadcast by this script.
-- [`risk_engine_guard.py`](risk_engine_guard.py) — pure config validation plus
-  `check_new_position()` (capital/exposure/position caps) and
-  `check_daily_loss_and_drawdown()`. The latter is a running-peak drawdown
-  over this instance's own *closed*-position history only — realized P&L,
-  not mark-to-market: an open position's unrealized loss does not count
-  toward `MAX_DRAWDOWN_PCT` until it's actually closed. Documented as an
-  approximation, not hidden as one — see the function's own docstring and
-  `solana_execution_risk_patch.py`'s query functions for exactly what's
-  measured.
-  By itself this file only validates config and holds pure functions;
-  [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py) is what
-  actually calls them before every Solana LIVE buy — see below for why these
-  are separate files. Does **not** cover slippage, price-impact, or minimum
+- [`risk_engine_guard.py`](risk_engine_guard.py) — the single source of truth
+  for risk numbers. Consolidated per direct owner instruction (2026-08-26):
+  position size, aggregate exposure, open-position count, and drawdown are
+  now owner-approved fixed constants (`OWNER_MAX_OPEN_POSITIONS=10`,
+  `OWNER_MAX_POSITION_PCT=3.00%`, `OWNER_MAX_TOTAL_EXPOSURE_PCT=30.00%`,
+  `OWNER_MAX_DRAWDOWN_PCT=20.00%`), calculated dynamically against exactly
+  one operator-provided number, `CLAUDE_CAPITAL_BASIS_USD` — not five
+  independent dollar/percent knobs an operator could misconfigure or leave
+  inconsistent with each other. `drawdown_pct()` is the one place drawdown
+  percentage is computed; every caller (execution guard, `/claude_status`,
+  tests) goes through it. Drawdown itself is a running-peak measurement over
+  this instance's own *closed*-position history only — realized P&L, not
+  mark-to-market: an open position's unrealized loss does not count toward
+  the 20% latch until it's actually closed. Documented as an approximation,
+  not hidden as one. Does **not** cover slippage, price-impact, or minimum
   liquidity — see the module's own docstring for exactly which reused,
-  already-reviewed `learnerbot` code governs those instead; a second
-  Claude-specific implementation risked being redundant or inconsistent with
-  logic already reviewed.
+  already-reviewed `learnerbot` code governs those instead.
+- [`claude_state.py`](claude_state.py) — the one authoritative state machine:
+  ordinary operating state (`OFF`/`ARMED`/`STOPPING`, reset to `OFF` on every
+  restart, never auto-restored to `ARMED`) kept deliberately separate from
+  the persistent `HALTED_DRAWDOWN` safety latch (survives restart, crash,
+  reboot, config reload, deployment/sync — cleared only through the
+  two-step, single-use-challenge owner restart flow). Both persist in one
+  atomically-written JSON file under this instance's own `DATA_DIR`.
+- [`telegram_control_patch.py`](telegram_control_patch.py) — the one
+  authoritative Telegram command router (`/claude_status`,
+  `/claude_arm_live CONFIRM`, `/claude_disarm`, `/claude_stop`,
+  `/claude_restart_request`, `/claude_restart_confirm CONFIRM` — see "Telegram
+  control" below). Owner-only, wraps `learnerbot.telegram_ui.handle_update`
+  once; replaces an earlier ad-hoc `/sibot1riskresume` handler that used to
+  live inside `solana_execution_risk_patch.py` (misnamed after the unrelated
+  production SiBot, and a second competing patch onto the same hook — both
+  fixed by consolidating into this one file).
 - [`solana_execution_risk_patch.py`](solana_execution_risk_patch.py) — wraps
   both `SolanaLiveExecutor.buy` and `.sell` (the real signing/broadcast entry
   points). Every call checks the *runtime* identity the executor was actually
@@ -143,13 +159,16 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
   (closes a gap review found: a mismatched identity with its own key could
   otherwise reach the executor even though `SIGNER_READY` described a
   different wallet). Buys additionally check `AUTHORISED_CHAINS` (fails
-  closed — no chain authorised by default) and
-  `risk_engine_guard`'s position/exposure/daily-loss/drawdown limits, priced
-  via a live Jupiter quote and this instance's own closed-position history.
-  Sells skip the chain/risk checks deliberately — closing a position reduces
-  risk, and revoking authorisation or hitting a cap mid-position shouldn't
-  trap capital in a position this bot can no longer exit. Only tightens;
-  cannot loosen anything reused from `learnerbot`.
+  closed — no chain authorised by default), `claude_state`'s operating state
+  (must be `ARMED`, must not be `HALTED_DRAWDOWN`) and
+  `risk_engine_guard`'s position/exposure/drawdown limits, priced via a live
+  Jupiter quote and this instance's own closed-position history. A drawdown
+  breach latches `HALTED_DRAWDOWN` (via `claude_state.latch_drawdown()`) and
+  sends the one-time owner alert before refusing. Sells skip the
+  state/chain/risk checks deliberately — closing a position reduces risk,
+  and revoking authorisation or hitting a cap mid-position shouldn't trap
+  capital in a position this bot can no longer exit. Only tightens; cannot
+  loosen anything reused from `learnerbot`.
   EVM is not wired here — no equivalent guard exists for `LiveTrader`, and
   `AUTHORISED_CHAINS` defaults to nothing authorised regardless, so EVM
   cannot execute through this bot yet even where its RPCs are reachable (see
@@ -159,6 +178,18 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
   message with `🤖 CLAUDE TRADING BOT` and sends the startup status message,
   following this codebase's existing `*_patch.py` convention rather than editing
   `learnerbot/telegram.py` directly.
+- [`telegram_connectivity_test.py`](telegram_connectivity_test.py) — a
+  one-time, marker-gated connectivity/format proof for THIS isolated
+  instance's own token, triggered only by an explicit human operator running
+  `python run.py send-test-telegram`. Never auto-installed into any patch
+  chain and never called from `claude_bot_patches.install_all()`. Replaces
+  an earlier version (`learnerbot/telegram_claude_smoke_patch.py`, removed
+  2026-08-26) that lived inside the shared production package with no
+  environment gate — it fired identically whichever process imported it,
+  meaning it could have sent a real message through **production's own**
+  Telegram bot token on production's own next restart. See that file's
+  removal note in `learnerbot/final_runtime_integrity_patch.py` for the full
+  finding.
 
 **Why `bootstrap_run.py` exists, not just `python -m learnerbot run`:**
 `os.execvpe()` replaces the process image entirely — any monkey-patching done
@@ -203,15 +234,18 @@ already active before `learnerbot/__main__.py`'s own chain begins.
 - The reused platform gates (`live_trading_settings.csv:trading_enabled`,
   `solana_settings.csv` live flag, per-user `live_trading_enabled`) default OFF
   and are unaffected by anything in this folder.
-- `risk_engine_guard.py` additionally refuses to start if `MAX_CAPITAL_USD`,
-  `MAX_POSITION_USD`, `MAX_TOTAL_EXPOSURE_USD`, `MAX_OPEN_POSITIONS`,
-  `MAX_DAILY_LOSS_USD`, or `MAX_DRAWDOWN_PCT` are absent or invalid — and
-  `solana_execution_risk_patch.py` actually checks the daily-loss and
-  drawdown values (computed from this instance's own closed-position
+- `risk_engine_guard.py` additionally refuses to start if
+  `CLAUDE_CAPITAL_BASIS_USD` is absent or invalid — position size (3.00%),
+  aggregate exposure (30.00%), open-position count (10), and drawdown
+  (20.00%) are owner-approved fixed constants derived from that one number,
+  not independently configurable. `solana_execution_risk_patch.py` actually
+  checks all of them (computed from this instance's own closed-position
   history, priced via a live Jupiter quote) before every guarded buy, not
-  just at startup. Slippage, price-impact, and minimum-liquidity are
-  intentionally not part of this contract — see `risk_engine_guard.py`'s
-  module docstring for exactly which reused, already-reviewed `learnerbot`
+  just at startup, and additionally requires `claude_state`'s operating
+  state to be `ARMED` and not `HALTED_DRAWDOWN`. Slippage, price-impact, and
+  minimum-liquidity are intentionally not part of this contract — see
+  `risk_engine_guard.py`'s module docstring for exactly which reused,
+  already-reviewed `learnerbot`
   code governs each instead.
 - `run.py` refuses to start at all if any required identity/config variable is
   missing from its runtime env file (see "Runtime config location" below).
@@ -220,6 +254,44 @@ No broadcast happens merely because this is deployed or running — it happens o
 when the operator explicitly enables the reused platform LIVE gates *and* the risk
 guard's limits are satisfied, per the project's existing `CONFIRM`-word and
 verified-write kill-switch conventions.
+
+## Telegram control (2026-08-26)
+
+State model (`claude_state.py`), two kinds of state kept deliberately separate:
+- Ordinary operating state: `OFF` → `ARMED` → `STOPPING` → `OFF`. Resets to
+  `OFF` on every process/service restart. `ARMED` is never auto-restored.
+- Persistent safety latch: `HALTED_DRAWDOWN`. Survives restart, crash,
+  reboot, config reload, and deployment/sync. Never clears on its own —
+  not on equity recovery, not on time elapsed, not for an AI agent, a
+  mailbox message, an API call, or a scheduler. Only the two-step owner
+  restart flow below can clear it.
+
+Commands (all owner-only — sender's Telegram id must exactly match
+`CLAUDE_BOT_WALLET_OWNER_ID`; a non-owner sender is flatly refused):
+- `/claude_status` — read-only: operating state, drawdown latch, current
+  drawdown %, open positions / 10, aggregate exposure % / 30% ceiling, per
+  position % / 3% ceiling, signer readiness, authorised chain(s). No
+  secrets.
+- `/claude_arm_live CONFIRM` — `OFF → ARMED`. Refused (with the specific
+  reason) if risk config is invalid, signer isn't ready, no chain is
+  authorised, or `HALTED_DRAWDOWN` is active.
+- `/claude_disarm` — immediate `→ OFF`, no confirmation required.
+- `/claude_stop` — immediate `→ STOPPING → OFF`, no confirmation required.
+  New entries blocked at once; open positions remain exitable.
+- `/claude_restart_request` — valid only while `HALTED_DRAWDOWN`; issues a
+  single-use challenge that expires after
+  `claude_state.RESTART_CHALLENGE_TTL_SECONDS` (300s).
+- `/claude_restart_confirm CONFIRM` — consumes the challenge (so a
+  stale/replayed confirm is always rejected), rechecks risk/signer/chain
+  preconditions, and only then clears `HALTED_DRAWDOWN` with a fresh
+  drawdown baseline. Operating state stays `OFF` afterward — resuming LIVE
+  entries still requires a separate `/claude_arm_live CONFIRM`.
+
+No command here can reach `SolanaLiveExecutor.buy`/`.sell` directly, bypass
+`risk_engine_guard`, bypass `signing_interface`, bypass `AUTHORISED_CHAINS`,
+or bypass the reused PoolCheck/RugCheck/slippage/liquidity gates in
+`learnerbot` — this router only ever flips the one `claude_state` flag those
+other, independent checks already consult on every guarded buy.
 
 ## Known limitations (reported, not worked around)
 

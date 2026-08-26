@@ -2,8 +2,11 @@
 """claude-trading-bot entrypoint.
 
 Usage:
-    python run.py check     # run preflight_check.py only, no trading loop starts
-    python run.py start     # validate everything, then run the real learnerbot loop
+    python run.py check               # run preflight_check.py only, no trading loop starts
+    python run.py start               # validate everything, then run the real learnerbot loop
+    python run.py send-test-telegram  # explicit, human-triggered only: sends the one-time
+                                       # connectivity/format test message via THIS instance's
+                                       # own token, then exits. Never called automatically.
 
 Design choice (deliberately conservative): `start` always requires the hard risk
 engine config (risk_engine_guard.py) to be present and valid, even if this
@@ -212,11 +215,11 @@ def cmd_start() -> int:
     print(f"claude-trading-bot starting: csv_dir={app.csv_dir} data_dir={app.data_dir}")
     print(
         "Hard risk limits: "
-        f"max_capital=${limits.max_capital_usd:,.2f} "
-        f"max_position=${limits.max_position_usd:,.2f} "
-        f"max_exposure=${limits.max_total_exposure_usd:,.2f} "
+        f"capital_basis=${limits.capital_basis_usd:,.2f} "
+        f"max_position={limits.max_position_pct:.2f}%(${limits.max_position_usd:,.2f}) "
+        f"max_exposure={limits.max_total_exposure_pct:.2f}%(${limits.max_total_exposure_usd:,.2f}) "
         f"max_open_positions={limits.max_open_positions} "
-        f"max_daily_loss=${limits.max_daily_loss_usd:,.2f}"
+        f"max_drawdown={limits.max_drawdown_pct:.2f}%"
     )
 
     import signing_interface
@@ -233,10 +236,10 @@ def cmd_start() -> int:
         mode="LIVE-capable (platform gates apply, see README)",
         authorised_chains=[c.strip() for c in os.environ.get("AUTHORISED_CHAINS", "").split(",") if c.strip()],
         active_strategy="learnerbot leader-quality / momentum (reused, unmodified)",
-        max_capital_usd=limits.max_capital_usd,
+        capital_basis_usd=limits.capital_basis_usd,
         max_position_usd=limits.max_position_usd,
         max_total_exposure_usd=limits.max_total_exposure_usd,
-        max_daily_loss_usd=limits.max_daily_loss_usd,
+        max_drawdown_pct=limits.max_drawdown_pct,
         wallet_balance_summary="see /balance in Telegram after startup",
         signer_ready=signer_status.ready,
     )
@@ -266,13 +269,38 @@ def cmd_start() -> int:
     os.execvpe(sys.executable, [sys.executable, str(THIS_DIR / "bootstrap_run.py")], os.environ)
 
 
+def cmd_send_test_telegram() -> int:
+    """Explicit, human-triggered only. Never called from cmd_start() or any
+    patch chain -- see telegram_connectivity_test.py's module docstring for
+    why that separation matters. Uses this instance's own isolated env/app,
+    never production's."""
+    _load_own_env()
+    _apply_deterministic_runtime_dir_defaults()
+    _quarantine_before_learnerbot()
+
+    import identity_patch
+
+    identity_patch.install()
+
+    from learnerbot.config import AppSettings
+
+    import telegram_connectivity_test
+
+    app = AppSettings.load()
+    result = telegram_connectivity_test.send_once(app)
+    print(f"send-test-telegram: {result}")
+    return 0 if result.get("sent") else 1
+
+
 def main() -> int:
-    if len(sys.argv) != 2 or sys.argv[1] not in {"check", "start"}:
+    if len(sys.argv) != 2 or sys.argv[1] not in {"check", "start", "send-test-telegram"}:
         print(__doc__)
         return 2
     try:
         if sys.argv[1] == "check":
             return cmd_check()
+        if sys.argv[1] == "send-test-telegram":
+            return cmd_send_test_telegram()
         return cmd_start()
     except StartupError as exc:
         print(f"REFUSED TO START: {exc}", file=sys.stderr)
