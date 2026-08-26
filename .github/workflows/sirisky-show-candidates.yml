@@ -1,0 +1,33 @@
+name: SiRisky Show Auto Candidates
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-show-candidates.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  show:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Show current SiRisky automatic candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          echo '=== AUTO SETTINGS ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|auto_discovery_enabled|auto_discovery_interval_seconds|auto_candidate_limit|auto_min_liquidity_usd|auto_max_age_seconds|auto_promote_to_selected)$/' /root/SiRisky/CSV/runtime.csv
+          echo '=== STAGE 1 CANDIDATES ==='
+          sudo -n head -n 21 /root/SiRisky/CSV/stage1_candidates.csv
+          echo '=== CANDIDATE COUNT ==='
+          sudo -n awk 'END{print NR-1}' /root/SiRisky/CSV/stage1_candidates.csv
+          echo '=== SAFETY ==='
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'real_transaction_broadcast=NO'
