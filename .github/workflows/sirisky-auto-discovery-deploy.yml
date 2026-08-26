@@ -1,0 +1,101 @@
+name: SiRisky Auto Discovery Deploy
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-auto-discovery-deploy.yml'
+      - 'SiRisky/overrides/sirisky/stage1_data.py'
+      - 'SiRisky/overrides/sirisky/engine.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy automatic Stage 1 discovery safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          test -d /root/SiRisky
+          test -f /root/SiRisky/run.py
+
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/stage1_data.py "/root/SiRisky/sirisky/stage1_data.py.${stamp}.bak"
+          sudo -n cp -a /root/SiRisky/sirisky/engine.py "/root/SiRisky/sirisky/engine.py.${stamp}.bak"
+
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage1_data.py /root/SiRisky/sirisky/stage1_data.py
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
+
+          sudo -n python3 - /root/SiRisky/CSV/runtime.csv <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+          by={str(r.get('setting') or ''):r for r in rows}
+          updates={
+            'auto_discovery_enabled':('1','Continuously discover fresh Solana pools from public market data'),
+            'auto_discovery_interval_seconds':('60','Refresh new-pool discovery at most once per minute'),
+            'auto_candidate_limit':('25','Keep the highest-ranked automatic Stage 1 candidates'),
+            'auto_enrich_limit':('12','Maximum DEX Screener enrichments per discovery refresh'),
+            'auto_min_liquidity_usd':('250','Cheap Stage 1 liquidity floor; Stage 3 remains the risk gate'),
+            'auto_max_age_seconds':('7200','Keep pools up to two hours old in automatic discovery'),
+            'auto_probe_sol':('0.0005','Quote-only probe size for later evaluation'),
+            'auto_dex_allowlist':('raydium,pump,meteora,orca,moonit','Automatic discovery DEX families'),
+            'auto_promote_to_selected':('0','Safety: discovery never auto-promotes a pool into execution approval'),
+          }
+          for k,(v,note) in updates.items():
+            if k in by:
+              by[k]['value']=v; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':v,'notes':note}; rows.append(row); by[k]=row
+          # This change is discovery/monitoring only. Never arm transaction broadcast here.
+          for k in ('broadcast_enabled','telegram_manual_run_enabled'):
+            if k in by: by[k]['value']='0'
+          with p.open('w',encoding='utf-8',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=['setting','value','notes']); w.writeheader(); w.writerows(rows)
+          PY
+
+          sudo -n python3 - /root/SiRisky/CSV/stage1_candidates.csv <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          if not p.exists():
+            h=['discovered_epoch','pool_id','chain','dex','pair_address','base_mint','quote_mint','age_seconds','age_class','temperature','liquidity_usd','volume_m5_usd','buys_m5','sells_m5','score','probe_sol','source','status']
+            with p.open('w',encoding='utf-8',newline='') as f: csv.writer(f).writerow(h)
+          PY
+
+          cd /root/SiRisky
+          sudo -n .venv/bin/python -m compileall -q sirisky run.py
+          sudo -n env PYTHONPATH=. .venv/bin/python run.py selftest
+
+          echo '=== FORCED AUTO DISCOVERY TEST ==='
+          sudo -n env PYTHONPATH=. .venv/bin/python - <<'PY'
+          from sirisky.config import Settings
+          from sirisky.stage1_data import Stage1Data
+          print(Stage1Data(Settings.load()).discover(force=True))
+          PY
+
+          echo '=== AUTO CANDIDATES (TOP 10) ==='
+          sudo -n head -n 11 CSV/stage1_candidates.csv
+
+          echo '=== SAFE CHECK ==='
+          sudo -n env PYTHONPATH=. .venv/bin/python run.py check
+
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          echo '=== AUTO SETTINGS ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_discovery_interval_seconds|auto_candidate_limit|auto_min_liquidity_usd|auto_max_age_seconds|auto_promote_to_selected)$/' CSV/runtime.csv
+          echo '=== FINAL SAFETY ASSERT ==='
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'real_transaction_broadcast=NO'
