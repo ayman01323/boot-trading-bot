@@ -158,3 +158,10 @@ from . import sibot1_solana_live_bridge_patch as _sibot1_solana_live_bridge  # n
 # It reports selected candidates, LIVE PoolCheck/simulation outcomes, broadcasts,
 # confirmations and deferred/error states, while deduplicating noisy repeats.
 from . import sibot1_trade_event_telegram_patch as _sibot1_trade_event_telegram  # noqa: E402,F401
+
+# State-ordering hardening loads after the reporting wrapper so Solana EXIT alerts
+# cannot precede a real LIVE-position proof, and ENTRY cannot be labelled LIVE
+# until the existing fresh LIVE PoolCheck/RugCheck + liquidity revalidation passes.
+# Untracked on-chain holdings are recorded as RECONCILIATION_OWNED only; they never
+# become ordinary AI EXIT authority. All execution safety gates remain unchanged.
+from . import sibot1_solana_candidate_state_fix_patch as _sibot1_solana_candidate_state_fix  # noqa: E402,F401
