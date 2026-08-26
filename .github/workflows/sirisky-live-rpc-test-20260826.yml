@@ -1,0 +1,84 @@
+name: SiRisky Live RPC Test 20260826
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-live-rpc-test-20260826.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-live:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Test live SiRisky connectivity without transaction broadcast
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n test -d /root/SiRisky
+
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          test "$(systemctl is-active sirisky.service)" = 'active'
+
+          echo '=== RPC TARGETS (HOST ONLY) ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+from urllib.parse import urlparse
+from sirisky.config import Settings
+s=Settings.load()
+for label,url in (("http",s.resolve_rpc("http")),("ws",s.resolve_rpc("ws"))):
+    p=urlparse(url)
+    print(f"{label}_scheme={p.scheme}")
+    print(f"{label}_host={p.hostname or \"MISSING\"}")
+    print(f"{label}_configured={str(bool(url)).lower()}")
+PY'
+
+          echo '=== WEBSOCKET NETWORK REACHABILITY ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+import socket, ssl
+from urllib.parse import urlparse
+from sirisky.config import Settings
+u=Settings.load().resolve_rpc("ws")
+p=urlparse(u)
+if p.scheme not in ("ws","wss") or not p.hostname:
+    raise SystemExit("WS_URL_INVALID")
+port=p.port or (443 if p.scheme=="wss" else 80)
+sock=socket.create_connection((p.hostname,port),timeout=8)
+try:
+    if p.scheme=="wss":
+        ctx=ssl.create_default_context(); tls=ctx.wrap_socket(sock,server_hostname=p.hostname); tls.close()
+    else:
+        sock.close()
+finally:
+    try: sock.close()
+    except Exception: pass
+print("ws_network_reachable=true")
+PY'
+
+          echo '=== SIRISKY SAFE LIVE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
+
+          echo '=== DISCOVERY STATUS ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+import csv, time
+from pathlib import Path
+p=Path("/root/SiRisky/CSV/stage1_candidates.csv")
+rows=list(csv.DictReader(p.open(encoding="utf-8-sig",newline=""))) if p.exists() else []
+print("candidate_count="+str(len(rows)))
+if rows:
+    newest=max(int(float(r.get("discovered_epoch") or 0)) for r in rows)
+    print("candidate_snapshot_age_seconds="+str(max(0,int(time.time())-newest)))
+PY'
+
+          echo '=== APPROVAL / SAFETY GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|auto_discovery_enabled)$/' /root/SiRisky/CSV/runtime.csv
+          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          echo 'live_monitoring_test=PASS'
+          echo 'real_transaction_broadcast=NO'
