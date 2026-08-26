@@ -3,7 +3,7 @@ from __future__ import annotations
 """One-time Claude-labelled Telegram connectivity proof via the existing router.
 
 This intentionally reuses the already-running VPS Telegram process and its
-existing credential.  It never polls Telegram, never copies the bot token to the
+existing credential. It never polls Telegram, never copies the bot token to the
 Google server, and never changes any trading/LIVE/ARM/AUTO/signer state.
 """
 
@@ -40,7 +40,7 @@ def _send_once(app) -> None:
             protect_content=True,
             disable_notification=False,
         )
-        delivered = int((result or {}).get("sent") or 0) if isinstance(result, dict) else int(result or 0)
+        delivered = int((result or {}).get("sent_chats") or 0) if isinstance(result, dict) else int(result or 0)
         if delivered <= 0:
             print("[claude-telegram-smoke] no successful MASTER delivery; marker not written")
             return
