@@ -44,8 +44,10 @@ jobs:
           import socket
           import ssl
           import sys
+          import urllib.error
           import urllib.parse
           import urllib.request
+          from collections import Counter
           from pathlib import Path
 
           rpc_csv = Path(sys.argv[1])
@@ -55,15 +57,46 @@ jobs:
               text = str(value or '').strip().lower()
               return text not in {'0', 'false', 'no', 'off'}
 
+          def _url_error_class(exc):
+              reason = getattr(exc, 'reason', None)
+              if isinstance(reason, socket.gaierror):
+                  return 'DNS'
+              if isinstance(reason, (socket.timeout, TimeoutError)):
+                  return 'TIMEOUT'
+              if isinstance(reason, ssl.SSLError):
+                  return 'TLS'
+              if isinstance(reason, ConnectionRefusedError):
+                  return 'CONNECT_REFUSED'
+              if isinstance(reason, OSError):
+                  if getattr(reason, 'errno', None) in {101, 102, 103, 104, 110, 111, 113}:
+                      return 'CONNECT'
+              return 'URL_ERROR'
+
           def json_rpc(url, method, timeout=10):
               body = json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':[]}).encode()
               req = urllib.request.Request(url, data=body, headers={'Content-Type':'application/json'})
               try:
                   with urllib.request.urlopen(req, timeout=timeout) as response:
-                      data = json.loads(response.read())
-                  return 'PASS' if 'result' in data and data.get('error') is None else 'FAIL'
+                      raw = response.read()
+                  try:
+                      data = json.loads(raw)
+                  except Exception:
+                      return 'FAIL', 'INVALID_JSON'
+                  if data.get('error') is not None:
+                      return 'FAIL', 'RPC_ERROR'
+                  if 'result' not in data:
+                      return 'FAIL', 'NO_RESULT'
+                  return 'PASS', 'OK'
+              except urllib.error.HTTPError as exc:
+                  return 'FAIL', f'HTTP_{int(exc.code)}'
+              except urllib.error.URLError as exc:
+                  return 'FAIL', _url_error_class(exc)
+              except (socket.timeout, TimeoutError):
+                  return 'FAIL', 'TIMEOUT'
+              except ssl.SSLError:
+                  return 'FAIL', 'TLS'
               except Exception:
-                  return 'FAIL'
+                  return 'FAIL', 'OTHER'
 
           def load_env(path):
               out = {}
@@ -97,7 +130,7 @@ jobs:
               except Exception:
                   return 'FAIL'
 
-          print('report_version=1')
+          print('report_version=2')
           print(f'rpc_csv_present={str(rpc_csv.is_file()).lower()}')
           if rpc_csv.is_file():
               try:
@@ -118,8 +151,19 @@ jobs:
                       by_chain.setdefault(cid, []).append((priority, str(row.get('url') or '').strip()))
                   for cid in sorted(by_chain, key=lambda x: int(x) if x.isdigit() else 10**20):
                       endpoints = sorted(by_chain[cid])
-                      status = json_rpc(endpoints[0][1], 'eth_blockNumber')
-                      print(f'evm_chain chain_id={cid} endpoints={len(endpoints)} rpc={status}')
+                      outcomes = [json_rpc(url, 'eth_blockNumber') for _, url in endpoints]
+                      passed = sum(1 for status, _ in outcomes if status == 'PASS')
+                      failures = [reason for status, reason in outcomes if status != 'PASS']
+                      failure_counts = Counter(failures)
+                      failure_classes = ','.join(
+                          f'{name}:{count}' for name, count in sorted(failure_counts.items())
+                      ) or 'none'
+                      overall = 'PASS' if passed else 'FAIL'
+                      print(
+                          f'evm_chain chain_id={cid} endpoints={len(endpoints)} '
+                          f'pass={passed} fail={len(endpoints) - passed} rpc={overall} '
+                          f'failure_classes={failure_classes}'
+                      )
               except Exception:
                   print('evm_rpc_csv_parse=FAIL')
           else:
@@ -131,7 +175,10 @@ jobs:
               print(f'{key}_present={str(bool(env.get(key))).lower()}')
 
           if env.get('SOLANA_RPC_URL'):
-              print('solana_rpc=' + json_rpc(env['SOLANA_RPC_URL'], 'getHealth'))
+              sol_status, sol_reason = json_rpc(env['SOLANA_RPC_URL'], 'getHealth')
+              print('solana_rpc=' + sol_status)
+              if sol_status != 'PASS':
+                  print('solana_rpc_failure_class=' + sol_reason)
           else:
               print('solana_rpc=MISSING')
 
@@ -145,7 +192,7 @@ jobs:
                        'inputMint=So11111111111111111111111111111111111111112&'
                        'outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&'
                        'amount=10000000&slippageBps=50')
-              req = urllib.request.Request(quote, headers={'User-Agent':'BOOT-Claude-Runtime-Check/1.0'})
+              req = urllib.request.Request(quote, headers={'User-Agent':'BOOT-Claude-Runtime-Check/2.0'})
               with urllib.request.urlopen(req, timeout=10) as response:
                   ok = response.status == 200
               print('jupiter_public_quote=' + ('PASS' if ok else 'FAIL'))
@@ -162,7 +209,7 @@ jobs:
         run: |
           set -euo pipefail
           result=/tmp/claude-google-runtime-check.txt
-          [[ -s "$result" ]] || printf 'report_version=1\ncheck=NOT_RUN\n' > "$result"
+          [[ -s "$result" ]] || printf 'report_version=2\ncheck=NOT_RUN\n' > "$result"
           {
             echo "run_id=${GITHUB_RUN_ID}"
             echo "hostname=$(hostname)"
