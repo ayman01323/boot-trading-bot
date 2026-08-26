@@ -1,18 +1,18 @@
-requested_sha=4d64059047b5f23446e8776160285b9d64403823
+requested_sha=df00416ce83881f5cbb2224e2f9e03d2cf1af9fc
 deploy_outcome=failure
 deploy_exit=10
-run_id=32952199333
-utc=2026-08-26T09:20:45Z
+run_id=32952557751
+utc=2026-08-26T09:23:25Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-26T09:19:01Z BEGIN current=fac796431b86800819c2bc17829f48eaccf43415 requested=4d64059047b5f23446e8776160285b9d64403823
+2026-08-26T09:21:40Z BEGIN current=fac796431b86800819c2bc17829f48eaccf43415 requested=df00416ce83881f5cbb2224e2f9e03d2cf1af9fc
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-   9ad46bb..4d64059  main       -> origin/main
-Updating fac7964..4d64059
+   4d64059..df00416  main       -> origin/main
+Updating fac7964..df00416
 Fast-forward
  .github/claude-google-sync.trigger                 |   7 +-
- .github/workflows/ai-mailbox-provider-relay.yml    |  29 +-
+ .github/workflows/ai-mailbox-provider-relay.yml    |  33 +-
  .github/workflows/ai-mailbox-provider-signal.yml   |   7 +-
  claude-trading-bot/README.md                       | 306 +++++++++++++++
  claude-trading-bot/bootstrap_run.py                |  55 +++
@@ -28,7 +28,7 @@ Fast-forward
  claude-trading-bot/solana_execution_risk_patch.py  | 212 +++++++++++
  .../systemd/claude-trading-bot.service             |  23 ++
  claude-trading-bot/verify_bootstrap_composition.py | 409 +++++++++++++++++++++
- 17 files changed, 2346 insertions(+), 6 deletions(-)
+ 17 files changed, 2350 insertions(+), 6 deletions(-)
  create mode 100644 claude-trading-bot/README.md
  create mode 100644 claude-trading-bot/bootstrap_run.py
  create mode 100644 claude-trading-bot/claude_bot_patches.py
@@ -96,13 +96,13 @@ tests/test_provider_git_mailbox_bridge.py:66: AssertionError
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
 FAILED tests/test_deploy_workflow_safety.py::test_communication_only_relays_do_not_use_boot_vps_runner
 FAILED tests/test_provider_git_mailbox_bridge.py::test_provider_relay_is_event_driven_without_schedule
-2 failed, 1184 passed, 1 skipped, 1 warning in 61.09s (0:01:01)
-2026-08-26T09:20:11Z TESTS FAILED; service remains on old running process
+2 failed, 1184 passed, 1 skipped, 1 warning in 67.78s (0:01:07)
+2026-08-26T09:22:55Z TESTS FAILED; service remains on old running process
 HEAD is now at fac7964 Fix provider relay import isolation
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-26T09:20:38Z
+UTC: 2026-08-26T09:23:19Z
 branch: main
 sha:    fac796431b86800819c2bc17829f48eaccf43415
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -115,26 +115,25 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; enabled; preset: disabled)
-     Active: active (running) since Wed 2026-08-26 10:15:09 BST; 5min ago
+     Active: active (running) since Wed 2026-08-26 10:15:09 BST; 8min ago
    Main PID: 1682036 (python)
-      Tasks: 42 (limit: 5869)
-     Memory: 561.3M (peak: 672.8M)
-        CPU: 3min 9.216s
+      Tasks: 41 (limit: 5869)
+     Memory: 591.5M (peak: 699.0M)
+        CPU: 4min 53.762s
      CGroup: /system.slice/learnerbot.service
              ├─1682036 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
              ├─1682218 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
              ├─1682238 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
              ├─1682239 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─1682240 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             └─1683785 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/central_report_scheduler.py factory-review --limit 1
+             └─1682240 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 26 10:15:39 mint.yesgoodwill.com python[1682036]: [sibot-legacy-drainer] started global_interval=45s provider_backoff=adaptive ranked_queue_priority=true progressive_resume=180s
-Aug 26 10:15:42 mint.yesgoodwill.com python[1682036]: [evm-router-probe] ERROR RuntimeError: Alchemy alchemy_getAssetTransfers: HTTP 429; retries exhausted
-Aug 26 10:15:45 mint.yesgoodwill.com python[1682036]: [telegram-menu] interactive multi-chain menu started
-Aug 26 10:16:40 mint.yesgoodwill.com python[1682036]: [fast-market-scan] direct=1 merged=1 eligible=1 auto-events=0 seconds=77.432
-Aug 26 10:18:40 mint.yesgoodwill.com python[1682036]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=118.750
-Aug 26 10:18:47 mint.yesgoodwill.com python[1682036]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 candidate_lookback_days=180 thresholds=unchanged
-Aug 26 10:18:47 mint.yesgoodwill.com python[1682036]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
-Aug 26 10:19:52 mint.yesgoodwill.com python[1682036]: [score:bsc] wallets=267330
-Aug 26 10:20:05 mint.yesgoodwill.com python[1682036]: [analyse:bsc] {'candidate_pool': 500, 'wallets': 50, 'transactions': 1500, 'transfer_logs': 132, 'evidence_rows': 1500, 'proven_positive_wallets': 8, 'cursor': 250}
 Aug 26 10:20:27 mint.yesgoodwill.com python[1682036]: [learn:bsc] patterns=688
+Aug 26 10:20:40 mint.yesgoodwill.com python[1682036]: [report-scheduler] report=factory success=false detail='Traceback (most recent call last):\n  File "/root/multichain-learning-bot-v2.2-fast-direct-market/scripts/central_report_scheduler.py", line 11, in <module>\n    from learnerbot.config import AppSettings\nModuleNotFoundError: No module named \'learnerbot.config\'\n'
+Aug 26 10:20:52 mint.yesgoodwill.com python[1682036]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=130.648
+Aug 26 10:22:10 mint.yesgoodwill.com python[1682036]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=77.033
+Aug 26 10:22:13 mint.yesgoodwill.com python[1682036]: [research:bsc] {'evidence_rows': 192810, 'behaviours': 7, 'wallet_behaviour_rows': 923}
+Aug 26 10:22:16 mint.yesgoodwill.com python[1682036]: [copy-check:bsc] {'evaluated': 923, 'passed': 2, 'disabled': False}
+Aug 26 10:22:53 mint.yesgoodwill.com python[1682036]: [solana-leader-edge-alignment] broader_pool=48 qualified=0 selected=0 candidate_lookback_days=180 thresholds=unchanged
+Aug 26 10:22:53 mint.yesgoodwill.com python[1682036]: [trading-worker-liveness] refreshed stale Solana selector thresholds=unchanged
+Aug 26 10:23:07 mint.yesgoodwill.com python[1682036]: [power-discovery] v2-added=14 v3-on=true v3-pools=180 products=7951 auto-products=615 rejected=2 seconds=465.343
+Aug 26 10:23:13 mint.yesgoodwill.com python[1682036]: [scan:base] 49867356..49867365 tx=1518
