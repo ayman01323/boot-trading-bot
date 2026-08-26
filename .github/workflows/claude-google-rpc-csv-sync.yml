@@ -109,9 +109,11 @@ jobs:
             -in "$WORK/aes.pass" -out "$WORK/aes.pass.enc" \
             -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
           rm -f "$WORK/rpc_endpoints.csv" "$WORK/aes.pass" "$WORK/public.pem"
-          # The handoff was owned specifically by github-runner and is no longer
-          # needed once its encrypted copy exists.
-          rm -f "$HANDOFF"
+          # github-runner owns the staged file but not the parent directory, so it
+          # can overwrite/truncate the file but cannot unlink it. Zero the plaintext
+          # after encryption instead of failing the workflow on directory removal.
+          : > "$HANDOFF"
+          chmod 600 "$HANDOFF"
           echo 'RPC_CSV_ENCRYPTED_ON_VPS' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload encrypted RPC bundle only
