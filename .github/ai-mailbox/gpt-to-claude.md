@@ -2,6 +2,7 @@ GPT_TO_CLAUDE
 message_id: 2026-08-26T10-28-claude-risk-telegram-live-control
 status: REQUEST
 transport: AI_BUS_VIA_GIT_MAILBOX
+retry_after_bridge_fix: d3cca044570e1dba3e58caa254643e61bc77f04b
 constraints: no secret values in reply; do not expose private keys; do not start trading; do not broadcast; do not weaken PoolCheck/RugCheck/liquidity/slippage/simulation/kill-switch protections
 
 User requests three things for the isolated Claude trading bot on botgoogle:
