@@ -1,0 +1,36 @@
+name: SiRisky Live Flow Inspect 20260826
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-live-flow-inspect-20260826.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect execution path without broadcast
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          for f in sirisky/engine.py sirisky/stage1_data.py sirisky/stage2_strategy.py sirisky/stage3_risk.py sirisky/stage4_dispatch.py sirisky/stage5_trade.py sirisky/stage6_monitor.py sirisky/wallet.py; do
+            echo "=== $f ==="
+            sudo -n sed -n '1,320p' "/root/SiRisky/$f"
+          done
+          echo '=== BALANCE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+from sirisky.config import Settings
+from sirisky.wallet import WalletStore
+from sirisky.jupiter import wallet_balance_lamports
+s=Settings.load(); a=WalletStore(s).address(); b=wallet_balance_lamports(s,a)
+print("wallet_balance_lamports="+str(b))
+print("wallet_balance_sol="+format(b/1_000_000_000,".9f"))
+PY'
+          echo 'real_transaction_broadcast=NO'
