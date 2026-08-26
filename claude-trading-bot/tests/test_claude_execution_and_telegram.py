@@ -206,11 +206,19 @@ def test_buy_refused_on_unrealised_drawdown_breach_and_sends_owner_alert(executo
 
 
 def test_buy_refused_when_health_check_fails_even_if_armed(executor, app, snapshot, equity, _capture_original_calls, monkeypatch):
+    """_guarded_buy() calls armed_health_check() as its first check (review,
+    2026-08-26: consolidated so there is one authoritative precondition
+    check, not a second partial copy of the same checks) -- any failure it
+    reports refuses the buy immediately."""
     claude_state.arm(app, owner_id=OWNER_ID)
     monkeypatch.setattr(guard, "armed_health_check", lambda app, tid: "kill-switch active (test)")
-    # _guarded_buy doesn't call armed_health_check directly today (it composes
-    # the same underlying checks) -- this proves the SAME underlying signer
-    # check both paths share still blocks consistently.
+    with pytest.raises(guard.ExecutionGuardError, match="Not safe to enter"):
+        guard._guarded_buy(executor, "MINT", "0.01", "0.02")
+    assert _capture_original_calls["buy"] == 0
+
+
+def test_buy_refused_when_signer_not_ready_via_health_check(executor, app, snapshot, equity, _capture_original_calls, monkeypatch):
+    claude_state.arm(app, owner_id=OWNER_ID)
     monkeypatch.setattr(
         signing_interface, "get_signer_status",
         lambda app: signing_interface.SignerStatus(ready=False, reason="SIGNER_READY=false: forced for test"),
@@ -287,8 +295,30 @@ def _insert_closed_live_position(app, *, position_id: str, telegram_id: str, rea
         conn.commit()
 
 
-def test_reconcile_accounts_a_real_closed_position_from_the_db(app, monkeypatch):
-    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+def test_synchronous_capture_accounts_a_position_this_sell_call_just_closed(app, monkeypatch):
+    """The trustworthy path (review, 2026-08-26, blocker A): a position
+    this exact call diffed into existence via the before/after id-set diff
+    is priced with the price fetched immediately after -- genuinely the
+    close-time price, not an approximation."""
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-2"))
+
+    accounted = guard._account_positions_synchronously(app, OWNER_ID, {"pos-A"}, price=Decimal("100"))
+
+    assert len(accounted) == 1
+    state = claude_state.load_state(app)
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-200")  # -2 SOL * $100
+    assert "pos-A" in state["accounted_position_ids"]
+    assert state["unpriced_closed_position_ids"] == {}
+
+
+def test_reconcile_sweep_marks_undiscovered_closes_as_unpriced_never_prices_them(app, monkeypatch):
+    """reconcile_realized_pnl() (the generic sweep, used by the monitor and
+    at startup) must NEVER assign a price -- only mark as unpriced. This is
+    the fix for blocker A: the old design priced every pending close at
+    whatever sol_usd_price() returned right then, which for a genuinely
+    crash-recovered close (down for minutes/hours) could be very different
+    from the true close-time price."""
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("9999"))  # must never be used
     _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-2"))
 
     newly = guard.reconcile_realized_pnl(app, OWNER_ID)
@@ -296,79 +326,114 @@ def test_reconcile_accounts_a_real_closed_position_from_the_db(app, monkeypatch)
     assert len(newly) == 1
     assert newly[0]["position_id"] == "pos-A"
     state = claude_state.load_state(app)
-    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-200")  # -2 SOL * $100
-    assert "pos-A" in state["accounted_position_ids"]
+    assert "pos-A" in state["unpriced_closed_position_ids"]
+    assert "pos-A" not in state["accounted_position_ids"]
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("0")  # never guessed
 
 
-def test_reconcile_is_idempotent_second_call_does_not_double_count(app, monkeypatch):
-    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+def test_reconcile_sweep_is_idempotent(app):
     _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-2"))
-
     guard.reconcile_realized_pnl(app, OWNER_ID)
-    second = guard.reconcile_realized_pnl(app, OWNER_ID)  # nothing new closed since
-
+    second = guard.reconcile_realized_pnl(app, OWNER_ID)
     assert second == []
-    assert Decimal(claude_state.load_state(app)["cumulative_realized_pnl_usd"]) == Decimal("-200")
+    assert len(claude_state.load_state(app)["unpriced_closed_position_ids"]) == 1
 
 
-def test_reconcile_accounts_two_closed_positions_independently(app, monkeypatch):
-    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
-    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("1"))
-    _insert_closed_live_position(app, position_id="pos-B", telegram_id=OWNER_ID, realised_net_sol=Decimal("-3"))
-
-    newly = guard.reconcile_realized_pnl(app, OWNER_ID)
-
-    assert {n["position_id"] for n in newly} == {"pos-A", "pos-B"}
-    state = claude_state.load_state(app)
-    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-200")  # (1 - 3) * 100
-    assert set(state["accounted_position_ids"]) == {"pos-A", "pos-B"}
+def test_reconcile_sweep_does_not_re_flag_a_trustworthily_accounted_position(app):
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("-2"))
+    guard._account_positions_synchronously(app, OWNER_ID, {"pos-A"}, price=Decimal("100"))
+    newly = guard.reconcile_realized_pnl(app, OWNER_ID)  # e.g. the monitor tick right after
+    assert newly == []
+    assert claude_state.load_state(app)["unpriced_closed_position_ids"] == {}
 
 
-def test_reconcile_historical_usd_value_unaffected_by_later_price_change(app, monkeypatch):
-    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("100"))
+def test_historical_usd_value_unaffected_by_later_price_change(app, monkeypatch):
+    """close at price P1 (synchronous, trustworthy), then reconciliation
+    runs again later at a very different price P3 -- the recorded value
+    must still reflect P1, never P3."""
     _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("2"))
-    guard.reconcile_realized_pnl(app, OWNER_ID)
+    guard._account_positions_synchronously(app, OWNER_ID, {"pos-A"}, price=Decimal("100"))  # P1
     recorded = Decimal(claude_state.load_state(app)["accounted_position_ids"]["pos-A"]["pnl_usd"])
 
-    # SOL price moves a lot, then reconciliation runs again (e.g. next
-    # monitor tick) -- pos-A is already accounted, so it must be skipped
-    # entirely, not re-priced at the new rate.
-    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("9999"))
-    guard.reconcile_realized_pnl(app, OWNER_ID)
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("9999"))  # P3, much later
+    guard.reconcile_realized_pnl(app, OWNER_ID)  # already accounted -- must be a pure no-op
     still_recorded = Decimal(claude_state.load_state(app)["accounted_position_ids"]["pos-A"]["pnl_usd"])
 
-    assert still_recorded == recorded == Decimal("200")
+    assert still_recorded == recorded == Decimal("200")  # 2 * P1(100), never P3
 
 
-def test_crash_after_db_close_before_claude_accounting_is_recovered_on_next_reconcile(app, monkeypatch):
+def test_two_closes_at_different_prices_retain_independent_valuations(app):
+    _insert_closed_live_position(app, position_id="pos-A", telegram_id=OWNER_ID, realised_net_sol=Decimal("2"))
+    _insert_closed_live_position(app, position_id="pos-B", telegram_id=OWNER_ID, realised_net_sol=Decimal("-1"))
+    guard._account_positions_synchronously(app, OWNER_ID, {"pos-A"}, price=Decimal("100"))  # P1
+    guard._account_positions_synchronously(app, OWNER_ID, {"pos-B"}, price=Decimal("50"))  # P2, a different close-time price
+
+    state = claude_state.load_state(app)
+    assert Decimal(state["accounted_position_ids"]["pos-A"]["pnl_usd"]) == Decimal("200")
+    assert Decimal(state["accounted_position_ids"]["pos-B"]["pnl_usd"]) == Decimal("-50")
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("150")
+
+
+def test_crash_before_synchronous_capture_recovered_as_unpriced_never_guessed(app, monkeypatch):
     """Simulates the exact crash window review flagged: the SELL committed
     to the real positions DB (a real CLOSED row exists), but the process
-    died before any Claude-side accounting ran at all -- no call to
-    reconcile_realized_pnl happened yet for this position. The very next
-    reconciliation pass (what claude_monitor's tick, or the next sell, or
-    process startup would trigger) must recover it completely, exactly
-    once, not lose it."""
+    died before _guarded_sell's own synchronous capture ever ran for it --
+    no trustworthy close-time price was ever obtained. The next
+    reconciliation pass (monitor tick, next sell, or process startup) must
+    detect it and mark it unpriced -- explicitly NOT price it at whatever
+    the current rate happens to be, per review: "do not guess a historical
+    value"."""
     _insert_closed_live_position(app, position_id="pos-crash", telegram_id=OWNER_ID, realised_net_sol=Decimal("-5"))
-    # nothing has run reconcile_realized_pnl yet -- this IS the crash state
     assert claude_state.load_state(app)["accounted_position_ids"] == {}
 
-    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("50"))
-    recovered = guard.reconcile_realized_pnl(app, OWNER_ID)  # e.g. the next monitor tick
+    monkeypatch.setattr(guard, "sol_usd_price", lambda: Decimal("50"))  # restart-time price -- must never be used
+    recovered = guard.reconcile_realized_pnl(app, OWNER_ID)
 
     assert len(recovered) == 1
     state = claude_state.load_state(app)
-    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-250")  # -5 * 50
-    # a second recovery pass (e.g. process restart right after) must not double-count
+    assert "pos-crash" in state["unpriced_closed_position_ids"]
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("0")  # not silently priced at 50
+    # a second recovery pass (e.g. another restart right after) must not double-flag
     second = guard.reconcile_realized_pnl(app, OWNER_ID)
     assert second == []
-    assert Decimal(claude_state.load_state(app)["cumulative_realized_pnl_usd"]) == Decimal("-250")
 
 
-def test_guarded_sell_reconciles_and_latches_via_real_db(executor, app, equity, monkeypatch):
-    """End-to-end through the actual guarded_sell call path (not just
-    reconcile_realized_pnl directly): a real closed position appearing in
-    the DB after _original_sell returns is accounted before the drawdown
-    check runs."""
+def test_armed_health_check_fails_closed_when_unpriced_closed_position_exists(app):
+    claude_state.mark_unpriced_closed_position(app, position_id="pos-crash", realised_net_sol=Decimal("-5"))
+    reason = guard.armed_health_check(app, OWNER_ID)
+    assert reason is not None
+    assert "trustworthy" in reason.lower() or "reconciled" in reason.lower()
+
+
+def test_arm_refused_when_unpriced_closed_position_exists(app, sent):
+    claude_state.mark_unpriced_closed_position(app, position_id="pos-crash", realised_net_sol=Decimal("-5"))
+    router.handle_update(app, _msg("/claude_arm_live CONFIRM", sender_id=OWNER_ID))
+    assert claude_state.load_state(app)["operating_state"] == claude_state.OFF
+    assert "refused" in sent[-1][1].lower()
+
+
+def test_monitor_forces_off_when_unpriced_closed_position_appears_while_armed(app, snapshot, equity, monkeypatch):
+    import claude_monitor
+
+    claude_state.arm(app, owner_id=OWNER_ID)
+    claude_state.mark_unpriced_closed_position(app, position_id="pos-crash", realised_net_sol=Decimal("-5"))
+
+    sent = []
+    monkeypatch.setattr(guard, "_send_owner_health_alert", lambda app, **kw: sent.append(kw))
+
+    claude_monitor.check_once(app)
+
+    state = claude_state.load_state(app)
+    assert state["operating_state"] == claude_state.OFF
+    assert "trustworthy" in state["last_forced_off_reason"].lower() or "reconciled" in state["last_forced_off_reason"].lower()
+    assert len(sent) == 1
+
+
+def test_guarded_sell_synchronously_accounts_and_latches_via_real_db(executor, app, equity, monkeypatch):
+    """End-to-end through the actual guarded_sell call path: a real closed
+    position appearing in the DB during this exact call is diffed,
+    synchronously accounted with the price fetched right after, before the
+    drawdown check runs -- never left for a later, less accurate sweep."""
     def _fake_original_sell(self, input_mint, amount_raw):
         _insert_closed_live_position(app, position_id="pos-live", telegram_id=OWNER_ID, realised_net_sol=Decimal("-1"))
         return {"ok": True}
@@ -381,6 +446,7 @@ def test_guarded_sell_reconciles_and_latches_via_real_db(executor, app, equity, 
     state = claude_state.load_state(app)
     assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("-100")
     assert "pos-live" in state["accounted_position_ids"]
+    assert state["unpriced_closed_position_ids"] == {}
 
 
 def test_startup_reconciliation_runs_via_app_wrapper(monkeypatch, tmp_path):
@@ -583,13 +649,18 @@ def test_armed_health_check_ignores_general_and_only_reads_operator_settings(app
         ("router", "Telegram router"),
         ("buy_guard", "BUY guard"),
         ("sell_guard", "SELL guard"),
-        ("evm_guard", "EVM execution"),
+        ("evm_buy_guard", "buy guard displaced"),
+        ("evm_sell_guard", "sell guard displaced"),
+        ("evm_execute_cycle_guard", "execute_cycle guard displaced"),
+        ("evm_execute_v3_cycle_guard", "execute_v3_cycle guard displaced"),
     ],
 )
 def test_armed_health_check_fails_when_any_composition_component_breaks(app, monkeypatch, break_it, expected_fragment):
-    """Review, 2026-08-26: buy/sell identity alone wasn't proof the whole
-    Claude runtime composition was intact. Each of these must independently
-    fail the check."""
+    """Review, 2026-08-26 (strengthened same day, blocker B): buy/sell
+    identity alone wasn't proof the whole Claude runtime composition was
+    intact, and checking only LiveTrader.buy left the other three EVM
+    signing/broadcast entry points' displacement undetected. Each of these
+    must independently fail the check."""
     import claude_bot_quarantine
     import evm_execution_guard_patch as evm_guard
     from learnerbot import config as _learnerbot_config
@@ -606,8 +677,14 @@ def test_armed_health_check_fails_when_any_composition_component_breaks(app, mon
         monkeypatch.setattr(_executor.SolanaLiveExecutor, "buy", guard._original_buy)
     elif break_it == "sell_guard":
         monkeypatch.setattr(_executor.SolanaLiveExecutor, "sell", guard._original_sell)
-    elif break_it == "evm_guard":
+    elif break_it == "evm_buy_guard":
         monkeypatch.setattr(_evm_executor.LiveTrader, "buy", evm_guard._original_buy)
+    elif break_it == "evm_sell_guard":
+        monkeypatch.setattr(_evm_executor.LiveTrader, "sell", evm_guard._original_sell)
+    elif break_it == "evm_execute_cycle_guard":
+        monkeypatch.setattr(_evm_executor.LiveTrader, "execute_cycle", evm_guard._original_execute_cycle)
+    elif break_it == "evm_execute_v3_cycle_guard":
+        monkeypatch.setattr(_evm_executor.LiveTrader, "execute_v3_cycle", evm_guard._original_execute_v3_cycle)
 
     reason = guard.armed_health_check(app, OWNER_ID)
     assert reason is not None

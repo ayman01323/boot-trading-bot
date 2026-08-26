@@ -101,6 +101,15 @@ def _default_state() -> dict:
         # never double-count, because a position_id present here is always
         # skipped.
         "accounted_position_ids": {},
+        # Closed positions detected WITHOUT a trustworthy close-time USD
+        # valuation (review, 2026-08-26, blocker A): the synchronous
+        # same-call capture in solana_execution_risk_patch._guarded_sell()
+        # never ran for these (most likely the process crashed between the
+        # sell committing to the shared positions DB and that capture
+        # running). Never priced with a guess -- see
+        # claude_state.mark_unpriced_closed_position() and
+        # armed_health_check(), which fails closed while this is non-empty.
+        "unpriced_closed_position_ids": {},
         "last_forced_off_reason": "",
         "last_forced_off_at": 0,
     }
@@ -306,6 +315,34 @@ def account_closed_position(app, *, position_id: str, realised_net_sol: Decimal,
         state["cumulative_realized_pnl_usd"] = str(total)
         _save_state(app, state)
         return pnl_usd
+
+
+def mark_unpriced_closed_position(app, *, position_id: str, realised_net_sol: Decimal) -> bool:
+    """Records a closed position detected WITHOUT a trustworthy close-time
+    USD valuation (review, 2026-08-26, blocker A). The learnerbot positions
+    schema has no close-time USD/price column, so once the narrow
+    synchronous capture window in _guarded_sell() is missed (the process
+    crashed between the sell committing to the DB and that capture running),
+    the true close-time price cannot be reconstructed -- from this table or
+    anywhere else in this codebase (checked: no price-history table exists).
+    Rather than substitute a later, wrong price, this is deliberately never
+    priced and never folded into cumulative_realized_pnl_usd. See
+    armed_health_check(), which fails closed while any entry exists here.
+
+    Idempotent per position_id: returns False (no-op) if this id is already
+    known here OR already trustworthily accounted -- never re-marked or
+    re-evaluated once either ledger has an entry for it."""
+    with _STATE_LOCK:
+        state = load_state(app)
+        if position_id in (state.get("accounted_position_ids") or {}):
+            return False
+        unpriced = dict(state.get("unpriced_closed_position_ids") or {})
+        if position_id in unpriced:
+            return False
+        unpriced[position_id] = {"realised_net_sol": str(realised_net_sol), "detected_at": int(time.time())}
+        state["unpriced_closed_position_ids"] = unpriced
+        _save_state(app, state)
+        return True
 
 
 def latch_drawdown(app, *, drawdown_pct, drawdown_usd) -> bool:

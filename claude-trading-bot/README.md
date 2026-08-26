@@ -297,6 +297,25 @@ current model:
   `account_closed_position()` is itself idempotent per `position_id`: once
   written, an entry's `pnl_usd`/`price_usd_used` is immutable, never
   recomputed even if reconciliation runs again later at a different price.
+- **Two-tier accounting** (strengthened per review, 2026-08-26): the
+  learnerbot positions schema has no close-time USD column, and no
+  price-history table exists anywhere in this codebase (checked) — so a
+  close discovered *after the fact* cannot be retroactively priced
+  accurately. `_guarded_sell()` diffs the set of `CLOSED` position ids
+  before/after its own call (id-set diff, not an aggregate `SUM` delta —
+  immune to a concurrent close elsewhere) and, for whatever it just closed,
+  calls `_account_positions_synchronously()` with the price fetched
+  immediately after — genuinely the close-time price. `reconcile_realized_pnl()`
+  (the generic sweep used by the monitor and at startup) NEVER prices a
+  close itself: anything it finds that isn't in either ledger yet is, by
+  construction, one the synchronous path never saw (most likely a crash
+  between the DB commit and that capture), so it's recorded in
+  `unpriced_closed_position_ids` with no price at all rather than guessed
+  at the sweep's own read-time rate — the exact "reprice at today's rate"
+  artifact review flagged, now impossible by construction rather than
+  merely avoided in the common case. `armed_health_check()` fails closed
+  while any unpriced entry remains (below) — that's the resolution path
+  (manual reconciliation), not an automatic price guess.
 - `high_water_equity_usd` seeds at the capital basis on the first-ever
   measurement, and is otherwise monotonically non-decreasing during normal
   operation. `drawdown_pct = (HWM − current) / HWM × 100`.
@@ -332,12 +351,20 @@ intact (`learnerbot.config.load_dotenv is claude_bot_quarantine._noop_load_doten
 the Claude state machine installed, the one authoritative Telegram router
 installed (`learnerbot.telegram_ui.handle_update is telegram_control_patch.handle_update`),
 both Solana execution guards still the effective wrapper on
-`SolanaLiveExecutor.buy`/`.sell`, and EVM still denied
-(`LiveTrader.buy is evm_execution_guard_patch._guarded_buy`) — buy/sell
-identity alone was reviewed as insufficient proof the whole runtime
-composition was intact. Signer fail-closed behaviour is proven by the
-signer/identity check itself, not a second redundant check. This module
-has no code path to arm,
+`SolanaLiveExecutor.buy`/`.sell`, and all four EVM signing/broadcast entry
+points `evm_execution_guard_patch.py` unconditionally guards still denied —
+`LiveTrader.buy`/`.sell`/`.execute_cycle`/`.execute_v3_cycle` each checked
+individually against their `_guarded_*` counterpart (an earlier version
+checked only `.buy`, which review correctly flagged: sell/execute_cycle/
+execute_v3_cycle could have been displaced while buy stayed intact and the
+check would still report healthy). Buy/sell identity alone was reviewed as
+insufficient proof the whole runtime composition was intact. Signer
+fail-closed behaviour is proven by the signer/identity check itself, not a
+second redundant check. `_guarded_buy()` itself calls `armed_health_check()`
+as its first check (consolidated per review rather than duplicating a
+partial copy of the same checks), so every one of these — including the
+unpriced-position check above — also blocks new entries directly, not just
+`/claude_arm_live`. This module has no code path to arm,
 clear `HALTED_DRAWDOWN`, sign, or broadcast — structurally proven (not just
 behaviorally) in `tests/test_claude_execution_and_telegram.py`.
 

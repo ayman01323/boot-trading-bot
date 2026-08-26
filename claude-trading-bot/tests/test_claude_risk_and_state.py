@@ -388,6 +388,25 @@ def test_force_off_active_transition_out_of_armed(app):
     assert claude_state.load_state(app)["operating_state"] == claude_state.OFF
 
 
+def test_mark_unpriced_closed_position_idempotent(app):
+    first = claude_state.mark_unpriced_closed_position(app, position_id="pos-X", realised_net_sol=Decimal("-1"))
+    assert first is True
+    second = claude_state.mark_unpriced_closed_position(app, position_id="pos-X", realised_net_sol=Decimal("-1"))
+    assert second is False  # already known, no-op
+    state = claude_state.load_state(app)
+    assert "pos-X" in state["unpriced_closed_position_ids"]
+    # never folded into the trustworthy running total -- that would be
+    # exactly the "guess a price" mistake review flagged
+    assert Decimal(state["cumulative_realized_pnl_usd"]) == Decimal("0")
+
+
+def test_mark_unpriced_closed_position_skipped_if_already_trustworthily_accounted(app):
+    claude_state.account_closed_position(app, position_id="pos-Y", realised_net_sol=Decimal("1"), price_usd_used=Decimal("100"))
+    marked = claude_state.mark_unpriced_closed_position(app, position_id="pos-Y", realised_net_sol=Decimal("1"))
+    assert marked is False
+    assert "pos-Y" not in claude_state.load_state(app)["unpriced_closed_position_ids"]
+
+
 def test_is_armed_false_when_halted_even_if_operating_state_stale(app):
     state = claude_state.arm(app, owner_id="owner1")
     assert claude_state.is_armed(state) is True

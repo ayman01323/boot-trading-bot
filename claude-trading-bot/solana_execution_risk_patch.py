@@ -142,14 +142,31 @@ def armed_health_check(app, telegram_id) -> str | None:
         return "Claude Solana BUY guard is no longer the effective wrapper on SolanaLiveExecutor.buy"
     if _executor.SolanaLiveExecutor.sell is not _guarded_sell:
         return "Claude Solana SELL guard is no longer the effective wrapper on SolanaLiveExecutor.sell"
+    # All four EVM signing/broadcast entry points evm_execution_guard_patch.py
+    # unconditionally guards -- review (2026-08-26) correctly flagged that
+    # checking only .buy left sell/execute_cycle/execute_v3_cycle displacement
+    # undetected, so a real EVM broadcast path could go unguarded while this
+    # check still reported healthy.
     if _evm_executor.LiveTrader.buy is not _evm_guard._guarded_buy:
-        return "EVM execution is no longer denied (evm_execution_guard_patch guard displaced)"
+        return "EVM execution is no longer denied (buy guard displaced)"
+    if _evm_executor.LiveTrader.sell is not _evm_guard._guarded_sell:
+        return "EVM execution is no longer denied (sell guard displaced)"
+    if _evm_executor.LiveTrader.execute_cycle is not _evm_guard._guarded_execute_cycle:
+        return "EVM execution is no longer denied (execute_cycle guard displaced)"
+    if _evm_executor.LiveTrader.execute_v3_cycle is not _evm_guard._guarded_execute_v3_cycle:
+        return "EVM execution is no longer denied (execute_v3_cycle guard displaced)"
     # Signer path fail-closed: already proven by the check_identity_and_signer()
     # call above -- a second, module-identity-based check here would be both
     # redundant and actively wrong in any test (or future code) that
     # legitimately substitutes signing_interface.get_signer_status for a
     # specific ready/not-ready scenario, which is a normal and correct thing
     # to do, not tampering.
+    unpriced = (claude_state.load_state(app).get("unpriced_closed_position_ids") or {})
+    if unpriced:
+        return (
+            f"{len(unpriced)} closed position(s) detected with no trustworthy close-time "
+            f"valuation -- equity cannot be trusted until manually reconciled"
+        )
     return None
 
 
@@ -196,27 +213,66 @@ def _current_unrealised_pnl_sol(app, telegram_id) -> Decimal:
         return Decimal(str(row["total"] or 0))
 
 
-def reconcile_realized_pnl(app, telegram_id) -> list[dict]:
-    """Idempotent, identity-based (position_id) reconciliation of this
-    instance's own closed LIVE positions into claude_state's realised-P&L
-    ledger. Crash-safe by construction (review, 2026-08-26): replaces an
-    earlier before/after SUM(realised_net_sol) snapshot taken around a
-    single sell call, which had a real crash window -- if the process died
-    after the sell committed to the positions DB but before the USD delta
-    was persisted, that realised P&L would never enter Claude's equity/HWM
-    accounting, permanently.
+def _closed_live_position_ids(app, telegram_id) -> set[str]:
+    with closing(_sol.connect(app)) as conn:
+        rows = conn.execute(
+            "SELECT position_id FROM positions WHERE telegram_id=? AND status='CLOSED' AND mode='LIVE'",
+            (str(telegram_id),),
+        ).fetchall()
+    return {str(row["position_id"]) for row in rows}
 
-    This function instead asks "which of this instance's closed positions,
-    by position_id, does the ledger not have yet" -- so it converges to the
-    same complete, no-double-counted total no matter when or how many times
-    it's called: immediately after a sell (the normal path, where "now" IS
-    the trade's own close time, so pricing at read time here is accurate,
-    not an artifact), every claude_monitor.py tick, and once at process
-    startup (claude_state.py's _app wrapper) to pick up anything a crash
-    left un-accounted. claude_state.account_closed_position() is itself
-    idempotent per position_id, so calling this redundantly from multiple
-    places is always safe -- there is exactly one ledger entry per
-    position_id, ever, and it is never rewritten once written."""
+
+def _account_positions_synchronously(app, telegram_id, position_ids, *, price: Decimal) -> list[dict]:
+    """Trustworthy path (review, 2026-08-26, blocker A): called ONLY from
+    _guarded_sell(), for the exact set of position_ids that call's own
+    SELECT-before/SELECT-after id-diff proved closed JUST NOW, in this same
+    function call -- so `price`, fetched immediately after, genuinely IS
+    this trade's close-time price, not an approximation. This is the only
+    function in this module allowed to price a close and call
+    claude_state.account_closed_position() with that price."""
+    if not position_ids:
+        return []
+    placeholders = ",".join("?" for _ in position_ids)
+    with closing(_sol.connect(app)) as conn:
+        rows = conn.execute(
+            f"SELECT position_id, realised_net_sol FROM positions "
+            f"WHERE telegram_id=? AND position_id IN ({placeholders})",
+            (str(telegram_id), *position_ids),
+        ).fetchall()
+    accounted = []
+    for row in rows:
+        pnl_usd = claude_state.account_closed_position(
+            app,
+            position_id=str(row["position_id"]),
+            realised_net_sol=Decimal(str(row["realised_net_sol"] or 0)),
+            price_usd_used=price,
+        )
+        if pnl_usd is not None:
+            accounted.append({"position_id": row["position_id"], "pnl_usd": pnl_usd})
+    return accounted
+
+
+def reconcile_realized_pnl(app, telegram_id) -> list[dict]:
+    """The fail-closed detection sweep (review, 2026-08-26, blocker A) --
+    called from claude_monitor.py's periodic tick, once at process startup
+    (claude_state.py's _app wrapper), and as the last step of
+    _guarded_sell(). Finds every closed LIVE position this instance's
+    ledgers don't know about yet and marks it via
+    claude_state.mark_unpriced_closed_position() -- it NEVER prices a close
+    itself (that's _account_positions_synchronously()'s job, for the exact
+    set a sell call just witnessed close). The learnerbot positions schema
+    has no close-time USD/price column, and no price-history table exists
+    anywhere in this codebase (checked), so any close this sweep finds is,
+    by construction, one the synchronous path never saw -- most likely a
+    process crash between the DB commit and that capture running. Guessing
+    a price for it (e.g. today's rate) would silently reintroduce exactly
+    the currency artifact blocker 1 originally flagged, so this deliberately
+    does not. See armed_health_check(), which fails closed while any
+    unpriced entry remains -- that is the resolution path (manual
+    reconciliation), not an automatic price guess.
+
+    Idempotent regardless of how many times or from how many places this is
+    called: an id already in either ledger is always skipped."""
     if not telegram_id:
         return []
     with closing(_sol.connect(app)) as conn:
@@ -226,22 +282,18 @@ def reconcile_realized_pnl(app, telegram_id) -> list[dict]:
             (str(telegram_id),),
         ).fetchall()
     state = claude_state.load_state(app)
-    accounted = state.get("accounted_position_ids") or {}
-    pending = [row for row in rows if str(row["position_id"]) not in accounted]
-    if not pending:
-        return []
-    price = sol_usd_price()  # one fetch for this whole reconciliation pass
-    newly_accounted = []
+    known = set(state.get("accounted_position_ids") or {}) | set(state.get("unpriced_closed_position_ids") or {})
+    pending = [row for row in rows if str(row["position_id"]) not in known]
+    newly_marked = []
     for row in pending:
-        pnl_usd = claude_state.account_closed_position(
+        marked = claude_state.mark_unpriced_closed_position(
             app,
             position_id=str(row["position_id"]),
             realised_net_sol=Decimal(str(row["realised_net_sol"] or 0)),
-            price_usd_used=price,
         )
-        if pnl_usd is not None:
-            newly_accounted.append({"position_id": row["position_id"], "pnl_usd": pnl_usd})
-    return newly_accounted
+        if marked:
+            newly_marked.append({"position_id": row["position_id"]})
+    return newly_marked
 
 
 def position_snapshot(app, telegram_id) -> dict:
@@ -365,8 +417,13 @@ def _check_and_latch_drawdown(app, telegram_id, *, limits, open_positions: int) 
 
 
 def _guarded_buy(self, output_mint: str, amount_sol, reserve_sol) -> dict:
-    check_identity_and_signer(self.app, self.telegram_id)
-    check_chain_authorised("solana")
+    # One authoritative precondition check (review, 2026-08-26) -- covers
+    # identity/signer/chain/risk-config/kill-switch/composition AND (this
+    # round) unpriced-closed-position fail-closed, instead of a second,
+    # partial copy of the same checks living here.
+    reason = armed_health_check(self.app, self.telegram_id)
+    if reason:
+        raise ExecutionGuardError(f"Not safe to enter: {reason}")
 
     state = claude_state.load_state(self.app)
     if state.get("halted_drawdown"):
@@ -406,12 +463,22 @@ def _guarded_sell(self, input_mint: str, amount_raw: int) -> dict:
     # Exits remain possible during a drawdown halt or while not armed: reducing
     # risk must never be blocked by an entry-only circuit breaker.
     check_identity_and_signer(self.app, self.telegram_id)
+    before_closed_ids = _closed_live_position_ids(self.app, self.telegram_id)
     result = _original_sell(self, input_mint, amount_raw)
-    # Post-sell reconciliation + drawdown recheck (review, 2026-08-26): a
-    # loss-realising sell must be accounted and latch+alert immediately, not
-    # wait for the next buy attempt or a crash-recovery pass. Never allowed
-    # to block or undo the exit that already completed above.
+    # Post-sell accounting + drawdown recheck (review, 2026-08-26): whatever
+    # this specific call just closed is identified precisely (id-set diff,
+    # not an aggregate SUM delta -- immune to another close happening
+    # concurrently) and priced trustworthily, right now, since "now" IS this
+    # trade's own close time. A loss-realising sell must latch+alert
+    # immediately, not wait for the next buy attempt or a crash-recovery
+    # pass. Never allowed to block or undo the exit that already completed
+    # above.
     try:
+        after_closed_ids = _closed_live_position_ids(self.app, self.telegram_id)
+        newly_closed_ids = after_closed_ids - before_closed_ids
+        if newly_closed_ids:
+            price = sol_usd_price()
+            _account_positions_synchronously(self.app, self.telegram_id, newly_closed_ids, price=price)
         limits = risk_engine_guard.RiskLimits.load()
         open_positions = _current_live_open_count(self.app, self.telegram_id)
         _check_and_latch_drawdown(self.app, self.telegram_id, limits=limits, open_positions=open_positions)

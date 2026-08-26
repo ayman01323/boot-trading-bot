@@ -115,10 +115,17 @@ def _status_text(app) -> str:
             exposure_line = f"Position/exposure data unavailable: {type(exc).__name__}\n"
 
     halted = "🛑 HALTED_DRAWDOWN" if state.get("halted_drawdown") else "not latched"
+    unpriced = state.get("unpriced_closed_position_ids") or {}
+    unpriced_line = (
+        f"⚠️ <b>{len(unpriced)} closed position(s) with no trustworthy close-time valuation</b> "
+        f"— equity untrustworthy, ARM refused until manually reconciled\n"
+        if unpriced else ""
+    )
     return (
         "<b>🤖 CLAUDE TRADING BOT — STATUS</b>\n"
         f"Effective state: <b>{claude_state.effective_state(state)}</b>\n"
         f"Drawdown latch: <b>{halted}</b>\n"
+        f"{unpriced_line}"
         f"{exposure_line}"
         f"{risk_line}"
         f"{signer_line}"
