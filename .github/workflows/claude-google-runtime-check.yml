@@ -1,0 +1,189 @@
+name: Claude Google Runtime Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-runtime-check.yml'
+      - '.github/claude-google-runtime-check.trigger'
+  workflow_dispatch:
+
+# The probe is read-only on botgoogle. Contents write is required only to
+# publish the redacted result to the existing server-diagnostics branch.
+permissions:
+  contents: write
+
+concurrency:
+  group: claude-google-runtime-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      RUNTIME_DIR: /home/ayman01323/ClaudeServer/runtime
+      RPC_CSV: /home/ayman01323/ClaudeServer/runtime/rpc_endpoints.csv
+      RUNTIME_ENV: /home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env
+    steps:
+      - name: Verify Google runner boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          test "$RUNTIME_DIR" = '/home/ayman01323/ClaudeServer/runtime'
+
+      - name: Probe runtime providers without logging secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$RPC_CSV" "$RUNTIME_ENV" > /tmp/claude-google-runtime-check.txt <<'PY'
+          import csv
+          import json
+          import socket
+          import ssl
+          import sys
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          rpc_csv = Path(sys.argv[1])
+          runtime_env = Path(sys.argv[2])
+
+          def bool_enabled(value):
+              text = str(value or '').strip().lower()
+              return text not in {'0', 'false', 'no', 'off'}
+
+          def json_rpc(url, method, timeout=10):
+              body = json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':[]}).encode()
+              req = urllib.request.Request(url, data=body, headers={'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as response:
+                      data = json.loads(response.read())
+                  return 'PASS' if 'result' in data and data.get('error') is None else 'FAIL'
+              except Exception:
+                  return 'FAIL'
+
+          def load_env(path):
+              out = {}
+              if not path.is_file():
+                  return out
+              for raw in path.read_text(encoding='utf-8').splitlines():
+                  line = raw.strip()
+                  if not line or line.startswith('#') or '=' not in line:
+                      continue
+                  key, value = line.split('=', 1)
+                  key, value = key.strip(), value.strip()
+                  if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                      value = value[1:-1]
+                  out[key] = value
+              return out
+
+          def tcp_tls_status(url):
+              try:
+                  parsed = urllib.parse.urlparse(url)
+                  host = parsed.hostname
+                  if not host:
+                      return 'FAIL'
+                  secure = parsed.scheme.lower() in {'wss', 'https'}
+                  port = parsed.port or (443 if secure else 80)
+                  with socket.create_connection((host, port), timeout=8) as sock:
+                      if secure:
+                          ctx = ssl.create_default_context()
+                          with ctx.wrap_socket(sock, server_hostname=host):
+                              pass
+                  return 'PASS'
+              except Exception:
+                  return 'FAIL'
+
+          print('report_version=1')
+          print(f'rpc_csv_present={str(rpc_csv.is_file()).lower()}')
+          if rpc_csv.is_file():
+              try:
+                  with rpc_csv.open(newline='', encoding='utf-8-sig') as handle:
+                      rows = list(csv.DictReader(handle))
+                  print(f'evm_rpc_rows={len(rows)}')
+                  enabled_rows = [r for r in rows if bool_enabled(r.get('enabled')) and str(r.get('url') or '').strip()]
+                  print(f'evm_rpc_enabled_rows={len(enabled_rows)}')
+                  by_chain = {}
+                  for row in enabled_rows:
+                      cid = str(row.get('chain_id') or '').strip()
+                      if not cid:
+                          continue
+                      try:
+                          priority = int(row.get('priority') or 999)
+                      except Exception:
+                          priority = 999
+                      by_chain.setdefault(cid, []).append((priority, str(row.get('url') or '').strip()))
+                  for cid in sorted(by_chain, key=lambda x: int(x) if x.isdigit() else 10**20):
+                      endpoints = sorted(by_chain[cid])
+                      status = json_rpc(endpoints[0][1], 'eth_blockNumber')
+                      print(f'evm_chain chain_id={cid} endpoints={len(endpoints)} rpc={status}')
+              except Exception:
+                  print('evm_rpc_csv_parse=FAIL')
+          else:
+              print('MISSING=rpc_endpoints.csv')
+
+          print(f'runtime_env_present={str(runtime_env.is_file()).lower()}')
+          env = load_env(runtime_env)
+          for key in ('SOLANA_RPC_URL','SOLANA_WS_URL','JUPITER_API_KEY'):
+              print(f'{key}_present={str(bool(env.get(key))).lower()}')
+
+          if env.get('SOLANA_RPC_URL'):
+              print('solana_rpc=' + json_rpc(env['SOLANA_RPC_URL'], 'getHealth'))
+          else:
+              print('solana_rpc=MISSING')
+
+          if env.get('SOLANA_WS_URL'):
+              print('solana_ws_transport=' + tcp_tls_status(env['SOLANA_WS_URL']))
+          else:
+              print('solana_ws_transport=MISSING')
+
+          try:
+              quote = ('https://lite-api.jup.ag/swap/v1/quote?'
+                       'inputMint=So11111111111111111111111111111111111111112&'
+                       'outputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&'
+                       'amount=10000000&slippageBps=50')
+              req = urllib.request.Request(quote, headers={'User-Agent':'BOOT-Claude-Runtime-Check/1.0'})
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  ok = response.status == 200
+              print('jupiter_public_quote=' + ('PASS' if ok else 'FAIL'))
+          except Exception:
+              print('jupiter_public_quote=FAIL')
+          PY
+          cat /tmp/claude-google-runtime-check.txt
+
+      - name: Publish redacted report for Claude
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          result=/tmp/claude-google-runtime-check.txt
+          [[ -s "$result" ]] || printf 'report_version=1\ncheck=NOT_RUN\n' > "$result"
+          {
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "hostname=$(hostname)"
+            echo "checked_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            cat "$result"
+          } > /tmp/claude-google-runtime-check-publish.txt
+
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/diagnostics/claude-google-runtime-check.txt"
+          current="$(curl -fsS -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/claude-google-runtime-check-publish.txt)"
+          payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
+          import json, sys
+          out = {'message':'Update Claude Google runtime check','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]:
+              out['sha'] = sys.argv[2]
+          print(json.dumps(out))
+          PY
+          )"
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" -d "$payload" >/dev/null
