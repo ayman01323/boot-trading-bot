@@ -1,0 +1,65 @@
+name: SiRisky Safe Diagnostics
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-safe-diagnostics.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Host identity
+        shell: bash
+        run: |
+          set -u
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo "uid=$(id -u)"
+
+      - name: SiRisky service state
+        shell: bash
+        run: |
+          set +e
+          echo '=== systemctl show ==='
+          systemctl show sirisky.service \
+            -p LoadState -p ActiveState -p SubState -p Result \
+            -p ExecMainPID -p ExecMainCode -p ExecMainStatus -p NRestarts \
+            -p FragmentPath -p User -p Group -p WorkingDirectory -p ExecStart \
+            --no-pager
+          echo
+          echo '=== systemctl is-active ==='
+          systemctl is-active sirisky.service || true
+          echo
+          echo '=== systemctl cat ==='
+          systemctl cat sirisky.service --no-pager || true
+
+      - name: Process snapshot
+        shell: bash
+        run: |
+          set +e
+          echo '=== sirisky processes ==='
+          ps -eo pid,ppid,user,state,etimes,cmd | grep -E '[r]un.py start|[s]irisky' | head -30 || true
+
+      - name: Root access boundary
+        shell: bash
+        run: |
+          set +e
+          if sudo -n true 2>/dev/null; then
+            echo 'sudo_noninteractive=PASS'
+            sudo -n bash -lc '
+              echo "target_exists=$(test -d /root/SiRisky && echo true || echo false)"
+              echo "env_exists=$(test -f /root/SiRisky/.env && echo true || echo false)"
+              echo "runtime_exists=$(test -f /root/SiRisky/CSV/runtime.csv && echo true || echo false)"
+              echo "venv_exists=$(test -x /root/SiRisky/.venv/bin/python && echo true || echo false)"
+              echo "service_state=$(systemctl is-active sirisky.service || true)"
+            '
+          else
+            echo 'sudo_noninteractive=FAIL'
+            echo 'root_file_checks=SKIPPED'
+          fi
