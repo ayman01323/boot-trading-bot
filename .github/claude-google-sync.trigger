@@ -1,5 +1,5 @@
-sync_requested_at=2026-08-26T11:03:00Z
+sync_requested_at=2026-08-26T16:24:30Z
 requested_by=gpt
-reason=sync_10_position_3pct_each_20pct_drawdown_owner_latch
+reason=sync_final_reviewed_claude_telegram_drawdown_concurrency_controls
 source_branch=main
-source_sha=548bd979d3c2189417acc59f467c0c7bf54fff6d
+source_sha=d49df95b30cf395fc07ea3621ef3cced3c4ca28d
