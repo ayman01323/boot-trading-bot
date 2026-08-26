@@ -34,7 +34,7 @@ DEFAULT_ENTRY_SOL = Decimal("0.0005")
 HARD_MAX_ENTRY_SOL = Decimal("0.001")
 MIN_RESERVE_SOL = Decimal("0.005")
 MAX_SIGNAL_AGE_SECONDS = 20
-MAX_OPEN_POSITIONS = 10
+MAX_OPEN_POSITIONS = 1
 MAX_REVERSE_IMPACT_BPS = Decimal("200")
 MAX_STRESS_IMPACT_BPS = Decimal("500")
 EXIT_IMPACT_CAP_BPS = Decimal("500")
@@ -639,7 +639,7 @@ def _start(app):
         ).start()
         _STARTED = True
         print(
-            "[sibot1-solana-live-bridge] installed=true default=OFF max_open=10 "
+            "[sibot1-solana-live-bridge] installed=true default=OFF max_open=1 "
             "canary_sol=0.0005 hard_max_sol=0.001 reserve_sol=0.005 poolcheck=fail-closed "
             "reverse=full stress=3x signed_simulation=required"
         )

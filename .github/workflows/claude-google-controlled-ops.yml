@@ -29,19 +29,6 @@ jobs:
     env:
       MANAGED_ROOT: /home/ayman01323/ClaudeServer
       MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
-      RUNTIME_ENV: /home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env
-      # Operator-owned risk profile. With a $500 capital ceiling, 3% per
-      # position is $15. Ten simultaneous positions therefore imply a maximum
-      # 30% / $150 aggregate exposure. The stronger Solana execution-size
-      # controls remain unchanged: 0.0005 SOL default canary and 0.001 SOL
-      # absolute hard maximum per entry.
-      CLAUDE_MAX_CAPITAL_USD: '500'
-      CLAUDE_MAX_POSITION_USD: '15'
-      CLAUDE_MAX_TOTAL_EXPOSURE_USD: '150'
-      CLAUDE_MAX_DAILY_LOSS_USD: '50'
-      CLAUDE_MAX_DRAWDOWN_PCT: '20'
-      CLAUDE_MAX_OPEN_POSITIONS: '10'
-      CLAUDE_AUTHORISED_CHAINS: 'solana'
     steps:
       - name: Check out trusted current main
         uses: actions/checkout@v4
@@ -129,72 +116,6 @@ jobs:
           printf 'CLAUDE_GOOGLE_SERVER_SYNC_OK\n'
           printf 'server_sha=%s\n' "$(git -C "$MANAGED_REPO" rev-parse HEAD)"
 
-      - name: Apply externally bounded Claude risk profile
-        if: steps.request.outputs.action == 'sync'
-        shell: bash
-        run: |
-          set -euo pipefail
-          umask 077
-          mkdir -p "$(dirname "$RUNTIME_ENV")"
-          RUNTIME_ENV="$RUNTIME_ENV" \
-          MAX_CAPITAL_USD="$CLAUDE_MAX_CAPITAL_USD" \
-          MAX_POSITION_USD="$CLAUDE_MAX_POSITION_USD" \
-          MAX_TOTAL_EXPOSURE_USD="$CLAUDE_MAX_TOTAL_EXPOSURE_USD" \
-          MAX_DAILY_LOSS_USD="$CLAUDE_MAX_DAILY_LOSS_USD" \
-          MAX_DRAWDOWN_PCT="$CLAUDE_MAX_DRAWDOWN_PCT" \
-          MAX_OPEN_POSITIONS="$CLAUDE_MAX_OPEN_POSITIONS" \
-          AUTHORISED_CHAINS="$CLAUDE_AUTHORISED_CHAINS" \
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          path = Path(os.environ['RUNTIME_ENV'])
-          desired = {
-              'MAX_CAPITAL_USD': os.environ['MAX_CAPITAL_USD'],
-              'MAX_POSITION_USD': os.environ['MAX_POSITION_USD'],
-              'MAX_TOTAL_EXPOSURE_USD': os.environ['MAX_TOTAL_EXPOSURE_USD'],
-              'MAX_DAILY_LOSS_USD': os.environ['MAX_DAILY_LOSS_USD'],
-              'MAX_DRAWDOWN_PCT': os.environ['MAX_DRAWDOWN_PCT'],
-              'MAX_OPEN_POSITIONS': os.environ['MAX_OPEN_POSITIONS'],
-              'AUTHORISED_CHAINS': os.environ['AUTHORISED_CHAINS'],
-          }
-          lines = path.read_text(encoding='utf-8').splitlines() if path.exists() else []
-          seen = set()
-          out = []
-          for line in lines:
-              stripped = line.lstrip()
-              if not stripped or stripped.startswith('#') or '=' not in line:
-                  out.append(line)
-                  continue
-              key = line.split('=', 1)[0].strip()
-              if key in desired:
-                  if key not in seen:
-                      out.append(f'{key}={desired[key]}')
-                      seen.add(key)
-                  continue
-              out.append(line)
-          for key, value in desired.items():
-              if key not in seen:
-                  out.append(f'{key}={value}')
-          tmp = path.with_suffix(path.suffix + '.tmp')
-          tmp.write_text('\n'.join(out).rstrip() + '\n', encoding='utf-8')
-          tmp.chmod(0o600)
-          tmp.replace(path)
-          path.chmod(0o600)
-          PY
-          echo 'claude_risk_profile_applied=true'
-          echo "max_capital_usd=$CLAUDE_MAX_CAPITAL_USD"
-          echo "max_position_usd=$CLAUDE_MAX_POSITION_USD"
-          echo 'max_position_pct=3'
-          echo "max_total_exposure_usd=$CLAUDE_MAX_TOTAL_EXPOSURE_USD"
-          echo 'max_total_exposure_pct=30'
-          echo "max_daily_loss_usd=$CLAUDE_MAX_DAILY_LOSS_USD"
-          echo "max_drawdown_pct=$CLAUDE_MAX_DRAWDOWN_PCT"
-          echo "max_open_positions=$CLAUDE_MAX_OPEN_POSITIONS"
-          echo "authorised_chains=$CLAUDE_AUTHORISED_CHAINS"
-          echo 'canary_default_sol=0.0005'
-          echo 'canary_hard_max_sol=0.001'
-
       - name: Security boundary summary
         if: always()
         shell: bash
@@ -207,5 +128,3 @@ jobs:
           echo '- no wallet/signing material authorised'
           echo '- no service restart authorised'
           echo '- sync accepts only clean fast-forward updates from repository main'
-          echo '- risk profile updates only allowlisted non-secret risk/chain variables outside git'
-          echo '- no LIVE/ARM/AUTO state is changed by this workflow'
