@@ -1,0 +1,104 @@
+name: Claude Google Provider Sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-provider-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-provider-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      RUNTIME_DIR: /home/ayman01323/ClaudeServer/runtime
+      RUNTIME_ENV: /home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env
+      SECRET_SOLANA_RPC_URL: ${{ secrets.SOLANA_RPC_URL }}
+      SECRET_SOLANA_WS_URL: ${{ secrets.SOLANA_WS_URL }}
+      SECRET_JUPITER_API_KEY: ${{ secrets.JUPITER_API_KEY }}
+    steps:
+      - name: Verify Google runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+      - name: Write Claude provider runtime without logging secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNTIME_DIR"
+          chmod 700 "$RUNTIME_DIR"
+
+          rpc_source=github_secret
+          ws_source=github_secret
+          if [ -z "${SECRET_SOLANA_RPC_URL:-}" ]; then
+            SECRET_SOLANA_RPC_URL='https://api.mainnet-beta.solana.com'
+            rpc_source=public_fallback
+          fi
+          if [ -z "${SECRET_SOLANA_WS_URL:-}" ]; then
+            SECRET_SOLANA_WS_URL='wss://api.mainnet-beta.solana.com'
+            ws_source=public_fallback
+          fi
+
+          umask 077
+          tmp="${RUNTIME_ENV}.tmp"
+          {
+            printf 'SOLANA_RPC_URL=%s\n' "$SECRET_SOLANA_RPC_URL"
+            printf 'SOLANA_WS_URL=%s\n' "$SECRET_SOLANA_WS_URL"
+            if [ -n "${SECRET_JUPITER_API_KEY:-}" ]; then
+              printf 'JUPITER_API_KEY=%s\n' "$SECRET_JUPITER_API_KEY"
+            fi
+          } > "$tmp"
+          mv "$tmp" "$RUNTIME_ENV"
+          chmod 600 "$RUNTIME_ENV"
+
+          {
+            echo 'CLAUDE_GOOGLE_PROVIDER_SYNC_OK'
+            echo "rpc_source=$rpc_source"
+            echo "ws_source=$ws_source"
+            if [ -n "${SECRET_JUPITER_API_KEY:-}" ]; then
+              echo 'jupiter_api_key=present'
+            else
+              echo 'jupiter_api_key=absent_optional'
+            fi
+            echo "runtime_env=$RUNTIME_ENV"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Connectivity checks without exposing provider URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$RUNTIME_ENV"
+          set +a
+          python3 - <<'PY'
+          import json, os, urllib.request
+          url=os.environ['SOLANA_RPC_URL']
+          req=urllib.request.Request(url, data=json.dumps({'jsonrpc':'2.0','id':1,'method':'getHealth'}).encode(), headers={'Content-Type':'application/json'})
+          with urllib.request.urlopen(req, timeout=15) as r:
+              data=json.load(r)
+          if data.get('result') != 'ok':
+              raise SystemExit(f"Solana RPC health failed: {data.get('error') or data.get('result')}")
+          print('solana_rpc_health=ok')
+          PY
+
+      - name: Safety summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo 'No secret values are printed.'
+            echo 'Writes only under /home/ayman01323/ClaudeServer/runtime.'
+            echo 'No sudo, /root, wallet/signing, service restart, trading, risk/capital or LIVE/ARMED authority.'
+          } >> "$GITHUB_STEP_SUMMARY"
