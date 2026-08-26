@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from contextlib import closing
 from pathlib import Path
@@ -44,14 +45,39 @@ def _providers(app):
     return out
 
 
+def _verified_endpoint_pool_active() -> bool:
+    """Accept only the audited endpoint-pool wrapper around trace/progressive history.
+
+    Do not import the endpoint-pool module here: this health module must verify the
+    already-composed runtime, not change composition merely by checking it.
+    """
+    active = _sibot.refresh_wallet_history
+    if getattr(active, "__module__", "") != "learnerbot.sibot_alchemy_endpoint_pool_patch":
+        return False
+    if getattr(active, "__name__", "") != "refresh_wallet_history_with_endpoint_pool":
+        return False
+    module = sys.modules.get("learnerbot.sibot_alchemy_endpoint_pool_patch")
+    if module is None:
+        return False
+    return getattr(module, "_PREV_REFRESH", None) is _trace_progress.refresh_wallet_history
+
+
 def _assert_alchemy_runtime() -> None:
-    """Fail startup if the final history refresher ever falls back to legacy code."""
-    if _sibot.refresh_wallet_history is not _trace_progress.refresh_wallet_history:
-        active = getattr(_sibot.refresh_wallet_history, "__module__", "unknown")
-        raise RuntimeError(
-            "EVM history runtime invariant failed: final refresh is not the Alchemy "
-            f"trace/progressive wrapper (active={active})"
-        )
+    """Fail startup unless the final history path remains progressive Alchemy.
+
+    A bounded endpoint-pool wrapper is allowed only when its captured inner function
+    is exactly the audited trace/progressive refresher. Arbitrary wrappers or legacy
+    history implementations remain rejected.
+    """
+    if _sibot.refresh_wallet_history is _trace_progress.refresh_wallet_history:
+        return
+    if _verified_endpoint_pool_active():
+        return
+    active = getattr(_sibot.refresh_wallet_history, "__module__", "unknown")
+    raise RuntimeError(
+        "EVM history runtime invariant failed: final refresh is not the Alchemy "
+        f"trace/progressive path or its verified endpoint-pool wrapper (active={active})"
+    )
 
 
 def _provider_error_truth(app, chain) -> dict:
@@ -207,7 +233,12 @@ def install():
     _health.build_report = build_report
     _health._publish_startup_health = _publish_startup_health
     _health._alchemy_history_health_patch_installed = True
-    print("[sibot-alchemy-runtime] final_refresh=trace_progress legacy_etherscan_runtime=false")
+    active = (
+        "endpoint_pool>trace_progress"
+        if _verified_endpoint_pool_active()
+        else "trace_progress"
+    )
+    print(f"[sibot-alchemy-runtime] final_refresh={active} legacy_etherscan_runtime=false")
 
 
 install()
