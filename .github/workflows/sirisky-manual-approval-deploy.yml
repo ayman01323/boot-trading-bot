@@ -1,0 +1,114 @@
+name: SiRisky Manual Approval Deploy
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-manual-approval-deploy.yml'
+      - 'SiRisky/overrides/sirisky/manual_approval.py'
+      - 'SiRisky/overrides/sirisky/engine.py'
+      - 'SiRisky/overrides/sirisky/stage5_trade.py'
+      - 'SiRisky/overrides/run.py'
+      - 'SiRisky/overrides/tests/test_manual_approval.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy manual per-trade approval safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n test -d /root/SiRisky
+          sudo -n test -f /root/SiRisky/run.py
+
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          echo '=== BACKUP ==='
+          for f in engine.py stage5_trade.py; do
+            sudo -n cp -a "/root/SiRisky/sirisky/$f" "/root/SiRisky/sirisky/$f.${stamp}.manual-approval.bak"
+          done
+          sudo -n cp -a /root/SiRisky/run.py "/root/SiRisky/run.py.${stamp}.manual-approval.bak"
+
+          echo '=== INSTALL ==='
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/manual_approval.py /root/SiRisky/sirisky/manual_approval.py
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage5_trade.py /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n install -m 0644 SiRisky/overrides/run.py /root/SiRisky/run.py
+          sudo -n install -m 0644 SiRisky/overrides/tests/test_manual_approval.py /root/SiRisky/tests/test_manual_approval.py
+
+          echo '=== RUNTIME SETTINGS ==='
+          sudo -n python3 - /root/SiRisky/CSV/runtime.csv <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+          by={str(r.get('setting') or ''):r for r in rows}
+          updates={
+            'manual_approval_enabled':('1','Every Stage-3-approved BUY/SELL stops at WAITING_FOR_MANUAL_APPROVAL'),
+            'manual_approval_ttl_seconds':('60','Each immutable trade proposal expires after 60 seconds'),
+            'manual_approval_require_external_signature':('1','Final signing must be external/manual; server wallet cannot broadcast through this gate'),
+          }
+          for k,(v,note) in updates.items():
+            if k in by:
+              by[k]['value']=v; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':v,'notes':note}; rows.append(row); by[k]=row
+          # Safety invariant: this deployment never arms autonomous transaction broadcast.
+          for k,note in (
+            ('broadcast_enabled','Locked: real transaction broadcast remains off'),
+            ('telegram_manual_run_enabled','Locked: Telegram cannot trigger an execution cycle'),
+          ):
+            if k in by:
+              by[k]['value']='0'; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':'0','notes':note}; rows.append(row); by[k]=row
+          with p.open('w',encoding='utf-8',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=['setting','value','notes']); w.writeheader(); w.writerows(rows)
+          PY
+
+          echo '=== APPROVAL CSV ==='
+          sudo -n python3 - /root/SiRisky/CSV/pending_approvals.csv <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          headers=['created_epoch','expires_epoch','order_id','action','pool_id','mint','amount_raw','amount_display','expected_output_raw','min_output_raw','slippage_bps','price_impact_pct','estimated_fee_lamports','exit_health_pct','strategy_id','opportunity_id','route_summary','proposal_hash','status']
+          if not p.exists():
+            with p.open('w',encoding='utf-8',newline='') as f: csv.writer(f).writerow(headers)
+          PY
+
+          echo '=== COMPILE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && .venv/bin/python -m compileall -q sirisky run.py tests'
+
+          echo '=== SELFTEST ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py selftest'
+
+          echo '=== SAFE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
+
+          echo '=== RESTART ==='
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+
+          echo '=== MANUAL APPROVAL GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|manual_approval_enabled|manual_approval_ttl_seconds|manual_approval_require_external_signature)$/' /root/SiRisky/CSV/runtime.csv
+
+          echo '=== PENDING APPROVALS ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py approvals'
+
+          echo '=== SAFETY ASSERTIONS ==='
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="manual_approval_require_external_signature"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          sudo -n grep -q 'MANUAL_APPROVAL_EXTERNAL_SIGNATURE_REQUIRED' /root/SiRisky/sirisky/stage5_trade.py
+          echo 'manual_approval_gate=ON'
+          echo 'external_manual_signature=REQUIRED'
+          echo 'real_transaction_broadcast=NO'
