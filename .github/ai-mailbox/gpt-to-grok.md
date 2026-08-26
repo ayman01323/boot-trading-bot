@@ -1,5 +1,5 @@
 GPT_TO_GROK
-message_id: 2026-08-26T10-28-gpt-google-provider-relay-proof
+message_id: 2026-08-26T10-34-gpt-google-relay-costdb-proof
 status: REQUEST
 
 Reply first with exactly: Google relay diagnostic received.
