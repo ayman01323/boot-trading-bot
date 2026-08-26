@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy automatic Stage 1 discovery safely
+      - name: Deploy automatic Stage 1 discovery and armed manual evaluation safely
         shell: bash
         run: |
           set -euo pipefail
@@ -34,7 +34,7 @@ jobs:
           sudo -n install -m 0644 SiRisky/overrides/sirisky/stage1_data.py /root/SiRisky/sirisky/stage1_data.py
           sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
 
-          echo '=== UPDATE AUTO SETTINGS ==='
+          echo '=== UPDATE ARMED MANUAL AUTO SETTINGS ==='
           sudo -n python3 - /root/SiRisky/CSV/runtime.csv <<'PY'
           import csv, sys
           from pathlib import Path
@@ -42,23 +42,34 @@ jobs:
           rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
           by={str(r.get('setting') or ''):r for r in rows}
           updates={
+            'live_enabled':('1','Live monitoring and automatic candidate evaluation enabled'),
+            'armed_manual_approval':('1','ARMED: automatic Stage-1 to Stage-2/3 evaluation; final transaction requires manual external signature'),
             'auto_discovery_enabled':('1','Continuously discover fresh Solana pools from public market data'),
             'auto_discovery_interval_seconds':('60','Refresh new-pool discovery at most once per minute'),
             'auto_candidate_limit':('25','Keep the highest-ranked automatic Stage 1 candidates'),
             'auto_enrich_limit':('12','Maximum DEX Screener enrichments per discovery refresh'),
             'auto_min_liquidity_usd':('250','Cheap Stage 1 liquidity floor; Stage 3 remains the risk gate'),
             'auto_max_age_seconds':('7200','Keep pools up to two hours old in automatic discovery'),
-            'auto_probe_sol':('0.0005','Quote-only probe size for later evaluation'),
+            'auto_probe_sol':('0.0005','Quote-only probe size for evaluation'),
             'auto_dex_allowlist':('raydium,pump,meteora,orca,moonit','Automatic discovery DEX families'),
-            'auto_promote_to_selected':('0','Discovery never auto-promotes a pool into execution approval'),
+            'auto_promote_to_selected':('1','Automatically feed ranked candidates into Stage 2/3 evaluation only; no autonomous broadcast'),
+            'auto_evaluate_candidate_limit':('5','Evaluate up to five ranked candidates per entry cycle until one passes Stage 3'),
+            'manual_approval_enabled':('1','Every Stage-3-approved BUY/SELL stops at WAITING_FOR_MANUAL_APPROVAL'),
+            'manual_approval_require_external_signature':('1','Final signing must be external/manual'),
           }
           for k,(v,note) in updates.items():
             if k in by:
               by[k]['value']=v; by[k]['notes']=note
             else:
               row={'setting':k,'value':v,'notes':note}; rows.append(row); by[k]=row
-          for k in ('broadcast_enabled','telegram_manual_run_enabled'):
-            if k in by: by[k]['value']='0'
+          for k,note in (
+            ('broadcast_enabled','Locked: no autonomous real-money transaction broadcast'),
+            ('telegram_manual_run_enabled','Locked: Telegram cannot directly execute a real transaction'),
+          ):
+            if k in by:
+              by[k]['value']='0'; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':'0','notes':note}; rows.append(row); by[k]=row
           with p.open('w',encoding='utf-8',newline='') as f:
             w=csv.DictWriter(f,fieldnames=['setting','value','notes']); w.writeheader(); w.writerows(rows)
           PY
@@ -78,9 +89,6 @@ jobs:
           echo '=== FORCED AUTO DISCOVERY TEST ==='
           sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -c '\''from sirisky.config import Settings; from sirisky.stage1_data import Stage1Data; print(Stage1Data(Settings.load()).discover(force=True))'\'''
 
-          echo '=== AUTO CANDIDATES (TOP 10) ==='
-          sudo -n head -n 11 /root/SiRisky/CSV/stage1_candidates.csv
-
           echo '=== SAFE CHECK ==='
           sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
 
@@ -89,8 +97,28 @@ jobs:
 
           echo '=== SERVICE ==='
           systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
-          echo '=== AUTO SETTINGS ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_discovery_interval_seconds|auto_candidate_limit|auto_min_liquidity_usd|auto_max_age_seconds|auto_promote_to_selected)$/' /root/SiRisky/CSV/runtime.csv
+          test "$(systemctl is-active sirisky.service)" = 'active'
+
+          echo '=== ARMED MANUAL AUTO SETTINGS ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|armed_manual_approval|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_discovery_interval_seconds|auto_candidate_limit|auto_min_liquidity_usd|auto_max_age_seconds|auto_promote_to_selected|auto_evaluate_candidate_limit|manual_approval_enabled|manual_approval_require_external_signature)$/' /root/SiRisky/CSV/runtime.csv
+
+          echo '=== CANDIDATE COUNT ==='
+          sudo -n awk 'END{print NR-1}' /root/SiRisky/CSV/stage1_candidates.csv
+
+          echo '=== ONE SAFE AUTO-EVALUATION CYCLE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py once' || true
+
+          echo '=== PENDING APPROVALS ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py approvals' || true
+
           echo '=== FINAL SAFETY ASSERT ==='
+          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="armed_manual_approval"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="auto_promote_to_selected"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="manual_approval_require_external_signature"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
           test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'armed_manual_approval=YES'
+          echo 'auto_candidate_evaluation=YES'
+          echo 'external_manual_signature=REQUIRED'
           echo 'real_transaction_broadcast=NO'
