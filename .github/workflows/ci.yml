@@ -1,4 +1,4 @@
-name: Install Google Production Deployer and Run Bot
+name: Start Only Migrated Google Learnerbot
 
 on:
   push:
@@ -11,45 +11,39 @@ permissions:
   contents: read
 
 concurrency:
-  group: google-production-deployer-and-run
+  group: start-only-google-production-learnerbot
   cancel-in-progress: false
 
 jobs:
-  install-and-run:
-    name: Install restricted deploy bridge and restart Google learnerbot
+  start-google-learnerbot:
+    name: Ensure only migrated Google learnerbot is running
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Verify Google runner and sudo
+      - name: Verify Google boundary
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          sudo -n true
-          echo 'GOOGLE_RUNNER_SUDO_READY=true'
+          sudo -n -l /usr/local/sbin/status-google-production-cutover >/dev/null 2>&1
+          sudo -n -l /usr/local/sbin/activate-google-production-bot >/dev/null 2>&1
 
-      - name: Install restricted Google production deploy bridge
+      - name: Start migrated learnerbot only if needed
         shell: bash
         run: |
           set -euo pipefail
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/migration/google-production-cutover/scripts/install_google_production_deployer.sh \
-            -o "$tmp"
-          sudo -n bash "$tmp"
-
-      - name: Restart only Google production learnerbot
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo -n /usr/local/sbin/status-google-production-bot
-          sudo -n /usr/local/sbin/restart-google-production-bot
-          sleep 10
-          OUT="$(sudo -n /usr/local/sbin/status-google-production-bot)"
-          printf '%s\n' "$OUT"
-          grep -q '^google_service_active=active$' <<<"$OUT"
-          grep -q '^google_service_enabled=enabled$' <<<"$OUT"
-          grep -q '^google_process_cwd=/root/multichain-learning-bot-v2.2-fast-direct-market$' <<<"$OUT"
+          BEFORE="$(sudo -n /usr/local/sbin/status-google-production-cutover)"
+          printf '%s\n' "$BEFORE"
+          if grep -q '^google_service_active=active$' <<<"$BEFORE"; then
+            echo 'GOOGLE_PRODUCTION_ALREADY_RUNNING=true'
+          else
+            sudo -n /usr/local/sbin/activate-google-production-bot
+          fi
+          sleep 5
+          AFTER="$(sudo -n /usr/local/sbin/status-google-production-cutover)"
+          printf '%s\n' "$AFTER"
+          grep -q '^google_service_active=active$' <<<"$AFTER"
+          grep -q '^google_service_enabled=enabled$' <<<"$AFTER"
+          grep -q '^google_process_cwd=/root/multichain-learning-bot-v2.2-fast-direct-market$' <<<"$AFTER"
           echo 'GOOGLE_PRODUCTION_RUN_VERIFIED=true'
