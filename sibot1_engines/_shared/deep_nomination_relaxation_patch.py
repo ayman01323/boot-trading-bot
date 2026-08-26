@@ -38,8 +38,9 @@ def _grok_load(path):
         s,
         min_confidence=min(s.min_confidence, Decimal("0.52")),
         min_volume_velocity=min(s.min_volume_velocity, Decimal("0.005")),
-        # Never turn unknown developer flow into known-safe evidence.
-        reject_dev_selling=True if s.reject_dev_selling else s.reject_dev_selling,
+        # Developer selling stays rejected even if an older settings CSV disabled it.
+        # The engine's separate "known" flag also remains fail-closed for unknown flow.
+        reject_dev_selling=True,
     )
 
 
