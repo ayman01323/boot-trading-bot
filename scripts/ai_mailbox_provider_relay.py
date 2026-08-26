@@ -3,8 +3,25 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import sys
 import tempfile
+import types
 from pathlib import Path
+
+# This relay is deliberately communication-only and runs in a tiny isolated
+# environment. Importing learnerbot normally executes learnerbot/__init__.py,
+# which bootstraps trading/runtime patches (including Web3 dependencies) that
+# the relay neither needs nor should load. Create only the package namespace so
+# the provider/cost modules can use their normal relative imports without
+# executing the trading runtime package initialiser.
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_LEARNERBOT_DIR = _REPO_ROOT / "learnerbot"
+if "learnerbot" not in sys.modules:
+    package = types.ModuleType("learnerbot")
+    package.__path__ = [str(_LEARNERBOT_DIR)]
+    package.__package__ = "learnerbot"
+    package.__file__ = str(_LEARNERBOT_DIR / "__init__.py")
+    sys.modules["learnerbot"] = package
 
 from learnerbot.ai_cost_provider_patch import call_provider
 
