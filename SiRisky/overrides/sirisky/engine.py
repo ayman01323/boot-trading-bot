@@ -27,29 +27,40 @@ class SiRiskyEngine:
 
     def _manual_approval_enabled(self): return as_bool(self.settings.runtime().get("manual_approval_enabled"),False)
 
+    def _auto_candidate_evaluation_enabled(self): return as_bool(self.settings.runtime().get("auto_promote_to_selected"),False)
+
+    def _candidate_limit(self):
+        try: return max(1,min(25,int(float(self.settings.runtime().get("auto_evaluate_candidate_limit") or 5))))
+        except Exception: return 5
+
+    def _candidate_pools(self):
+        rows=read_rows(self.settings.csv_dir/"stage1_candidates.csv")
+        out=[]
+        for row in rows[:self._candidate_limit()]:
+            if str(row.get("status") or "DISCOVERED").upper() not in {"DISCOVERED","READY","CANDIDATE"}: continue
+            pool=dict(row)
+            # Auto-promotion is evaluation-only. It satisfies the existing Stage-2
+            # MANUAL_READY trigger in memory, but Stage 5 still cannot broadcast
+            # because manual approval + external signature remain mandatory.
+            pool["manual_ready"]="1"
+            pool["enabled"]="1"
+            if not pool.get("temperature_hint"): pool["temperature_hint"]=pool.get("temperature") or "COLD"
+            out.append(pool)
+        return out
+
     def _save_open(self, rows): write_rows_atomic(self.settings.csv_dir/"open_positions.csv",OPEN_HEADERS,rows)
 
     def _log_order(self, order): append_row(self.settings.csv_dir/"orders.csv",ORDER_HEADERS,{"timestamp":int(time.time()),"order_id":order.order_id,"action":order.action,"mint":order.mint,"amount_raw":order.amount_raw,"opportunity_id":order.opportunity_id,"reason":order.reason})
 
-    def entry_cycle(self):
-        # Stage 1 discovers fresh Solana pools automatically from public market data.
-        # Discovery writes CSV/stage1_candidates.csv only; it never auto-promotes a
-        # candidate into the execution-approved stage1_selected_pools.csv.
-        if hasattr(self.s1, "discover_if_due"):
-            discovery=self.s1.discover_if_due()
-        else:
-            # Keeps existing isolated flow tests/stubs compatible.
-            discovery={"status":"TEST_STUB","count":0,"updated":False}
-        pools=self.settings.selected_pools()
-        if not pools:
-            count=int(discovery.get("count") or 0)
-            status="AUTO_CANDIDATES_READY" if count else "NO_ENABLED_POOL"
-            return {"status":status,"candidate_count":count,"discovery":discovery}
-        pool=pools[0]
-        probe=float(pool.get("probe_sol") or 0.0005); snap=self.s1.snapshot(pool,probe); opp=self.s2.create_opportunity(snap,pool)
+    def _evaluate_pool_for_entry(self,pool,discovery):
+        try:
+            probe=float(pool.get("probe_sol") or 0.0005); snap=self.s1.snapshot(pool,probe)
+        except Exception as exc:
+            return {"status":"CANDIDATE_QUOTE_REJECT","pool_id":str(pool.get("pool_id") or ""),"error":type(exc).__name__,"discovery":discovery}
+        opp=self.s2.create_opportunity(snap,pool)
         if not opp: return {"status":"NO_TRIGGER","pool_id":snap.pool_id,"discovery":discovery}
         risk=self.s3.check(opp); append_row(self.settings.csv_dir/"risk_checks.csv",RISK_HEADERS,{"timestamp":int(time.time()),"opportunity_id":opp.opportunity_id,"pool_id":opp.pool_id,"mint":opp.mint,"passed":str(risk.passed).lower(),"reasons":"|".join(risk.reasons),"forecast_net_pct":f"{opp.forecast_net_pct:.6f}","exit_health_pct":f"{opp.snapshot.exit_health_pct:.6f}"})
-        if not risk.passed: return {"status":"RISK_REJECT","reasons":risk.reasons,"discovery":discovery}
+        if not risk.passed: return {"status":"RISK_REJECT","pool_id":opp.pool_id,"reasons":risk.reasons,"discovery":discovery}
         order=self.s4.buy_order(opp); self._log_order(order)
         if self._manual_approval_enabled():
             try:
@@ -62,6 +73,36 @@ class SiRiskyEngine:
         pos={"position_id":"pos-"+uuid.uuid4().hex[:12],"opportunity_id":opp.opportunity_id,"strategy_id":opp.strategy_id,"age_class":opp.age_class,"temperature":opp.temperature,"mint":opp.mint,"opened_epoch":int(time.time()),"entry_sol":opp.position_sol,"entry_lamports":order.amount_raw,"token_raw":token_raw,"target_net_pct":max(0.1,opp.forecast_net_pct),"max_hold_seconds":opp.max_hold_seconds,"mode":mode,"buy_signature":result.get("signature","") or "","status":"OPEN"}
         rows=self.open_positions(); rows.append(pos); self._save_open(rows)
         return {"status":"OPENED","position":pos,"execution":result,"discovery":discovery}
+
+    def entry_cycle(self):
+        if hasattr(self.s1,"discover_if_due"):
+            discovery=self.s1.discover_if_due()
+        else:
+            discovery={"status":"TEST_STUB","count":0,"updated":False}
+
+        pools=self.settings.selected_pools()
+        auto_mode=False
+        if not pools and self._auto_candidate_evaluation_enabled():
+            pools=self._candidate_pools(); auto_mode=True
+        if not pools:
+            count=int(discovery.get("count") or 0)
+            status="AUTO_CANDIDATES_READY" if count else "NO_ENABLED_POOL"
+            return {"status":status,"candidate_count":count,"discovery":discovery}
+
+        # In auto-armed manual-approval mode, try the highest-ranked candidates
+        # until one reaches Stage 3 PASS. No transaction can be broadcast here.
+        if auto_mode:
+            last={"status":"NO_TRIGGER","discovery":discovery}
+            attempted=0
+            for pool in pools:
+                attempted+=1
+                result=self._evaluate_pool_for_entry(pool,discovery)
+                if result.get("status") in {"WAITING_FOR_MANUAL_APPROVAL","MANUAL_APPROVAL_PREP_FAILED"}:
+                    result["auto_candidate_evaluation"]=True; result["attempted_candidates"]=attempted; return result
+                last=result
+            last["auto_candidate_evaluation"]=True; last["attempted_candidates"]=attempted; return last
+
+        return self._evaluate_pool_for_entry(pools[0],discovery)
 
     def monitor_cycle(self):
         rows=self.open_positions()
