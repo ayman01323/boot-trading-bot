@@ -50,3 +50,8 @@ from . import telegram_sibot1_duplicate_secret_scrub_patch as _sibot1_duplicate_
 # provider scheduling, discovery allocation and evidence qualification only; it
 # does not enable any execution gate or bypass PoolCheck/simulation/signer controls.
 from . import deep_trading_pipeline_repair_patch as _deep_pipeline_repair  # noqa: E402,F401
+# Preserve explicit existing/operator configuration semantics around that repair:
+# the 10-minute provider circuit blocks network calls without rewriting scheduler
+# timing, and adaptive quality relaxes from configured baselines rather than
+# replacing them.
+from . import deep_trading_pipeline_config_compat_patch as _deep_pipeline_compat  # noqa: E402,F401
