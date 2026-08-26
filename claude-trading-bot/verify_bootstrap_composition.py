@@ -7,7 +7,7 @@ No transaction is ever constructed, signed, or broadcast by this script.
 
 Usage: python verify_bootstrap_composition.py
 Requires the same env as `run.py check` (CSV_DIR, DATA_DIR,
-CLAUDE_BOT_WALLET_OWNER_ID, MAX_* risk vars, AUTHORISED_CHAINS). Must run on
+CLAUDE_BOT_WALLET_OWNER_ID, CLAUDE_CAPITAL_BASIS_USD, AUTHORISED_CHAINS). Must run on
 Linux (the target OS, matching botgoogle) -- some patches in learnerbot's
 chain import POSIX-only modules (fcntl) that don't exist on Windows.
 

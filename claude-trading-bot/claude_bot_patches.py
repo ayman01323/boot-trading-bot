@@ -21,9 +21,13 @@ from __future__ import annotations
 import identity_patch
 import evm_execution_guard_patch
 import solana_execution_risk_patch
+import claude_state
+import telegram_control_patch
 
 
 def install_all() -> None:
     identity_patch.install()
     solana_execution_risk_patch.install()
     evm_execution_guard_patch.install()
+    claude_state.install()
+    telegram_control_patch.install()

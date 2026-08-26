@@ -148,7 +148,15 @@ from . import solana_operator_writeoff_8fip_migration as _writeoff_8fip  # noqa:
 _writeoff_8fip.apply()
 from . import solana_stuck_owner_warning_v2_patch  # noqa: E402,F401
 from . import telegram_ai_target_score_patch  # noqa: E402,F401
-# One-time outbound connectivity proof for the isolated Claude design. It wraps
-# only app construction after all audited trading-hook checks have passed and
-# cannot change LIVE/ARM/AUTO/signer state.
-from . import telegram_claude_smoke_patch  # noqa: E402,F401
+# NOTE: a prior "telegram_claude_smoke_patch" one-time connectivity-proof
+# import used to live here. Removed (2026-08-26) because it had no
+# environment gate distinguishing the isolated Claude instance from this
+# production process -- it fired identically whichever one imported this
+# module, meaning it could send a real Telegram message through
+# PRODUCTION's own bot token/master chat ids on production's own next
+# restart, marker-gated only in production's own data dir. That is exactly
+# the isolation violation this file's own audited-hooks check exists to
+# prevent. The Claude-specific connectivity test now lives entirely in
+# claude-trading-bot/telegram_connectivity_test.py, is never auto-installed
+# into any patch chain, and only ever runs via an explicit manual command
+# inside the isolated Claude instance.

@@ -1,48 +1,48 @@
-"""Additional hard risk limits for claude-trading-bot.
+"""Single source of truth for Claude-bot risk definitions.
 
-This sits IN FRONT OF the reused learnerbot execution engines — actually
-consulted by solana_execution_risk_patch.py before every Solana LIVE buy,
-not just validated at startup (that gap was flagged in review and fixed).
-It only ever adds a tighter constraint on top of the existing, unmodified
-gates in learnerbot/live_executor.py, learnerbot/solana_live_executor.py,
-evm_pool_rug_gate.py and solana_pool_risk_gate.py — it never loosens or
-replaces any of them. If a required limit is missing or invalid, load()
-raises and the caller must refuse to start LIVE mode.
+Consolidated per direct owner instruction (2026-08-26): the previous version
+of this module let the operator set MAX_POSITION_USD / MAX_TOTAL_EXPOSURE_USD
+/ MAX_DAILY_LOSS_USD / MAX_OPEN_POSITIONS / MAX_DRAWDOWN_PCT as five
+independent dollar/percent knobs. The owner's instruction was explicit: do
+not hard-code or assume any dollar figure, and do not treat values that
+happened to exist in old commits/runtime files as authoritative. Position
+size, aggregate exposure, open-position count, and drawdown are now the
+owner-approved constants below (OWNER_MAX_*), calculated dynamically against
+exactly one operator-provided number: the actual owner-approved Claude
+trading capital/equity basis (CLAUDE_CAPITAL_BASIS_USD). There is nothing
+left to independently misconfigure -- one basis in, everything else derived.
 
-Scope note (per review): this contract intentionally does NOT include
-slippage, price-impact, or minimum-liquidity limits. Those dimensions are
-already governed by the reused, already-reviewed code this bot runs
-unmodified:
-  - price impact: solana_pool_risk_gate.py's reference_reverse_depth_check(),
-    hard-capped at 200 bps
-  - minimum liquidity / LP lock: solana_pool_risk_gate.py's
-    evaluate_rugcheck() (LP-locked-pct floor) and evaluate_dexscreener()
-    (liquidity floor, pool-age cooling, liquidity-collapse detection)
-  - slippage: solana_live_executor.py's Jupiter slippageBps parameter plus
-    its mandatory post-execution economic validation (rejects if executed
-    input/output don't reconcile)
-A second, Claude-specific implementation of the same checks would either be
-redundant with those or, worse, subtly inconsistent with logic that's
-already been reviewed — so this module does not attempt it. What IS unique
-to this contract (nothing reused already tracks these in absolute USD terms
-for this specific instance) is daily loss and drawdown, which
-check_daily_loss_and_drawdown() enforces for real against this instance's
-own closed-position history.
+This module defines position/exposure/open-count limits and the threshold
+constants. It does NOT compute drawdown (see claude_state.evaluate_drawdown()
+for the equity/high-water-mark model -- an earlier version of this file
+computed drawdown itself from closed-position-only realised P&L, which
+review (2026-08-26) correctly rejected: it missed unrealised/open-position
+losses and mixed a fixed USD basis against a SOL amount priced at read time)
+and it does not decide what happens on breach (see claude_state.py for the
+persistent HALTED_DRAWDOWN latch) or touch execution (see
+solana_execution_risk_patch.py, which consults this module and claude_state
+before every buy, after every sell, and on a periodic health check while
+ARMED -- see claude_monitor.py). It still sits in front of the reused,
+unmodified learnerbot execution engines and never loosens or replaces their
+own gates (PoolCheck/RugCheck, slippage, price-impact, liquidity -- see
+solana_pool_risk_gate.py / solana_live_executor.py).
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal
 
-REQUIRED_FLOAT_VARS = (
-    "MAX_CAPITAL_USD",
-    "MAX_POSITION_USD",
-    "MAX_TOTAL_EXPOSURE_USD",
-    "MAX_DAILY_LOSS_USD",
-    "MAX_DRAWDOWN_PCT",
-)
-REQUIRED_INT_VARS = ("MAX_OPEN_POSITIONS",)
+# Owner-approved constants (2026-08-26 combined owner instruction). These are
+# fixed by direct instruction, not environment-configurable -- there is
+# exactly one number left for the operator to supply: the capital basis.
+OWNER_MAX_OPEN_POSITIONS = 10
+OWNER_MAX_POSITION_PCT = Decimal("3.00")
+OWNER_MAX_TOTAL_EXPOSURE_PCT = Decimal("30.00")
+OWNER_MAX_DRAWDOWN_PCT = Decimal("20.00")
+
+CAPITAL_BASIS_VAR = "CLAUDE_CAPITAL_BASIS_USD"
 
 
 class RiskGuardConfigError(RuntimeError):
@@ -50,113 +50,108 @@ class RiskGuardConfigError(RuntimeError):
 
 
 class DrawdownLimitBreached(RiskGuardConfigError):
-    """Specific drawdown breach used by the execution layer to latch trading off."""
+    """Raised when current drawdown has reached/exceeded OWNER_MAX_DRAWDOWN_PCT."""
 
-    def __init__(self, *, drawdown_pct: float, limit_pct: float, drawdown_usd: float):
-        self.drawdown_pct = float(drawdown_pct)
-        self.limit_pct = float(limit_pct)
-        self.drawdown_usd = float(drawdown_usd)
+    def __init__(self, *, drawdown_pct: Decimal, drawdown_usd: Decimal):
+        self.drawdown_pct = drawdown_pct
+        self.drawdown_usd = drawdown_usd
         super().__init__(
-            f"Drawdown {self.drawdown_pct:.2f}% of MAX_CAPITAL_USD reached/exceeded "
-            f"MAX_DRAWDOWN_PCT {self.limit_pct:.2f}%"
+            f"Drawdown {drawdown_pct:.2f}% of {CAPITAL_BASIS_VAR} reached/exceeded "
+            f"the owner-approved limit {OWNER_MAX_DRAWDOWN_PCT:.2f}%"
         )
+
+
+def quantize_pct(value: Decimal) -> Decimal:
+    """Round to 2dp the same way for every percentage comparison in this
+    codebase -- a boundary value like exactly 20.00% must compare identically
+    everywhere, not drift between callers that round differently. Public
+    (not _-prefixed): claude_state.py's equity/HWM/drawdown model reuses this
+    exact rounding rather than defining its own."""
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 @dataclass(frozen=True)
 class RiskLimits:
-    max_capital_usd: float
-    max_position_usd: float
-    max_total_exposure_usd: float
-    max_open_positions: int
-    max_daily_loss_usd: float
-    max_drawdown_pct: float
+    capital_basis_usd: Decimal
 
     @classmethod
     def load(cls) -> "RiskLimits":
-        missing = [v for v in REQUIRED_FLOAT_VARS + REQUIRED_INT_VARS if not os.environ.get(v, "").strip()]
-        if missing:
+        raw = os.environ.get(CAPITAL_BASIS_VAR, "").strip()
+        if not raw:
             raise RiskGuardConfigError(
-                "Missing required hard risk engine variables, refusing to arm: " + ", ".join(missing)
+                f"{CAPITAL_BASIS_VAR} is not set, refusing to arm. This must be the "
+                f"actual owner-approved Claude trading capital/equity basis -- there "
+                f"is no safe default."
             )
-
-        values: dict[str, float] = {}
-        for name in REQUIRED_FLOAT_VARS:
-            raw = os.environ[name].strip()
-            try:
-                val = float(raw)
-            except ValueError as exc:
-                raise RiskGuardConfigError(f"{name}={raw!r} is not a valid number") from exc
-            if val <= 0:
-                raise RiskGuardConfigError(f"{name} must be > 0, got {val}")
-            values[name] = val
-
-        raw_positions = os.environ["MAX_OPEN_POSITIONS"].strip()
         try:
-            max_open_positions = int(raw_positions)
-        except ValueError as exc:
-            raise RiskGuardConfigError(f"MAX_OPEN_POSITIONS={raw_positions!r} is not a valid integer") from exc
-        if max_open_positions <= 0:
-            raise RiskGuardConfigError(f"MAX_OPEN_POSITIONS must be > 0, got {max_open_positions}")
+            basis = Decimal(raw)
+        except Exception as exc:  # noqa: BLE001
+            raise RiskGuardConfigError(f"{CAPITAL_BASIS_VAR}={raw!r} is not a valid number") from exc
+        if basis <= 0:
+            raise RiskGuardConfigError(f"{CAPITAL_BASIS_VAR} must be > 0, got {basis}")
+        return cls(capital_basis_usd=basis)
 
-        if values["MAX_POSITION_USD"] > values["MAX_CAPITAL_USD"]:
-            raise RiskGuardConfigError("MAX_POSITION_USD cannot exceed MAX_CAPITAL_USD")
-        if values["MAX_TOTAL_EXPOSURE_USD"] > values["MAX_CAPITAL_USD"]:
-            raise RiskGuardConfigError("MAX_TOTAL_EXPOSURE_USD cannot exceed MAX_CAPITAL_USD")
-        if not (0 < values["MAX_DRAWDOWN_PCT"] <= 100):
-            raise RiskGuardConfigError("MAX_DRAWDOWN_PCT must be within (0, 100]")
+    @property
+    def max_open_positions(self) -> int:
+        return OWNER_MAX_OPEN_POSITIONS
 
-        return cls(
-            max_capital_usd=values["MAX_CAPITAL_USD"],
-            max_position_usd=values["MAX_POSITION_USD"],
-            max_total_exposure_usd=values["MAX_TOTAL_EXPOSURE_USD"],
-            max_open_positions=max_open_positions,
-            max_daily_loss_usd=values["MAX_DAILY_LOSS_USD"],
-            max_drawdown_pct=values["MAX_DRAWDOWN_PCT"],
-        )
+    @property
+    def max_position_pct(self) -> Decimal:
+        return OWNER_MAX_POSITION_PCT
 
-    def check_new_position(self, *, proposed_usd: float, current_exposure_usd: float, open_positions: int) -> None:
-        """Raise RiskGuardConfigError if a proposed position would breach a hard limit.
+    @property
+    def max_total_exposure_pct(self) -> Decimal:
+        return OWNER_MAX_TOTAL_EXPOSURE_PCT
 
-        This is an additive pre-check; callers must still pass through the reused
-        learnerbot pool/token safety gates and execution engines unchanged.
-        """
-        if proposed_usd > self.max_position_usd:
-            raise RiskGuardConfigError(
-                f"Proposed position ${proposed_usd:.2f} exceeds MAX_POSITION_USD ${self.max_position_usd:.2f}"
-            )
-        if current_exposure_usd + proposed_usd > self.max_total_exposure_usd:
-            raise RiskGuardConfigError(
-                f"Proposed position would push exposure to "
-                f"${current_exposure_usd + proposed_usd:.2f}, exceeding "
-                f"MAX_TOTAL_EXPOSURE_USD ${self.max_total_exposure_usd:.2f}"
-            )
-        if open_positions >= self.max_open_positions:
-            raise RiskGuardConfigError(
-                f"Already at MAX_OPEN_POSITIONS ({self.max_open_positions})"
-            )
+    @property
+    def max_drawdown_pct(self) -> Decimal:
+        return OWNER_MAX_DRAWDOWN_PCT
 
-    def check_daily_loss_and_drawdown(
-        self, *, realized_pnl_usd_today: float, peak_to_current_drawdown_usd: float
+    @property
+    def max_position_usd(self) -> Decimal:
+        return self.capital_basis_usd * OWNER_MAX_POSITION_PCT / Decimal(100)
+
+    @property
+    def max_total_exposure_usd(self) -> Decimal:
+        return self.capital_basis_usd * OWNER_MAX_TOTAL_EXPOSURE_PCT / Decimal(100)
+
+    def position_pct(self, position_usd: Decimal) -> Decimal:
+        if self.capital_basis_usd == 0:
+            return Decimal("0.00")
+        return quantize_pct(position_usd / self.capital_basis_usd * Decimal(100))
+
+    def check_new_position(
+        self, *, proposed_usd: Decimal, current_exposure_usd: Decimal, open_positions: int
     ) -> None:
-        """Raise RiskGuardConfigError if realized daily loss or drawdown breach limits.
-
-        Callers compute realized_pnl_usd_today (sum of realized P&L for
-        positions closed since the start of the current UTC day) and
-        peak_to_current_drawdown_usd (running peak of cumulative realized
-        P&L minus current cumulative realized P&L, i.e. how far below the
-        active risk baseline's best point this instance's equity has fallen)
-        from this instance's own isolated position history — see
-        solana_execution_risk_patch.py.
-        """
-        if realized_pnl_usd_today < 0 and -realized_pnl_usd_today > self.max_daily_loss_usd:
+        """Raise RiskGuardConfigError if a proposed position would breach a hard
+        limit. Additive pre-check; callers still pass through the reused
+        learnerbot pool/token safety gates and execution engines unchanged."""
+        if open_positions >= self.max_open_positions:
+            raise RiskGuardConfigError(f"Already at the owner-approved maximum of {self.max_open_positions} open positions")
+        proposed_pct = self.position_pct(proposed_usd)
+        if proposed_pct > OWNER_MAX_POSITION_PCT:
             raise RiskGuardConfigError(
-                f"Realized loss today ${-realized_pnl_usd_today:.2f} exceeds "
-                f"MAX_DAILY_LOSS_USD ${self.max_daily_loss_usd:.2f}"
+                f"Proposed position ${proposed_usd:.2f} is {proposed_pct:.2f}% of the "
+                f"${self.capital_basis_usd:.2f} capital basis, exceeding the owner-approved "
+                f"{OWNER_MAX_POSITION_PCT:.2f}% per-position limit (${self.max_position_usd:.2f})"
             )
-        drawdown_pct = (peak_to_current_drawdown_usd / self.max_capital_usd) * 100 if self.max_capital_usd else 0.0
-        if drawdown_pct >= self.max_drawdown_pct:
-            raise DrawdownLimitBreached(
-                drawdown_pct=drawdown_pct,
-                limit_pct=self.max_drawdown_pct,
-                drawdown_usd=peak_to_current_drawdown_usd,
+        total_pct = self.position_pct(current_exposure_usd + proposed_usd)
+        if total_pct > OWNER_MAX_TOTAL_EXPOSURE_PCT:
+            raise RiskGuardConfigError(
+                f"Proposed position would push aggregate exposure to {total_pct:.2f}% of "
+                f"the capital basis, exceeding the owner-approved {OWNER_MAX_TOTAL_EXPOSURE_PCT:.2f}% "
+                f"limit (${self.max_total_exposure_usd:.2f})"
             )
+
+    # Drawdown is NOT computed here. Per review (2026-08-26), a
+    # closed-position-only, capital-basis-relative drawdown missed
+    # unrealised (open-position) losses entirely and mixed a fixed USD
+    # basis against a SOL-priced-at-read-time swing. The authoritative
+    # drawdown calculation is now claude_state.evaluate_drawdown(): a
+    # current-trading-equity-vs-persisted-high-water-mark model, fed by
+    # solana_execution_risk_patch.compute_current_equity_usd() (capital
+    # basis + a running realised-P&L-in-USD total priced once at each
+    # trade's own close time, never re-derived from today's price, plus
+    # today's mark-to-market of open positions). This class still owns
+    # max_drawdown_pct as the threshold constant; DrawdownLimitBreached
+    # below is still the exception type raised on breach.

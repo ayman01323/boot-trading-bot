@@ -49,10 +49,10 @@ def build_startup_message(
     mode: str,
     authorised_chains: list[str],
     active_strategy: str,
-    max_capital_usd: float,
+    capital_basis_usd: float,
     max_position_usd: float,
     max_total_exposure_usd: float,
-    max_daily_loss_usd: float,
+    max_drawdown_pct: float,
     wallet_balance_summary: str,
     signer_ready: bool,
 ) -> str:
@@ -65,10 +65,10 @@ def build_startup_message(
         f"Mode: {mode}\n"
         f"Authorised chains: {chains}\n"
         f"Active strategy: {active_strategy}\n"
-        f"Max capital: ${max_capital_usd:,.2f}\n"
+        f"Capital basis: ${capital_basis_usd:,.2f}\n"
         f"Max position: ${max_position_usd:,.2f}\n"
         f"Max exposure: ${max_total_exposure_usd:,.2f}\n"
-        f"Daily loss limit: ${max_daily_loss_usd:,.2f}\n"
+        f"Drawdown latch: {max_drawdown_pct:.2f}%\n"
         f"Wallet balance: {wallet_balance_summary}\n"
         f"SIGNER_READY: {str(signer_ready).lower()} "
         + ("(broadcast possible if ARMED)" if signer_ready else "(broadcast unavailable)")
