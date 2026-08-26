@@ -1,0 +1,115 @@
+name: SiRisky Env Repair
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-env-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Repair standalone env and recheck safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+
+          sudo -n python3 - <<'PY'
+          import csv
+          from pathlib import Path
+
+          target = Path('/root/SiRisky')
+          root_env = target / '.env'
+          old_env = Path('/home/ayman01323/ClaudeServer/SiRisky/.env')
+          runtime = target / 'CSV/runtime.csv'
+
+          # Keep execution disabled.
+          rows = list(csv.DictReader(runtime.open(encoding='utf-8-sig', newline='')))
+          for r in rows:
+              if r.get('setting') in {'live_enabled','broadcast_enabled','telegram_manual_run_enabled'}:
+                  r['value'] = '0'
+          with runtime.open('w', encoding='utf-8', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=['setting','value','notes'])
+              w.writeheader(); w.writerows(rows)
+
+          keys = {'SOLANA_RPC_URL','SOLANA_WS_URL','JUPITER_API_KEY','CSV_DIR','DATA_DIR','LOG_DIR','AUTHORISED_CHAINS'}
+
+          def read_assignments(path):
+              out = {}
+              if not path.is_file():
+                  return out
+              for raw in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                  s = raw.strip()
+                  if not s or s.startswith('#') or '=' not in raw:
+                      continue
+                  k,v = raw.split('=',1)
+                  k = k.strip(); v = v.strip().strip('"').strip("'")
+                  if v:
+                      out.setdefault(k, []).append(v)
+              return out
+
+          current = read_assignments(root_env)
+          old = read_assignments(old_env)
+
+          # Prefer Helius over the public Solana endpoint when both exist.
+          rpc_candidates = current.get('SOLANA_RPC_URL', []) + old.get('SOLANA_RPC_URL', [])
+          helius = [v for v in rpc_candidates if 'helius-rpc.com' in v]
+          rpc = (helius[-1] if helius else (rpc_candidates[-1] if rpc_candidates else ''))
+
+          ws_candidates = current.get('SOLANA_WS_URL', []) + old.get('SOLANA_WS_URL', [])
+          ws_helius = [v for v in ws_candidates if 'helius-rpc.com' in v]
+          ws = (ws_helius[-1] if ws_helius else '')
+          if not ws and rpc.startswith('https://') and 'helius-rpc.com' in rpc:
+              ws = 'wss://' + rpc[len('https://'):]
+
+          j_candidates = current.get('JUPITER_API_KEY', []) + old.get('JUPITER_API_KEY', [])
+          jkey = j_candidates[-1] if j_candidates else ''
+
+          existing_lines = root_env.read_text(encoding='utf-8', errors='replace').splitlines() if root_env.exists() else []
+          kept = []
+          for raw in existing_lines:
+              if '=' in raw and not raw.lstrip().startswith('#'):
+                  k = raw.split('=',1)[0].strip()
+                  if k in keys:
+                      continue
+              kept.append(raw)
+
+          replacements = {
+              'CSV_DIR':'/root/SiRisky/CSV',
+              'DATA_DIR':'/root/SiRisky/data',
+              'LOG_DIR':'/root/SiRisky/logs',
+              'AUTHORISED_CHAINS':'solana',
+          }
+          if rpc: replacements['SOLANA_RPC_URL'] = rpc
+          if ws: replacements['SOLANA_WS_URL'] = ws
+          if jkey: replacements['JUPITER_API_KEY'] = jkey
+
+          kept.extend(f'{k}={v}' for k,v in replacements.items())
+          root_env.write_text('\n'.join(kept).rstrip()+'\n', encoding='utf-8')
+          root_env.chmod(0o600)
+
+          print('rpc_present=' + str(bool(rpc)).lower())
+          print('rpc_is_helius=' + str('helius-rpc.com' in rpc).lower())
+          print('ws_present=' + str(bool(ws)).lower())
+          print('jupiter_key_present=' + str(bool(jkey)).lower())
+          PY
+
+          sudo -n sed -i 's#EPjFWdd5AufqSSqeM2qPZo2mrQSSrSLRYhNACTM1v#EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v#g' /root/SiRisky/sirisky/jupiter.py
+
+          sudo -n systemctl restart sirisky.service
+          sleep 4
+
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory -p ExecStart --no-pager
+          echo '=== SAFE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check || true'
+          echo '=== LIVE GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled)$/' /root/SiRisky/CSV/runtime.csv
+          echo 'real_transaction_broadcast=NO'
