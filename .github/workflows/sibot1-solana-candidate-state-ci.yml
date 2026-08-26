@@ -1,0 +1,64 @@
+name: SiBot 1 Solana Candidate State CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/sibot1_solana_candidate_state_fix_patch.py'
+      - 'learnerbot/sibot1_solana_live_bridge_patch.py'
+      - 'learnerbot/sibot1_trade_event_telegram_patch.py'
+      - 'learnerbot/telegram_sibot1_duplicate_secret_scrub_patch.py'
+      - 'tests/test_sibot1_solana_candidate_state_fix.py'
+      - 'tests/test_sibot1_solana_live_bridge.py'
+      - '.github/workflows/sibot1-solana-candidate-state-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sibot1-solana-candidate-state-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install test dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -q --upgrade pip
+          python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+
+      - name: Compile touched runtime and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile \
+            learnerbot/sibot1_solana_candidate_state_fix_patch.py \
+            learnerbot/sibot1_solana_live_bridge_patch.py \
+            learnerbot/sibot1_trade_event_telegram_patch.py \
+            learnerbot/telegram_sibot1_duplicate_secret_scrub_patch.py \
+            tests/test_sibot1_solana_candidate_state_fix.py \
+            tests/test_sibot1_solana_live_bridge.py
+
+      - name: Run focused SiBot Solana state regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -x -vv \
+            tests/test_sibot1_solana_candidate_state_fix.py \
+            tests/test_sibot1_solana_live_bridge.py
