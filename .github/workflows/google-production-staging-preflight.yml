@@ -21,6 +21,8 @@ jobs:
       STAGING_DIR: /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market
       FINAL_DIR: /root/multichain-learning-bot-v2.2-fast-direct-market
       TEST_VENV: /home/ayman01323/NamecheapMigration/.google-preflight-venv
+      PREPARE_WRAPPER: /usr/local/sbin/prepare-google-production-bot
+      VERIFY_WRAPPER: /usr/local/sbin/verify-google-production-bot
     steps:
       - name: Validate Google host and staged source
         shell: bash
@@ -44,6 +46,25 @@ jobs:
           echo "claude_root_present=$([[ -d /home/ayman01323/ClaudeServer ]] && echo true || echo false)"
           echo "staging_processes=$(pgrep -af "$STAGING_DIR" 2>/dev/null | wc -l)"
           df -h /
+
+      - name: Inspect bounded sudo permissions and use migration bridge if already installed
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== sudo permissions ==='
+          sudo -n -l 2>&1 || true
+          echo "prepare_wrapper_present=$([[ -x "$PREPARE_WRAPPER" ]] && echo true || echo false)"
+          echo "verify_wrapper_present=$([[ -x "$VERIFY_WRAPPER" ]] && echo true || echo false)"
+          if [[ -x "$PREPARE_WRAPPER" ]] && sudo -n -l "$PREPARE_WRAPPER" >/dev/null 2>&1; then
+            echo 'restricted_prepare_permission=true'
+            sudo -n "$PREPARE_WRAPPER"
+            sudo -n "$VERIFY_WRAPPER"
+            echo 'GOOGLE_FINAL_PATH_PREPARED=true'
+          else
+            echo 'restricted_prepare_permission=false'
+            echo 'GOOGLE_FINAL_PATH_PREPARED=false'
+            echo 'ROOT_BOOTSTRAP_REQUIRED=true'
+          fi
 
       - name: Build clean temporary Google virtualenv
         shell: bash
