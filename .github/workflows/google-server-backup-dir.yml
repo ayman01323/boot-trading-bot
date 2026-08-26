@@ -15,34 +15,94 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Create backup directory on botgoogle
+      - name: Repair WinSCP public-key authentication
         shell: bash
         run: |
           set -euo pipefail
           target="$HOME/GoogleServerBuckup"
-          mkdir -p "$target"
-          chmod 700 "$target"
+          mkdir -p "$target" "$HOME/.ssh"
+          chmod 700 "$target" "$HOME/.ssh"
           touch "$target/.backup-dir-ready"
-          echo "backup_dir=$target"
-          stat -c 'mode=%a owner=%U group=%G path=%n' "$target"
-          ls -ld "$target"
 
-      - name: Publish verification marker
+          ak="$HOME/.ssh/authorized_keys"
+          key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHpZkKAbpMnmuf83u+SbzomxHo6aNjBPbJipZW2aGhok winscp-botgoogle-2026-08-26'
+          touch "$ak"
+          grep -qxF "$key" "$ak" || printf '%s\n' "$key" >> "$ak"
+          chmod 600 "$ak"
+          chown "$(id -un):$(id -gn)" "$HOME/.ssh" "$ak"
+
+          echo 'Expected WinSCP key fingerprint:'
+          printf '%s\n' "$key" | ssh-keygen -lf - -E sha256
+          echo 'Installed authorized_keys fingerprints:'
+          ssh-keygen -lf "$ak" -E sha256 || true
+
+      - name: Publish SSH authentication diagnostics
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           target="$HOME/GoogleServerBuckup"
-          test -d "$target"
-          mode="$(stat -c '%a' "$target")"
-          owner="$(stat -c '%U:%G' "$target")"
+          ak="$HOME/.ssh/authorized_keys"
+          external_ip="$(curl -fsS -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip' 2>/dev/null || true)"
+          expected_fp='SHA256:2xhfWDjk6X0g4x90OSbR/cqZvOB4tZriHla4jNgg6K8'
+          installed_fps="$(ssh-keygen -lf "$ak" -E sha256 2>/dev/null | awk '{print $2}' | paste -sd, -)"
+          expected_installed=false
+          printf '%s\n' "$installed_fps" | tr ',' '\n' | grep -qxF "$expected_fp" && expected_installed=true || true
+
+          sshd_bin="$(command -v sshd || echo /usr/sbin/sshd)"
+          cfg="$($sshd_bin -T -C user=$(id -un),host=$(hostname),addr=127.0.0.1 2>/dev/null || $sshd_bin -T 2>/dev/null || true)"
+          getcfg() { printf '%s\n' "$cfg" | awk -v k="$1" '$1==k {$1=""; sub(/^ /,""); print; exit}'; }
+          pubkey_auth="$(getcfg pubkeyauthentication)"
+          authorized_keys_file="$(getcfg authorizedkeysfile)"
+          authorized_keys_command="$(getcfg authorizedkeyscommand)"
+          strict_modes="$(getcfg strictmodes)"
+          auth_methods="$(getcfg authenticationmethods)"
+          allow_users="$(getcfg allowusers)"
+          deny_users="$(getcfg denyusers)"
+          accepted_algs="$(getcfg pubkeyacceptedalgorithms)"
+          ed25519_accepted=false
+          printf '%s' "$accepted_algs" | grep -q 'ssh-ed25519' && ed25519_accepted=true || true
+
+          home_mode="$(stat -c '%a' "$HOME" 2>/dev/null || true)"
+          home_owner="$(stat -c '%U:%G' "$HOME" 2>/dev/null || true)"
+          ssh_mode="$(stat -c '%a' "$HOME/.ssh" 2>/dev/null || true)"
+          ssh_owner="$(stat -c '%U:%G' "$HOME/.ssh" 2>/dev/null || true)"
+          ak_mode="$(stat -c '%a' "$ak" 2>/dev/null || true)"
+          ak_owner="$(stat -c '%U:%G' "$ak" 2>/dev/null || true)"
+
+          authlog=''
+          authlog="$(sudo -n journalctl -u ssh --since '20 minutes ago' --no-pager 2>/dev/null || journalctl -u ssh --since '20 minutes ago' --no-pager 2>/dev/null || true)"
+          authlog="$(printf '%s\n' "$authlog" | grep -Ei 'publickey|authentication|ayman01323' | tail -n 20 | sed -E 's/from [0-9a-fA-F:.]+ port [0-9]+/from REDACTED port REDACTED/g; s/rhost=[^ ]+/rhost=REDACTED/g' || true)"
+          [[ -n "$authlog" ]] || authlog='unavailable-or-no-recent-lines'
+
           cat > /tmp/google-server-backup-dir.txt <<EOF
           hostname=$(hostname)
+          username=$(id -un)
+          home=$HOME
+          external_ip=$external_ip
           backup_dir=$target
-          exists=true
-          mode=$mode
-          owner=$owner
+          ssh_service=$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || true)
+          expected_key_fingerprint=$expected_fp
+          installed_key_fingerprints=$installed_fps
+          expected_key_installed=$expected_installed
+          pubkey_authentication=$pubkey_auth
+          authorized_keys_file=$authorized_keys_file
+          authorized_keys_command=$authorized_keys_command
+          strict_modes=$strict_modes
+          authentication_methods=$auth_methods
+          allow_users=$allow_users
+          deny_users=$deny_users
+          ed25519_accepted=$ed25519_accepted
+          home_mode=$home_mode
+          home_owner=$home_owner
+          ssh_dir_mode=$ssh_mode
+          ssh_dir_owner=$ssh_owner
+          authorized_keys_mode=$ak_mode
+          authorized_keys_owner=$ak_owner
+          recent_auth_log_begin=true
+          $authlog
+          recent_auth_log_end=true
           verified_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           EOF
 
@@ -53,13 +113,13 @@ jobs:
           if [[ -n "$existing_sha" ]]; then
             payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
           import json,sys
-          print(json.dumps({"message":"Update Google backup directory verification","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          print(json.dumps({"message":"Update Google WinSCP SSH diagnostics","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
           PY
           )"
           else
             payload="$(python3 - "$encoded" <<'PY'
           import json,sys
-          print(json.dumps({"message":"Create Google backup directory verification","content":sys.argv[1],"branch":"server-diagnostics"}))
+          print(json.dumps({"message":"Create Google WinSCP SSH diagnostics","content":sys.argv[1],"branch":"server-diagnostics"}))
           PY
           )"
           fi
