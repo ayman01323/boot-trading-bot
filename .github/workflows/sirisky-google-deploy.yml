@@ -1,0 +1,258 @@
+name: SiRisky Google Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'SiRisky/bundle_parts/**'
+      - 'SiRisky/source_manifest.json'
+      - '.github/workflows/sirisky-google-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sirisky-google-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 25
+    env:
+      TARGET: /home/ayman01323/ClaudeServer/SiRisky
+      LEGACY_ENV: /home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env
+      LEGACY_CSV_DIR: /home/ayman01323/ClaudeServer/runtime/CSVbot
+      LEGACY_DATA_DIR: /home/ayman01323/ClaudeServer/runtime/data
+      SAFE_REPORT: /tmp/sirisky-deploy-safe.txt
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Google runner boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          case "$TARGET" in
+            /home/ayman01323/ClaudeServer/SiRisky) ;;
+            *) echo 'Unexpected SiRisky target boundary' >&2; exit 2 ;;
+          esac
+          : > "$SAFE_REPORT"
+          echo 'runner_boundary=PASS' >> "$SAFE_REPORT"
+
+      - name: Stage self-contained SiRisky files
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="$GITHUB_WORKSPACE/SiRisky/bundle_parts"
+          test -f "$BUNDLE_DIR/part01.b64"
+          STAGE_ROOT="/tmp/SiRisky.deploy.${GITHUB_RUN_ID}"
+          rm -rf "$STAGE_ROOT"
+          mkdir -p "$STAGE_ROOT"
+          cat "$BUNDLE_DIR"/part*.b64 | base64 -d > "$STAGE_ROOT/SiRisky.zip"
+          python3 - "$STAGE_ROOT/SiRisky.zip" "$STAGE_ROOT" <<'PY'
+          import sys, zipfile
+          from pathlib import Path
+          z=Path(sys.argv[1]); dest=Path(sys.argv[2])
+          with zipfile.ZipFile(z) as f:
+              for info in f.infolist():
+                  target=(dest/info.filename).resolve()
+                  if not str(target).startswith(str(dest.resolve()) + '/'):
+                      raise SystemExit('Unsafe archive path')
+              f.extractall(dest)
+          PY
+          STAGE="$STAGE_ROOT/SiRisky"
+          test -f "$STAGE/run.py"
+
+          # Preserve the bot's OWN runtime state and operator-edited CSVs on upgrades.
+          if [[ -d "$TARGET" ]]; then
+            [[ -f "$TARGET/.env" ]] && cp -a "$TARGET/.env" "$STAGE/.env"
+            [[ -d "$TARGET/data" ]] && { rm -rf "$STAGE/data"; cp -a "$TARGET/data" "$STAGE/data"; }
+            [[ -d "$TARGET/logs" ]] && { rm -rf "$STAGE/logs"; cp -a "$TARGET/logs" "$STAGE/logs"; }
+            if [[ -d "$TARGET/CSV" ]]; then
+              cp -a "$TARGET/CSV/." "$STAGE/CSV/"
+            fi
+          fi
+          mkdir -p "$STAGE/data" "$STAGE/logs" "$STAGE/CSV"
+          chmod 700 "$STAGE" "$STAGE/data" "$STAGE/logs"
+
+          rm -rf "${TARGET}.previous"
+          if [[ -d "$TARGET" ]]; then mv "$TARGET" "${TARGET}.previous"; fi
+          mv "$STAGE" "$TARGET"
+          rm -rf "$STAGE_ROOT"
+          echo 'files_staged=PASS' >> "$SAFE_REPORT"
+
+      - name: Bootstrap standalone environment from existing named values
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$LEGACY_ENV" "$TARGET/.env" "$TARGET" <<'PY'
+          import os, sys
+          from pathlib import Path
+          src=Path(sys.argv[1]); dst=Path(sys.argv[2]); root=Path(sys.argv[3])
+          if dst.exists():
+              os.chmod(dst,0o600)
+              raise SystemExit(0)
+          wanted={
+              'TELEGRAM_BOT_TOKEN':'TELEGRAM_BOT_TOKEN',
+              'TELEGRAM_CHAT_IDS':'TELEGRAM_CHAT_IDS',
+              'AUTHORISED_CHAINS':'AUTHORISED_CHAINS',
+              'SOLANA_RPC_URL':'SOLANA_RPC_URL',
+              'SOLANA_WS_URL':'SOLANA_WS_URL',
+              'JUPITER_API_KEY':'JUPITER_API_KEY',
+              'MAX_CAPITAL_USD':'MAX_CAPITAL_USD',
+              'MAX_POSITION_USD':'MAX_POSITION_USD',
+              'MAX_TOTAL_EXPOSURE_USD':'MAX_TOTAL_EXPOSURE_USD',
+              'MAX_OPEN_POSITIONS':'MAX_OPEN_POSITIONS',
+              'MAX_DAILY_LOSS_USD':'MAX_DAILY_LOSS_USD',
+              'MAX_DRAWDOWN_PCT':'MAX_DRAWDOWN_PCT',
+              'CLAUDE_BOT_WALLET_OWNER_ID':'SIRISKY_WALLET_OWNER_ID',
+          }
+          vals={}
+          if src.is_file():
+              for raw in src.read_text(encoding='utf-8',errors='replace').splitlines():
+                  line=raw.strip()
+                  if not line or line.startswith('#') or '=' not in line: continue
+                  k,v=line.split('=',1)
+                  k=k.strip()
+                  if k in wanted: vals[wanted[k]]=v
+          vals['CSV_DIR']=str(root/'CSV')
+          vals['DATA_DIR']=str(root/'data')
+          vals['LOG_DIR']=str(root/'logs')
+          vals.setdefault('AUTHORISED_CHAINS','solana')
+          lines=[f"{k}={v}" for k,v in vals.items()]
+          dst.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          os.chmod(dst,0o600)
+          PY
+          echo 'env_bootstrap=PASS' >> "$SAFE_REPORT"
+
+      - name: Bootstrap one encrypted Solana wallet without exposing key material
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$TARGET" "$LEGACY_CSV_DIR" "$LEGACY_DATA_DIR" <<'PY'
+          import csv, os, shutil, sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); legacy_csv=Path(sys.argv[2]); legacy_data=Path(sys.argv[3])
+          env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='replace').splitlines():
+              if '=' in raw and not raw.lstrip().startswith('#'):
+                  k,v=raw.split('=',1); env[k.strip()]=v.strip()
+          owner=env.get('SIRISKY_WALLET_OWNER_ID','')
+          target_csv=root/'CSV'/'wallets.csv'
+          if not owner:
+              raise SystemExit(0)
+          # If SiRisky already has a signing wallet, never replace it on deployment.
+          if target_csv.exists():
+              with target_csv.open(encoding='utf-8-sig',newline='') as f:
+                  rows=list(csv.DictReader(f))
+              if any(str(r.get('telegram_id','')).strip()==owner and str(r.get('signing','')).lower()=='true' for r in rows):
+                  raise SystemExit(0)
+          source_csv=legacy_csv/'auto'/'solana_user_wallets.csv'
+          source_key=legacy_data/'.solana_wallet_store.key'
+          source_owner=legacy_data/'user_solana_wallets'/owner
+          if not (source_csv.exists() and source_key.exists() and source_owner.is_dir()):
+              raise SystemExit(0)
+          with source_csv.open(encoding='utf-8-sig',newline='') as f:
+              rows=[r for r in csv.DictReader(f) if str(r.get('telegram_id','')).strip()==owner and str(r.get('enabled','true')).lower() in {'1','true','yes','on'}]
+          if not rows: raise SystemExit(0)
+          active=next((r for r in rows if str(r.get('active','')).lower()=='true' and str(r.get('signing','')).lower()=='true'),None)
+          if active is None: active=next((r for r in rows if str(r.get('signing','')).lower()=='true'),None)
+          if active is None: raise SystemExit(0)
+          headers=['telegram_id','wallet_id','label','address','signing','enabled','active','created_epoch','notes']
+          target_csv.parent.mkdir(parents=True,exist_ok=True)
+          with target_csv.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=headers); w.writeheader(); w.writerow({h:active.get(h,'') for h in headers})
+          shutil.copy2(source_key,root/'data'/'.solana_wallet_store.key')
+          dest=root/'data'/'user_solana_wallets'/owner
+          dest.parent.mkdir(parents=True,exist_ok=True)
+          shutil.copytree(source_owner,dest,dirs_exist_ok=True)
+          os.chmod(root/'data'/'.solana_wallet_store.key',0o600)
+          for p in dest.glob('*.enc.json'):
+              os.chmod(p,0o600)
+          PY
+          echo 'wallet_bootstrap_attempted=PASS' >> "$SAFE_REPORT"
+
+      - name: Install dependencies and run local tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET"
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --disable-pip-version-check -r requirements.txt
+          .venv/bin/python -m compileall -q .
+          PYTHONPATH=. .venv/bin/python run.py selftest
+          echo 'selftest=PASS' >> "$SAFE_REPORT"
+
+      - name: Run non-broadcast Google-server preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$TARGET"
+          set +e
+          PYTHONPATH=. .venv/bin/python run.py check > /tmp/sirisky-check-safe.txt 2>&1
+          rc=$?
+          set -e
+          echo "preflight_exit_code=$rc" >> "$SAFE_REPORT"
+          # run.py check prints only status names, booleans and exception class names.
+          cat /tmp/sirisky-check-safe.txt >> "$SAFE_REPORT"
+
+      - name: Force safe CSV deployment state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "$TARGET/CSV/runtime.csv" <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1]); rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+          for r in rows:
+              if r.get('setting') in {'live_enabled','broadcast_enabled','telegram_manual_run_enabled'}:
+                  r['value']='0'
+          headers=['setting','value','notes']
+          with p.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=headers); w.writeheader(); w.writerows(rows)
+          PY
+          echo 'live_enabled=false' >> "$SAFE_REPORT"
+          echo 'broadcast_enabled=false' >> "$SAFE_REPORT"
+
+      - name: Install and start user service in safe mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/systemd/user"
+          cp "$TARGET/systemd/sirisky.service" "$HOME/.config/systemd/user/sirisky.service"
+          if systemctl --user daemon-reload >/dev/null 2>&1 && systemctl --user enable --now sirisky.service >/dev/null 2>&1; then
+            sleep 2
+            if systemctl --user is-active --quiet sirisky.service; then
+              echo 'service_active=PASS' >> "$SAFE_REPORT"
+            else
+              echo 'service_active=FAIL' >> "$SAFE_REPORT"
+            fi
+          else
+            pkill -f "$TARGET/.venv/bin/python run.py start" >/dev/null 2>&1 || true
+            nohup "$TARGET/.venv/bin/python" "$TARGET/run.py" start >> "$TARGET/logs/sirisky.log" 2>&1 &
+            sleep 2
+            if pgrep -f "$TARGET/.venv/bin/python $TARGET/run.py start" >/dev/null; then
+              echo 'service_active=PASS_NOHUP' >> "$SAFE_REPORT"
+            else
+              echo 'service_active=FAIL' >> "$SAFE_REPORT"
+            fi
+          fi
+
+      - name: Publish safe deployment summary to job log
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- SiRisky safe deployment report ---'
+          cat "$SAFE_REPORT" 2>/dev/null || true
+          echo 'target=/home/ayman01323/ClaudeServer/SiRisky'
+          echo 'No secret values are printed. No LIVE transaction was authorised.'
+          rm -f /tmp/sirisky-check-safe.txt "$SAFE_REPORT"
