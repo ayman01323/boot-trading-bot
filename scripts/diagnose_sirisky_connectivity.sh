@@ -12,7 +12,7 @@ PY=.venv/bin/python
 "$PY" - <<'PY'
 from pathlib import Path
 from urllib.parse import urlparse
-import csv, json, requests
+import csv, requests
 
 def load_env():
     env={}
@@ -65,11 +65,13 @@ print('jupiter_key_present=' + str(bool(key)).lower())
 headers={'User-Agent':'SiRisky-connectivity-diagnostic'}
 if key: headers['x-api-key']=key
 
-# Test legacy quote endpoint because it gives a clear HTTP/auth signal.
+USDC='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+WSOL='So11111111111111111111111111111111111111112'
+
 try:
     r=requests.get('https://api.jup.ag/swap/v1/quote', params={
-        'inputMint':'So11111111111111111111111111111111111111112',
-        'outputMint':'EPjFWdd5AufqSSqeM2qPZo2mrQSSrSLRYhNACTM1v',
+        'inputMint':WSOL,
+        'outputMint':USDC,
         'amount':'1000000','slippageBps':'100'
     }, headers=headers, timeout=20)
     print('jupiter_v1_http_status=' + str(r.status_code))
@@ -84,12 +86,11 @@ try:
 except Exception as e:
     print('jupiter_v1_result=FAIL_' + type(e).__name__)
 
-# Test the same v2 order family SiRisky uses. No transaction is broadcast.
 if wallet:
     try:
         r=requests.get('https://api.jup.ag/swap/v2/order', params={
-            'inputMint':'So11111111111111111111111111111111111111112',
-            'outputMint':'EPjFWdd5AufqSSqeM2qPZo2mrQSSrSLRYhNACTM1v',
+            'inputMint':WSOL,
+            'outputMint':USDC,
             'amount':'1000000','taker':wallet,'excludeRouters':'jupiterz'
         }, headers=headers, timeout=20)
         print('jupiter_v2_http_status=' + str(r.status_code))
