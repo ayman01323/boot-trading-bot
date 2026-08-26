@@ -1,6 +1,9 @@
 Claude Google Bot Preflight trigger.
 
-requested_at=2026-08-26T09:33:00Z
+requested_at=2026-08-26T10:17:00Z
 requested_by=gpt
-synced_server_sha=d9d7b21ca461c3969518c33081e81b9fdf8912cd
-reason=authoritative_post_sync_preflight
+synced_server_sha=591a254e199e771852e452b8e377f03fa24c5fc6
+source_branch=claude/deterministic-runtime-dirs
+source_sha=3b9acc8143d0a5623ed5ddfe12735803fdf675cd
+merge_sha=0f4605e7ac0e0d37d74a768a26a727e5e643d10e
+reason=post_sync_deterministic_runtime_dirs_validation
