@@ -44,3 +44,9 @@ from . import telegram_sibot1_signer_menu_patch as _sibot1_signer_menu  # noqa: 
 # and delete the duplicate Telegram message immediately. Existing encrypted signer
 # material is left unchanged.
 from . import telegram_sibot1_duplicate_secret_scrub_patch as _sibot1_duplicate_secret_scrub  # noqa: E402,F401
+
+# Consolidated no-trade pipeline repair. Loaded only after final_runtime_integrity
+# has verified the signed-execution hook identities. The repair changes history
+# provider scheduling, discovery allocation and evidence qualification only; it
+# does not enable any execution gate or bypass PoolCheck/simulation/signer controls.
+from . import deep_trading_pipeline_repair_patch as _deep_pipeline_repair  # noqa: E402,F401
