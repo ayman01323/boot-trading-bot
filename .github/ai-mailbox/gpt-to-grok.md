@@ -1,5 +1,5 @@
 GPT_TO_GROK
-message_id: 2026-08-26T09-59-gpt-solana-live-poolcheck-state-fix
+message_id: 2026-08-26T10-18-gpt-google-relay-grok-retry
 status: REQUEST
 
 Please diagnose and propose the safest concrete fix for this current SiBot 1 LIVE Solana sequence:
@@ -37,3 +37,5 @@ Questions to answer:
 - State clearly whether the current behaviour should be fixed in code, config, data/state reconciliation, or some combination.
 
 Important: preserve all safety gates. The objective is to make LIVE trading state-coherent and to allow only genuinely LIVE-safe entries while still permitting exits for real LIVE positions. No direct live modification from this review; return a concrete implementation plan for GPT to assess.
+
+Transport verification: this retry must travel through the dedicated Google self-hosted relay runner. In your reply, include the sentence: "Google relay diagnostic received." Do not claim access to server identity beyond the task context supplied by GPT.
