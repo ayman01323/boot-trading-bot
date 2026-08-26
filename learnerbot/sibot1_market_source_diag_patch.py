@@ -80,10 +80,51 @@ def _market_source_health(app) -> dict:
     }
 
 
+def _engine_nomination_health(app) -> dict:
+    """Expose only aggregate counters from worker health; never candidate identities."""
+    path = Path(app.data_dir) / "sibot1" / "status.json"
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"available": False, "redacted": True, "engines": {}}
+    workers = raw.get("workers") if isinstance(raw, dict) else {}
+    if not isinstance(workers, dict):
+        return {"available": False, "redacted": True, "engines": {}}
+
+    engines = {}
+    for engine_id in ("gpt", "gemini", "grok"):
+        row = workers.get(engine_id)
+        if not isinstance(row, dict):
+            continue
+        item = {
+            "events": _safe_int(row.get("events")) or 0,
+            "signals": _safe_int(row.get("signals")) or 0,
+        }
+        rejects = row.get("prefilter_rejections")
+        if isinstance(rejects, dict):
+            # Keys are fixed strategy reason labels; values are aggregate counts.
+            item["prefilter_rejections"] = {
+                str(k)[:80]: max(0, _safe_int(v) or 0)
+                for k, v in rejects.items()
+            }
+        for key in (
+            "developer_flow_known_safe",
+            "developer_flow_selling",
+            "developer_flow_unknown",
+            "spread_signals",
+            "cycle_signals",
+        ):
+            if key in row:
+                item[key] = max(0, _safe_int(row.get(key)) or 0)
+        engines[engine_id] = item
+    return {"available": True, "redacted": True, "engines": engines}
+
+
 def snapshot(app) -> dict:
     out = _PREV_SNAPSHOT(app)
-    out["schema_version"] = max(5, int(out.get("schema_version") or 0))
+    out["schema_version"] = max(6, int(out.get("schema_version") or 0))
     out["market_source_health"] = _market_source_health(app)
+    out["engine_nomination_health"] = _engine_nomination_health(app)
     return out
 
 
@@ -92,7 +133,7 @@ def install() -> None:
         return
     _diag.snapshot = snapshot
     _diag._sibot1_market_source_diag_installed = True
-    print("[sibot1-market-source-diag] redacted=true source-health=true")
+    print("[sibot1-market-source-diag] redacted=true source-health=true nomination-health=true")
 
 
 install()
