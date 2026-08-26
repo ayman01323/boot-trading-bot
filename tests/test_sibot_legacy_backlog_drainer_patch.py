@@ -95,19 +95,25 @@ def test_provider_429_sets_account_wide_exponential_backoff(tmp_path, monkeypatc
         },
     )
 
+    base_backoff = patch._rate_limit_backoff_seconds(app)
+    max_backoff = patch._max_backoff_seconds(app)
+
     first = patch._drain_once(app, now_epoch=1_000, chains=[chain])
     assert first["status"] == "RATE_LIMIT"
-    assert first["backoff_seconds"] == 60
-    assert first["next_epoch"] == 1_060
+    assert first["backoff_seconds"] == base_backoff
+    assert first["next_epoch"] == 1_000 + base_backoff
     assert patch._read_state_int(app, patch._GLOBAL_PRESSURE_KEY, 0) == 1
 
-    blocked = patch._drain_once(app, now_epoch=1_030, chains=[chain])
-    assert blocked == {"status": "BACKOFF", "next_epoch": 1_060}
+    blocked_at = 1_000 + max(1, base_backoff // 2)
+    blocked = patch._drain_once(app, now_epoch=blocked_at, chains=[chain])
+    assert blocked == {"status": "BACKOFF", "next_epoch": 1_000 + base_backoff}
 
-    second = patch._drain_once(app, now_epoch=1_061, chains=[chain])
+    second_at = 1_001 + base_backoff
+    second = patch._drain_once(app, now_epoch=second_at, chains=[chain])
+    second_backoff = min(max_backoff, base_backoff * 2)
     assert second["status"] == "RATE_LIMIT"
-    assert second["backoff_seconds"] == 120
-    assert second["next_epoch"] == 1_181
+    assert second["backoff_seconds"] == second_backoff
+    assert second["next_epoch"] == second_at + second_backoff
     assert patch._read_state_int(app, patch._GLOBAL_PRESSURE_KEY, 0) == 2
 
 
