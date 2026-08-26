@@ -12,10 +12,11 @@ permissions:
 
 concurrency:
   group: namecheap-vps-to-google-backup
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   prepare-google:
+    if: github.event_name == 'workflow_dispatch'
     name: Prepare protected Google backup destination
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
@@ -218,7 +219,7 @@ jobs:
 
   cleanup-google-key:
     name: Remove one-time Google transfer key
-    if: always()
+    if: ${{ always() && github.event_name == 'workflow_dispatch' }}
     needs: [prepare-google, export-namecheap, import-google]
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
