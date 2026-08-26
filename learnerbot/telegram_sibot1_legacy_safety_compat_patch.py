@@ -44,3 +44,9 @@ from . import telegram_sibot1_signer_menu_patch as _sibot1_signer_menu  # noqa: 
 # and delete the duplicate Telegram message immediately. Existing encrypted signer
 # material is left unchanged.
 from . import telegram_sibot1_duplicate_secret_scrub_patch as _sibot1_duplicate_secret_scrub  # noqa: E402,F401
+
+# Post-integrity operational correctness: keep candidate notifications truthful,
+# suppress unowned SHADOW EXIT claims, and add bounded read-only RPC failover to
+# the learned-route scanner. These patches do not change any execution/risk gate.
+from . import sibot1_candidate_truth_patch as _sibot1_candidate_truth  # noqa: E402,F401
+from . import route_scanner_rpc_failover_patch as _route_scanner_rpc_failover  # noqa: E402,F401
