@@ -1,0 +1,91 @@
+name: Claude Telegram Runtime Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-telegram-runtime-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 3
+    steps:
+      - name: Send one Claude-labelled message through existing runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          py="$repo/.venv/bin/python"
+          test -x "$py"
+          cd "$repo"
+          "$py" - <<'PY' >/tmp/claude-telegram-runtime-test.txt
+          from learnerbot.config import AppSettings
+          from learnerbot.ai_ops_status import master_chat_ids
+          from learnerbot.telegram import send_to_chats
+
+          app = AppSettings.load()
+          token = str(getattr(app, 'telegram_bot_token', '') or '').strip()
+          chats = [str(x).strip() for x in master_chat_ids(app.csv_dir) if str(x).strip()]
+          print(f'telegram_token_present={str(bool(token)).lower()}')
+          print(f'master_destination_present={str(bool(chats)).lower()}')
+          if not token or not chats:
+              print('telegram_sent=false')
+              raise SystemExit(2)
+
+          text = (
+              '🤖 CLAUDE TRADING BOT — test message. '
+              'STATUS=SIMULATED, LIVE=OFF, ARMED=OFF. '
+              'This is a connectivity/format check only, no trade action taken.'
+          )
+          result = send_to_chats(
+              token,
+              chats,
+              text,
+              protect_content=True,
+              disable_notification=False,
+          )
+          sent = int((result or {}).get('sent_chats') or 0) if isinstance(result, dict) else int(result or 0)
+          print(f'telegram_sent={str(sent > 0).lower()}')
+          print(f'sent_destination_count={sent}')
+          print('live_state_changed=false')
+          print('signer_state_changed=false')
+          if sent <= 0:
+              raise SystemExit(3)
+          PY
+          cat /tmp/claude-telegram-runtime-test.txt
+
+      - name: Publish redacted result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=/tmp/claude-telegram-runtime-publish.txt
+          {
+            echo "checked_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo 'runner=boot-vps'
+            if [[ -f /tmp/claude-telegram-runtime-test.txt ]]; then
+              grep -E '^(telegram_token_present|master_destination_present|telegram_sent|sent_destination_count|live_state_changed|signer_state_changed)=' /tmp/claude-telegram-runtime-test.txt || true
+            else
+              echo 'telegram_sent=false'
+            fi
+          } > "$report"
+
+          path='diagnostics/claude-telegram-runtime-test.txt'
+          api="repos/${GITHUB_REPOSITORY}/contents/${path}"
+          current="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" 2>/dev/null || true)"
+          sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$report")"
+          python3 - "$encoded" "$sha" <<'PY' >/tmp/claude-tg-runtime-put.json
+          import json,sys
+          data={'message':'Update Claude Telegram runtime test','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: data['sha']=sys.argv[2]
+          print(json.dumps(data))
+          PY
+          gh api -X PUT "$api" --input /tmp/claude-tg-runtime-put.json >/dev/null
