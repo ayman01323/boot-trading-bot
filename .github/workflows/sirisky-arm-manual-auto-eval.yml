@@ -1,0 +1,97 @@
+name: SiRisky Arm Manual Auto Evaluation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-arm-manual-auto-eval.yml'
+      - 'SiRisky/overrides/sirisky/engine.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arm:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Arm automatic candidate evaluation with manual final signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n test -d /root/SiRisky
+          sudo -n test -f /root/SiRisky/run.py
+
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/engine.py "/root/SiRisky/sirisky/engine.py.${stamp}.armed-manual.bak"
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
+
+          sudo -n python3 - /root/SiRisky/CSV/runtime.csv <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+          by={str(r.get('setting') or ''):r for r in rows}
+          updates={
+            'armed_manual_approval':('1','ARMED: automatic candidate evaluation is enabled; final transaction requires manual external signature'),
+            'auto_promote_to_selected':('1','Automatically promote ranked Stage-1 candidates into Stage-2/3 evaluation only'),
+            'auto_evaluate_candidate_limit':('5','Evaluate up to five ranked candidates per entry cycle until one passes Stage 3'),
+            'manual_approval_enabled':('1','Every Stage-3-approved BUY/SELL stops at WAITING_FOR_MANUAL_APPROVAL'),
+            'manual_approval_require_external_signature':('1','Final signing must be external/manual'),
+            'live_enabled':('1','Live monitoring and candidate evaluation enabled'),
+            'auto_discovery_enabled':('1','Continuously discover fresh Solana pools'),
+          }
+          for k,(v,note) in updates.items():
+            if k in by:
+              by[k]['value']=v; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':v,'notes':note}; rows.append(row); by[k]=row
+          for k,note in (
+            ('broadcast_enabled','Locked: no autonomous real-money transaction broadcast'),
+            ('telegram_manual_run_enabled','Locked: Telegram cannot directly execute a real transaction'),
+          ):
+            if k in by:
+              by[k]['value']='0'; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':'0','notes':note}; rows.append(row); by[k]=row
+          with p.open('w',encoding='utf-8',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=['setting','value','notes']); w.writeheader(); w.writerows(rows)
+          PY
+
+          echo '=== COMPILE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && .venv/bin/python -m compileall -q sirisky run.py tests'
+
+          echo '=== SELFTEST ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py selftest'
+
+          echo '=== SAFE LIVE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
+
+          echo '=== RESTART ==='
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+
+          echo '=== ARMED MANUAL STATE ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(armed_manual_approval|live_enabled|broadcast_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit|manual_approval_enabled|manual_approval_require_external_signature)$/' /root/SiRisky/CSV/runtime.csv
+
+          echo '=== ONE SAFE EVALUATION CYCLE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py once' || true
+
+          echo '=== PENDING APPROVALS ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py approvals' || true
+
+          echo '=== SAFETY ASSERTIONS ==='
+          test "$(sudo -n awk -F, '$1=="armed_manual_approval"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="auto_promote_to_selected"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="manual_approval_require_external_signature"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'armed_manual_approval=YES'
+          echo 'auto_candidate_evaluation=YES'
+          echo 'external_manual_signature=REQUIRED'
+          echo 'real_transaction_broadcast=NO'
