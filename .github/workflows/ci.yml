@@ -1,4 +1,4 @@
-name: Diagnose Google SSH Key Access
+name: Restore Google WinSCP SSH Access
 
 on:
   push:
@@ -11,28 +11,40 @@ permissions:
   contents: read
 
 jobs:
-  diagnose-google-ssh:
-    name: Read-only SSH key diagnostics on Google
+  restore-winscp-key:
+    name: Restore WinSCP key for ayman01323 on Google
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Inspect SSH account safely
+      - name: Add WinSCP public key idempotently
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          echo "hostname=$(hostname)"
-          echo "user=$(id -un)"
-          echo "home=$HOME"
-          stat -c 'ssh_dir_mode=%a owner=%U:%G' "$HOME/.ssh"
-          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
-            stat -c 'authorized_keys_mode=%a owner=%U:%G size=%s' "$HOME/.ssh/authorized_keys"
-            echo "authorized_key_lines=$(grep -cve '^[[:space:]]*$' "$HOME/.ssh/authorized_keys" || true)"
-            echo "migration_key_lines=$(grep -c 'namecheap-google-final-cutover' "$HOME/.ssh/authorized_keys" || true)"
-            echo 'AUTHORIZED_KEY_FINGERPRINTS_BEGIN'
-            ssh-keygen -lf "$HOME/.ssh/authorized_keys" || true
-            echo 'AUTHORIZED_KEY_FINGERPRINTS_END'
+
+          KEY_TYPE='ssh-ed25519'
+          KEY_BODY='AAAAC3NzaC1lZDI1NTE5AAAAIHpZkKAbpMnmuf83u+SbzomxHo6aNjBPbJipZW2aGhok'
+          KEY_LINE="$KEY_TYPE $KEY_BODY winscp-ayman"
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          touch "$HOME/.ssh/authorized_keys"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+
+          if grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"; then
+            echo 'WINSCP_KEY_ALREADY_PRESENT=true'
           else
-            echo 'AUTHORIZED_KEYS_MISSING=true'
+            printf '%s\n' "$KEY_LINE" >> "$HOME/.ssh/authorized_keys"
+            echo 'WINSCP_KEY_ADDED=true'
           fi
+
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          test "$(stat -c '%U' "$HOME/.ssh/authorized_keys")" = 'ayman01323'
+          grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"
+
+          EXPECTED_FP="$(printf '%s\n' "$KEY_LINE" | ssh-keygen -lf /dev/stdin | awk '{print $2}')"
+          INSTALLED_FP="$(grep -F "$KEY_BODY" "$HOME/.ssh/authorized_keys" | head -1 | ssh-keygen -lf /dev/stdin | awk '{print $2}')"
+          test "$EXPECTED_FP" = "$INSTALLED_FP"
+          echo "winscp_key_fingerprint=$INSTALLED_FP"
+          echo 'WINSCP_SSH_ACCESS_KEY_VERIFIED=true'
