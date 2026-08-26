@@ -1,0 +1,121 @@
+name: Claude Google Runtime Health Hot-Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-hotdeploy-runtime-health.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-runtime-health-hotdeploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      SERVICE: claude-trading-bot.service
+    steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Google runner and bounded dirty workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(whoami)" = ayman01323
+          test -d "$MANAGED_REPO/.git"
+          origin="$(git -C "$MANAGED_REPO" remote get-url origin)"
+          case "$origin" in
+            "https://github.com/${GITHUB_REPOSITORY}"|"https://github.com/${GITHUB_REPOSITORY}.git") ;;
+            *) echo "Unexpected managed origin: $origin" >&2; exit 2 ;;
+          esac
+
+          mapfile -t dirty < <(git -C "$MANAGED_REPO" status --porcelain | sed -E 's/^.. //' | sort -u)
+          allowed=(
+            'claude-trading-bot/solana_execution_risk_patch.py'
+            'claude-trading-bot/telegram_control_patch.py'
+            'learnerbot/sibot1_runtime_diag_export_patch.py'
+          )
+          for path in "${dirty[@]}"; do
+            ok=false
+            for allow in "${allowed[@]}"; do
+              [[ "$path" == "$allow" ]] && ok=true && break
+            done
+            if [[ "$ok" != true ]]; then
+              echo "Refusing hot-deploy: unexpected dirty path: $path" >&2
+              exit 3
+            fi
+          done
+          printf 'bounded_dirty_paths=%s\n' "${dirty[*]:-(none)}"
+
+      - name: Verify trusted fix source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f claude-trading-bot/claude_runtime_health_patch.py
+          grep -q 'install_attestation=OK' claude-trading-bot/claude_runtime_health_patch.py
+          grep -q 'claude_runtime_health_patch.install()' claude-trading-bot/claude_bot_patches.py
+          echo 'trusted_runtime_health_source=PASS'
+
+      - name: Hot-deploy only Claude health files
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0644 claude-trading-bot/claude_runtime_health_patch.py \
+            "$MANAGED_REPO/claude-trading-bot/claude_runtime_health_patch.py"
+          install -m 0644 claude-trading-bot/claude_bot_patches.py \
+            "$MANAGED_REPO/claude-trading-bot/claude_bot_patches.py"
+
+          "$MANAGED_REPO/.venv/bin/python" -m py_compile \
+            "$MANAGED_REPO/claude-trading-bot/claude_runtime_health_patch.py" \
+            "$MANAGED_REPO/claude-trading-bot/claude_bot_patches.py"
+          echo 'bounded_hotdeploy_compile=PASS'
+
+      - name: Restart only isolated Claude service
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemctl restart "$SERVICE"
+          sleep 20
+          test "$(systemctl is-active "$SERVICE")" = active
+          echo "active=$(systemctl is-active "$SERVICE")"
+          systemctl show "$SERVICE" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+
+      - name: Verify Claude runtime attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(sudo -n journalctl -u "$SERVICE" --since '2 minutes ago' --no-pager)"
+          printf '%s\n' "$log" | grep '\[claude-runtime-health\] install_attestation=OK'
+          printf '%s\n' "$log" | grep '\[trading-runtime-invariant\] OK'
+          printf '%s\n' "$log" | grep '\[final-runtime-integrity\] OK'
+          if printf '%s\n' "$log" | grep -Eq 'Traceback|Main process exited|Failed with result'; then
+            echo 'Fatal runtime error detected after hot-deploy' >&2
+            printf '%s\n' "$log" | tail -120
+            exit 4
+          fi
+          echo 'CLAUDE_RUNTIME_HEALTH_HOTDEPLOY_OK'
+          echo 'LIVE_STATE_NOT_CHANGED_BY_WORKFLOW=true'
+
+      - name: Boundary summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Bounded operation only:'
+          echo '- copied two Claude runtime-health source files'
+          echo '- preserved existing three approved server hotfix files'
+          echo '- restarted only claude-trading-bot.service'
+          echo '- did not ARM LIVE'
+          echo '- did not sign or broadcast a transaction'
+          echo '- did not read or modify wallet secrets'
