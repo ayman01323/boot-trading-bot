@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/claude-google-rpc-csv-sync.yml'
+      - '.github/claude-rpc-export.trigger'
+      - 'learnerbot/claude_rpc_runtime_bridge_patch.py'
+      - 'learnerbot/loss_forensics_runtime_bridge_patch.py'
   workflow_dispatch:
 
 permissions:
@@ -19,6 +22,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     env:
+      RUNTIME_BASE: /home/ayman01323/ClaudeServer/runtime
       KEY_DIR: /home/ayman01323/ClaudeServer/runtime/rpc-transfer-${{ github.run_id }}
     steps:
       - name: Verify Google runner and generate ephemeral transfer key
@@ -27,6 +31,10 @@ jobs:
           set -euo pipefail
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
+          mkdir -p "$RUNTIME_BASE"
+          chmod 700 "$RUNTIME_BASE"
+          # Clear only stale material created by this RPC transfer workflow.
+          find "$RUNTIME_BASE" -mindepth 1 -maxdepth 1 -type d -name 'rpc-transfer-*' -exec rm -rf -- {} +
           mkdir -p "$KEY_DIR"
           chmod 700 "$KEY_DIR"
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$KEY_DIR/private.pem" >/dev/null 2>&1
@@ -48,6 +56,7 @@ jobs:
     timeout-minutes: 10
     env:
       WORK: /tmp/claude-rpc-export-${{ github.run_id }}
+      HANDOFF: /var/tmp/boot/claude_rpc_endpoints.csv
     steps:
       - name: Download Google public key
         uses: actions/download-artifact@v4
@@ -55,33 +64,17 @@ jobs:
           name: rpc-transfer-public-${{ github.run_id }}
           path: /tmp/claude-rpc-export-${{ github.run_id }}
 
-      - name: Read only the production RPC CSV and encrypt it
+      - name: Read only the protected production RPC handoff and encrypt it
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$WORK"
           chmod 700 "$WORK"
-          src=''
-          for candidate in \
-            /root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot/rpc_endpoints.csv \
-            /root/boot-trading-bot/CSVbot/rpc_endpoints.csv \
-            /opt/boot-trading-bot/CSVbot/rpc_endpoints.csv
-          do
-            if [ -r "$candidate" ]; then
-              src="$candidate"
-              cat "$candidate" > "$WORK/rpc_endpoints.csv"
-              break
-            fi
-            if sudo -n test -r "$candidate" 2>/dev/null; then
-              src="$candidate"
-              sudo -n cat "$candidate" > "$WORK/rpc_endpoints.csv"
-              break
-            fi
-          done
-          if [ -z "$src" ] || [ ! -s "$WORK/rpc_endpoints.csv" ]; then
-            echo 'Production rpc_endpoints.csv was not readable at any approved fixed path.' >&2
+          if [ ! -r "$HANDOFF" ] || [ ! -s "$HANDOFF" ]; then
+            echo 'Protected RPC handoff is not ready on the VPS yet.' >&2
             exit 1
           fi
+          cat "$HANDOFF" > "$WORK/rpc_endpoints.csv"
 
           python3 - "$WORK/rpc_endpoints.csv" <<'PY'
           import csv, sys
@@ -93,7 +86,11 @@ jobs:
           headers=set(rows[0].keys())
           if 'chain_id' not in headers or 'url' not in headers:
               raise SystemExit('RPC CSV missing required chain_id/url columns')
+          enabled=sum(1 for r in rows if str(r.get('enabled','true')).strip().lower() in {'1','true','yes','on','y'})
+          chain_ids=sorted({str(r.get('chain_id') or '').strip() for r in rows if str(r.get('chain_id') or '').strip()})
           print(f'rpc_csv_rows={len(rows)}')
+          print(f'rpc_csv_enabled_rows={enabled}')
+          print('rpc_csv_chain_ids=' + ','.join(chain_ids))
           PY
 
           openssl rand -base64 48 > "$WORK/aes.pass"
@@ -106,6 +103,9 @@ jobs:
             -in "$WORK/aes.pass" -out "$WORK/aes.pass.enc" \
             -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
           rm -f "$WORK/rpc_endpoints.csv" "$WORK/aes.pass" "$WORK/public.pem"
+          # The handoff was owned specifically by github-runner and is no longer
+          # needed once its encrypted copy exists.
+          rm -f "$HANDOFF"
           echo 'RPC_CSV_ENCRYPTED_ON_VPS' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload encrypted RPC bundle only
@@ -203,3 +203,15 @@ jobs:
             echo 'Final RPC CSV is mode 600 under /home/ayman01323/ClaudeServer/runtime.'
             echo 'No wallet/private-key/trading/LIVE authority was transferred.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup-key:
+    if: always()
+    needs: [prepare-key, export-encrypted, import-google]
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    env:
+      KEY_DIR: /home/ayman01323/ClaudeServer/runtime/rpc-transfer-${{ github.run_id }}
+    steps:
+      - name: Remove ephemeral transfer key if any prior step failed
+        shell: bash
+        run: rm -rf "$KEY_DIR"
