@@ -1,0 +1,23 @@
+[Unit]
+Description=Claude Trading Bot (isolated instance, reuses learnerbot strategy/risk code)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ayman01323/ClaudeServer/boot-trading-bot/claude-trading-bot
+ExecStart=/home/ayman01323/ClaudeServer/boot-trading-bot/.venv/bin/python run.py start
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+# NOTE: this unit is not yet installable through the current
+# `Claude Google Controlled Operations` workflow — that workflow only performs
+# inspect/test/sync against a git checkout and is explicitly barred from
+# production service restarts. Installing/enabling this unit needs a separate,
+# narrowly-scoped operation (see claude-trading-bot/README.md, "Known
+# limitations", item 3) — do not bypass the sync workflow's boundary to work
+# around this.
+
+[Install]
+WantedBy=multi-user.target
