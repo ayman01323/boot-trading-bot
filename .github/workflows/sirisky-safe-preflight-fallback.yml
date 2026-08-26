@@ -1,0 +1,80 @@
+name: SiRisky Safe Preflight Fallback
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-safe-preflight-fallback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install temporary safe preflight fallbacks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+
+          sudo -n /root/SiRisky/.venv/bin/python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          root=Path('/root/SiRisky')
+          runtime=root/'CSV/runtime.csv'
+          envp=root/'.env'
+          jp=root/'sirisky/jupiter.py'
+
+          # Keep all irreversible execution disabled.
+          rows=list(csv.DictReader(runtime.open(encoding='utf-8-sig',newline='')))
+          for r in rows:
+              if r.get('setting') in {'live_enabled','broadcast_enabled','telegram_manual_run_enabled'}:
+                  r['value']='0'
+          with runtime.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=['setting','value','notes']); w.writeheader(); w.writerows(rows)
+
+          # Temporary public Solana RPC only for SAFE-OFF verification until a fresh private RPC key is installed.
+          managed={'SOLANA_RPC_URL','SOLANA_WS_URL','CSV_DIR','DATA_DIR','LOG_DIR','AUTHORISED_CHAINS'}
+          lines=envp.read_text(encoding='utf-8',errors='replace').splitlines() if envp.exists() else []
+          kept=[]
+          for raw in lines:
+              if '=' in raw and not raw.lstrip().startswith('#') and raw.split('=',1)[0].strip() in managed:
+                  continue
+              kept.append(raw)
+          kept += [
+              'SOLANA_RPC_URL=https://api.mainnet-beta.solana.com',
+              'SOLANA_WS_URL=wss://api.mainnet-beta.solana.com',
+              'CSV_DIR=/root/SiRisky/CSV',
+              'DATA_DIR=/root/SiRisky/data',
+              'LOG_DIR=/root/SiRisky/logs',
+              'AUTHORISED_CHAINS=solana',
+          ]
+          envp.write_text('\n'.join(kept).rstrip()+'\n',encoding='utf-8'); envp.chmod(0o600)
+
+          # Make quote_only a true quote call. This avoids requiring the wallet to already own
+          # the reverse-leg token merely to verify route availability.
+          text=jp.read_text(encoding='utf-8')
+          old='''def quote_only(settings, taker: str, input_mint: str, output_mint: str, amount_raw: int) -> dict:\n    data=order(settings,taker,input_mint,output_mint,amount_raw)\n    return {"in_amount": _amount(data.get("inAmount") or data.get("inputAmount") or amount_raw, amount_raw), "out_amount": _amount(data.get("outAmount") or data.get("outputAmount") or data.get("estimatedOutputAmount"),0), "router":str(data.get("router") or ""), "request_id":str(data.get("requestId") or ""), "raw":data}\n'''
+          new='''def quote_only(settings, taker: str, input_mint: str, output_mint: str, amount_raw: int) -> dict:\n    if amount_raw <= 0:\n        raise JupiterError("Amount must be positive")\n    # Keyless quote endpoint is sufficient for SAFE route validation; it never broadcasts.\n    params={"inputMint":input_mint,"outputMint":output_mint,"amount":str(int(amount_raw)),"slippageBps":"100"}\n    r=requests.get("https://lite-api.jup.ag/swap/v1/quote",params=params,headers={"User-Agent":"SiRisky/0.1"},timeout=30)\n    r.raise_for_status(); data=r.json()\n    if data.get("error") or not data.get("outAmount"):\n        raise JupiterError(f"Jupiter quote failed: {data.get('error') or data.get('errorMessage') or 'no output amount'}")\n    return {"in_amount":_amount(data.get("inAmount") or amount_raw,amount_raw),"out_amount":_amount(data.get("outAmount"),0),"router":"quote-v1","request_id":"","raw":data}\n'''
+          if old not in text:
+              raise SystemExit('quote_only source shape changed; refusing unsafe patch')
+          jp.write_text(text.replace(old,new),encoding='utf-8')
+          PY
+
+          sudo -n bash -lc 'cd /root/SiRisky && .venv/bin/python -m compileall -q . && PYTHONPATH=. .venv/bin/python run.py selftest'
+          sudo -n systemctl restart sirisky.service
+          sleep 4
+
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          echo '=== SAFE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check || true'
+          echo '=== LIVE GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled)$/' /root/SiRisky/CSV/runtime.csv
+          echo 'rpc_mode=PUBLIC_TEMPORARY_SAFE_OFF'
+          echo 'real_transaction_broadcast=NO'
