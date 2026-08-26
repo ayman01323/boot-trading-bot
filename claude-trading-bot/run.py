@@ -26,7 +26,13 @@ from pathlib import Path
 
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parent
-ENV_FILE = THIS_DIR / ".env"
+
+# Default to the real, operator-provisioned runtime config location on the
+# Google server (outside git, placed there directly -- not something this
+# bot writes or commits). CLAUDE_BOT_ENV_FILE overrides this for local dev/
+# testing, so the same code works off-server without editing this constant.
+DEFAULT_ENV_FILE = Path("/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env")
+ENV_FILE = Path(os.environ.get("CLAUDE_BOT_ENV_FILE") or DEFAULT_ENV_FILE)
 
 # Make `learnerbot` importable regardless of cwd or whether it's pip-installed —
 # don't depend on install state matching production's venv.
@@ -46,16 +52,17 @@ class StartupError(RuntimeError):
 
 
 def _load_own_env() -> None:
-    """Load claude-trading-bot/.env only — never the production bot's .env.
+    """Load this instance's own runtime env file only — never the production bot's .env.
 
     Loaded with override=True: if this process somehow already has a stale
-    production value set (e.g. a shared parent shell), this instance's own .env
-    always wins for the keys it defines.
+    production value set (e.g. a shared parent shell), this instance's own
+    runtime env file always wins for the keys it defines.
     """
     if not ENV_FILE.exists():
         raise StartupError(
-            f"{ENV_FILE} not found. Copy env.example to .env and fill in real "
-            f"values before starting claude-trading-bot."
+            f"{ENV_FILE} not found. Provision it at that path (see env.example "
+            f"for the required keys), or set CLAUDE_BOT_ENV_FILE to point at a "
+            f"local copy for testing off-server."
         )
     try:
         from dotenv import load_dotenv
@@ -130,6 +137,11 @@ def cmd_start() -> int:
         f"max_daily_loss=${limits.max_daily_loss_usd:,.2f}"
     )
 
+    import signing_interface
+
+    signer_status = signing_interface.get_signer_status(app)
+    print(f"Signer status: {signer_status.reason}")
+
     from learnerbot.telegram import send_to_chats
 
     startup_text = identity_patch.build_startup_message(
@@ -144,6 +156,7 @@ def cmd_start() -> int:
         max_total_exposure_usd=limits.max_total_exposure_usd,
         max_daily_loss_usd=limits.max_daily_loss_usd,
         wallet_balance_summary="see /balance in Telegram after startup",
+        signer_ready=signer_status.ready,
     )
     send_to_chats(app.telegram_bot_token, app.telegram_chat_ids, startup_text)
 

@@ -211,6 +211,23 @@ def check_kill_switch_state() -> None:
         _record(name, "FAIL", str(exc))
 
 
+def check_signer_readiness() -> None:
+    name = "signing readiness (SIGNER_READY)"
+    try:
+        from learnerbot.config import AppSettings
+
+        import signing_interface
+
+        app = AppSettings.load()
+        status = signing_interface.get_signer_status(app)
+        # Not ready is an expected, correct state until a wallet is
+        # provisioned -- report it as PASS (the check itself worked and
+        # correctly refuses broadcast), not FAIL.
+        _record(name, "PASS", status.reason)
+    except Exception as exc:  # noqa: BLE001
+        _record(name, "FAIL", str(exc))
+
+
 def check_wallet_balance() -> None:
     name = "wallet balance read"
     try:
@@ -235,6 +252,7 @@ CHECKS = (
     check_telegram,
     check_database,
     check_kill_switch_state,
+    check_signer_readiness,
     check_wallet_balance,
 )
 

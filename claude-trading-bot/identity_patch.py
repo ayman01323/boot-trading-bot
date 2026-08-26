@@ -54,6 +54,7 @@ def build_startup_message(
     max_total_exposure_usd: float,
     max_daily_loss_usd: float,
     wallet_balance_summary: str,
+    signer_ready: bool,
 ) -> str:
     chains = ", ".join(authorised_chains) if authorised_chains else "(none authorised)"
     return (
@@ -68,7 +69,9 @@ def build_startup_message(
         f"Max position: ${max_position_usd:,.2f}\n"
         f"Max exposure: ${max_total_exposure_usd:,.2f}\n"
         f"Daily loss limit: ${max_daily_loss_usd:,.2f}\n"
-        f"Wallet balance: {wallet_balance_summary}"
+        f"Wallet balance: {wallet_balance_summary}\n"
+        f"SIGNER_READY: {str(signer_ready).lower()} "
+        + ("(broadcast possible if ARMED)" if signer_ready else "(broadcast unavailable)")
     )
 
 

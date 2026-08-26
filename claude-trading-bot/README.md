@@ -64,7 +64,17 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
 - [`preflight_check.py`](preflight_check.py) — the non-trading readiness checklist
   (RPC, WebSocket, market data, both-side quotes, pool/token safety dry-run,
   wallet balance read, DB init, Telegram delivery, kill-switch state,
-  restart/recovery) — no signing or broadcast occurs in this script.
+  signer readiness, restart/recovery) — no signing or broadcast occurs in
+  this script.
+- [`signing_interface.py`](signing_interface.py) — answers exactly one
+  question, SIGNER_READY true/false, by checking whether an encrypted
+  signing key exists in `learnerbot.solana_wallet_store.SolanaWalletStore`
+  (the existing, reviewed keystore — reused, not reimplemented) for this
+  instance's isolated wallet-owner id. Until GPT/operator provisions a
+  dedicated wallet on the Google server, this reports `false` and every
+  caller treats that as broadcast-unavailable. It does not itself decide to
+  broadcast anything — that still requires the existing ARMED/LIVE_TRADING
+  platform gates plus `risk_engine_guard.py`, unchanged.
 - `systemd/claude-trading-bot.service` — a unit template for running this as its
   own process, parallel to `systemd/learnerbot.service`. **Not yet installable**
   — see limitations below.
@@ -80,7 +90,7 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
   `MAX_DAILY_LOSS_USD`, `MAX_DRAWDOWN_PCT`, `MAX_SLIPPAGE_PCT`,
   `MAX_PRICE_IMPACT_PCT`, or `MIN_POOL_LIQUIDITY_USD` are absent or invalid.
 - `run.py` refuses to start at all if any required identity/config variable is
-  missing from `claude-trading-bot/.env`.
+  missing from its runtime env file (see "Runtime config location" below).
 
 No broadcast happens merely because this is deployed or running — it happens only
 when the operator explicitly enables the reused platform LIVE gates *and* the risk
@@ -99,12 +109,24 @@ verified-write kill-switch conventions.
    duplicating a large, actively-changing package without a clear win yet.
 2. **Server path.** The `Claude Google Controlled Operations` sync workflow syncs
    the whole `boot-trading-bot` repo to
-   `/home/ayman01323/ClaudeServer/boot-trading-bot/`. This folder will therefore
-   land at `/home/ayman01323/ClaudeServer/boot-trading-bot/claude-trading-bot/`,
-   **not** a separate top-level `/home/ayman01323/ClaudeServer/claude-trading-bot/`
-   path. If a separate top-level path is actually required, that needs a change to
-   the sync workflow itself (a GPT/operator decision), not something to route
-   around here.
+   `/home/ayman01323/ClaudeServer/boot-trading-bot/`. This folder's *code* lands
+   at `/home/ayman01323/ClaudeServer/boot-trading-bot/claude-trading-bot/`, not a
+   separate top-level `/home/ayman01323/ClaudeServer/claude-trading-bot/` path —
+   but its *runtime config and state* now correctly live under
+   `/home/ayman01323/ClaudeServer/runtime/` instead (see next point), which is a
+   real, separate, operator-managed area outside the git checkout entirely.
+3. **Runtime config location — do not put CSV_DIR/DATA_DIR inside the checkout.**
+   `claude-google-controlled-ops.yml`'s `sync` action refuses to run if
+   `git status --porcelain` on the managed checkout shows *any* local changes —
+   and that check does not exclude untracked files. If this bot's CSV config or
+   SQLite state were written inside `claude-trading-bot/` (even though gitignored),
+   every sync after this bot's first run would start failing with "managed server
+   workspace has local changes." `env.example` now points `CSV_DIR`/`DATA_DIR` at
+   `/home/ayman01323/ClaudeServer/runtime/{CSVbot,data}` instead — outside the
+   checkout, alongside the operator-provisioned `rpc_endpoints.csv` and
+   `claude-trading-bot.env`. `run.py`'s `DEFAULT_ENV_FILE` reads its own runtime
+   config from `/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env`
+   directly (override with `CLAUDE_BOT_ENV_FILE` for local/off-server testing).
 3. **No running-service mechanism yet.** The Google sync workflow only performs
    `inspect` / `test` / `sync` against a git checkout — it has no systemd/process
    management and is explicitly barred from restarting production services. The
