@@ -1,0 +1,22 @@
+name: Namecheap Google Migration Queue Sentinel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/namecheap-google-migration-sentinel.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: namecheap-to-google-bot-migration
+  cancel-in-progress: false
+
+jobs:
+  no-op:
+    name: No-op migration queue guard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm no-op
+        run: echo 'Migration duplicate queue guard only; no server changes.'
