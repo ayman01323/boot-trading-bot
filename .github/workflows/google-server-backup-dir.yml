@@ -15,19 +15,17 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Install dedicated WinSCP public key
+      - name: Create backup directory on botgoogle
         shell: bash
         run: |
           set -euo pipefail
-          key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHpZkKAbpMnmuf83u+SbzomxHo6aNjBPbJipZW2aGhok winscp-botgoogle-2026-08-26'
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          touch "$HOME/.ssh/authorized_keys"
-          chmod 600 "$HOME/.ssh/authorized_keys"
-          grep -qxF "$key" "$HOME/.ssh/authorized_keys" || printf '%s\n' "$key" >> "$HOME/.ssh/authorized_keys"
-          test "$(stat -c '%U' "$HOME/.ssh/authorized_keys")" = "$(whoami)"
-          grep -qxF "$key" "$HOME/.ssh/authorized_keys"
-          echo 'winscp_key_installed=true'
+          target="$HOME/GoogleServerBuckup"
+          mkdir -p "$target"
+          chmod 700 "$target"
+          touch "$target/.backup-dir-ready"
+          echo "backup_dir=$target"
+          stat -c 'mode=%a owner=%U group=%G path=%n' "$target"
+          ls -ld "$target"
 
       - name: Publish verification marker
         shell: bash
@@ -35,22 +33,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHpZkKAbpMnmuf83u+SbzomxHo6aNjBPbJipZW2aGhok winscp-botgoogle-2026-08-26'
-          ak="$HOME/.ssh/authorized_keys"
-          external_ip="$(curl -fsS -H 'Metadata-Flavor: Google' 'http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip')"
-          ssh_service="$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || true)"
-          if grep -qxF "$key" "$ak"; then key_installed=true; else key_installed=false; fi
+          target="$HOME/GoogleServerBuckup"
+          test -d "$target"
+          mode="$(stat -c '%a' "$target")"
+          owner="$(stat -c '%U:%G' "$target")"
           cat > /tmp/google-server-backup-dir.txt <<EOF
           hostname=$(hostname)
-          username=$(whoami)
-          home=$HOME
-          external_ip=$external_ip
-          ssh_service=$ssh_service
-          ssh_port=22
-          authorized_keys_exists=true
-          authorized_keys_mode=$(stat -c '%a' "$ak")
-          authorized_keys_owner=$(stat -c '%U:%G' "$ak")
-          winscp_key_installed=$key_installed
+          backup_dir=$target
+          exists=true
+          mode=$mode
+          owner=$owner
           verified_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           EOF
 
@@ -61,13 +53,13 @@ jobs:
           if [[ -n "$existing_sha" ]]; then
             payload="$(python3 - "$encoded" "$existing_sha" <<'PY'
           import json,sys
-          print(json.dumps({"message":"Verify WinSCP SSH key on Google VM","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
+          print(json.dumps({"message":"Update Google backup directory verification","content":sys.argv[1],"sha":sys.argv[2],"branch":"server-diagnostics"}))
           PY
           )"
           else
             payload="$(python3 - "$encoded" <<'PY'
           import json,sys
-          print(json.dumps({"message":"Verify WinSCP SSH key on Google VM","content":sys.argv[1],"branch":"server-diagnostics"}))
+          print(json.dumps({"message":"Create Google backup directory verification","content":sys.argv[1],"branch":"server-diagnostics"}))
           PY
           )"
           fi
