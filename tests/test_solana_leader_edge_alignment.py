@@ -65,6 +65,13 @@ def test_quality_metrics_carries_live_edge_evidence(monkeypatch):
     assert out["recent_median_return_pct"] == Decimal("4.4")
 
 
+def test_selection_lookback_uses_longer_evidence_without_lowering_strategy_window():
+    assert patch._selection_lookback_days({"lookback_days": "60"}) == 180
+    assert patch._selection_lookback_days({"lookback_days": "60", "leader_selection_lookback_days": "300"}) == 300
+    assert patch._selection_lookback_days({"lookback_days": "250", "leader_selection_lookback_days": "180"}) == 250
+    assert patch._selection_lookback_days({"lookback_days": "60", "leader_selection_lookback_days": "999"}) == 365
+
+
 def test_broader_selector_evaluates_candidates_beyond_display_top20(monkeypatch):
     candidates = [{"wallet": f"wallet-{i}"} for i in range(25)]
     seen = []
