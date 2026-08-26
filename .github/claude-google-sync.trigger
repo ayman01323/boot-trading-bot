@@ -1,5 +1,5 @@
-sync_requested_at=2026-08-26T15:29:00Z
+sync_requested_at=2026-08-26T19:24:00Z
 requested_by=gpt
-reason=final_reviewed_claude_sync_via_merged_push
+reason=deploy_claude_live_arm_runtime_health_fix
 source_branch=main
-source_sha=fd5b4bf0819795a37af3b9c56243c45fbb9e2b9a
+source_sha=27dd626ad1b10c6c3c919503c03c3883ba1b06ae
