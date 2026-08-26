@@ -34,6 +34,10 @@ REPO_ROOT = THIS_DIR.parent
 DEFAULT_ENV_FILE = Path("/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env")
 ENV_FILE = Path(os.environ.get("CLAUDE_BOT_ENV_FILE") or DEFAULT_ENV_FILE)
 
+# Same directory as DEFAULT_ENV_FILE -- the one location on the Google server
+# that's already fixed and known, independent of what any operator types in.
+DEFAULT_RUNTIME_DIR = DEFAULT_ENV_FILE.parent
+
 # Make `learnerbot` importable regardless of cwd or whether it's pip-installed —
 # don't depend on install state matching production's venv.
 if str(REPO_ROOT) not in sys.path:
@@ -71,7 +75,60 @@ def _load_own_env() -> None:
     load_dotenv(ENV_FILE, override=True)
 
 
+def _apply_deterministic_runtime_dir_defaults() -> None:
+    """Fill CSV_DIR/DATA_DIR from a fixed, known-safe location if this
+    instance's own env file didn't set them explicitly -- never overrides an
+    explicit value, only fills the gap.
+
+    Preflight against the real Google-server runtime file found CSV_DIR/
+    DATA_DIR simply blank (an operator hasn't typed them in yet), which
+    means every startup depended on that manual entry being both present
+    and correct (outside the git checkout) -- exactly the kind of manual
+    step review asked to make deterministic instead. Since
+    DEFAULT_RUNTIME_DIR is already a fixed, known-safe location (the same
+    directory DEFAULT_ENV_FILE lives in, structurally guaranteed outside
+    the git checkout), deriving CSV_DIR/DATA_DIR from it removes the need
+    to type them at all in the common case, while an operator who DOES set
+    them explicitly (e.g. for local/off-server testing via
+    CLAUDE_BOT_ENV_FILE) is still fully respected.
+
+    Deliberately NOT os.environ.setdefault(): the real runtime file has
+    `CSV_DIR=` with no value, not the key entirely absent -- load_dotenv()
+    loads that as os.environ["CSV_DIR"] = "" (present, blank), and
+    setdefault() only fills a key that is not present at all, so it would
+    never have actually applied the default against the real file (caught
+    by testing this against the exact blank-key shape, not just an unset
+    key). Treats present-but-blank the same as absent.
+    """
+    if not os.environ.get("CSV_DIR", "").strip():
+        os.environ["CSV_DIR"] = str(DEFAULT_RUNTIME_DIR / "CSVbot")
+    if not os.environ.get("DATA_DIR", "").strip():
+        os.environ["DATA_DIR"] = str(DEFAULT_RUNTIME_DIR / "data")
+
+
+def _is_inside(path: Path, container: Path) -> bool:
+    try:
+        path.relative_to(container)
+        return True
+    except ValueError:
+        return False
+
+
 def _check_identity_vars() -> None:
+    """Fail closed on ANY unsafe CSV_DIR/DATA_DIR, not just an exact match
+    with production's own paths.
+
+    Case 3 of the runtime-directory hardening: an operator (or a stale copy
+    of this instance's env file) could set CSV_DIR/DATA_DIR to some OTHER
+    path inside the git checkout -- e.g. REPO_ROOT/claude-trading-bot/CSVbot
+    -- which the old exact-equality check against REPO_ROOT/CSVbot would
+    have silently let through, even though it has exactly the same
+    sync-blocking consequence documented in README.md. This checks
+    "anywhere inside REPO_ROOT" generally, and refuses to start rather than
+    silently substituting a safe value -- an operator who explicitly
+    (if mistakenly) set an unsafe path needs to see why it was rejected,
+    not have it quietly overridden.
+    """
     missing = [v for v in REQUIRED_IDENTITY_VARS if not os.environ.get(v, "").strip()]
     if missing:
         raise StartupError(
@@ -80,12 +137,21 @@ def _check_identity_vars() -> None:
         )
     csv_dir = Path(os.environ["CSV_DIR"]).resolve()
     data_dir = Path(os.environ["DATA_DIR"]).resolve()
-    production_csv_dir = (REPO_ROOT / "CSVbot").resolve()
-    production_data_dir = (REPO_ROOT / "data").resolve()
-    if csv_dir == production_csv_dir:
-        raise StartupError(f"CSV_DIR must not equal the production bot's CSVbot/ ({production_csv_dir})")
-    if data_dir == production_data_dir:
-        raise StartupError(f"DATA_DIR must not equal the production bot's data/ ({production_data_dir})")
+    repo_root_resolved = REPO_ROOT.resolve()
+    if _is_inside(csv_dir, repo_root_resolved):
+        raise StartupError(
+            f"CSV_DIR={csv_dir} resolves inside the git-managed checkout ({repo_root_resolved}) "
+            f"-- refusing to start rather than silently using a different path. "
+            f"Unset CSV_DIR to use the safe deterministic default, or point it "
+            f"somewhere outside the checkout entirely."
+        )
+    if _is_inside(data_dir, repo_root_resolved):
+        raise StartupError(
+            f"DATA_DIR={data_dir} resolves inside the git-managed checkout ({repo_root_resolved}) "
+            f"-- refusing to start rather than silently using a different path. "
+            f"Unset DATA_DIR to use the safe deterministic default, or point it "
+            f"somewhere outside the checkout entirely."
+        )
 
 
 def _git_sha() -> str:
@@ -112,6 +178,7 @@ def _quarantine_before_learnerbot() -> None:
 
 def cmd_check() -> int:
     _load_own_env()
+    _apply_deterministic_runtime_dir_defaults()
     _quarantine_before_learnerbot()
     import preflight_check
 
@@ -120,6 +187,7 @@ def cmd_check() -> int:
 
 def cmd_start() -> int:
     _load_own_env()
+    _apply_deterministic_runtime_dir_defaults()
     _check_identity_vars()
     _quarantine_before_learnerbot()
 
