@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import time, uuid
 from .config import Settings
-from .csvio import append_row, read_rows, write_rows_atomic
+from .csvio import append_row, read_rows, write_rows_atomic, as_bool
+from .manual_approval import ManualApprovalGate
 from .stage1_data import Stage1Data
 from .stage2_strategy import Stage2Strategy
 from .stage3_risk import Stage3Risk
@@ -18,9 +19,13 @@ ORDER_HEADERS=["timestamp","order_id","action","mint","amount_raw","opportunity_
 
 class SiRiskyEngine:
     def __init__(self, settings=None):
-        self.settings=settings or Settings.load(); self.s1=Stage1Data(self.settings); self.s2=Stage2Strategy(self.settings); self.s3=Stage3Risk(self.settings); self.s4=Stage4Dispatcher(); self.s5=Stage5Trade(self.settings); self.s6=Stage6Monitor(self.settings); self.s7=Stage7Cycle(self.settings); self.s8=Stage8Review(self.settings)
+        self.settings=settings or Settings.load(); self.s1=Stage1Data(self.settings); self.s2=Stage2Strategy(self.settings); self.s3=Stage3Risk(self.settings); self.s4=Stage4Dispatcher(); self.s5=Stage5Trade(self.settings); self.s6=Stage6Monitor(self.settings); self.s7=Stage7Cycle(self.settings); self.s8=Stage8Review(self.settings); self.approvals=ManualApprovalGate(self.settings)
 
     def open_positions(self): return [r for r in read_rows(self.settings.csv_dir/"open_positions.csv") if str(r.get("status") or "").upper()=="OPEN"]
+
+    def pending_approvals(self): return self.approvals.pending()
+
+    def _manual_approval_enabled(self): return as_bool(self.settings.runtime().get("manual_approval_enabled"),False)
 
     def _save_open(self, rows): write_rows_atomic(self.settings.csv_dir/"open_positions.csv",OPEN_HEADERS,rows)
 
@@ -45,7 +50,14 @@ class SiRiskyEngine:
         if not opp: return {"status":"NO_TRIGGER","pool_id":snap.pool_id,"discovery":discovery}
         risk=self.s3.check(opp); append_row(self.settings.csv_dir/"risk_checks.csv",RISK_HEADERS,{"timestamp":int(time.time()),"opportunity_id":opp.opportunity_id,"pool_id":opp.pool_id,"mint":opp.mint,"passed":str(risk.passed).lower(),"reasons":"|".join(risk.reasons),"forecast_net_pct":f"{opp.forecast_net_pct:.6f}","exit_health_pct":f"{opp.snapshot.exit_health_pct:.6f}"})
         if not risk.passed: return {"status":"RISK_REJECT","reasons":risk.reasons,"discovery":discovery}
-        order=self.s4.buy_order(opp); self._log_order(order); result=self.s5.execute(order)
+        order=self.s4.buy_order(opp); self._log_order(order)
+        if self._manual_approval_enabled():
+            try:
+                prepared=self.approvals.prepare(order,{"pool_id":opp.pool_id,"strategy_id":opp.strategy_id,"exit_health_pct":opp.snapshot.exit_health_pct})
+                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,"proposal":prepared["proposal"],"new_proposal":prepared["created"],"discovery":discovery}
+            except Exception as exc:
+                return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,"error":type(exc).__name__,"discovery":discovery}
+        result=self.s5.execute(order)
         token_raw=int(result.get("output_raw") or 0); mode=str(result.get("mode") or "SHADOW")
         pos={"position_id":"pos-"+uuid.uuid4().hex[:12],"opportunity_id":opp.opportunity_id,"strategy_id":opp.strategy_id,"age_class":opp.age_class,"temperature":opp.temperature,"mint":opp.mint,"opened_epoch":int(time.time()),"entry_sol":opp.position_sol,"entry_lamports":order.amount_raw,"token_raw":token_raw,"target_net_pct":max(0.1,opp.forecast_net_pct),"max_hold_seconds":opp.max_hold_seconds,"mode":mode,"buy_signature":result.get("signature","") or "","status":"OPEN"}
         rows=self.open_positions(); rows.append(pos); self._save_open(rows)
@@ -57,7 +69,14 @@ class SiRiskyEngine:
         pos=rows[0]; ev=self.s6.evaluate(pos)
         if ev["decision"]=="HOLD": return {"status":"HOLD","position_id":pos["position_id"],"net_pct":ev["net_pct"]}
         if int(ev.get("sell_raw") or 0)<=0: return {"status":"EXIT_BLOCKED_ZERO_BALANCE","position_id":pos["position_id"]}
-        order=self.s4.exit_order(pos,ev["reason"],int(ev["sell_raw"])); self._log_order(order); sell=self.s5.execute(order)
+        order=self.s4.exit_order(pos,ev["reason"],int(ev["sell_raw"])); self._log_order(order)
+        if self._manual_approval_enabled():
+            try:
+                prepared=self.approvals.prepare(order,{"pool_id":str(pos.get("pool_id") or ""),"strategy_id":str(pos.get("strategy_id") or ""),"exit_health_pct":ev.get("exit_health_pct") or ""})
+                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,"position_id":pos.get("position_id"),"proposal":prepared["proposal"],"new_proposal":prepared["created"],"exit_reason":ev.get("reason")}
+            except Exception as exc:
+                return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,"position_id":pos.get("position_id"),"error":type(exc).__name__}
+        sell=self.s5.execute(order)
         remaining=[r for r in rows if r.get("position_id")!=pos.get("position_id")]; self._save_open(remaining)
         closed=self.s7.close(pos,sell,ev); review=self.s8.review(closed,pos)
         return {"status":"CLOSED","closed":closed,"review":review}
