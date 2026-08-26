@@ -1,0 +1,46 @@
+name: No-Trading State Provider Fix Tests
+
+on:
+  push:
+    branches:
+      - fix/no-trading-state-provider-v2
+    paths:
+      - 'learnerbot/sibot1_candidate_truth_patch.py'
+      - 'learnerbot/route_scanner_rpc_failover_patch.py'
+      - 'learnerbot/telegram_sibot1_legacy_safety_compat_patch.py'
+      - 'tests/test_sibot1_candidate_truth_patch.py'
+      - 'tests/test_route_scanner_rpc_failover_patch.py'
+      - '.github/workflows/no-trading-state-provider-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  targeted-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -q --upgrade pip
+          python -m pip install --disable-pip-version-check -q -r requirements.txt pytest
+      - name: Compile changed runtime modules and tests
+        run: |
+          python -m py_compile \
+            learnerbot/sibot1_candidate_truth_patch.py \
+            learnerbot/route_scanner_rpc_failover_patch.py \
+            learnerbot/telegram_sibot1_legacy_safety_compat_patch.py \
+            tests/test_sibot1_candidate_truth_patch.py \
+            tests/test_route_scanner_rpc_failover_patch.py
+      - name: Run targeted regressions
+        run: |
+          python -m pytest -x -vv \
+            tests/test_sibot1_candidate_truth_patch.py \
+            tests/test_route_scanner_rpc_failover_patch.py
