@@ -98,8 +98,21 @@ def _git_sha() -> str:
         return "unknown"
 
 
+def _quarantine_before_learnerbot() -> None:
+    """Must run before the first `import learnerbot` (any submodule) in this
+    process -- review confirmed the parent process (this file) imports
+    learnerbot before exec just as much as the child (bootstrap_run.py)
+    does, so both need this at the same point in their own startup, not
+    just the child. See claude_bot_quarantine.py for what this actually
+    does and why."""
+    import claude_bot_quarantine
+
+    claude_bot_quarantine.quarantine_before_any_learnerbot_import()
+
+
 def cmd_check() -> int:
     _load_own_env()
+    _quarantine_before_learnerbot()
     import preflight_check
 
     return preflight_check.main()
@@ -108,6 +121,7 @@ def cmd_check() -> int:
 def cmd_start() -> int:
     _load_own_env()
     _check_identity_vars()
+    _quarantine_before_learnerbot()
 
     # Fail closed: hard risk engine config must be valid before the loop starts.
     import risk_engine_guard

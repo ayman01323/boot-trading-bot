@@ -49,6 +49,13 @@ before `learnerbot` is ever imported, so none of them can silently inherit a
 production value either. `verify_bootstrap_composition.py` checks this stayed
 true after a full chain run, not just at the moment it's set.
 
+This is an audited, enumerated list, not a mathematical guarantee against
+every conceivable current or future `os.getenv` call anywhere in `learnerbot`
+— if a new secret-shaped env var is added to that package later without a
+corresponding entry in `claude_bot_quarantine._PRODUCTION_ONLY_SECRETS`, it
+could fall through until the audit is redone. Stated precisely rather than
+claimed absolutely, per review.
+
 ## What's reused as-is vs. new in this folder
 
 **Reused, unmodified:** `learnerbot.config.AppSettings`, the SQLite schema/atomic
@@ -61,19 +68,30 @@ per-user `live_trading_enabled`/`auto_trading_enabled`, all defaulting OFF).
 
 **New in this folder:**
 - [`run.py`](run.py) — fail-closed env isolation + entrypoint.
-- [`claude_bot_quarantine.py`](claude_bot_quarantine.py) — pre-creates the
-  marker files for every known historical production migration in
-  `learnerbot`'s patch chain (12 found by audit — see the module's own
-  docstring for the full list and why each is included or, in two cases,
-  deliberately excluded) so none of them run their mutation logic against
-  this instance, and blanks every secret-shaped env var this bot doesn't
-  need so `learnerbot/config.py`'s un-overridden
+- [`claude_bot_quarantine.py`](claude_bot_quarantine.py) — replaces every
+  known historical production migration in `learnerbot`'s patch chain (12
+  found by audit — see the module's own docstring for the full list and why
+  each is included or, in two cases, deliberately excluded) with an empty
+  stand-in module in `sys.modules`, so their code never executes at all —
+  zero repo-root writes, not "writes limited to a marker file" (an earlier
+  version of this module worked by pre-creating those migrations' own
+  marker files so they'd see themselves as already-applied; review correctly
+  rejected that as still violating a zero-repo-root-write invariant, since
+  creating the marker is itself a write). Also blanks every secret-shaped
+  env var this bot doesn't need so `learnerbot/config.py`'s un-overridden
   `load_dotenv(BOT_ROOT/.env)` can never silently fill one in from
-  production's real `.env`. Not hypothetical: a real test run before this
-  module existed proved `telegram_account_roles_patch.py` and
-  `polygon_live_enable_migration.py` both replay against a fresh instance —
-  see "Known limitations" and `verify_bootstrap_composition.py`, which
-  actively checks (not just trusts) that quarantine actually worked.
+  production's real `.env`. Both must run before the *first* `learnerbot`
+  import in a process — enforced by
+  `quarantine_before_any_learnerbot_import()` raising if called too late —
+  and both `run.py` (parent) and `bootstrap_run.py` (child; `os.execvpe()`
+  gives it a fresh interpreter with empty `sys.modules`, so the parent
+  having done this doesn't cover the child) call it first, before anything
+  else. Not hypothetical: a real test run before this module existed proved
+  `telegram_account_roles_patch.py` and `polygon_live_enable_migration.py`
+  both replay against a fresh instance — see "Known limitations" and
+  `verify_bootstrap_composition.py`, which actively checks (not just
+  trusts) that quarantine actually worked, requiring zero repo-root file
+  changes with no exception.
 - [`evm_execution_guard_patch.py`](evm_execution_guard_patch.py) — wraps
   every `LiveTrader` signing/broadcast entry point (`buy`, `sell`,
   `execute_cycle`, `execute_v3_cycle`) to unconditionally refuse. EVM has no
@@ -274,9 +292,10 @@ verified-write kill-switch conventions.
    replayed against a fresh `DATA_DIR` lacking its marker file — including
    this isolated instance's — and created its own hardcoded user row
    independent of `TELEGRAM_CHAT_IDS`. `claude_bot_quarantine.py` now
-   pre-creates that migration's marker (and 11 others found by a systematic
-   audit — see that module's docstring) before `learnerbot`'s chain ever
-   imports, so this specific replay no longer happens.
+   replaces that migration (and 11 others found by a systematic audit — see
+   that module's docstring) with an empty stand-in in `sys.modules` before
+   `learnerbot`'s chain ever imports it, so its code never runs at all and
+   this specific replay no longer happens.
    `verify_bootstrap_composition.py` actively re-checks this every run
    rather than trusting the fix once made. `CLAUDE_BOT_WALLET_OWNER_ID`
    should now correctly equal `TELEGRAM_CHAT_IDS[0]` via

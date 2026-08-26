@@ -158,12 +158,16 @@ def _peak_to_current_drawdown_sol(app, telegram_id: str) -> Decimal:
         ).fetchall()
     cumulative = Decimal(0)
     peak = Decimal(0)
-    max_drawdown = Decimal(0)
     for row in rows:
         cumulative += Decimal(str(row["realised_net_sol"] or 0))
         peak = max(peak, cumulative)
-        max_drawdown = max(max_drawdown, peak - cumulative)
-    return max_drawdown
+    # Current distance below the running peak, not the worst historical dip
+    # anywhere in the series (that would be `max(peak_i - cumulative_i)` over
+    # every i, which stays elevated forever even after a full recovery --
+    # wrong for a live "should I still be blocked right now" check, and a
+    # mismatch this function's own name/docstring already promised but the
+    # prior implementation didn't deliver, caught in review).
+    return peak - cumulative
 
 
 def _guarded_buy(self, output_mint: str, amount_sol, reserve_sol) -> dict:
