@@ -1,0 +1,62 @@
+name: SiRisky Auto Discovery Diagnose
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-auto-discovery-diagnose.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Diagnose partial auto-discovery deployment
+        shell: bash
+        run: |
+          set +e
+          echo '=== HOST ==='
+          hostname
+          echo '=== SUDO ==='
+          sudo -n true; echo "sudo_rc=$?"
+          echo '=== TARGET ==='
+          sudo -n test -d /root/SiRisky; echo "target_dir_rc=$?"
+          sudo -n test -f /root/SiRisky/run.py; echo "run_py_rc=$?"
+          echo '=== STAGE1 MARKERS ==='
+          sudo -n grep -nE 'GECKO_NEW_POOLS|def discover|stage1_candidates' /root/SiRisky/sirisky/stage1_data.py 2>&1; echo "stage1_marker_rc=$?"
+          echo '=== ENGINE MARKERS ==='
+          sudo -n grep -nE 'discover_if_due|AUTO_CANDIDATES_READY' /root/SiRisky/sirisky/engine.py 2>&1; echo "engine_marker_rc=$?"
+          echo '=== RUNTIME ==='
+          sudo -n cat /root/SiRisky/CSV/runtime.csv 2>&1; echo "runtime_rc=$?"
+          echo '=== CANDIDATE FILE ==='
+          sudo -n ls -l /root/SiRisky/CSV/stage1_candidates.csv 2>&1; echo "candidate_ls_rc=$?"
+          sudo -n head -n 8 /root/SiRisky/CSV/stage1_candidates.csv 2>&1; echo "candidate_head_rc=$?"
+          echo '=== COMPILE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && .venv/bin/python -m py_compile sirisky/stage1_data.py sirisky/engine.py' 2>&1; echo "compile_rc=$?"
+          echo '=== IMPORT ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+from sirisky.config import Settings
+from sirisky.stage1_data import Stage1Data
+s=Settings.load()
+print("import_ok=true")
+print("candidate_path="+str(Stage1Data(s).candidate_path))
+PY' 2>&1; echo "import_rc=$?"
+          echo '=== FORCED DISCOVERY ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+import traceback
+from sirisky.config import Settings
+from sirisky.stage1_data import Stage1Data
+try:
+    print(Stage1Data(Settings.load()).discover(force=True))
+except Exception:
+    traceback.print_exc()
+    raise
+PY' 2>&1; echo "discovery_rc=$?"
+          echo '=== SERVICE ==='
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager 2>&1
+          echo '=== SAFETY GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_promote_to_selected)$/' /root/SiRisky/CSV/runtime.csv 2>&1
+          echo 'real_transaction_broadcast=NO'
