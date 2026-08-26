@@ -27,5 +27,9 @@ def test_watcher_log_marker_is_observability_not_deployment_gate():
 def test_communication_only_relays_do_not_use_boot_vps_runner():
     for name in ("universal-ai-bus-mailbox-relay.yml", "ai-mailbox-provider-relay.yml"):
         text = _workflow_text(name)
-        assert "runs-on: ubuntu-latest" in text
         assert "runs-on: [self-hosted, linux, x64, boot-vps]" not in text
+
+    universal = _workflow_text("universal-ai-bus-mailbox-relay.yml")
+    provider = _workflow_text("ai-mailbox-provider-relay.yml")
+    assert "runs-on: ubuntu-latest" in universal
+    assert "runs-on: [self-hosted, linux, x64, boot-google]" in provider
