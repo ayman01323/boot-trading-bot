@@ -1,6 +1,5 @@
-sync_requested_at=2026-08-26T09:14:00Z
+sync_requested_at=2026-08-26T09:31:00Z
 requested_by=gpt
-reason=deploy_reviewed_claude_trading_bot_pr648
-reviewed_pr=648
-reviewed_head=c023f5c3b21945a4bdeaac34a8c2fb511a1c08ad
-merged_main_sha=ab184c7a86308cf8229f01e2e1d3c74a986170f5
+reason=sync_current_main_before_claude_google_bot_preflight
+preflight_pr=663
+preflight_merge_sha=5853b9fd8ab883ab2c001bb4657c60991717afe3
