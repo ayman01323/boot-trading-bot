@@ -1,0 +1,62 @@
+name: Commit Isolated Learner Entry Gate
+
+on:
+  push:
+    branches: [fix/isolated-learner-live-entry-gate-20260827]
+    paths:
+      - '.github/workflows/commit-isolated-learner-entry-gate.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/isolated-learner-live-entry-gate-20260827
+          fetch-depth: 0
+      - name: Add fail-closed learner new-entry gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('learnerbot/solana_live_patch.py')
+          s = p.read_text(encoding='utf-8')
+          marker = 'learner_new_entries_enabled'
+          if marker in s:
+              print('entry gate already present')
+          else:
+              old = '        if event["action"] == "BUY":\n            max_positions = max(1, min(5, _sol._int(cfg.get("live_max_positions"), 1)))'
+              new = (
+                  '        if event["action"] == "BUY":\n'
+                  '            # Learner-only STOP blocks new BUYs but deliberately leaves\n'
+                  '            # solana_live_enabled on so open LIVE positions can still be\n'
+                  '            # monitored and exited by the existing safety/leader rules.\n'
+                  '            if not user_bool(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "learner_new_entries_enabled", False):\n'
+                  '                actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LEARNER new entries OFF; exit monitoring remains active"})\n'
+                  '                continue\n'
+                  '            max_positions = max(1, min(5, _sol._int(cfg.get("live_max_positions"), 1)))'
+              )
+              if old not in s:
+                  raise SystemExit('REFUSED: expected LIVE BUY branch not found')
+              p.write_text(s.replace(old, new, 1), encoding='utf-8')
+              print('entry gate added')
+          PY
+          python3 -m py_compile learnerbot/solana_live_patch.py
+          grep -q 'learner_new_entries_enabled' learnerbot/solana_live_patch.py
+      - name: Commit exact runtime source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo 'No code change required'
+            exit 0
+          fi
+          git config user.name 'openai-gpt-learner-deploy'
+          git config user.email 'actions@users.noreply.github.com'
+          git add learnerbot/solana_live_patch.py
+          git commit -m 'Add isolated learner new-entry gate'
+          git push origin HEAD:fix/isolated-learner-live-entry-gate-20260827
