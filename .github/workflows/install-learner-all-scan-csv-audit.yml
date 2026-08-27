@@ -1,0 +1,263 @@
+name: Install Learner All Scan CSV Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/install-learner-all-scan-csv-audit.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-learner-all-scan-csv-audit
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install exact DB-triggered CSV audit for isolated learner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          WORK="$HOME/.cache/learner-csv-audit-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/install.sh"
+          RESULT="$WORK/result.txt"
+          UNIT="$WORK/learner-csv-audit-${GITHUB_RUN_ID}.service"
+
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          DAEMON=/home/ayman01323/.local/libexec/google_learner_all_scan_csv_audit.py
+          SERVICE=/etc/systemd/system/google-learner-all-scan-csv-audit.service
+          RESULT=__RESULT__
+          exec > >(tee "$RESULT") 2>&1
+
+          test -d "$LEARN"
+          install -d -m 0755 -o ayman01323 -g ayman01323 /home/ayman01323/.local/libexec
+          install -d -m 0755 -o ayman01323 -g ayman01323 "$LEARN/CSVbot/auto"
+
+          cat > "$DAEMON" <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+          import csv, json, os, sqlite3, time
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          LEARN=Path('/home/ayman01323/BOOT/testingbots/learn')
+          DB=LEARN/'data'/'solana_sibot.sqlite3'
+          OUT=LEARN/'CSVbot'/'auto'/'solana_all_scan_records.csv'
+          STATE=LEARN/'data'/'.solana_all_scan_csv_audit.state'
+          POLL=1.0
+
+          TABLES={
+            'candidates': ['wallet','first_seen','last_seen','swap_events','last_signature','updated_at'],
+            'history_status': ['wallet','fetched_at','coverage_start_ts','coverage_end_ts','signatures','swaps','closed_trades','truncated','error'],
+            'trades': ['trade_id','wallet','mint','decimals','buy_signature','sell_signature','buy_ts','sell_ts','token_amount_raw','cost_sol','proceeds_sol','net_sol','hold_seconds','source','updated_at'],
+            'rankings': ['telegram_id','lookback_days','rank','wallet','gross_profit_sol','gross_loss_sol','net_profit_sol','wins','losses','closed_trades','win_rate','updated_at'],
+            'leaders': ['telegram_id','rank','wallet','net_profit_sol','win_rate','closed_trades','selected_at','updated_at'],
+            'leader_events': ['event_id','leader_wallet','signature','action','mint','decimals','token_amount_raw','sol_amount','sell_pct','slot','event_ts','created_at'],
+            'positions': ['position_id','telegram_id','leader_wallet','leader_rank','mint','mode','status','token_amount_raw','entry_cost_sol','entry_ts','leader_buy_signature','leader_entry_sol','leader_entry_token_raw','signal_count','current_exit_sol','unrealised_net_sol','unrealised_pct','peak_unrealised_pct','leader_exit_pending','realised_net_sol','exit_signature','exit_reason','closed_at','updated_at'],
+          }
+          PK={
+            'candidates':['wallet'], 'history_status':['wallet'], 'trades':['trade_id'],
+            'rankings':['telegram_id','wallet'], 'leaders':['telegram_id','wallet'],
+            'leader_events':['event_id'], 'positions':['position_id'],
+          }
+          WALLET_FIELD={
+            'candidates':'wallet','history_status':'wallet','trades':'wallet','rankings':'wallet',
+            'leaders':'wallet','leader_events':'leader_wallet','positions':'leader_wallet',
+          }
+          HEAD=['audit_id','recorded_utc','source_table','event_type','wallet','primary_key','full_data_json']
+
+          def utc_now():
+              return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+
+          def qident(name):
+              return '"'+name.replace('"','""')+'"'
+
+          def connect():
+              c=sqlite3.connect(DB,timeout=30.0)
+              c.row_factory=sqlite3.Row
+              c.execute('PRAGMA busy_timeout=30000')
+              c.execute('PRAGMA journal_mode=WAL')
+              c.execute('PRAGMA synchronous=NORMAL')
+              return c
+
+          def existing_tables(c):
+              return {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+
+          def json_expr(cols, prefix='NEW'):
+              parts=[]
+              for col in cols:
+                  parts += [repr(col), f'{prefix}.{qident(col)}']
+              return 'json_object('+','.join(parts)+')'
+
+          def pk_expr(table, prefix='NEW'):
+              cols=PK[table]
+              if len(cols)==1:
+                  return f"coalesce(cast({prefix}.{qident(cols[0])} as text),'')"
+              pieces=[f"coalesce(cast({prefix}.{qident(c)} as text),'')" for c in cols]
+              return " || '|' || ".join(pieces)
+
+          def ensure_audit(c):
+              c.execute('''CREATE TABLE IF NOT EXISTS csv_scan_audit(
+                audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_table TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                event_epoch INTEGER NOT NULL,
+                wallet TEXT,
+                primary_key TEXT,
+                row_json TEXT NOT NULL
+              )''')
+              tabs=existing_tables(c)
+              for table, cols in TABLES.items():
+                  if table not in tabs:
+                      continue
+                  wf=WALLET_FIELD[table]
+                  for event,timing in [('INSERT','INSERT'),('UPDATE','UPDATE')]:
+                      trg=f'csv_audit_{table}_{event.lower()}'
+                      c.execute(f'DROP TRIGGER IF EXISTS {qident(trg)}')
+                      sql=f'''CREATE TRIGGER {qident(trg)} AFTER {timing} ON {qident(table)}
+                      BEGIN
+                        INSERT INTO csv_scan_audit(source_table,event_type,event_epoch,wallet,primary_key,row_json)
+                        VALUES({repr(table)},{repr(event)},CAST(strftime('%s','now') AS INTEGER),
+                               cast(NEW.{qident(wf)} as text),{pk_expr(table)}, {json_expr(cols)});
+                      END'''
+                      c.execute(sql)
+              c.commit()
+
+          def load_last_id():
+              try: return int(STATE.read_text().strip() or '0')
+              except Exception: return 0
+
+          def save_last_id(v):
+              tmp=STATE.with_suffix('.tmp')
+              tmp.write_text(str(int(v))+'\n',encoding='utf-8')
+              os.replace(tmp,STATE)
+
+          def ensure_csv():
+              OUT.parent.mkdir(parents=True,exist_ok=True)
+              if not OUT.exists() or OUT.stat().st_size==0:
+                  with OUT.open('w',encoding='utf-8',newline='') as f:
+                      csv.writer(f).writerow(HEAD)
+                      f.flush(); os.fsync(f.fileno())
+
+          def append_rows(rows):
+              if not rows: return
+              ensure_csv()
+              with OUT.open('a',encoding='utf-8',newline='') as f:
+                  w=csv.writer(f)
+                  for r in rows:
+                      ts=datetime.fromtimestamp(int(r['event_epoch']),timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+                      w.writerow([r['audit_id'],ts,r['source_table'],r['event_type'],r['wallet'] or '',r['primary_key'] or '',r['row_json']])
+                  f.flush(); os.fsync(f.fileno())
+
+          def baseline(c):
+              # One-time baseline captures every existing scan-derived row before live auditing continues.
+              if STATE.exists() or not OUT.exists() or OUT.stat().st_size>0:
+                  return
+              tabs=existing_tables(c)
+              ensure_csv()
+              with OUT.open('a',encoding='utf-8',newline='') as f:
+                  w=csv.writer(f)
+                  for table,cols in TABLES.items():
+                      if table not in tabs: continue
+                      rows=c.execute(f'SELECT * FROM {qident(table)}').fetchall()
+                      for r in rows:
+                          d={col:r[col] for col in cols if col in r.keys()}
+                          wallet=str(d.get(WALLET_FIELD[table]) or '')
+                          pkey='|'.join(str(d.get(k) or '') for k in PK[table])
+                          w.writerow(['',utc_now(),table,'BASELINE',wallet,pkey,json.dumps(d,separators=(',',':'),ensure_ascii=False,default=str)])
+                  f.flush(); os.fsync(f.fileno())
+
+          print(f'[learner-csv-audit] output={OUT} poll={POLL}s mode=append-only exact-db-insert-update no-private-keys=true', flush=True)
+          last=load_last_id()
+          while True:
+              try:
+                  if not DB.exists():
+                      time.sleep(POLL); continue
+                  with connect() as c:
+                      ensure_audit(c)
+                      baseline(c)
+                      rows=c.execute('SELECT audit_id,source_table,event_type,event_epoch,wallet,primary_key,row_json FROM csv_scan_audit WHERE audit_id>? ORDER BY audit_id LIMIT 5000',(last,)).fetchall()
+                      if rows:
+                          append_rows(rows)
+                          last=int(rows[-1]['audit_id']); save_last_id(last)
+                  time.sleep(POLL)
+              except Exception as e:
+                  print('[learner-csv-audit] warning='+type(e).__name__+':'+str(e)[:240], flush=True)
+                  time.sleep(3)
+          PY
+          chmod 0755 "$DAEMON"
+          chown ayman01323:ayman01323 "$DAEMON"
+
+          cat > "$SERVICE" <<EOF
+          [Unit]
+          Description=Google isolated learner permanent all-scan CSV audit
+          After=network-online.target learnerbot-learn.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=ayman01323
+          Group=ayman01323
+          ExecStart=/usr/bin/python3 $DAEMON
+          Restart=always
+          RestartSec=3
+          NoNewPrivileges=true
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          chmod 0644 "$SERVICE"
+          systemctl daemon-reload
+          systemctl enable --now google-learner-all-scan-csv-audit.service
+          sleep 4
+          test "$(systemctl is-active google-learner-all-scan-csv-audit.service)" = active
+          test -f "$LEARN/CSVbot/auto/solana_all_scan_records.csv"
+
+          echo "csv_audit_service=$(systemctl is-active google-learner-all-scan-csv-audit.service)"
+          echo "learner_runtime=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "telegram_relay=$(systemctl is-active google-learner-telegram-relay.service 2>/dev/null || true)"
+          echo "csv_path=$LEARN/CSVbot/auto/solana_all_scan_records.csv"
+          echo "csv_lines=$(wc -l < "$LEARN/CSVbot/auto/solana_all_scan_records.csv")"
+          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import sqlite3,sys
+          c=sqlite3.connect(sys.argv[1])
+          tabs={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+          trgs={r[0] for r in c.execute("select name from sqlite_master where type='trigger' and name like 'csv_audit_%'")}
+          print('audit_table=' + ('YES' if 'csv_scan_audit' in tabs else 'NO'))
+          print('audit_triggers='+str(len(trgs)))
+          print('audit_events='+str(c.execute('select count(*) from csv_scan_audit').fetchone()[0] if 'csv_scan_audit' in tabs else 0))
+          c.close()
+          PY
+          echo 'records=candidates+history_status+trades+rankings+leaders+leader_events+positions'
+          echo 'private_keys_recorded=NO'
+          ROOTSCRIPT
+
+          sed -i "s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 0755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Install learner all-scan CSV audit
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 0644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          RC=0
+          sudo -n /usr/bin/systemctl start "$NAME" || RC=$?
+          cat "$RESULT" 2>/dev/null || true
+          exit "$RC"
