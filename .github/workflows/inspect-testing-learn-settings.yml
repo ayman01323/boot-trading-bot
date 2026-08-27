@@ -1,79 +1,94 @@
+# one-shot inspection trigger 2026-08-27
 name: Inspect Testing Learner Settings
+
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/inspect-testing-learn-settings.yml']
+    paths:
+      - '.github/workflows/inspect-testing-learn-settings.yml'
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Find historical Aug 17 Solana wallet safely
+      - name: Inspect isolated learner safely
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          echo "TARGET=$target"
+          echo "--- snapshot ---"
+          cat "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          echo "--- runtime paths ---"
+          for p in "$target/CSVbot" "$target/data" "$target/CSVbot/solana_settings.csv" "$target/CSVbot/auto/solana_user_wallets.csv"; do
+            if [[ -e "$p" ]]; then echo "EXISTS $p"; else echo "MISSING $p"; fi
+          done
+          echo "--- source defaults ---"
           python3 - <<'PY'
-          import csv,json,os,sqlite3,time
-          from pathlib import Path
-          TOKEN='HUPMJ4Zsi9tLVoJS5SgHhKGxLosxFDejZAU9evy3pump'
-          roots=[Path('/home/ayman01323/BOOT'),Path('/home/ayman01323/ClaudeServer')]
-          skip={'.git','node_modules','.venv','venv','__pycache__'}
-          files=[]
-          for root in roots:
-              if not root.exists(): continue
-              for dp,dns,fns in os.walk(root):
-                  dns[:]=[d for d in dns if d not in skip]
-                  for fn in fns:
-                      low=fn.lower()
-                      if ('solana' in low and any(x in low for x in ('wallet','sibot','position','trade'))) or low in ('users.csv','user_trading_settings.csv'):
-                          files.append(Path(dp)/fn)
-          print('candidate_files='+str(len(files)))
-          for p in sorted(files):
-              try:
-                  s=p.stat(); print(f'FILE {p} mtime={time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(s.st_mtime))} size={s.st_size}')
-              except Exception: pass
-          for p in files:
-              if p.suffix.lower()=='.csv':
+          import ast, pathlib, re
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          src=(root/'learnerbot/solana_sibot.py').read_text(encoding='utf-8')
+          tree=ast.parse(src)
+          defaults={}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id=='DEFAULTS' for t in node.targets):
+                  defaults=ast.literal_eval(node.value)
+                  break
+          live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
+          m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)', live, re.S)
+          if m:
+              defaults.update(ast.literal_eval('{'+m.group(1)+'}'))
+          keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
+          for k in keys:
+              if k in defaults: print(f'{k}={defaults[k][0]}')
+          PY
+          echo "--- runtime solana settings if present ---"
+          if [[ -f "$target/CSVbot/solana_settings.csv" ]]; then
+            python3 - <<'PY'
+          import csv, pathlib
+          p=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          allowed={'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds'}
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  if r.get('setting') in allowed: print(f"{r['setting']}={r.get('value','')}")
+          PY
+          else
+            echo "NO_RUNTIME_SETTINGS_FILE"
+          fi
+          echo "--- user/wallet readiness ---"
+          python3 - <<'PY'
+          import csv, pathlib
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
+          user_files=[root/'users.csv',root/'auto/users.csv',root/'user_registry.csv',root/'auto/user_registry.csv']
+          users=[]
+          for p in user_files:
+              if p.exists():
                   try:
                       with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-                  except Exception: continue
-                  for i,r in enumerate(rows,2):
-                      a=str(r.get('address') or r.get('wallet') or r.get('wallet_address') or '').strip()
-                      if 32<=len(a)<=64 and a.isalnum():
-                          print(f'CSV_WALLET path={p} line={i} address={a} telegram_id={r.get("telegram_id","")} wallet_id={r.get("wallet_id","")} label={r.get("label","")} signing={r.get("signing","")} active={r.get("active","")}')
-              elif p.name.endswith('.enc.json'):
-                  try: j=json.loads(p.read_text())
-                  except Exception: continue
-                  a=str(j.get('address') or '')
-                  if a: print(f'ENC_WALLET path={p} address={a} telegram_id={j.get("telegram_id","")} wallet_id={j.get("wallet_id","")} source={j.get("source","")}')
-              elif p.suffix.lower() in ('.sqlite','.sqlite3','.db'):
-                  try:
-                      con=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=3); con.row_factory=sqlite3.Row
-                      tabs={x[0] for x in con.execute("select name from sqlite_master where type='table'")}
-                      if 'positions' in tabs:
-                          cols={x[1] for x in con.execute('pragma table_info(positions)')}
-                          if 'mint' in cols:
-                              for rr in con.execute('select * from positions where mint=? order by entry_ts desc limit 20',(TOKEN,)):
-                                  d=dict(rr); print('MATCH_POSITION db={} telegram_id={} leader_wallet={} mint={} mode={} status={} entry_ts={} entry_cost_sol={} leader_buy_signature={} exit_signature={} exit_reason={}'.format(p,d.get('telegram_id',''),d.get('leader_wallet',''),d.get('mint',''),d.get('mode',''),d.get('status',''),d.get('entry_ts',''),d.get('entry_cost_sol',''),d.get('leader_buy_signature',''),d.get('exit_signature',''),d.get('exit_reason','')))
-                      if 'leader_events' in tabs:
-                          for rr in con.execute('select * from leader_events where mint=? order by event_ts desc limit 20',(TOKEN,)):
-                              d=dict(rr); print('MATCH_EVENT db={} leader_wallet={} action={} sol_amount={} sell_pct={} signature={} event_ts={}'.format(p,d.get('leader_wallet',''),d.get('action',''),d.get('sol_amount',''),d.get('sell_pct',''),d.get('signature',''),d.get('event_ts','')))
-                      con.close()
-                  except Exception as e: print(f'DB_SKIP path={p} error={type(e).__name__}')
-          print('secret_values_printed=NO')
+                      print(f'USER_FILE={p} ROWS={len(rows)}')
+                      users.extend(rows)
+                  except Exception as e: print(f'USER_FILE_ERROR={p}:{type(e).__name__}')
+          tids=[]
+          for r in users:
+              tid=str(r.get('telegram_id') or '').strip()
+              if tid and tid not in tids: tids.append(tid)
+          print('UNIQUE_TELEGRAM_USERS='+str(len(tids)))
+          wp=root/'auto/solana_user_wallets.csv'
+          if wp.exists():
+              with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+              print('SOLANA_WALLETS='+str(len(rows)))
+              for r in rows:
+                  print('WALLET address='+str(r.get('address') or '')+' signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
+          else:
+              print('SOLANA_WALLETS=0')
           PY
-          TOKEN='HUPMJ4Zsi9tLVoJS5SgHhKGxLosxFDejZAU9evy3pump'
-          for root in /home/ayman01323/BOOT /home/ayman01323/ClaudeServer; do
-            [[ -d "$root" ]] || continue
-            grep -RIl --exclude='*.enc.json' --exclude='*backup*' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv "$TOKEN" "$root" 2>/dev/null | head -30 | while read -r f; do
-              echo "TOKEN_FILE $f"
-              grep -nF "$TOKEN" "$f" 2>/dev/null | head -5 | sed -E 's/(encrypted_keypair|private_key|secret|keypair)[^,}]*/[REDACTED]/Ig'
-            done
-          done
-          echo live_execution_started=NO
-          echo production_service_restart=NO
+          echo "live_execution_started=NO"
+          echo "production_service_restart=NO"
