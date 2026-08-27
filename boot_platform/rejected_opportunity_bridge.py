@@ -133,7 +133,14 @@ class RejectedOpportunityBridge:
     def ingest_sibot1_live_db(self, path: str | Path) -> dict[str, Any]:
         path = Path(path)
         result: dict[str, Any] = {"path": str(path), "readable": False, "published": 0, "skipped": 0}
-        if not path.is_file() or not os.access(path, os.R_OK):
+        try:
+            if not path.is_file() or not os.access(path, os.R_OK):
+                return result
+        except PermissionError:
+            result["error"] = "permission_denied"
+            return result
+        except OSError as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
             return result
         result["readable"] = True
         key = f"sibot1:{path}"
