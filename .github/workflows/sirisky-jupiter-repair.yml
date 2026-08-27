@@ -1,0 +1,60 @@
+name: SiRisky Jupiter Repair
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-jupiter-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Repair Jupiter quote auth and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n test -d /root/SiRisky
+
+          echo '=== BACKUP ==='
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/jupiter.py "/root/SiRisky/sirisky/jupiter.py.${stamp}.bak"
+
+          echo '=== PATCH JUPITER QUOTE ENDPOINT/HEADER ==='
+          sudo -n python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/root/SiRisky/sirisky/jupiter.py')
+          s = p.read_text()
+          s = s.replace('https://lite-api.jup.ag/swap/v1/quote','https://api.jup.ag/swap/v1/quote')
+          s = s.replace('headers={"User-Agent":"SiRisky/0.1"}', 'headers=_headers(settings)')
+          p.write_text(s)
+          print('patched')
+          PY
+
+          echo '=== VERIFY SOURCE ==='
+          sudo -n grep -nEi 'swap/v1/quote|x-api-key|_headers\(settings\)' /root/SiRisky/sirisky/jupiter.py
+
+          echo '=== SAFETY GATE ==='
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+
+          echo '=== COMPILE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -m py_compile sirisky/jupiter.py'
+
+          echo '=== SAFE CHECK ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
+
+          echo '=== SERVICE RESTART ==='
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          test "$(systemctl is-active sirisky.service)" = 'active'
+
+          echo '=== FINAL SAFETY ==='
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'real_transaction_broadcast=NO'
