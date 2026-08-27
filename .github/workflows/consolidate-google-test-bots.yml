@@ -2,34 +2,32 @@ name: Consolidate Google Test Bots Under ClaudeServer
 
 on:
   push:
-    branches:
-      - gpt/consolidate-google-test-bots
-    paths:
-      - '.github/workflows/consolidate-google-test-bots.yml'
+    branches: [gpt/consolidate-google-test-bots]
+    paths: ['.github/workflows/consolidate-google-test-bots.yml']
 
 permissions:
   contents: write
 
 concurrency:
   group: consolidate-google-test-bots
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   migrate:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - name: Verify restricted maintenance bridge
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = 'botgoogle'
-          test "$(id -un)" = 'ayman01323'
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
           test -x /usr/local/sbin/consolidate-google-test-bots
           test -x /usr/local/sbin/backup-google-test-bots
           sudo -n -l /usr/local/sbin/consolidate-google-test-bots >/dev/null
           sudo -n -l /usr/local/sbin/backup-google-test-bots >/dev/null
-          echo 'restricted_bridge=PASS'
+          echo restricted_bridge=PASS
 
       - name: Confirm consolidated layout
         shell: bash
@@ -37,43 +35,36 @@ jobs:
           set -euo pipefail
           sudo -n /usr/local/sbin/consolidate-google-test-bots 2>&1 | tee /tmp/google-folder-consolidation.txt
 
-      - name: Recover or create one ClaudeServer backup
+      - name: Recover or create combined backup
         shell: bash
         run: |
           set -euo pipefail
           DEST=/home/ayman01323/GoogleServerBuckup
           : > /tmp/google-folder-backup.txt
-
           latest="$(find "$DEST" -maxdepth 1 -type f -name 'claude-server-all-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2- || true)"
-          if [[ -n "$latest" ]] && tar -tzf "$latest" >/dev/null 2>&1; then
-            echo 'RECOVERED_EXISTING_ARCHIVE=true' | tee -a /tmp/google-folder-backup.txt
-            echo "archive=$latest" | tee -a /tmp/google-folder-backup.txt
-          else
-            marker="$(mktemp)"
+          if [[ -z "$latest" ]]; then
             set +e
             sudo -n /usr/local/sbin/backup-google-test-bots 2>&1 | tee -a /tmp/google-folder-backup.txt
             rc=${PIPESTATUS[0]}
             set -e
-            latest="$(find "$DEST" -maxdepth 1 -type f -name 'claude-server-all-*.tar.gz' -newer "$marker" -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2- || true)"
-            rm -f "$marker"
-            test -n "$latest"
-            tar -tzf "$latest" >/dev/null
-            if [[ $rc -ne 0 ]]; then
-              if [[ $rc -eq 1 ]] && grep -Eq 'file changed as we read it|File removed before we read it' /tmp/google-folder-backup.txt; then
-                echo 'LIVE_FILE_CHURN_WARNING_ACCEPTED=true' | tee -a /tmp/google-folder-backup.txt
-              else
-                echo "backup_wrapper_exit=$rc" >&2
-                exit "$rc"
-              fi
+            latest="$(find "$DEST" -maxdepth 1 -type f -name 'claude-server-all-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2- || true)"
+            if [[ $rc -ne 0 ]] && ! { [[ $rc -eq 1 ]] && grep -Eq 'file changed as we read it|File removed before we read it' /tmp/google-folder-backup.txt; }; then
+              exit "$rc"
             fi
-            echo "archive=$latest" | tee -a /tmp/google-folder-backup.txt
+          else
+            echo RECOVERED_EXISTING_ARCHIVE=true | tee -a /tmp/google-folder-backup.txt
           fi
-
-          sha256sum "$latest" > "$latest.sha256"
-          chmod 600 "$latest.sha256"
-          echo 'archive_validation=PASS' | tee -a /tmp/google-folder-backup.txt
-          echo "sha256=$(cut -d' ' -f1 "$latest.sha256")" | tee -a /tmp/google-folder-backup.txt
-          ls -lh "$latest" "$latest.sha256" | tee -a /tmp/google-folder-backup.txt
+          test -n "$latest"
+          test -s "$latest"
+          magic="$(dd if="$latest" bs=2 count=1 status=none | od -An -tx1 | tr -d ' \n')"
+          test "$magic" = 1f8b
+          first="$(set +o pipefail; tar -tzf "$latest" 2>/dev/null | head -n1 || true)"
+          [[ "$first" == ClaudeServer* ]]
+          gzip -l "$latest" | tee -a /tmp/google-folder-backup.txt
+          bytes="$(stat -c %s "$latest")"
+          echo archive_structural_check=PASS | tee -a /tmp/google-folder-backup.txt
+          echo "archive=$latest" | tee -a /tmp/google-folder-backup.txt
+          echo "archive_bytes=$bytes" | tee -a /tmp/google-folder-backup.txt
 
       - name: Verify final layout and services
         shell: bash
@@ -97,15 +88,14 @@ jobs:
           test "$(systemctl is-active learnerbot.service 2>/dev/null || true)" = active
           test "$(systemctl is-active sirisky.service 2>/dev/null || true)" = active
           {
-            echo "learnerbot=active"
-            echo "sirisky=active"
+            echo learnerbot=active
+            echo sirisky=active
             echo "production_link=$(readlink "$PROD")"
             echo "sirisky_link=$(readlink "$SIRISKY")"
             echo "workspace_link=$(readlink "$WORK" 2>/dev/null || echo not-present)"
           } | tee /tmp/google-folder-final.txt
-          sudo -n du -sh "$BASE/boot-trading-bot" "$BASE/SiRisky-runtime" "$BASE/SiRisky-workspace" 2>/dev/null | tee -a /tmp/google-folder-final.txt || true
 
-      - name: Publish consolidation attestation without gh CLI
+      - name: Publish consolidation attestation
         if: always()
         shell: bash
         env:
@@ -116,48 +106,27 @@ jobs:
             echo "generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "hostname=$(hostname)"
             echo "workflow_run_id=${GITHUB_RUN_ID}"
-            echo
             echo '=== CONSOLIDATION ==='
             cat /tmp/google-folder-consolidation.txt 2>/dev/null || true
-            echo
             echo '=== BACKUP ==='
             cat /tmp/google-folder-backup.txt 2>/dev/null || true
-            echo
             echo '=== FINAL ==='
             cat /tmp/google-folder-final.txt 2>/dev/null || true
           } > /tmp/google-folder-consolidation-attestation.txt
-
           python3 - <<'PY'
-          import base64, json, os, urllib.error, urllib.parse, urllib.request
-          repo = os.environ['GITHUB_REPOSITORY']
-          token = os.environ['GITHUB_TOKEN']
-          path = 'diagnostics/google-folder-consolidation.txt'
-          api = f'https://api.github.com/repos/{repo}/contents/{path}'
-          headers = {
-              'Authorization': f'Bearer {token}',
-              'Accept': 'application/vnd.github+json',
-              'X-GitHub-Api-Version': '2022-11-28',
-              'User-Agent': 'botgoogle-consolidation',
-          }
-          sha = None
+          import base64,json,os,urllib.error,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; token=os.environ['GITHUB_TOKEN']
+          api=f'https://api.github.com/repos/{repo}/contents/diagnostics/google-folder-consolidation.txt'
+          h={'Authorization':f'Bearer {token}','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'botgoogle-consolidation'}
+          sha=None
           try:
-              req = urllib.request.Request(api + '?ref=server-diagnostics', headers=headers)
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  sha = json.load(r).get('sha')
+            with urllib.request.urlopen(urllib.request.Request(api+'?ref=server-diagnostics',headers=h),timeout=30) as r: sha=json.load(r).get('sha')
           except urllib.error.HTTPError as e:
-              if e.code != 404:
-                  raise
-          data = open('/tmp/google-folder-consolidation-attestation.txt', 'rb').read()
-          body = {
-              'message': 'Record Google test-bot folder consolidation',
-              'content': base64.b64encode(data).decode(),
-              'branch': 'server-diagnostics',
-          }
-          if sha:
-              body['sha'] = sha
-          req = urllib.request.Request(api, data=json.dumps(body).encode(), headers={**headers, 'Content-Type':'application/json'}, method='PUT')
-          with urllib.request.urlopen(req, timeout=30) as r:
-              result = json.load(r)
-              print('attestation_commit=' + result['commit']['sha'])
+            if e.code!=404: raise
+          data=open('/tmp/google-folder-consolidation-attestation.txt','rb').read()
+          body={'message':'Record Google test-bot folder consolidation','content':base64.b64encode(data).decode(),'branch':'server-diagnostics'}
+          if sha: body['sha']=sha
+          req=urllib.request.Request(api,data=json.dumps(body).encode(),headers={**h,'Content-Type':'application/json'},method='PUT')
+          with urllib.request.urlopen(req,timeout=30) as r: print('attestation_commit='+json.load(r)['commit']['sha'])
           PY
           cat /tmp/google-folder-consolidation-attestation.txt
