@@ -31,11 +31,12 @@ jobs:
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
           test -d "$BOOT" && test -r "$BOOT" && test -x "$BOOT"
+          command -v python3 >/dev/null
           mkdir -p "$DEST_ROOT"
           chmod 700 "$DEST_ROOT"
           df -h "$DEST_ROOT"
 
-      - name: Create verified BOOT archive
+      - name: Create verified BOOT ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -47,29 +48,66 @@ jobs:
           mkdir -p "$DAY_DIR"
           chmod 700 "$DAY_DIR"
 
-          tar -C "$(dirname "$BOOT")" -czf "$WORK/boot.tar.gz" "$(basename "$BOOT")"
-          chmod 600 "$WORK/boot.tar.gz"
-          tar -tzf "$WORK/boot.tar.gz" >/dev/null
-          (cd "$WORK" && sha256sum boot.tar.gz > boot.tar.gz.sha256)
-          chmod 600 "$WORK/boot.tar.gz.sha256"
+          python3 - "$BOOT" "$WORK/BOOT.zip" <<'PY'
+          import os, stat, sys, zipfile
+          from pathlib import Path
+          src = Path(sys.argv[1]).resolve()
+          out = Path(sys.argv[2])
+          root_name = 'BOOT'
+          def add_link(zf, path, arcname):
+              info = zipfile.ZipInfo(arcname)
+              info.create_system = 3
+              info.external_attr = (stat.S_IFLNK | 0o777) << 16
+              zf.writestr(info, os.readlink(path).encode())
+          with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
+              for current, dirs, files in os.walk(src, topdown=True, followlinks=False):
+                  current_path = Path(current)
+                  rel = current_path.relative_to(src)
+                  arcdir = root_name if str(rel) == '.' else f"{root_name}/{rel.as_posix()}"
+                  info = zipfile.ZipInfo(arcdir.rstrip('/') + '/')
+                  info.create_system = 3
+                  info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                  zf.writestr(info, b'')
+                  for dirname in list(dirs):
+                      p = current_path / dirname
+                      if p.is_symlink():
+                          add_link(zf, p, f"{arcdir}/{dirname}")
+                          dirs.remove(dirname)
+                  for filename in files:
+                      p = current_path / filename
+                      arcname = f"{arcdir}/{filename}"
+                      add_link(zf, p, arcname) if p.is_symlink() else zf.write(p, arcname)
+          with zipfile.ZipFile(out, 'r') as zf:
+              bad = zf.testzip()
+              if bad is not None:
+                  raise SystemExit(f"ZIP integrity failure at {bad}")
+              entries = len(zf.infolist())
+          size = out.stat().st_size
+          if entries < 5 or size < 4096:
+              raise SystemExit(f"ZIP sanity failure entries={entries} bytes={size}")
+          print(entries)
+          print(size)
+          PY
 
-          cat > "$WORK/google-boot-manifest.txt" <<EOF
-          backup_date=$BACKUP_DATE
-          created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
-          created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          hostname=$(hostname)
-          boot_source=$BOOT
-          destination=$DAY_DIR
-          EOF
-          chmod 600 "$WORK/google-boot-manifest.txt"
+          entries="$(python3 - "$WORK/BOOT.zip" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1], 'r') as zf: print(len(zf.infolist()))
+          PY
+          )"
+          bytes="$(stat -c '%s' "$WORK/BOOT.zip")"
+          (cd "$WORK" && sha256sum BOOT.zip > BOOT.zip.sha256)
+          printf 'source=%s\nentries=%s\nbytes=%s\ncreated_london=%s\nformat=zip\n' \
+            "$BOOT" "$entries" "$bytes" "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$WORK/BOOT.stats"
 
-          mv -f "$WORK/boot.tar.gz" "$DAY_DIR/boot.tar.gz"
-          mv -f "$WORK/boot.tar.gz.sha256" "$DAY_DIR/boot.tar.gz.sha256"
-          mv -f "$WORK/google-boot-manifest.txt" "$DAY_DIR/google-boot-manifest.txt"
+          install -m 600 "$WORK/BOOT.zip" "$DAY_DIR/BOOT.zip"
+          install -m 600 "$WORK/BOOT.zip.sha256" "$DAY_DIR/BOOT.zip.sha256"
+          install -m 600 "$WORK/BOOT.stats" "$DAY_DIR/BOOT.stats"
           cd "$DAY_DIR"
-          sha256sum -c boot.tar.gz.sha256
-          echo "BOOT backup completed: $DAY_DIR"
-          ls -lh "$DAY_DIR/boot.tar.gz" "$DAY_DIR/boot.tar.gz.sha256" "$DAY_DIR/google-boot-manifest.txt"
+          sha256sum -c BOOT.zip.sha256
+          rm -f boot.tar.gz boot.tar.gz.sha256 boot.stats google-boot-manifest.txt
+          echo "BOOT ZIP backup completed: $DAY_DIR"
+          cat BOOT.stats
+          ls -lh BOOT.zip BOOT.zip.sha256 BOOT.stats
 
       - name: Apply retention policy
         shell: bash
@@ -85,15 +123,20 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 180
     steps:
-      - name: Run fixed-purpose protected backup helper
+      - name: Run fixed-purpose protected ZIP backup helper
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          if [ ! -x /usr/local/sbin/google-root-backup ]; then
-            echo 'ERROR: /usr/local/sbin/google-root-backup is not installed.' >&2
-            echo 'Project source/config remains under /home/ayman01323/BOOT; only the root-owned installed helper lives outside BOOT for security.' >&2
+          STAGED=/home/ayman01323/BOOT/.backup-helper/scripts/google-root-backup
+          INSTALLED=/usr/local/sbin/google-root-backup
+          test -x "$INSTALLED"
+          test -f "$STAGED"
+          cmp -s "$STAGED" "$INSTALLED" || {
+            echo 'ERROR: installed protected backup helper is not the reviewed ZIP version.' >&2
+            echo 'Run once:' >&2
+            echo 'sudo bash /home/ayman01323/BOOT/.backup-helper/scripts/install-google-root-backup-helper /home/ayman01323/BOOT/.backup-helper' >&2
             exit 1
-          fi
-          sudo -n /usr/local/sbin/google-root-backup
+          }
+          sudo -n "$INSTALLED"
