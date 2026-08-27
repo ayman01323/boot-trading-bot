@@ -1,4 +1,4 @@
-name: Diagnose Recurring Google SSH Key Rejection
+name: Persist WinSCP Key in Google Instance Metadata
 
 on:
   push:
@@ -11,65 +11,98 @@ permissions:
   contents: read
 
 jobs:
-  diagnose-google-ssh:
-    name: Diagnose effective SSH authentication on botgoogle
+  persist-winscp-key:
+    name: Permanently register WinSCP key on botgoogle
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Read-only SSH diagnostics
+      - name: Add permanent instance metadata SSH key
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
 
           KEY_BODY='AAAAC3NzaC1lZDI1NTE5AAAAIHpZkKAbpMnmuf83u+SbzomxHo6aNjBPbJipZW2aGhok'
-          echo "hostname=$(hostname)"
-          echo "user=$(id -un)"
-          echo "home=$HOME"
-          getent passwd "$(id -un)" | awk -F: '{print "passwd_home="$6" shell="$7}'
-
-          stat -c 'home_mode=%a home_owner=%U:%G' "$HOME" || true
-          stat -c 'ssh_dir_mode=%a ssh_dir_owner=%U:%G' "$HOME/.ssh" || true
-          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
-            stat -c 'authorized_keys_mode=%a authorized_keys_owner=%U:%G size=%s' "$HOME/.ssh/authorized_keys" || true
-            echo "authorized_key_lines=$(grep -cve '^[[:space:]]*$' "$HOME/.ssh/authorized_keys" || true)"
-            if grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"; then
-              echo 'winscp_key_present_in_authorized_keys=true'
-              grep -F "$KEY_BODY" "$HOME/.ssh/authorized_keys" | head -1 | ssh-keygen -lf /dev/stdin | awk '{print "winscp_installed_fingerprint="$2}' || true
-            else
-              echo 'winscp_key_present_in_authorized_keys=false'
-            fi
-          else
-            echo 'authorized_keys_missing=true'
-          fi
+          KEY_VALUE="ssh-ed25519 ${KEY_BODY} winscp-ayman"
+          METADATA_LINE="ayman01323:${KEY_VALUE}"
 
           meta() {
-            local path="$1"
-            curl -fsS -H 'Metadata-Flavor: Google' --max-time 5 "http://metadata.google.internal/computeMetadata/v1/$path" 2>/dev/null || true
+            curl -fsS -H 'Metadata-Flavor: Google' --max-time 5 \
+              "http://metadata.google.internal/computeMetadata/v1/$1"
           }
-          echo "instance_enable_oslogin=$(meta instance/attributes/enable-oslogin)"
-          echo "project_enable_oslogin=$(meta project/attributes/enable-oslogin)"
-          echo "instance_block_project_ssh_keys=$(meta instance/attributes/block-project-ssh-keys)"
 
-          for svc in ssh sshd google-guest-agent google-oslogin-cache google-osconfig-agent; do
-            state="$(systemctl is-active "$svc" 2>/dev/null || true)"
-            [[ -n "$state" ]] && echo "service_${svc}=$state"
+          PROJECT_ID="$(meta project/project-id)"
+          ZONE_PATH="$(meta instance/zone)"
+          ZONE="${ZONE_PATH##*/}"
+          test -n "$PROJECT_ID"
+          test -n "$ZONE"
+          echo "project_id=$PROJECT_ID"
+          echo "zone=$ZONE"
+
+          command -v gcloud >/dev/null
+          command -v python3 >/dev/null
+
+          DESC="$(mktemp)"
+          KEYFILE="$(mktemp)"
+          ERRFILE="$(mktemp)"
+          trap 'rm -f "$DESC" "$KEYFILE" "$ERRFILE"' EXIT
+
+          gcloud compute instances describe botgoogle \
+            --project "$PROJECT_ID" \
+            --zone "$ZONE" \
+            --format=json > "$DESC"
+
+          python3 - "$DESC" "$KEYFILE" "$KEY_BODY" "$METADATA_LINE" <<'PY'
+          import json, sys
+          desc_path, out_path, key_body, metadata_line = sys.argv[1:]
+          with open(desc_path, encoding='utf-8') as f:
+              obj = json.load(f)
+          items = (obj.get('metadata') or {}).get('items') or []
+          current = ''
+          for item in items:
+              if item.get('key') == 'ssh-keys':
+                  current = item.get('value') or ''
+                  break
+          lines = [line for line in current.splitlines() if line.strip()]
+          already = any(key_body in line for line in lines)
+          if not already:
+              lines.append(metadata_line)
+          with open(out_path, 'w', encoding='utf-8', newline='\n') as f:
+              if lines:
+                  f.write('\n'.join(lines) + '\n')
+          print(f'instance_metadata_ssh_key_lines_before={len([x for x in current.splitlines() if x.strip()])}')
+          print(f'winscp_key_already_in_instance_metadata={str(already).lower()}')
+          print(f'instance_metadata_ssh_key_lines_after={len(lines)}')
+          PY
+
+          if ! gcloud compute instances add-metadata botgoogle \
+              --project "$PROJECT_ID" \
+              --zone "$ZONE" \
+              --metadata-from-file="ssh-keys=$KEYFILE" \
+              --quiet >/dev/null 2>"$ERRFILE"; then
+            echo 'INSTANCE_METADATA_WRITE_FAILED=true'
+            tail -20 "$ERRFILE" >&2 || true
+            exit 41
+          fi
+          echo 'INSTANCE_METADATA_WRITE_SUCCESS=true'
+
+          FOUND=false
+          for _ in 1 2 3 4 5 6 7 8 9; do
+            if [[ -f "$HOME/.ssh/authorized_keys" ]] && grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"; then
+              FOUND=true
+              break
+            fi
+            sleep 10
           done
 
-          if sudo -n true >/dev/null 2>&1; then
-            echo 'runner_passwordless_sudo=true'
-            if command -v sshd >/dev/null 2>&1; then
-              echo 'SSHD_EFFECTIVE_BEGIN'
-              sudo -n sshd -T -C user=ayman01323,host=botgoogle,addr=127.0.0.1 2>/dev/null \
-                | grep -E '^(pubkeyauthentication|authorizedkeysfile|authorizedkeyscommand|authorizedkeyscommanduser|passwordauthentication|kbdinteractiveauthentication|usepam) ' || true
-              echo 'SSHD_EFFECTIVE_END'
-            fi
-            echo 'SSHD_RELEVANT_CONFIG_BEGIN'
-            sudo -n grep -RniE '^[[:space:]]*(PubkeyAuthentication|AuthorizedKeysFile|AuthorizedKeysCommand|AuthorizedKeysCommandUser|PasswordAuthentication|UsePAM|AuthenticationMethods)[[:space:]]' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null || true
-            echo 'SSHD_RELEVANT_CONFIG_END'
-          else
-            echo 'runner_passwordless_sudo=false'
+          if [[ "$FOUND" != true ]]; then
+            echo 'GUEST_AGENT_DID_NOT_MATERIALIZE_KEY=true'
+            exit 42
           fi
 
-          echo 'SSH_DIAGNOSTIC_COMPLETE=true'
+          chmod 700 "$HOME/.ssh"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          INSTALLED_FP="$(grep -F "$KEY_BODY" "$HOME/.ssh/authorized_keys" | head -1 | ssh-keygen -lf /dev/stdin | awk '{print $2}')"
+          echo "winscp_key_fingerprint=$INSTALLED_FP"
+          echo 'WINSCP_KEY_PERSISTENT_METADATA_VERIFIED=true'
