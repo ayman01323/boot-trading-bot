@@ -9,29 +9,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: stage-google-root-backup-helper
+  cancel-in-progress: true
+
 jobs:
   stage:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Stage reviewed helper files for one-time root installation
+      - name: Stage reviewed helper files under BOOT
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          STAGE=/home/ayman01323/.google-backup-helper
+
+          # Remove the earlier temporary home-level staging area.
+          rm -rf /home/ayman01323/.google-backup-helper
+
+          STAGE=/home/ayman01323/BOOT/.backup-helper
+          rm -rf "$STAGE"
           mkdir -p "$STAGE/scripts" "$STAGE/config"
           chmod 700 "$STAGE" "$STAGE/scripts" "$STAGE/config"
+
           BASE="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}"
           curl -fsSL "$BASE/scripts/google-root-backup" -o "$STAGE/scripts/google-root-backup"
           curl -fsSL "$BASE/config/google-root-backup.sudoers" -o "$STAGE/config/google-root-backup.sudoers"
           curl -fsSL "$BASE/scripts/install-google-root-backup-helper" -o "$STAGE/scripts/install-google-root-backup-helper"
           chmod 700 "$STAGE/scripts/google-root-backup" "$STAGE/scripts/install-google-root-backup-helper"
           chmod 600 "$STAGE/config/google-root-backup.sudoers"
+
           bash -n "$STAGE/scripts/google-root-backup"
           bash -n "$STAGE/scripts/install-google-root-backup-helper"
           grep -Fx 'ayman01323 ALL=(root) NOPASSWD: /usr/local/sbin/google-root-backup' "$STAGE/config/google-root-backup.sudoers"
+
           echo "staged=$STAGE"
           find "$STAGE" -maxdepth 2 -type f -printf '%m %u:%g %p\n'
-          echo 'Install with: sudo bash /home/ayman01323/.google-backup-helper/scripts/install-google-root-backup-helper /home/ayman01323/.google-backup-helper'
+          echo 'Install once with:'
+          echo 'sudo bash /home/ayman01323/BOOT/.backup-helper/scripts/install-google-root-backup-helper /home/ayman01323/BOOT/.backup-helper'
