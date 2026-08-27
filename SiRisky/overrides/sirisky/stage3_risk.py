@@ -1,10 +1,30 @@
 from __future__ import annotations
 
 import os
-from .csvio import read_rows
+import time
+from .csvio import append_row, read_rows
 from .models import RiskDecision
 from .wallet import WalletStore
 from .jupiter import wallet_balance_lamports
+
+
+FORECAST_BAND_HEADERS = [
+    "timestamp",
+    "opportunity_id",
+    "pool_id",
+    "mint",
+    "strategy_id",
+    "age_class",
+    "temperature",
+    "forecast_band",
+    "forecast_net_pct",
+    "min_forecast_net_pct",
+    "margin_to_min_pct",
+    "exit_health_pct",
+    "round_trip_cost_pct",
+    "risk_passed",
+    "risk_reasons",
+]
 
 
 def _truthy(value) -> bool:
@@ -25,6 +45,10 @@ class Stage3Risk:
     with an ``ADVISORY:`` prefix but do not fail the decision. This keeps the
     HR-CWH routing invariant while allowing explicitly-evidenced high-risk
     pools to be evaluated without weakening sellability/catastrophic controls.
+
+    Every evaluated opportunity is also written to ``forecast_bands.csv`` for
+    counterfactual SHADOW analysis. The band log is diagnostic only and never
+    changes the Stage-3 pass/fail decision.
     """
 
     def __init__(self, settings):
@@ -41,6 +65,44 @@ class Stage3Risk:
             for k in ("risk_flags", "rugcheck_risks", "poolcheck_risks", "risk_text")
         ).lower()
         return any(n.lower() in text for n in needles)
+
+    @staticmethod
+    def _forecast_band(value: float, minimum: float) -> str:
+        if value < 0:
+            return "NEGATIVE"
+        if value < minimum:
+            return "POSITIVE_BELOW_MIN"
+        return "MEETS_OR_EXCEEDS_MIN"
+
+    def _record_forecast_band(self, opportunity, minimum: float, passed: bool, reasons: list[str]) -> None:
+        """Best-effort analytics log; it must never become an execution gate."""
+        try:
+            snap = opportunity.snapshot
+            forecast = _num(getattr(opportunity, "forecast_net_pct", 0.0))
+            append_row(
+                self.settings.csv_dir / "forecast_bands.csv",
+                FORECAST_BAND_HEADERS,
+                {
+                    "timestamp": int(time.time()),
+                    "opportunity_id": str(getattr(opportunity, "opportunity_id", "") or ""),
+                    "pool_id": str(getattr(opportunity, "pool_id", "") or getattr(snap, "pool_id", "") or ""),
+                    "mint": str(getattr(opportunity, "mint", "") or getattr(snap, "mint", "") or ""),
+                    "strategy_id": str(getattr(opportunity, "strategy_id", "") or ""),
+                    "age_class": str(getattr(opportunity, "age_class", "") or ""),
+                    "temperature": str(getattr(opportunity, "temperature", "") or ""),
+                    "forecast_band": self._forecast_band(forecast, minimum),
+                    "forecast_net_pct": f"{forecast:.6f}",
+                    "min_forecast_net_pct": f"{minimum:.6f}",
+                    "margin_to_min_pct": f"{forecast - minimum:.6f}",
+                    "exit_health_pct": f"{_num(getattr(snap, 'exit_health_pct', 0.0)):.6f}",
+                    "round_trip_cost_pct": f"{_num(getattr(snap, 'round_trip_cost_pct', 0.0)):.6f}",
+                    "risk_passed": str(bool(passed)).lower(),
+                    "risk_reasons": "|".join(str(x) for x in reasons),
+                },
+            )
+        except Exception:
+            # Analytics must never interrupt Stage 3 or alter a trade decision.
+            pass
 
     def check(self, opportunity):
         cfg = self.settings.risk()
@@ -135,4 +197,6 @@ class Stage3Risk:
             advisory.append("SOFT_HIGH_RISK_SIGNAL")
 
         reasons = hard + ["ADVISORY:" + item for item in advisory]
-        return RiskDecision(passed=not hard, reasons=reasons, opportunity=opportunity)
+        passed = not hard
+        self._record_forecast_band(opportunity, min_forecast, passed, reasons)
+        return RiskDecision(passed=passed, reasons=reasons, opportunity=opportunity)
