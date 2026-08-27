@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - '.github/workflows/stage-google-root-backup-helper.yml'
+      - 'scripts/google-root-backup'
+      - 'scripts/install-google-root-backup-helper'
+      - 'config/google-root-backup.sudoers'
   workflow_dispatch:
 
 permissions:
@@ -52,7 +55,9 @@ jobs:
           set -euo pipefail
           test -x /usr/local/sbin/google-root-backup
           cmp -s /home/ayman01323/BOOT/.backup-helper/scripts/google-root-backup /usr/local/sbin/google-root-backup || {
-            echo 'ERROR: installed helper does not match staged reviewed helper.' >&2
+            echo 'ERROR: installed helper needs the reviewed BOOT update.' >&2
+            echo 'Run once:' >&2
+            echo 'sudo bash /home/ayman01323/BOOT/.backup-helper/scripts/install-google-root-backup-helper /home/ayman01323/BOOT/.backup-helper' >&2
             exit 1
           }
           sudo -n -l /usr/local/sbin/google-root-backup >/dev/null
@@ -72,12 +77,17 @@ jobs:
           set -euo pipefail
           DAY_DIR="/home/ayman01323/GoogleServerBuckup/$(date +%Y-%m-%d)"
           cd "$DAY_DIR"
-          test -s claude-server.tar.gz
-          test -s production-bot.tar.gz
-          test -s sirisky.tar.gz
+          for label in claude-server production-bot sirisky; do
+            test -s "$label.tar.gz"
+            test -s "$label.tar.gz.sha256"
+            test -s "$label.stats"
+            sha256sum -c "$label.tar.gz.sha256"
+            entries="$(awk -F= '$1=="entries"{print $2}' "$label.stats")"
+            bytes="$(awk -F= '$1=="bytes"{print $2}' "$label.stats")"
+            test "${entries:-0}" -ge 5
+            test "${bytes:-0}" -ge 4096
+          done
           test -s google-protected-folders-manifest.txt
-          sha256sum -c claude-server.tar.gz.sha256
-          sha256sum -c production-bot.tar.gz.sha256
-          sha256sum -c sirisky.tar.gz.sha256
           echo "verified_day_dir=$DAY_DIR"
+          cat claude-server.stats production-bot.stats sirisky.stats
           ls -lh claude-server.tar.gz production-bot.tar.gz sirisky.tar.gz google-protected-folders-manifest.txt
