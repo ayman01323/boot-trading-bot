@@ -79,20 +79,40 @@ def telegram_handler(engine, settings, cmd, chat):
     return "SiRisky commands: /status /pending /check /runone"
 
 
+def _result_notice_key(result):
+    status=str(result.get("status") or "")
+    if status=="RISK_REJECT":
+        reasons=tuple(str(x) for x in (result.get("reasons") or []))
+        return (status,str(result.get("pool_id") or ""),reasons)
+    if status=="MANUAL_APPROVAL_PREP_FAILED":
+        return (status,str(result.get("error") or ""),str(result.get("order_id") or ""))
+    return (status,)
+
+
 def start(settings):
     engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); tg.run_thread(lambda c,ch:telegram_handler(engine,settings,c,ch),stop)
     tg.send("SiRisky started. Manual per-trade approval is supported; server-side transaction broadcast remains CSV-gated and external/manual signing is required when the approval gate is enabled.")
     def sig(*_): stop.set()
     signal.signal(signal.SIGTERM,sig); signal.signal(signal.SIGINT,sig)
     last_error_key=""; last_error_notice=0.0
+    last_result_key=None; last_result_notice=0.0
     while not stop.is_set():
         try:
             result=engine.run_once(); status=str(result.get("status") or "")
             if status=="WAITING_FOR_MANUAL_APPROVAL":
                 if result.get("new_proposal") and result.get("proposal"):
                     tg.send(ManualApprovalGate(settings).format_for_user(result["proposal"]))
-            elif status in {"OPENED","CLOSED","RISK_REJECT","MANUAL_APPROVAL_PREP_FAILED"}:
+            elif status in {"OPENED","CLOSED"}:
+                # State-changing events are always important enough for Telegram.
                 tg.send("SiRisky: "+json.dumps(result,default=str)[:3500])
+            elif status in {"RISK_REJECT","MANUAL_APPROVAL_PREP_FAILED"}:
+                # These can repeat every poll. Keep them in stdout every cycle,
+                # but only repeat the same Telegram notice every five minutes.
+                print("SiRisky: "+json.dumps(result,default=str),flush=True)
+                now=time.time(); key=_result_notice_key(result)
+                if key!=last_result_key or (now-last_result_notice)>=300:
+                    tg.send("SiRisky: "+json.dumps(result,default=str)[:3500])
+                    last_result_key=key; last_result_notice=now
         except Exception as exc:
             trace=_safe_trace(exc); key=f"{type(exc).__name__}:{trace}"; now=time.time()
             print(f"SiRisky cycle error: {type(exc).__name__} trace={trace}",file=sys.stderr,flush=True)
