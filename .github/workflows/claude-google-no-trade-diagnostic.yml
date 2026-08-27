@@ -51,7 +51,7 @@ jobs:
           PY
           test "$active" = active
 
-      - name: Isolated platform LIVE and AUTO flags
+      - name: Isolated platform and Solana bridge controls
         shell: bash
         run: |
           set -euo pipefail
@@ -59,8 +59,8 @@ jobs:
           import csv, os
           from pathlib import Path
           root = Path(os.environ['CSV_DIR'])
+          truthy = {'1','true','yes','on','armed','live','auto','y'}
           keys = ('trading_enabled','live_trading_enabled','auto_trading_enabled','sibot_auto_trade_enabled','recommendation_mode')
-          truthy = {'1','true','yes','on','armed','live','auto'}
           total_truthy = 0
           for name in ('live_trading_settings.csv','auto_trading_settings.csv','user_trading_settings.csv'):
               p = root / name
@@ -76,9 +76,24 @@ jobs:
                           hits.append((i,k,str(r.get(k,''))))
               total_truthy += len(hits)
               print(f'{name}_rows={len(rows)} truthy_arming_fields={len(hits)}')
-              for line,key,value in hits[:10]:
-                  print(f'{name}:line={line} {key}={value}')
           print(f'isolated_truthy_arming_fields_total={total_truthy}')
+
+          p = root / 'sibot1' / 'solana_live_control.csv'
+          if not p.exists():
+              print('solana_live_control=MISSING')
+          else:
+              with p.open('r', encoding='utf-8-sig', newline='') as f:
+                  rows = list(csv.DictReader(f))
+              armed = sum(str(r.get('armed','')).strip().lower() in truthy for r in rows)
+              live = sum(str(r.get('live_enabled','')).strip().lower() in truthy for r in rows)
+              auto = sum(str(r.get('auto_enabled','')).strip().lower() in truthy for r in rows)
+              all3 = sum(
+                  str(r.get('armed','')).strip().lower() in truthy and
+                  str(r.get('live_enabled','')).strip().lower() in truthy and
+                  str(r.get('auto_enabled','')).strip().lower() in truthy
+                  for r in rows
+              )
+              print(f'solana_live_control_rows={len(rows)} armed_rows={armed} live_rows={live} auto_rows={auto} all_three_rows={all3}')
           PY
 
       - name: Recent opportunity pipeline and execution evidence
@@ -98,6 +113,7 @@ jobs:
           echo "sell_word_events=$(count '(^|[^A-Z])SELL([^A-Z]|$)')"
           echo "broadcast_word_events=$(count 'broadcast')"
           echo "position_word_events=$(count 'position')"
+          echo "cooldown_events=$(count 'temporarily cooling down')"
 
           for tag in '[solana-leader-edge-alignment]' '[fast-market-scan]' '[live-route-scan]' '[copy-top20]'; do
             line="$(printf '%s\n' "$log" | grep -F "$tag" | tail -1 || true)"
@@ -108,6 +124,23 @@ jobs:
               printf 'latest_%s=NONE\n' "$(printf '%s' "$tag" | tr -cd '[:alnum:]-')"
             fi
           done
+
+          LOG="$log" python3 - <<'PY'
+          import os, re
+          from collections import Counter
+          text = os.environ.get('LOG','')
+          lines = [ln for ln in text.splitlines() if 'SolanaRpcEndpointError' in ln or re.search(r'Solana RPC .*HTTP [45][0-9][0-9]', ln)]
+          statuses = Counter()
+          methods = Counter()
+          for ln in lines:
+              m = re.search(r'HTTP\s+(\d{3})', ln)
+              if m: statuses[m.group(1)] += 1
+              m = re.search(r'Solana RPC\s+([A-Za-z][A-Za-z0-9_]*)', ln)
+              if m: methods[m.group(1)] += 1
+          print('rpc_status_counts=' + (','.join(f'{k}:{v}' for k,v in sorted(statuses.items())) or 'NONE'))
+          print('rpc_method_counts=' + (','.join(f'{k}:{v}' for k,v in methods.most_common(10)) or 'NONE'))
+          PY
+
           echo 'rpc_urls_logged=false'
           echo 'wallet_secrets_read=false'
           echo 'live_state_changed=false'
