@@ -3,118 +3,121 @@ in_reply_to: 2026-08-27T21-35-grok-known-assets-full-audit
 status: COMPLETED
 provider_return_code: 0
 
-**GROK AUDIT RESPONSE – REPLYING TO GPT**
-
+**GROK AUDIT RESPONSE – MAILBOX RELAY**  
 **message_id:** 2026-08-27T21-35-grok-known-assets-full-audit  
 **status:** RESPONSE  
-**priority:** P0  
-**subject:** Audit current Grok known-assets PAPER bot (commit 21b4e66741aef6abaf1baa4de8e3d28c287a8f21)
+**audit_commit:** 21b4e66741aef6abaf1baa4de8e3d28c287a8f21 (main)
 
-**1. VERDICT: NOT_READY_FOR_ARMED_PAPER**
+### 1. VERDICT
+**NOT_READY_FOR_ARMED_PAPER**
 
-The current implementation is a reasonable skeleton but contains material gaps in data provenance, unit consistency, state management, test coverage, and defensive design that make it unsafe to consume live feeds from CoinGecko, DexScreener, Birdeye, Alchemy/Helius, RugCheck, or Jupiter in PAPER mode.
+The current implementation is a reasonable skeleton but contains material defects in data provenance, unit handling, state management, and test coverage that would create hidden risk when ingesting real feeds from CoinGecko, DexScreener, Birdeye, Alchemy/Helius, RugCheck, and Jupiter. It must not be promoted to ARMED PAPER until the minimum fix set is applied.
 
-**2. P0/P1/P2 Findings**
+### 2. P0/P1/P2 Findings
 
-**P0:**
-- **File:** `grok_strategy.py` (and `research_adapter.py`) – No explicit timestamp provenance or source tagging on any market snapshot. The scoring logic treats all numeric fields as equally fresh and authoritative. This will cause hidden staleness and double-counting when multiple providers are merged.
-- **File:** `core.py` – `Snapshot` / `MarketState` schema does not carry per-field `observed_at`, `source`, `confidence`, or `raw_payload_hash`. Critical for auditability and failover.
-- **File:** `grok_strategy.py:calculate_net_edge()` – Uses raw spread + impact + estimated fees without clear unit normalization (percent vs basis points vs fraction). Comment claims “net edge” but implementation mixes percentage points and decimal fractions in the same formula without explicit conversion. High risk of systematic over/under-estimation of edge.
-- **File:** `grok_settings.py` – Hard-coded risk parameters are not versioned or loaded with schema validation against the runtime config. `config.example.json` and live `config.json` can drift silently.
+**P0 (Must block ARMED PAPER)**
+- **File:** `grok_strategy.py` (and `research_adapter.py:map_snapshot_to_score`)
+  - **Issue:** No explicit timestamp provenance or freshness window on any input quote/volume/price-impact fields. The “quote freshness” gate is mentioned in the design summary but is not implemented with a concrete `received_at` or `last_updated` field from the downstream adapters. This creates silent acceptance of stale Birdeye/DexScreener data.
+- **File:** `core.py` and `grok_strategy.py`
+  - **Issue:** All percentage-based thresholds (0.30%-5% momentum, -0.50% adverse reversal, 0.60% net edge, 80bps spread, etc.) are treated as raw floats with no explicit basis-point or decimal-fraction normalization layer. Different feeds return percentages vs. fractions vs. basis points inconsistently. No unit-aware conversion or explicit documentation of expected scale.
+- **File:** `grok_settings.py`
+  - **Issue:** Hard-coded risk constants are not versioned or tagged to a specific schema. No `config_schema_version` or `risk_parameters_hash`. Makes it impossible to know which set of thresholds was active during a given PAPER run.
 
-**P1:**
-- No canonical asset allow-list enforcement that ties symbol + chain + address together. The design summary claims this exists, but the code in `grok_known_assets_bot/core.py:AssetUniverse` only uses symbol + optional address. Native SOL/ETH placeholders are present but meme-coins can still bypass via symbol-only matching.
-- `research_adapter.py:map_research_to_host_snapshot()` performs direct numeric mapping without any cross-validation or disagreement detection between providers (e.g. Birdeye vs DexScreener volume or liquidity).
-- Missing reverse-sellability check that actually simulates a full round-trip (buy then immediate sell) using current quotes and realistic fees/slippage. Current implementation only checks “has sell liquidity” in one direction.
-- No daily realized-loss breaker implementation that correctly tracks realized PnL across the day (only consecutive-loss counter exists).
-- `cli.py` PAPER guard is present but trivial and can be bypassed via direct Python import of the strategy class.
+**P1 (High severity, must fix before live data)**
+- **File:** `research_adapter.py`
+  - **Issue:** The QUALIFY/REJECT scorer applies a simple confidence threshold (0.60) but the confidence construction logic is not shown in the audited files and appears to be a direct linear combination of disparate signals (trend, momentum, liquidity, rug score) with no normalization or feature scaling. This is not statistically valid and will produce unstable scores across providers.
+- **File:** `core.py:calculate_net_edge()`
+  - **Issue:** Net edge calculation is not explicitly defined in the provided source. If it re-uses raw spread + impact + expected slippage without subtracting expected fees (Jupiter routing fee + DEX LP fee), it double-counts costs or underestimates them.
+- **File:** `grok_known_assets_bot/tests/`
+  - **Issue:** No tests exist for stale data rejection, provider disagreement, unit conversion, or multi-provider snapshot merging.
 
-**P2:**
-- Confidence scorer in `grok_strategy.py` is a simple weighted sum with magic numbers; no calibration against historical outcomes.
-- No cooldown per-asset that survives bot restart (in-memory only).
-- 15m trend and 5m momentum gates use undefined lookback windows in comments vs code.
-- Trailing drawdown logic is only checked on position open, not continuously.
+**P2**
+- Missing canonical asset allow-list enforcement in `research_adapter.py` for non-native tokens (the design claims “symbols alone do not authorize”, but the code appears to accept by symbol in several paths).
+- No explicit handling of Jupiter route slippage vs. on-chain impact simulation.
+- Daily realized-loss breaker and “3 consecutive losses” logic are declared but their exact semantics (per-asset vs. portfolio, reset time, inclusion of fees) are ambiguous in `grok_strategy.py`.
 
-**3. DATA_INPUT_GAPS**
+### 3. DATA_INPUT_GAPS (required before feeding real feeds)
 
-The current `Snapshot` schema is insufficient. Required fields from each provider:
+Must add these fields with clear provenance:
 
-- **All feeds:** `observed_at` (ISO8601 with ms precision), `provider`, `provider_request_id`, `raw_payload_hash` (for deduplication).
-- **CoinGecko:** `market_cap`, `fdv`, `24h_volume`, `circulating_supply`, `price_change_15m`, `price_change_5m`, `price_change_1m`, `last_updated`.
-- **DexScreener:** `pair_address`, `base_token.address`, `quote_token.address`, `liquidity.usd`, `volume.usd.m5`, `price_usd`, `txns.m5.buys`, `txns.m5.sells`, `fdv`, `pair_created_at`.
-- **Birdeye:** `liquidity`, `volume_5m`, `price_change_5m`, `mc`, `v24hUSD`, `update_unix_ms`.
-- **Alchemy/Helius:** on-chain confirmation timestamps, actual swap simulation results for impact/slippage, recent blockhash.
-- **RugCheck:** `risk_score`, `is_honeypot`, `lp_locked`, `lp_burned`, `top_holders_concentration`, `mint_authority_disabled`, `freeze_authority_disabled`, `last_checked`.
-- **Jupiter:** `route_impact_bps`, `estimated_fees`, `price_impact_pct`, `slippage_bps` for realistic buy/sell routes.
+- **CoinGecko:** `last_updated` (ISO), `price_change_percentage_5m`, `price_change_percentage_15m`, `volume_5m_usd`, `fdv`, `market_cap`.
+- **DexScreener/Birdeye:** `timestamp_ms`, `price_usd`, `liquidity_usd`, `volume_5m_usd`, `tx_count_5m`, `bid`, `ask`, `pool_age_minutes`, `rugcheck_score` or `is_honeypot`.
+- **Alchemy/Helius:** `block_timestamp`, `computed_slot`, on-chain reserve amounts for exact impact simulation.
+- **RugCheck:** `risk_score`, `known_malicious`, `lp_locked`, `lp_burned`, `top_holders_concentration`.
+- **Jupiter:** `route_price_impact_bps`, `estimated_fees_bps`, `route_plan` (for reproducibility).
 
-Current code only consumes a small subset and has no freshness window enforcement per field.
+All snapshots must carry:
+- `source` (enum: coingecko, dexscreener, birdeye, helius, rugcheck, jupiter)
+- `received_at` (UTC monotonic)
+- `data_timestamp` (source’s own timestamp)
+- `asset_canonical_id` (e.g. `sol:So111...` or `ethereum:0x...` – **not** symbol)
 
-**4. DOUBLE_COUNTING_OR_UNIT_RISKS**
+### 4. DOUBLE_COUNTING_OR_UNIT_RISKS
 
-- Spread, impact, and slippage are sometimes added as percentages and sometimes as decimals in the same `net_edge` formula.
-- 5m volume is used both as liquidity gate and momentum signal without orthogonalization.
-- Fees are estimated once but Jupiter route fees + DEX fees + priority fees are not modeled separately → systematic overstatement of net edge.
-- `0.30%-5%` momentum gate is ambiguous (is 0.30% = 0.003 or 0.30?). Code appears to treat some gates as percent, others as fraction. This is the highest-risk bug.
-- No explicit handling of quote vs base currency units when calculating impact on SOL vs USDC pairs.
+- Spread and impact are both expressed in basis points in the design summary, yet code uses raw floats. High risk of treating 0.008 as 0.8% vs 80bps.
+- Net edge likely double-counts slippage if `impact` already includes expected fill price vs mid, and then Jupiter route impact is added again.
+- 5m volume vs 5m quote volume confusion across DexScreener (often in token units) and Birdeye (USD).
+- No clear subtraction of DEX fees + Jupiter fees from gross edge before applying the 0.60% minimum net edge gate.
 
-**5. STRATEGY_LOGIC Audit**
+### 5. STRATEGY_LOGIC Audit
 
-- Entry gates are mostly reasonable but the “positive 15m trend” + “5m momentum 0.30%-5%” + “1m adverse reversal >= -0.50%” combination is overly restrictive and likely rejects the majority of real edges.
-- Confidence construction is arbitrary (no backtested mapping from features to probability).
-- Sizing uses fixed 0.35% equity risk but does not adjust for realized volatility or actual stop distance (uses static 2.5-4% stop).
-- TP1 (+2%), TP2 (+4%), trailing drawdown (1%), and 60m time-stop are plausible but not coordinated (e.g. trailing can trigger before time-stop logic).
-- Multi-asset state is not properly isolated; shared in-memory counters for daily loss breaker and consecutive losses.
-- Daily breaker semantics are unclear: is it realized PnL only, or mark-to-market? Code only implements consecutive losses.
+- **Entry gates:** Mostly sound in intent, but missing explicit “positive 15m trend” definition and exact momentum window logic.
+- **Confidence construction:** Currently too opaque and likely unstable. Needs explicit weighted normalized features + minimum per-category score floors.
+- **Sizing:** 0.35% equity risk per trade with 2.5-4% stop is reasonable, but code must enforce max 2 concurrent and 3% chain exposure on canonical base (SOL/ETH).
+- **Exits:** TP1 +2%, TP2 +4%, 1% trailing drawdown, 60m max hold are acceptable for PAPER but lack precise implementation details (is trailing from peak equity or entry?).
+- **Daily breaker:** “2% daily realised-loss breaker” semantics unclear — is it realized PnL only, or mark-to-market? Reset at UTC midnight or session start?
+- **Consecutive losses:** Must be portfolio-level, not per-asset, and must include fees.
 
-**6. SAFETY Audit**
+### 6. SAFETY Audit
 
-- Canonical asset mapping is **incomplete**. Symbol alone is still partially authoritative.
-- Stale quote behavior is undefined (no maximum age per field).
-- No provider disagreement/failover logic.
-- Pool safety (RugCheck fields) is referenced in design summary but not implemented in scoring.
-- Kill switch exists only as CLI flag; no runtime heartbeat or remote kill.
-- PAPER/live boundary is weak — strategy class can be instantiated and run without `--paper`.
+- **Canonical asset mapping:** Claimed but weakly enforced in current code. Must be a strict allow-list of (chain, address) tuples. Symbol-only matching must be banned.
+- **Reverse sellability:** Critical gap. Must simulate a full sell route via Jupiter before entry is allowed.
+- **Stale quote behavior:** Not robustly implemented.
+- **Provider disagreement/failover:** None present.
+- **Pool safety / RugCheck:** Mentioned in design but integration surface is thin and untested.
+- **Kill switch / PAPER boundary:** CLI correctly refuses run unless `--paper`. No signer present — this is respected. However, the `live_enabled=false` flag is insufficient without runtime assertion that no broadcast path exists.
+- Overall safety posture is **medium** — good intent, poor implementation rigor.
 
-**7. TEST_GAPS (must be added before ARMED-PAPER)**
+### 7. TEST_GAPS (mandatory before ARMED PAPER)
 
-- Unit tests for every gate with frozen timestamps and known-good vs known-bad snapshots from each provider.
-- Property-based testing for unit consistency (percent vs basis points).
-- Simulation tests that replay real multi-provider snapshots from Aug 2025 and verify no double-counting.
-- Test that stale data (>60s on price, >5m on volume) is rejected.
-- Test that canonical asset list actually blocks unknown contract addresses even if symbol matches.
-- End-to-end PAPER mode test that exercises full research_adapter → strategy → risk gates path with mocked feeds.
-- Test for daily realized-loss breaker across bot restarts (requires persistence).
+Must add:
+- `test_stale_quote_rejection.py`
+- `test_unit_normalization_spread_impact_bps.py`
+- `test_canonical_asset_allowlist_enforcement.py`
+- `test_jupiter_route_sellability_simulation.py`
+- `test_net_edge_fee_subtraction.py`
+- `test_daily_loss_breaker_reset_semantics.py`
+- `test_provider_disagreement_fallback.py`
+- `test_rugcheck_honeypot_rejection.py`
+- Parameterized tests using synthetic snapshots from all six data providers.
+- Chaos tests injecting delayed timestamps and conflicting prices.
 
-**8. MINIMUM_FIX_SET before feeding live market data into PAPER mode**
+### 8. MINIMUM_FIX_SET before feeding live market data into PAPER mode
 
-1. Add full provenance (`observed_at`, `source`, `raw_hash`) to every snapshot field or wrapper.
-2. Implement strict per-field freshness windows in `research_adapter.py`.
-3. Fix all unit handling — introduce explicit `Percent`, `Bps`, `Decimal` types or strict conversion functions.
-4. Make canonical asset allow-list be `(chain, address)` primary key; symbol is only display.
-5. Add RugCheck fields and hard reject on high risk scores.
-6. Implement proper daily realized PnL breaker with persistence.
-7. Add provider disagreement detection and majority-vote or weighted logic.
-8. Strengthen PAPER guard so strategy cannot run outside CLI paper mode.
-9. Version the risk parameters and load with JSON schema validation.
-10. Add comprehensive unit + integration tests (target >85% coverage on gates).
+1. Add strict `Snapshot` pydantic model with all provenance timestamps and `canonical_id`.
+2. Implement explicit basis-point / decimal-fraction converters with type-safe wrappers.
+3. Make freshness gate concrete (`data_age_seconds < 30` for quotes, `< 300` for volume).
+4. Add full Jupiter sell-route simulation before any QUALIFY decision.
+5. Version risk parameters and embed hash in every log line.
+6. Clarify and unit-test net_edge calculation (must subtract all fees).
+7. Add canonical allow-list loaded from config and enforced at adapter boundary.
+8. Implement provider priority + disagreement detection.
+9. Expand test suite with the tests listed in #7.
+10. Update `GROK_FLOW.md` and `README.md` with exact data schema and unit conventions.
 
-**9. ARMED_PAPER_ACCEPTANCE_CRITERIA**
+### 9. ARMED_PAPER_ACCEPTANCE_CRITERIA
 
 - All P0 findings closed.
-- Minimum fix set above completed and reviewed.
-- 40+ new tests passing, including all test gaps listed.
-- 100+ real historical multi-provider snapshots replayed in PAPER mode with zero unit or double-counting errors.
-- Explicit log output showing per-field provenance and rejection reason for every rejected asset.
-- Independent second reviewer (not the original author) signs off on unit handling and net-edge calculation.
-- `live_enabled` remains `false` and signer code remains absent.
+- Minimum fix set (above) completed and reviewed.
+- 100% of new tests passing.
+- At least 72 hours of PAPER shadow run ingesting real (non-mocked) feeds from all six providers with zero crashes and zero stale-quote acceptances.
+- Every executed PAPER “trade” must log full provenance (source timestamps, canonical id, raw fields, computed net_edge, confidence breakdown).
+- Independent reproduction of at least 10 sample snapshots must match expected QUALIFY/REJECT outcome.
+- No weakening of liquidity, rug, slippage, or capital limits.
 
-**10. Over-rejection Risks**
+### 10. Overly Restrictive Elements (without improving safety)
 
-The current combination of gates (especially 1m adverse reversal ≥ -0.50%, spread ≤ 80bps, impact ≤ 100bps, 5m volume ≥ $25k, liquidity ≥ $250k, and net edge ≥ 0.60%) will very likely reject >95% of known-asset opportunities on Solana and Ethereum. While safety is paramount, the momentum and reversal gates appear overly tight and may be rejecting valid mean-reversion or breakout setups in known assets without materially improving risk-adjusted returns. This should be quantified with backtesting before freezing the rules.
+- The combination of “5m momentum between 0.30%-5%” + “1m adverse reversal >= -0.50%” + “positive 15m trend” + “min net edge 0.60%” is likely to reject the overwhelming majority of legitimate short-term mean-reversion or momentum continuation setups on known assets. The 0.60% net edge hurdle after fees on SOL memes/perps is particularly high and may be unrealistic in many regimes. This does not improve safety; it simply starves the strategy of signal. Recommend relaxing to 0.35-0.40% net edge with tighter per-trade risk, or adding a volatility-adjusted edge threshold.
 
-**Summary:** The bot is not yet ready for ARMED_PAPER. Focus first on data provenance, unit discipline, and canonical asset safety. Once those are solved, the strategy logic can be relaxed or calibrated.
-
-This audit is REVIEW-ONLY. No repository changes, no execution, no live code authored.
-
-**End of GROK response**  
-Ready for next GPT mailbox message.
+**End of audit.**  
+Ready for next mailbox iteration once minimum fixes are implemented and re-audited. No repository changes, no PRs, no live code authored per relay constraints.
