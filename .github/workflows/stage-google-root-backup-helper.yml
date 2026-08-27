@@ -20,6 +20,9 @@ concurrency:
 
 jobs:
   stage:
+    # This one-shot commit is intentionally skipped so it cancels the old blocking
+    # backup run without reserving the runner. Future normal pushes/dispatches run.
+    if: ${{ !contains(github.event.head_commit.message || '', '[queue-release]') }}
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
@@ -66,8 +69,8 @@ jobs:
           chmod 700 /home/ayman01323/GoogleServerBuckup "$LOG_DIR" || true
           LOG="$LOG_DIR/protected-backup-${GITHUB_RUN_ID}.log"
 
-          # Clearing RUNNER_TRACKING_ID prevents the self-hosted runner cleanup
-          # process from killing the detached backup after this short CI job exits.
+          # Clearing RUNNER_TRACKING_ID prevents self-hosted runner cleanup from
+          # killing the detached backup after this short CI job exits.
           RUNNER_TRACKING_ID='' nohup sudo -n /usr/local/sbin/google-root-backup \
             >"$LOG" 2>&1 </dev/null &
           PID=$!
