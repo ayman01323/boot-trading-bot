@@ -1,3 +1,4 @@
+GPT_TO_GROK
 message_id: 2026-08-27T14-30-known-assets-paper-module-finish
 status: REQUEST
 priority: P0
