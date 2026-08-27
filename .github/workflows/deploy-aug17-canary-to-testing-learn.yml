@@ -1,0 +1,117 @@
+name: Deploy Aug17 Canary to Testing Learn
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/deploy-aug17-canary-to-testing-learn.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-aug17-canary-testing-learn
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify isolated Google runner and target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          echo "target=$target"
+          echo "production_service_touched=NO"
+
+      - name: Install restoration branch code without touching wallet or runtime data
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          preserve="$tmp/preserve.sha256"
+          : > "$preserve"
+          for f in \
+            "$target/CSVbot/solana_settings.csv" \
+            "$target/CSVbot/auto/solana_user_wallets.csv" \
+            "$target/data/.solana_wallet_store.key" \
+            "$target/private/solana_test_wallet_backup.json"; do
+            if [[ -f "$f" ]]; then sha256sum "$f" >> "$preserve"; fi
+          done
+
+          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore \
+            https://github.com/ayman01323/boot-trading-bot.git "$tmp/repo"
+          source_sha="$(git -C "$tmp/repo" rev-parse HEAD)"
+
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='CSVbot/' \
+            --exclude='data/' \
+            --exclude='private/' \
+            --exclude='.venv/' \
+            --exclude='.wallet-venv/' \
+            --exclude='KNOWN_GOOD_SNAPSHOT.txt' \
+            --exclude='DEPLOYED_CODE_REF.txt' \
+            "$tmp/repo/" "$target/"
+
+          cat > "$target/DEPLOYED_CODE_REF.txt" <<EOF
+          purpose=isolated_aug17_strategy_canary
+          source_branch=fix/solana-aug17-canary-restore
+          source_commit=$source_sha
+          historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e
+          target=/home/ayman01323/BOOT/testingbots/learn
+          production_service_started_or_restarted=NO
+          wallet_runtime_data_preserved=YES
+          EOF
+
+          test -f "$target/learnerbot/solana_aug17_canary_restore_patch.py"
+          test -f "$target/learnerbot/solana_live_executor.py"
+          test -f "$target/learnerbot/solana_live_patch.py"
+          test -f "$target/learnerbot/solana_liquidity_stuck_nonblocking_patch.py"
+          test -f "$target/learnerbot/solana_stuck_liquidity_safe_slice_patch.py"
+
+          (cd "$target" && python3 -m compileall -q learnerbot scripts)
+
+          if [[ -s "$preserve" ]]; then
+            while read -r oldsum oldpath; do
+              newsum="$(sha256sum "$oldpath" | awk '{print $1}')"
+              test "$newsum" = "$oldsum"
+            done < "$preserve"
+          fi
+
+          echo "installed_path=$target"
+          echo "source_commit=$source_sha"
+          echo "historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e"
+          echo "wallet_runtime_data_preserved=YES"
+          echo "production_service_started_or_restarted=NO"
+          echo "live_execution_started=NO"
+
+      - name: Show installed code identity and public wallet only
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          cat "$target/DEPLOYED_CODE_REF.txt"
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/auto/solana_user_wallets.csv')
+          if p.exists():
+              rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+              for r in rows:
+                  if str(r.get('enabled','true')).lower() in {'1','true','yes','on'}:
+                      print('public_wallet='+str(r.get('address') or ''))
+                      break
+          print('private_key_printed=NO')
+          PY
