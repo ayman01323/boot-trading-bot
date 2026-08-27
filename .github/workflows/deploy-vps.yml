@@ -3,6 +3,11 @@ name: Deploy BOOT to VPS
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'testingbots/grok_known_assets_bot/**'
+      - '.github/workflows/deploy-grok-known-assets-testing-bot.yml'
+      - '.github/workflows/test-grok-known-assets-research.yml'
+      - '.github/workflows/deploy-vps.yml'
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -90,7 +95,7 @@ jobs:
         run: |
           set +e
           sudo /usr/local/sbin/status-boot-trading-bot 2>&1 | tee /tmp/boot-server-status.txt
-          code=${PIPESTATUS[0]}
+          code=$?
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
           exit 0
 
