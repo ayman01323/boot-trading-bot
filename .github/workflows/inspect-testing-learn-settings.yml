@@ -1,3 +1,4 @@
+# one-shot inspection trigger 2026-08-27
 name: Inspect Testing Learner Settings
 
 on:
@@ -44,8 +45,7 @@ jobs:
           live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
           m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)', live, re.S)
           if m:
-              extra=ast.literal_eval('{'+m.group(1)+'}')
-              defaults.update(extra)
+              defaults.update(ast.literal_eval('{'+m.group(1)+'}'))
           keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
           for k in keys:
               if k in defaults: print(f'{k}={defaults[k][0]}')
@@ -72,8 +72,7 @@ jobs:
           for p in user_files:
               if p.exists():
                   try:
-                      with p.open(encoding='utf-8-sig',newline='') as f:
-                          rows=list(csv.DictReader(f))
+                      with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
                       print(f'USER_FILE={p} ROWS={len(rows)}')
                       users.extend(rows)
                   except Exception as e: print(f'USER_FILE_ERROR={p}:{type(e).__name__}')
@@ -87,8 +86,7 @@ jobs:
               with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
               print('SOLANA_WALLETS='+str(len(rows)))
               for r in rows:
-                  addr=str(r.get('address') or '')
-                  print('WALLET address='+addr+' signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
+                  print('WALLET address='+str(r.get('address') or '')+' signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
           else:
               print('SOLANA_WALLETS=0')
           PY
