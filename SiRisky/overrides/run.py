@@ -33,6 +33,7 @@ def _safe_trace(exc):
 
 
 def safe_check(settings):
+    rt=settings.runtime(); live=as_bool(rt.get("live_enabled"),False); broadcast=as_bool(rt.get("broadcast_enabled"),False); manual=as_bool(rt.get("manual_approval_enabled"),False)
     results=[]
     results.append(status_line(settings.csv_dir.exists(),"CSV directory"))
     try:
@@ -46,16 +47,29 @@ def safe_check(settings):
         except Exception as exc: results.append(status_line(False,"wallet balance read",type(exc).__name__))
         results.append(status_line(store.has_private_key(),"signing readiness"))
         try:
-            q1=quote_only(settings,addr,WSOL_MINT,USDC_MINT,100_000); results.append(status_line(int(q1.get("out_amount") or 0)>0,"Jupiter buy-side quote"))
-            if int(q1.get("out_amount") or 0)>0:
-                q2=quote_only(settings,addr,USDC_MINT,WSOL_MINT,int(q1["out_amount"])); results.append(status_line(int(q2.get("out_amount") or 0)>0,"Jupiter sell-side quote"))
-        except Exception as exc: results.append(status_line(False,"Jupiter round-trip quote",type(exc).__name__))
+            q1=quote_only(settings,addr,WSOL_MINT,USDC_MINT,100_000)
+            buy_ok=int(q1.get("out_amount") or 0)>0
+            status_line(buy_ok,"Jupiter buy-side quote")
+            sell_ok=False
+            if buy_ok:
+                q2=quote_only(settings,addr,USDC_MINT,WSOL_MINT,int(q1["out_amount"]))
+                sell_ok=int(q2.get("out_amount") or 0)>0
+                status_line(sell_ok,"Jupiter sell-side quote")
+            if broadcast:
+                results.append(buy_ok and sell_ok)
+            elif not (buy_ok and sell_ok):
+                print("[WARN] Jupiter preflight unavailable; non-fatal because broadcast_enabled=false")
+        except Exception as exc:
+            status_line(False,"Jupiter round-trip quote",type(exc).__name__)
+            if broadcast:
+                results.append(False)
+            else:
+                print("[WARN] Jupiter preflight unavailable; non-fatal because broadcast_enabled=false")
     except Exception as exc:
         results.append(status_line(False,"wallet metadata",type(exc).__name__))
     tg=TelegramClient(settings)
     if tg.configured(): results.append(status_line(tg.send("SiRisky preflight: Telegram delivery test. Transaction broadcast remains locked behind external/manual signing."),"Telegram delivery"))
     else: print("[SKIP] Telegram delivery — TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_IDS not fully configured")
-    rt=settings.runtime(); live=as_bool(rt.get("live_enabled"),False); broadcast=as_bool(rt.get("broadcast_enabled"),False); manual=as_bool(rt.get("manual_approval_enabled"),False)
     print(f"[PASS] live gate report — live_enabled={str(live).lower()} broadcast_enabled={str(broadcast).lower()} manual_approval_enabled={str(manual).lower()}")
     return 0 if all(results) else 2
 
