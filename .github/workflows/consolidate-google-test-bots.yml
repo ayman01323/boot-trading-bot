@@ -17,148 +17,86 @@ concurrency:
 jobs:
   migrate:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
-      - name: Move test bot folders safely and preserve compatibility paths
+      - name: Verify restricted maintenance bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          test -x /usr/local/sbin/consolidate-google-test-bots
+          test -x /usr/local/sbin/backup-google-test-bots
+          sudo -n -l /usr/local/sbin/consolidate-google-test-bots >/dev/null
+          sudo -n -l /usr/local/sbin/backup-google-test-bots >/dev/null
+          echo 'restricted_bridge=PASS'
+
+      - name: Consolidate exact test-bot folders
+        id: consolidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/consolidate-google-test-bots 2>&1 | tee /tmp/google-folder-consolidation.txt
+
+      - name: Create one ClaudeServer backup
+        id: backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/backup-google-test-bots 2>&1 | tee /tmp/google-folder-backup.txt
+
+      - name: Verify final layout and services
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          SIRISKY=/root/SiRisky
+          WORK=/home/ayman01323/ClaudeServer/SiRisky
+          BASE=/home/ayman01323/ClaudeServer/TestBots
+          test -L "$PROD"
+          test -L "$SIRISKY"
+          test "$(readlink -f "$PROD")" = "$BASE/boot-trading-bot"
+          test "$(readlink -f "$SIRISKY")" = "$BASE/SiRisky-runtime"
+          if test -e "$BASE/SiRisky-workspace"; then
+            test -L "$WORK"
+            test "$(readlink -f "$WORK")" = "$BASE/SiRisky-workspace"
+          fi
+          sudo -n test -x "$PROD/.venv/bin/python"
+          sudo -n test -x "$SIRISKY/.venv/bin/python"
+          sudo -n git -C "$PROD" rev-parse --is-inside-work-tree >/dev/null
+          echo "learnerbot=$(systemctl is-active learnerbot.service 2>/dev/null || true)"
+          echo "sirisky=$(systemctl is-active sirisky.service 2>/dev/null || true)"
+          echo "production_link=$(readlink "$PROD")"
+          echo "sirisky_link=$(readlink "$SIRISKY")"
+          echo "workspace_link=$(readlink "$WORK" 2>/dev/null || echo not-present)"
+          sudo -n du -sh "$BASE/boot-trading-bot" "$BASE/SiRisky-runtime" "$BASE/SiRisky-workspace" 2>/dev/null || true
+
+      - name: Publish consolidation attestation
+        if: always()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -Eeuo pipefail
-
-          test "$(hostname)" = 'botgoogle'
-          test "$(id -un)" = 'ayman01323'
-          sudo -n true
-
-          BASE=/home/ayman01323/ClaudeServer/TestBots
-          PROD_OLD=/root/multichain-learning-bot-v2.2-fast-direct-market
-          PROD_NEW=$BASE/boot-trading-bot
-          SIRISKY_OLD=/root/SiRisky
-          SIRISKY_NEW=$BASE/SiRisky-runtime
-          WORK_OLD=/home/ayman01323/ClaudeServer/SiRisky
-          WORK_NEW=$BASE/SiRisky-workspace
-
-          sudo -n install -d -m 0755 -o ayman01323 -g ayman01323 "$BASE"
-
-          service_active() {
-            systemctl is-active --quiet "$1" 2>/dev/null
-          }
-
-          LEARNER_WAS_ACTIVE=false
-          SIRISKY_WAS_ACTIVE=false
-          if service_active learnerbot.service; then LEARNER_WAS_ACTIVE=true; fi
-          if service_active sirisky.service; then SIRISKY_WAS_ACTIVE=true; fi
-
-          rollback() {
-            set +e
-            echo 'Migration failed; attempting path rollback.'
-            sudo -n systemctl stop learnerbot.service 2>/dev/null || true
-            sudo -n systemctl stop sirisky.service 2>/dev/null || true
-
-            if [[ -L "$PROD_OLD" ]]; then sudo -n rm -f "$PROD_OLD"; fi
-            if [[ -d "$PROD_NEW" && ! -e "$PROD_OLD" ]]; then sudo -n mv "$PROD_NEW" "$PROD_OLD"; fi
-
-            if [[ -L "$SIRISKY_OLD" ]]; then sudo -n rm -f "$SIRISKY_OLD"; fi
-            if [[ -d "$SIRISKY_NEW" && ! -e "$SIRISKY_OLD" ]]; then sudo -n mv "$SIRISKY_NEW" "$SIRISKY_OLD"; fi
-
-            if [[ -L "$WORK_OLD" ]]; then rm -f "$WORK_OLD"; fi
-            if [[ -d "$WORK_NEW" && ! -e "$WORK_OLD" ]]; then mv "$WORK_NEW" "$WORK_OLD"; fi
-
-            if [[ "$LEARNER_WAS_ACTIVE" == true ]]; then sudo -n systemctl start learnerbot.service || true; fi
-            if [[ "$SIRISKY_WAS_ACTIVE" == true ]]; then sudo -n systemctl start sirisky.service || true; fi
-          }
-          trap rollback ERR
-
-          # Stop only services that were running before the migration.
-          if [[ "$LEARNER_WAS_ACTIVE" == true ]]; then sudo -n systemctl stop learnerbot.service; fi
-          if [[ "$SIRISKY_WAS_ACTIVE" == true ]]; then sudo -n systemctl stop sirisky.service; fi
-
-          # Production learnerbot: physically move once, then retain the old /root path as a symlink.
-          if [[ -L "$PROD_OLD" ]]; then
-            test "$(readlink -f "$PROD_OLD")" = "$PROD_NEW"
-          else
-            test -d "$PROD_OLD"
-            test ! -e "$PROD_NEW"
-            sudo -n mv "$PROD_OLD" "$PROD_NEW"
-            sudo -n ln -s "$PROD_NEW" "$PROD_OLD"
-          fi
-
-          # SiRisky runtime: physically move once, then retain /root/SiRisky as a compatibility symlink.
-          if [[ -L "$SIRISKY_OLD" ]]; then
-            test "$(readlink -f "$SIRISKY_OLD")" = "$SIRISKY_NEW"
-          else
-            test -d "$SIRISKY_OLD"
-            test ! -e "$SIRISKY_NEW"
-            sudo -n mv "$SIRISKY_OLD" "$SIRISKY_NEW"
-            sudo -n ln -s "$SIRISKY_NEW" "$SIRISKY_OLD"
-          fi
-
-          # Preserve the existing Claude-side SiRisky working copy as a separate workspace.
-          if [[ -L "$WORK_OLD" ]]; then
-            test "$(readlink -f "$WORK_OLD")" = "$WORK_NEW"
-          elif [[ -d "$WORK_OLD" ]]; then
-            test ! -e "$WORK_NEW"
-            mv "$WORK_OLD" "$WORK_NEW"
-            ln -s "$WORK_NEW" "$WORK_OLD"
-          fi
-
-          # Verify compatibility paths before restarting anything.
-          test -d "$PROD_NEW"
-          test -d "$SIRISKY_NEW"
-          test -L "$PROD_OLD"
-          test -L "$SIRISKY_OLD"
-          test "$(readlink -f "$PROD_OLD")" = "$PROD_NEW"
-          test "$(readlink -f "$SIRISKY_OLD")" = "$SIRISKY_NEW"
-          if [[ -e "$WORK_NEW" ]]; then
-            test -L "$WORK_OLD"
-            test "$(readlink -f "$WORK_OLD")" = "$WORK_NEW"
-          fi
-
-          sudo -n test -x "$PROD_OLD/.venv/bin/python"
-          sudo -n test -x "$SIRISKY_OLD/.venv/bin/python"
-          sudo -n git -C "$PROD_OLD" rev-parse --is-inside-work-tree >/dev/null
-
-          # Restore only services that were active before the migration.
-          if [[ "$LEARNER_WAS_ACTIVE" == true ]]; then
-            sudo -n systemctl start learnerbot.service
-            sleep 3
-            sudo -n systemctl is-active --quiet learnerbot.service
-          fi
-          if [[ "$SIRISKY_WAS_ACTIVE" == true ]]; then
-            sudo -n systemctl start sirisky.service
-            sleep 3
-            sudo -n systemctl is-active --quiet sirisky.service
-          fi
-
-          # Safe SiRisky self-check; no transaction broadcast is requested.
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check' >/tmp/sirisky-folder-migration-check.txt 2>&1 || true
-
-          trap - ERR
-
-          cat > /tmp/google-folder-consolidation.txt <<EOF
-          generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          hostname=$(hostname)
-          base=$BASE
-          production_physical=$PROD_NEW
-          production_compat=$PROD_OLD -> $(readlink "$PROD_OLD")
-          sirisky_runtime_physical=$SIRISKY_NEW
-          sirisky_runtime_compat=$SIRISKY_OLD -> $(readlink "$SIRISKY_OLD")
-          sirisky_workspace_physical=$WORK_NEW
-          sirisky_workspace_compat=$WORK_OLD -> $(readlink "$WORK_OLD" 2>/dev/null || echo not-present)
-          learnerbot_active=$(systemctl is-active learnerbot.service 2>/dev/null || true)
-          sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)
-          EOF
-
-          echo '=== NEW LAYOUT ===' >> /tmp/google-folder-consolidation.txt
-          sudo -n ls -ld "$BASE" "$PROD_NEW" "$SIRISKY_NEW" "$PROD_OLD" "$SIRISKY_OLD" "$WORK_OLD" 2>/dev/null >> /tmp/google-folder-consolidation.txt || true
-          echo '=== SIZES ===' >> /tmp/google-folder-consolidation.txt
-          sudo -n du -sh "$PROD_NEW" "$SIRISKY_NEW" "$WORK_NEW" 2>/dev/null >> /tmp/google-folder-consolidation.txt || true
-          echo '=== SIRISKY CHECK TAIL ===' >> /tmp/google-folder-consolidation.txt
-          tail -n 40 /tmp/sirisky-folder-migration-check.txt >> /tmp/google-folder-consolidation.txt || true
-
+          set -euo pipefail
+          {
+            echo "generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "hostname=$(hostname)"
+            echo "workflow_run_id=${GITHUB_RUN_ID}"
+            echo
+            echo '=== CONSOLIDATION ==='
+            cat /tmp/google-folder-consolidation.txt 2>/dev/null || true
+            echo
+            echo '=== BACKUP ==='
+            cat /tmp/google-folder-backup.txt 2>/dev/null || true
+            echo
+            echo '=== FINAL ==='
+            ls -ld /home/ayman01323/ClaudeServer/TestBots /root/multichain-learning-bot-v2.2-fast-direct-market /root/SiRisky /home/ayman01323/ClaudeServer/SiRisky 2>/dev/null || true
+            echo "learnerbot=$(systemctl is-active learnerbot.service 2>/dev/null || true)"
+            echo "sirisky=$(systemctl is-active sirisky.service 2>/dev/null || true)"
+          } > /tmp/google-folder-consolidation-attestation.txt
           api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/google-folder-consolidation.txt"
           existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
-          encoded="$(base64 -w0 /tmp/google-folder-consolidation.txt)"
+          encoded="$(base64 -w0 /tmp/google-folder-consolidation-attestation.txt)"
           python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/google-folder-consolidation-put.json
           import json,sys
           out={'message':'Record Google test-bot folder consolidation','content':sys.argv[1],'branch':'server-diagnostics'}
@@ -166,5 +104,4 @@ jobs:
           print(json.dumps(out))
           PY
           gh api -X PUT "$api" --input /tmp/google-folder-consolidation-put.json >/dev/null
-
-          cat /tmp/google-folder-consolidation.txt
+          cat /tmp/google-folder-consolidation-attestation.txt
