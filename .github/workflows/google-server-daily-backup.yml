@@ -1,14 +1,10 @@
 name: Google Server Daily Backup
 
 on:
-  # 03:00 Europe/London, DST-safe: schedule both UTC equivalents and gate locally.
   schedule:
-    - cron: '0 2 * * *'
     - cron: '0 3 * * *'
+      timezone: 'Europe/London'
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/google-server-daily-backup.yml'
 
 permissions:
   contents: read
@@ -29,21 +25,7 @@ jobs:
       RETENTION_DAYS: '30'
       TZ: Europe/London
     steps:
-      - name: Check 03:00 London schedule gate
-        id: gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$(date +%H)" != "03" ]; then
-            echo "run_backup=false" >> "$GITHUB_OUTPUT"
-            echo "No-op: London local hour is $(date +%H), not 03."
-          else
-            echo "run_backup=true" >> "$GITHUB_OUTPUT"
-            echo "Proceeding at $(date '+%Y-%m-%d %H:%M:%S %Z')."
-          fi
-
       - name: Verify user-owned sources
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -56,7 +38,6 @@ jobs:
           df -h "$DEST_ROOT"
 
       - name: Create verified ClaudeServer and BOOT archives
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -105,7 +86,6 @@ jobs:
           ls -lh "$DAY_DIR"
 
       - name: Apply retention policy
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -121,19 +101,7 @@ jobs:
     env:
       TZ: Europe/London
     steps:
-      - name: Check 03:00 London schedule gate
-        id: gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$(date +%H)" != "03" ]; then
-            echo "run_backup=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run_backup=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Run fixed-purpose root backup helper
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
