@@ -1,0 +1,55 @@
+name: Diagnose Telegram Menu Owner Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/diagnose-telegram-menu-owner-now.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  google:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Google Telegram pollers safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "host=$(hostname)"
+          for s in learnerbot.service learnerbot-learn.service sirisky.service; do
+            echo "$s=$(systemctl is-active "$s" 2>/dev/null || true)"
+          done
+          echo '--- relevant processes ---'
+          pgrep -af 'python.*(learnerbot|SiRisky|sirisky|run.py)' 2>/dev/null \
+            | sed -E 's#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=[^ ]+#\1=REDACTED#g' || true
+          echo '--- learner menu bridge ---'
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          grep -n 'telegram_google_learner_launcher_patch' "$PROD/learnerbot/__main__.py" 2>/dev/null || true
+          grep -n 'Learner Bot — Google Test' "$PROD/learnerbot/telegram_google_learner_launcher_patch.py" 2>/dev/null || true
+          echo '--- recent 409 ---'
+          journalctl -u learnerbot.service --since '-3 minutes' --no-pager -o cat 2>/dev/null | grep 'HTTP 409' || true
+          echo '--- sirisky unit ---'
+          systemctl cat sirisky.service 2>/dev/null | grep -E '^(ExecStart|WorkingDirectory|EnvironmentFile)=' || true
+
+  old-vps:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect old VPS Telegram pollers safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "host=$(hostname)"
+          if sudo -n -l /usr/local/sbin/verify-namecheap-cutover-stopped >/dev/null 2>&1; then
+            sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped || true
+          fi
+          for s in learnerbot.service sirisky.service; do
+            echo "$s=$(systemctl is-active "$s" 2>/dev/null || true)"
+          done
+          echo '--- relevant processes ---'
+          pgrep -af 'python.*(learnerbot|SiRisky|sirisky|run.py)' 2>/dev/null \
+            | sed -E 's#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=[^ ]+#\1=REDACTED#g' || true
