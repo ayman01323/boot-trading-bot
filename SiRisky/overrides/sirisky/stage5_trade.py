@@ -1,11 +1,61 @@
 from __future__ import annotations
 
+import json
+import re
 import time
+from urllib.error import HTTPError, URLError
+
 from .csvio import append_row, as_bool
 from .jupiter import order as jup_order, execute_order, quote_only, WSOL_MINT
 from .wallet import WalletStore
 
 EXEC_HEADERS=["timestamp","order_id","action","mint","mode","status","signature","input_raw","output_raw","reason","error"]
+
+
+def _compact_text(value, limit=220):
+    text=" ".join(str(value or "").split())
+    # Never persist URLs/query strings or obvious credentials from transport errors.
+    text=re.sub(r"https?://\S+", "[url]", text, flags=re.I)
+    text=re.sub(r"(?i)(api[-_]?key|authorization|bearer|token)\s*[:=]\s*\S+", r"\1=[redacted]", text)
+    return text[:limit]
+
+
+def _json_error_message(raw):
+    try:
+        body=json.loads(raw)
+    except Exception:
+        return _compact_text(raw)
+    if isinstance(body,dict):
+        err=body.get("error")
+        if isinstance(err,dict):
+            for key in ("message","reason","code","status"):
+                if err.get(key):
+                    return _compact_text(err.get(key))
+        if err:
+            return _compact_text(err)
+        for key in ("message","reason","detail","status"):
+            if body.get(key):
+                return _compact_text(body.get(key))
+    return _compact_text(raw)
+
+
+def safe_execution_error(exc):
+    """Return a useful but credential-safe Stage-5 error label."""
+    if isinstance(exc,HTTPError):
+        try:
+            raw=exc.read().decode("utf-8",errors="replace")
+        except Exception:
+            raw=""
+        detail=_json_error_message(raw)
+        return f"HTTP {int(exc.code)}"+(f" | {detail}" if detail else "")
+    if isinstance(exc,URLError):
+        reason=getattr(exc,"reason",None)
+        return "URL_ERROR"+(f" | {type(reason).__name__}" if reason is not None else "")
+    text=_compact_text(str(exc),180)
+    if text and re.fullmatch(r"[A-Z0-9_ .|:-]+",text):
+        return text
+    return type(exc).__name__
+
 
 class Stage5Trade:
     """Execution only. It never makes the strategy/risk decision."""
@@ -58,5 +108,8 @@ class Stage5Trade:
             append_row(self.settings.csv_dir/"executions.csv",EXEC_HEADERS,{"timestamp":int(time.time()),"order_id":order.order_id,"action":order.action,"mint":order.mint,"mode":mode,"status":status,"signature":sig,"input_raw":order.amount_raw,"output_raw":out,"reason":order.reason,"error":""})
             return {"status":status,"mode":mode,"signature":sig,"output_raw":out,"input_raw":order.amount_raw,"order":order,"jupiter":q}
         except Exception as exc:
-            append_row(self.settings.csv_dir/"executions.csv",EXEC_HEADERS,{"timestamp":int(time.time()),"order_id":order.order_id,"action":order.action,"mint":order.mint,"mode":mode,"status":"FAILED","signature":"","input_raw":order.amount_raw,"output_raw":0,"reason":order.reason,"error":type(exc).__name__})
-            raise
+            detail=safe_execution_error(exc)
+            append_row(self.settings.csv_dir/"executions.csv",EXEC_HEADERS,{"timestamp":int(time.time()),"order_id":order.order_id,"action":order.action,"mint":order.mint,"mode":mode,"status":"FAILED","signature":"","input_raw":order.amount_raw,"output_raw":0,"reason":order.reason,"error":detail})
+            # Re-raise only the sanitised label so upstream logging/Telegram
+            # cannot accidentally expose a URL, query string or credential.
+            raise RuntimeError(detail) from None
