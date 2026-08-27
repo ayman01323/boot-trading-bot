@@ -5,6 +5,8 @@ import re
 import time
 from urllib.error import HTTPError, URLError
 
+import requests
+
 from .csvio import append_row, as_bool
 from .jupiter import order as jup_order, execute_order, quote_only, WSOL_MINT
 from .wallet import WalletStore
@@ -41,6 +43,28 @@ def _json_error_message(raw):
 
 def safe_execution_error(exc):
     """Return a useful but credential-safe Stage-5 error label."""
+    # requests is used by the Jupiter client. Its HTTPError is a different
+    # class from urllib.error.HTTPError, so handle it explicitly first.
+    if isinstance(exc, requests.exceptions.HTTPError):
+        response=getattr(exc,"response",None)
+        code=getattr(response,"status_code",None)
+        raw=""
+        if response is not None:
+            try:
+                raw=response.text or ""
+            except Exception:
+                raw=""
+        detail=_json_error_message(raw)
+        label=f"HTTP {int(code)}" if code is not None else "HTTP_ERROR"
+        return label+(f" | {detail}" if detail else "")
+
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "HTTP_TIMEOUT"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "HTTP_CONNECTION_ERROR"
+    if isinstance(exc, requests.exceptions.RequestException):
+        return "HTTP_REQUEST_ERROR"
+
     if isinstance(exc,HTTPError):
         try:
             raw=exc.read().decode("utf-8",errors="replace")
