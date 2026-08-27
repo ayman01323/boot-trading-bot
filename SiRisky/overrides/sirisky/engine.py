@@ -106,6 +106,20 @@ class SiRiskyEngine:
             "reason":order.reason,
         })
 
+    @staticmethod
+    def _candidate_result_summary(result,index):
+        return {
+            "candidate":index,
+            "status":str(result.get("status") or ""),
+            "pool_id":str(result.get("pool_id") or ""),
+            "mint":str(result.get("mint") or ""),
+            "stage3_passed":result.get("stage3_passed"),
+            "forecast_net_pct":result.get("forecast_net_pct"),
+            "exit_health_pct":result.get("exit_health_pct"),
+            "reasons":list(result.get("reasons") or []),
+            "error":str(result.get("error") or "")[:240],
+        }
+
     def _evaluate_pool_for_entry(self,pool,discovery):
         try:
             probe=float(pool.get("probe_sol") or 0.0005)
@@ -115,12 +129,15 @@ class SiRiskyEngine:
                     snap.meta[key]=pool.get(key)
             snap.meta.setdefault("reverse_quote_present", True)
         except Exception as exc:
-            return {"status":"CANDIDATE_QUOTE_REJECT","pool_id":str(pool.get("pool_id") or ""),"error":type(exc).__name__,"discovery":discovery}
+            return {"status":"CANDIDATE_QUOTE_REJECT","pool_id":str(pool.get("pool_id") or ""),
+                    "mint":str(pool.get("base_mint") or pool.get("mint") or ""),
+                    "stage3_passed":None,"error":type(exc).__name__,"discovery":discovery}
 
         # Stage 2: strategy/opportunity only.
         opp=self.s2.create_opportunity(snap,pool)
         if not opp:
-            return {"status":"NO_TRIGGER","pool_id":snap.pool_id,"discovery":discovery}
+            return {"status":"NO_TRIGGER","pool_id":snap.pool_id,"mint":str(getattr(snap,"mint","") or pool.get("base_mint") or ""),
+                    "stage3_passed":None,"discovery":discovery}
 
         # Stage 3: all pre-trade risk gates.
         risk=self.s3.check(opp)
@@ -129,8 +146,16 @@ class SiRiskyEngine:
             "mint":opp.mint,"passed":str(risk.passed).lower(),"reasons":"|".join(risk.reasons),
             "forecast_net_pct":f"{opp.forecast_net_pct:.6f}","exit_health_pct":f"{opp.snapshot.exit_health_pct:.6f}",
         })
+        common={
+            "pool_id":opp.pool_id,
+            "mint":opp.mint,
+            "forecast_net_pct":round(float(opp.forecast_net_pct),6),
+            "exit_health_pct":round(float(opp.snapshot.exit_health_pct),6),
+            "min_forecast_net_pct":float(self.settings.risk().get("min_forecast_net_pct") or 0.25),
+            "discovery":discovery,
+        }
         if not risk.passed:
-            return {"status":"RISK_REJECT","pool_id":opp.pool_id,"reasons":risk.reasons,"discovery":discovery}
+            return {**common,"status":"RISK_REJECT","stage3_passed":False,"reasons":risk.reasons}
 
         # Stage 4: one dispatcher only.
         order=self.s4.buy_order(opp)
@@ -145,11 +170,12 @@ class SiRiskyEngine:
                     "exit_health_pct":opp.snapshot.exit_health_pct,
                     "risk_reasons":"|".join(risk.reasons),
                 })
-                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,
-                        "proposal":prepared["proposal"],"new_proposal":prepared["created"],
-                        "risk_reasons":risk.reasons,"discovery":discovery}
+                return {**common,"status":"WAITING_FOR_MANUAL_APPROVAL","stage3_passed":True,
+                        "order_id":order.order_id,"proposal":prepared["proposal"],"new_proposal":prepared["created"],
+                        "risk_reasons":risk.reasons}
             except Exception as exc:
-                return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,"error":type(exc).__name__,"discovery":discovery}
+                return {**common,"status":"MANUAL_APPROVAL_PREP_FAILED","stage3_passed":True,
+                        "order_id":order.order_id,"error":type(exc).__name__}
 
         # Stage 5: execution only. A failed/no-route candidate is a normal
         # automatic-engine outcome, not a process-wide RuntimeError. In SHADOW
@@ -157,8 +183,8 @@ class SiRiskyEngine:
         try:
             result=self.s5.execute(order)
         except Exception as exc:
-            return {"status":"EXECUTION_REJECT","pool_id":opp.pool_id,"order_id":order.order_id,
-                    "error":type(exc).__name__,"discovery":discovery}
+            return {**common,"status":"EXECUTION_REJECT","stage3_passed":True,
+                    "order_id":order.order_id,"stage5_status":"FAILED","error":str(exc)[:240] or type(exc).__name__}
 
         token_raw=int(result.get("output_raw") or 0)
         mode=str(result.get("mode") or "SHADOW")
@@ -183,8 +209,8 @@ class SiRiskyEngine:
         rows=self.open_positions()
         rows.append(pos)
         self._save_open(rows)
-        return {"status":"OPENED","position":pos,"execution":result,"discovery":discovery,
-                "automatic":self._paper_auto_enabled()}
+        return {**common,"status":"OPENED","stage3_passed":True,"stage5_status":str(result.get("status") or ""),
+                "position":pos,"execution":result,"automatic":self._paper_auto_enabled()}
 
     def entry_cycle(self):
         # Stage 1 continuous discovery/live data update.
@@ -204,23 +230,39 @@ class SiRiskyEngine:
             return {"status":status,"candidate_count":count,"discovery":discovery}
 
         if auto_mode:
-            last={"status":"NO_TRIGGER","discovery":discovery}
             attempted=0
+            summaries=[]
             for pool in pools:
                 attempted+=1
                 result=self._evaluate_pool_for_entry(pool,discovery)
+                summaries.append(self._candidate_result_summary(result,attempted))
                 # Exactly one position/order lifecycle at a time. Stop as soon
                 # as Stage 3 passes into either SHADOW execution or live review.
-                # Candidate-specific rejects deliberately continue to the next
-                # ranked candidate rather than crashing the whole cycle.
                 if result.get("status") in {"OPENED","WAITING_FOR_MANUAL_APPROVAL","MANUAL_APPROVAL_PREP_FAILED"}:
                     result["auto_candidate_evaluation"]=True
                     result["attempted_candidates"]=attempted
+                    result["candidate_results"]=summaries
                     return result
-                last=result
-            last["auto_candidate_evaluation"]=True
-            last["attempted_candidates"]=attempted
-            return last
+
+            stage3_passed=sum(1 for row in summaries if row.get("stage3_passed") is True)
+            risk_rejects=sum(1 for row in summaries if row.get("status")=="RISK_REJECT")
+            execution_rejects=sum(1 for row in summaries if row.get("status")=="EXECUTION_REJECT")
+            quote_rejects=sum(1 for row in summaries if row.get("status")=="CANDIDATE_QUOTE_REJECT")
+            no_triggers=sum(1 for row in summaries if row.get("status")=="NO_TRIGGER")
+            # Do not mislabel the whole batch as RISK_REJECT when one or more
+            # candidates actually passed Stage 3 and failed later in Stage 5.
+            return {
+                "status":"CANDIDATE_BATCH_NO_OPEN",
+                "discovery":discovery,
+                "auto_candidate_evaluation":True,
+                "attempted_candidates":attempted,
+                "stage3_passed_candidates":stage3_passed,
+                "risk_rejects":risk_rejects,
+                "execution_rejects":execution_rejects,
+                "quote_rejects":quote_rejects,
+                "no_triggers":no_triggers,
+                "candidate_results":summaries,
+            }
 
         return self._evaluate_pool_for_entry(pools[0],discovery)
 
@@ -265,7 +307,7 @@ class SiRiskyEngine:
             sell=self.s5.execute(order)
         except Exception as exc:
             return {"status":"EXIT_EXECUTION_RETRY","position_id":pos.get("position_id"),
-                    "order_id":order.order_id,"error":type(exc).__name__,
+                    "order_id":order.order_id,"error":str(exc)[:240] or type(exc).__name__,
                     "exit_reason":ev.get("reason")}
 
         remaining=[r for r in rows if r.get("position_id")!=pos.get("position_id")]
@@ -283,4 +325,3 @@ class SiRiskyEngine:
         if self.open_positions():
             return self.monitor_cycle()
         return self.entry_cycle()
-
