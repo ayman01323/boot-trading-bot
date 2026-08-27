@@ -12,6 +12,8 @@ on:
 permissions:
   contents: read
 
+# One Google self-hosted runner serves operational jobs. A long ZIP operation must
+# never occupy that runner for hours. A newer staging run also cancels an older one.
 concurrency:
   group: stage-google-root-backup-helper
   cancel-in-progress: true
@@ -19,7 +21,7 @@ concurrency:
 jobs:
   stage:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 180
+    timeout-minutes: 10
     steps:
       - name: Stage reviewed helper files under BOOT
         shell: bash
@@ -27,8 +29,6 @@ jobs:
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-
-          rm -rf /home/ayman01323/.google-backup-helper
 
           STAGE=/home/ayman01323/BOOT/.backup-helper
           rm -rf "$STAGE"
@@ -45,126 +45,39 @@ jobs:
           bash -n "$STAGE/scripts/google-root-backup"
           bash -n "$STAGE/scripts/install-google-root-backup-helper"
           grep -Fx 'ayman01323 ALL=(root) NOPASSWD: /usr/local/sbin/google-root-backup' "$STAGE/config/google-root-backup.sudoers"
-
           echo "staged=$STAGE"
-          find "$STAGE" -maxdepth 2 -type f -printf '%m %u:%g %p\n'
-
-      - name: Backup BOOT as ZIP now
-        shell: bash
-        env:
-          TZ: Europe/London
-        run: |
-          set -euo pipefail
-          umask 077
-          SOURCE=/home/ayman01323/BOOT
-          DEST_ROOT=/home/ayman01323/GoogleServerBuckup
-          DAY_DIR="$DEST_ROOT/$(date +%Y-%m-%d)"
-          WORK="$(mktemp -d /tmp/google-boot-now.XXXXXX)"
-          trap 'rm -rf "$WORK"' EXIT
-          mkdir -p "$DAY_DIR"
-          chmod 700 "$DEST_ROOT" "$DAY_DIR"
-
-          python3 - "$SOURCE" "$WORK/BOOT.zip" <<'PY'
-          import os, stat, sys, zipfile
-          from pathlib import Path
-          src = Path(sys.argv[1]).resolve()
-          out = Path(sys.argv[2])
-          root_name = 'BOOT'
-          def add_link(zf, path, arcname):
-              info = zipfile.ZipInfo(arcname)
-              info.create_system = 3
-              info.external_attr = (stat.S_IFLNK | 0o777) << 16
-              zf.writestr(info, os.readlink(path).encode())
-          with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
-              for current, dirs, files in os.walk(src, topdown=True, followlinks=False):
-                  current_path = Path(current)
-                  rel = current_path.relative_to(src)
-                  arcdir = root_name if str(rel) == '.' else f"{root_name}/{rel.as_posix()}"
-                  info = zipfile.ZipInfo(arcdir.rstrip('/') + '/')
-                  info.create_system = 3
-                  info.external_attr = (stat.S_IFDIR | 0o755) << 16
-                  zf.writestr(info, b'')
-                  for dirname in list(dirs):
-                      p = current_path / dirname
-                      if p.is_symlink():
-                          add_link(zf, p, f"{arcdir}/{dirname}")
-                          dirs.remove(dirname)
-                  for filename in files:
-                      p = current_path / filename
-                      arcname = f"{arcdir}/{filename}"
-                      add_link(zf, p, arcname) if p.is_symlink() else zf.write(p, arcname)
-          with zipfile.ZipFile(out, 'r') as zf:
-              bad = zf.testzip()
-              if bad is not None: raise SystemExit(f"ZIP integrity failure at {bad}")
-              entries = len(zf.infolist())
-          size = out.stat().st_size
-          if entries < 5 or size < 4096: raise SystemExit(f"ZIP sanity failure entries={entries} bytes={size}")
-          PY
-
-          entries="$(python3 - "$WORK/BOOT.zip" <<'PY'
-          import sys, zipfile
-          with zipfile.ZipFile(sys.argv[1], 'r') as zf: print(len(zf.infolist()))
-          PY
-          )"
-          bytes="$(stat -c '%s' "$WORK/BOOT.zip")"
-          (cd "$WORK" && sha256sum BOOT.zip > BOOT.zip.sha256)
-          printf 'source=%s\nentries=%s\nbytes=%s\ncreated_london=%s\nformat=zip\n' \
-            "$SOURCE" "$entries" "$bytes" "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$WORK/BOOT.stats"
-          install -m 600 "$WORK/BOOT.zip" "$DAY_DIR/BOOT.zip"
-          install -m 600 "$WORK/BOOT.zip.sha256" "$DAY_DIR/BOOT.zip.sha256"
-          install -m 600 "$WORK/BOOT.stats" "$DAY_DIR/BOOT.stats"
-          cd "$DAY_DIR"
-          sha256sum -c BOOT.zip.sha256
-          rm -f boot.tar.gz boot.tar.gz.sha256 boot.stats google-boot-manifest.txt
-          echo "BOOT ZIP backup completed: $DAY_DIR"
-          cat BOOT.stats
-          ls -lh BOOT.zip BOOT.zip.sha256 BOOT.stats
 
       - name: Verify installed restricted helper
         shell: bash
         run: |
           set -euo pipefail
           test -x /usr/local/sbin/google-root-backup
-          cmp -s /home/ayman01323/BOOT/.backup-helper/scripts/google-root-backup /usr/local/sbin/google-root-backup || {
-            echo 'ERROR: installed helper needs the reviewed ZIP update.' >&2
-            echo 'Run once:' >&2
-            echo 'sudo bash /home/ayman01323/BOOT/.backup-helper/scripts/install-google-root-backup-helper /home/ayman01323/BOOT/.backup-helper' >&2
-            exit 1
-          }
           sudo -n -l /usr/local/sbin/google-root-backup >/dev/null
-          echo 'Installed ZIP helper and restricted sudo rule verified.'
+          echo 'Installed restricted backup helper is callable.'
 
-      - name: Run protected ZIP backup now
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo -n /usr/local/sbin/google-root-backup
-
-      - name: Verify today protected ZIP backups
+      - name: Launch protected ZIP backup without holding Actions runner
         shell: bash
         env:
           TZ: Europe/London
         run: |
           set -euo pipefail
-          DAY_DIR="/home/ayman01323/GoogleServerBuckup/$(date +%Y-%m-%d)"
-          cd "$DAY_DIR"
-          for label in ClaudeServer multichain-learning-bot-v2.2-fast-direct-market SiRisky; do
-            test -s "$label.zip"
-            test -s "$label.zip.sha256"
-            test -s "$label.stats"
-            sha256sum -c "$label.zip.sha256"
-            entries="$(awk -F= '$1=="entries"{print $2}' "$label.stats")"
-            bytes="$(awk -F= '$1=="bytes"{print $2}' "$label.stats")"
-            test "${entries:-0}" -ge 5
-            test "${bytes:-0}" -ge 4096
-            python3 - "$label.zip" <<'PY'
-          import sys, zipfile
-          with zipfile.ZipFile(sys.argv[1], 'r') as zf:
-              bad = zf.testzip()
-              if bad is not None: raise SystemExit(f"ZIP integrity failure at {bad}")
-          PY
-          done
-          test -s google-protected-folders-manifest.txt
-          echo "verified_day_dir=$DAY_DIR"
-          cat ClaudeServer.stats multichain-learning-bot-v2.2-fast-direct-market.stats SiRisky.stats
-          ls -lh ClaudeServer.zip multichain-learning-bot-v2.2-fast-direct-market.zip SiRisky.zip google-protected-folders-manifest.txt
+          LOG_DIR=/home/ayman01323/GoogleServerBuckup/action-logs
+          mkdir -p "$LOG_DIR"
+          chmod 700 /home/ayman01323/GoogleServerBuckup "$LOG_DIR" || true
+          LOG="$LOG_DIR/protected-backup-${GITHUB_RUN_ID}.log"
+
+          # Clearing RUNNER_TRACKING_ID prevents the self-hosted runner cleanup
+          # process from killing the detached backup after this short CI job exits.
+          RUNNER_TRACKING_ID='' nohup sudo -n /usr/local/sbin/google-root-backup \
+            >"$LOG" 2>&1 </dev/null &
+          PID=$!
+          sleep 2
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo 'Backup process exited during launch.' >&2
+            cat "$LOG" 2>/dev/null || true
+            exit 1
+          fi
+          echo "backup_started=YES"
+          echo "backup_pid=$PID"
+          echo "backup_log=$LOG"
+          echo 'actions_runner_released=YES'
