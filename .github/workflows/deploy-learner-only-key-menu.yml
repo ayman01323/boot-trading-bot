@@ -1,0 +1,83 @@
+name: Deploy Learner-Only Key Menu
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/deploy-learner-only-key-menu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 6
+    steps:
+      - name: Install learner-only key menu on Google MASTER bot
+        shell: bash
+        env:
+          SOURCE_SHA: 5acc3f66253396e0a714e2b31f711e85fcf3b65b
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          WORK="$HOME/.cache/learner-only-key-menu-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SRC="$WORK/telegram_google_learner_launcher_patch.py"
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${SOURCE_SHA}/learnerbot/telegram_google_learner_launcher_patch.py" -o "$SRC"
+          grep -q 'Add Private Key — LEARNER ONLY' "$SRC"
+          grep -q 'telegram-master-learner-only' "$SRC"
+          python3 -m py_compile "$SRC"
+
+          SCRIPT="$WORK/install.sh"
+          RESULT="$WORK/result.txt"
+          UNIT="$WORK/learner-only-key-menu-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<EOF
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          exec > >(tee '$RESULT') 2>&1
+          for target in \
+            /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py \
+            /home/ayman01323/ClaudeServer/TestBots/boot-trading-bot/learnerbot/telegram_google_learner_launcher_patch.py; do
+            if [[ -d "\$(dirname "\$target")" ]]; then
+              install -m 0644 '$SRC' "\$target"
+              grep -q 'Add Private Key — LEARNER ONLY' "\$target"
+            fi
+          done
+          /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m py_compile /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py
+          systemctl restart learnerbot.service
+          sleep 15
+          echo "learner_active=\$(systemctl is-active learnerbot.service || true)"
+          echo "learner_restarts_1=\$(systemctl show learnerbot.service -p NRestarts --value)"
+          sleep 12
+          echo "learner_restarts_2=\$(systemctl show learnerbot.service -p NRestarts --value)"
+          journalctl -u learnerbot.service --since '-35 seconds' --no-pager -o cat \
+            | grep -E 'HTTP 409|PermissionError|Traceback|Main process exited' || true
+          test "\$(systemctl is-active learnerbot.service)" = active
+          EOF
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Install learner-only key menu on Google MASTER Telegram
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$NAME"
+          cat "$RESULT"
+          R1="$(grep '^learner_restarts_1=' "$RESULT" | tail -1 | cut -d= -f2)"
+          R2="$(grep '^learner_restarts_2=' "$RESULT" | tail -1 | cut -d= -f2)"
+          test -n "$R1" -a -n "$R2"
+          test "$R1" = "$R2"
+          ! grep -q 'HTTP 409' "$RESULT"
+          ! grep -q 'Main process exited' "$RESULT"
+          sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
+          rm -f "$UNIT" "$SCRIPT" "$RESULT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          echo 'learner_only_key_menu=LIVE'
