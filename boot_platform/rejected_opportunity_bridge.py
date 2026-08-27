@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import hashlib
 import json
 import os
 import shutil
@@ -13,45 +15,33 @@ from .rejected_opportunity_queue import DEFAULT_ROOT, RejectedOpportunityQueue
 
 BOT_IDS = ("learnerbot", "claude", "gpt", "gemini", "grok", "future")
 
-# These are runtime sources that already exist in the current architecture. The
-# bridge is deliberately read-only against them. Missing/unreadable sources are
-# skipped rather than treated as empty evidence.
+# Runtime sources already present in the current architecture. The bridge is
+# deliberately read-only against them. Missing/unreadable sources are skipped
+# rather than treated as empty evidence.
 DEFAULT_SIBOT1_DBS = (
     Path("/root/multichain-learning-bot-v2.2-fast-direct-market/data/sibot1_solana_live_bridge.sqlite3"),
     Path("/home/ayman01323/ClaudeServer/runtime/data/sibot1_solana_live_bridge.sqlite3"),
 )
 
+DEFAULT_REJECTION_CSVS = (
+    (Path("/root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot/auto/full_power_rejections.csv"), "learnerbot"),
+    (Path("/root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot/auto/power_discovery_rejections.csv"), "learnerbot"),
+    (Path("/home/ayman01323/ClaudeServer/boot-trading-bot/CSVbot/auto/full_power_rejections.csv"), "claude"),
+    (Path("/home/ayman01323/ClaudeServer/boot-trading-bot/CSVbot/auto/power_discovery_rejections.csv"), "claude"),
+)
+
 MARKET_REJECTION_TERMS = (
-    "POOL",
-    "LIQUID",
-    "LP_",
-    "LP ",
-    "RUGCHECK",
-    "REVERSE",
-    "SELLABILITY",
-    "PRICE IMPACT",
-    "ROUNDTRIP",
-    "ROUND-TRIP",
-    "DEX",
-    "HONEYPOT",
-    "FREEZE",
-    "MINT AUTHORITY",
-    "DEVELOPER",
-    "DEV_",
-    "SIMULATION",
-    "QUOTE",
+    "POOL", "LIQUID", "LP_", "LP ", "RUGCHECK", "REVERSE", "SELLABILITY",
+    "PRICE IMPACT", "ROUNDTRIP", "ROUND-TRIP", "DEX", "HONEYPOT", "FREEZE",
+    "MINT AUTHORITY", "DEVELOPER", "DEV_", "SIMULATION", "QUOTE",
 )
 
 NON_MARKET_TERMS = (
-    "ACCOUNT AUTOMATIC",
-    "SIGNER",
-    "NOT FUNDED",
-    "INSUFFICIENT BALANCE",
-    "PERMISSION IS OFF",
-    "LIVE IS OFF",
-    "AUTO IS OFF",
-    "ARMED IS OFF",
+    "ACCOUNT AUTOMATIC", "SIGNER", "NOT FUNDED", "INSUFFICIENT BALANCE",
+    "PERMISSION IS OFF", "LIVE IS OFF", "AUTO IS OFF", "ARMED IS OFF",
 )
+
+CHAIN_BY_ID = {1: "ethereum", 56: "bsc", 137: "polygon", 8453: "base", 42161: "arbitrum"}
 
 
 def _market_rejection(error: str) -> bool:
@@ -76,6 +66,32 @@ def _classify(error: str) -> str:
     if "QUOTE" in text:
         return "QUOTE_REJECT"
     return "MARKET_RISK_REJECT"
+
+
+def _csv_class(stage: str, reason: str) -> str:
+    stage = str(stage or "").strip().upper()
+    if stage == "EDGE":
+        return "STRATEGY_EDGE_REJECT"
+    if stage == "QUOTE":
+        return "QUOTE_REJECT"
+    if stage in {"GRAPH", "ROUTE"}:
+        return "ROUTE_REJECT"
+    if stage == "QUARANTINE":
+        return "QUARANTINE_REJECT"
+    if stage in {"PRODUCT", "POLICY"}:
+        return "PRODUCT_POLICY_REJECT"
+    if stage in {"RPC", "VENUE", "CONFIG"}:
+        return "DISCOVERY_INFRA_REJECT"
+    return _classify(reason)
+
+
+def _route_token(route_path: str) -> str:
+    text = str(route_path or "").replace("->", ">").replace("|", ">")
+    parts = [x.strip() for x in text.split(">") if x.strip()]
+    addresses = [x for x in parts if x.lower().startswith("0x") and len(x) == 42]
+    if len(addresses) >= 2:
+        return addresses[1]
+    return addresses[0] if addresses else ""
 
 
 class RejectedOpportunityBridge:
@@ -198,8 +214,84 @@ class RejectedOpportunityBridge:
             self._save_state()
         return result
 
+    def ingest_rejection_csv(self, path: str | Path, source_bot: str) -> dict[str, Any]:
+        path = Path(path)
+        result: dict[str, Any] = {
+            "path": str(path), "source_bot": source_bot, "readable": False,
+            "published": 0, "skipped": 0,
+        }
+        try:
+            if not path.is_file() or not os.access(path, os.R_OK):
+                return result
+            with path.open(newline="", encoding="utf-8-sig") as handle:
+                rows = list(csv.DictReader(handle))
+        except Exception as exc:
+            result["error"] = f"{type(exc).__name__}: {exc}"
+            return result
+        result["readable"] = True
+
+        state_key = f"rejection_csv:{source_bot}:{path}"
+        seen = set(str(x) for x in (self.state.get(state_key) or []))
+        new_seen = list(seen)
+        for row in rows[-1000:]:
+            canonical = json.dumps(row, sort_keys=True, separators=(",", ":"))
+            fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
+            if fingerprint in seen:
+                continue
+            new_seen.append(fingerprint)
+            route_path = str(row.get("route_path") or "")
+            token = _route_token(route_path)
+            if not token:
+                result["skipped"] += 1
+                continue
+            chain = str(row.get("chain_slug") or "").strip().lower()
+            if not chain:
+                try:
+                    chain = CHAIN_BY_ID.get(int(row.get("chain_id") or 0), "")
+                except Exception:
+                    chain = ""
+            if not chain:
+                result["skipped"] += 1
+                continue
+            reason = str(row.get("reason") or "scanner rejection").strip()
+            stage = str(row.get("stage") or "").strip()
+            rejection_class = _csv_class(stage, reason)
+            try:
+                observed = int(float(row.get("observed_at_epoch") or time.time()))
+            except Exception:
+                observed = int(time.time())
+            self.queue.publish(
+                chain=chain,
+                token_address=token,
+                source_bot=source_bot,
+                source_strategy_id="full_power_scanner",
+                source_event_id=f"scanner:{fingerprint}",
+                rejection_class=rejection_class,
+                rejection_reason=reason,
+                priority=50,
+                observed_at=observed,
+                payload={
+                    "risk_class": rejection_class,
+                    "source_runtime": "full_power_scanner_rejections",
+                    "route_kind": str(row.get("route_kind") or ""),
+                    "route_path": route_path,
+                    "stage": stage,
+                    "chain_id": str(row.get("chain_id") or ""),
+                },
+            )
+            result["published"] += 1
+
+        # Keep only the bounded fingerprints represented by the scanner's rolling files.
+        self.state[state_key] = new_seen[-2500:]
+        self._save_state()
+        return result
+
     def run_once(self, extra_sibot1_dbs: list[str] | None = None) -> dict[str, Any]:
-        report: dict[str, Any] = {"inboxes": self.consume_inboxes(), "runtime_sources": []}
+        report: dict[str, Any] = {
+            "inboxes": self.consume_inboxes(),
+            "runtime_sources": [],
+            "scanner_sources": [],
+        }
         paths = list(DEFAULT_SIBOT1_DBS)
         for value in extra_sibot1_dbs or []:
             paths.append(Path(value))
@@ -210,6 +302,10 @@ class RejectedOpportunityBridge:
                 continue
             seen.add(key)
             report["runtime_sources"].append(self.ingest_sibot1_live_db(path))
+
+        for path, source_bot in DEFAULT_REJECTION_CSVS:
+            report["scanner_sources"].append(self.ingest_rejection_csv(path, source_bot))
+
         report["queue"] = self.queue.stats()
         self.queue.export_csv()
         return report
