@@ -1,0 +1,33 @@
+name: Expose Learner Scan CSV
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/expose-learner-scan-csv.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  expose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Create easy-to-find live CSV hardlink
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          SRC=/home/ayman01323/BOOT/testingbots/learn/CSVbot/auto/solana_all_scan_records.csv
+          DST=/home/ayman01323/BOOT/testingbots/learn/ALL_SCANNED_WALLETS.csv
+          test -s "$SRC"
+          rm -f "$DST"
+          ln "$SRC" "$DST"
+          chown ayman01323:ayman01323 "$DST"
+          chmod 0644 "$DST"
+          echo "source=$SRC"
+          echo "easy_path=$DST"
+          echo "lines=$(wc -l < "$DST")"
+          ls -li "$SRC" "$DST"
