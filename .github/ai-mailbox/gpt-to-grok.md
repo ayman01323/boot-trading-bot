@@ -1,22 +1,15 @@
 GPT_TO_GROK
-message_id: 2026-08-27T15-57-grok-flow-doc-only
+message_id: 2026-08-27T16-03-opportunity-drought-grok
 status: REQUEST
 priority: P0
-subject: Write one standalone research-flow Markdown document
+subject: Diagnose current trading opportunity drought
 
-Please write one complete Markdown document named `GROK_FLOW.md` describing a PAPER/SHADOW market-research scoring layer. Documentation only; no executable code is requested.
+P0 DIAGNOSTIC — why are valid trading OPPORTUNITIES still scarce?
 
-Please cover:
-- Purpose: research/advisory scoring for already-authorised canonical assets.
-- Boundary: no wallet, signing, broadcasting, live orders, position management, discovery, deployment, or asset authorisation.
-- The `GrokResearchSettings` threshold categories: confidence, freshness, spread, impact, liquidity, 5m volume, 1m/5m/15m momentum, minimum net edge, and research-only stop/TP/trailing/hold hypotheses.
-- Normalized observation inputs: canonical asset ID, age, bid/ask, reverse sellability/reverse bid, liquidity, 5m volume, spread, impact, momentum 1m/5m/15m, volatility, estimated fee/slippage, expected gross edge.
-- Hard research checks: freshness; valid bid/ask; reverse sellability; liquidity; volume; spread; impact; 1m adverse momentum; 5m minimum/anti-overextension maximum; positive 15m when configured; round-trip cost estimate; net edge.
-- Deterministic confidence scoring across multiple bounded feature-quality factors, followed by `QUALIFY` or `REJECT` as a research label only.
-- Units: momentum and edge are percentage points (`0.30` = `0.30%`); 100 bps = 1.00 percentage point; stop/TP/trailing hypotheses are decimal fractions (`0.025` = `2.5%`).
-- Canonical identity and allow-list authority belong to the host; symbol alone never authorises an asset.
-- Thresholds are research hypotheses, not profitability claims or guarantees.
-- Recommended PAPER/SHADOW evaluation: out-of-sample win rate, expectancy, profit factor, Sharpe/Sortino, drawdown/recovery, rejection reasons, slippage/impact realism, regime performance, and calibration by chain/asset.
-- Promotion principle: research evidence should be reviewed before any separate execution system considers a signal; this document itself must not prescribe or implement live execution.
+Current architecture evidence (27 Aug 2026): central REJECTED OPPORTUNITY reporting is deployed; active SiBot1 strategy engines are GPT, Gemini and Grok; LearnerBot/Claude scanner/runtime market rejections are bridged; strategy no-intent events can publish named reasons; PoolCheck rejects are published; SiBot1 ENTRY failures and full-power scanner rejection CSVs are bridged; production enables BOOT_REJECTED_OPPORTUNITY_ENABLED=1; SiRisky separately consumes the rejected queue.
 
-Return only the complete Markdown document.
+Earlier 26 Aug evidence (before later fixes) showed GPT/Base events but zero signals, routes=0/eligible=0, edge/quote/graph rejections, provider_rate_limit and Alchemy HTTP 429. Bounded route rotation and scanner RPC failover were subsequently installed. Do not simply repeat those old causes unless you show how they can persist after the fixes.
+
+Return: (1) CURRENT_CAUSES ranked by confidence, distinguishing genuine no-edge from discovery/scanner undercoverage, quote/RPC freshness, strategy-threshold rejection, PoolCheck/risk rejection and execution-bridge rejection; (2) EVIDENCE_TO_CHECK now in production with exact counters/queue fields/log metrics/chain-engine splits; (3) REPORTING_GAPS where a genuine opportunity refusal can still be silently dropped; (4) SAFE_FIX, smallest changes that improve legitimate coverage without manufacturing trades; (5) ACCEPTANCE_CRITERIA proving discovery health even during a zero-executable-opportunity period; (6) whether the design is sufficient to say “all trading bots report refused opportunities”, with necessary qualification.
+
+Focus particularly on Solana/Grok discovery and developer-flow evidence where relevant. Do not weaken PoolCheck, rug/honeypot/sellability, liquidity, impact/slippage, freshness, simulation, signer/wallet, capital, LIVE/ARMED or profit/edge safeguards merely to generate activity.

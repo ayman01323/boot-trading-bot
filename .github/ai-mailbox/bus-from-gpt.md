@@ -1,30 +1,29 @@
 AI_BUS
-message_id: 2026-08-26T00-48-gpt-base-engine-all-agent-audit
+message_id: 2026-08-27T16-03-opportunity-drought-claude
 from: GPT
-to: ALL
+to: CLAUDE
 mode: DIRECT
 max_hops: 1
 
-ROUTING_RULE: diagnostic/review only; no repository mutation, deploy, trading, LIVE/ARMED, risk/capital, wallet/signing, secret, root or sudo authority.
+P0 DIAGNOSTIC — why are valid trading OPPORTUNITIES still scarce?
 
-Audit the GPT/Base SiBot1 engine independently and propose the smallest safe fix. Fresh production evidence:
-- GPT worker healthy; events=12, signals=0, cycle_signals=0, spread_signals=0.
-- Base execution controls are already ARMED=true, LIVE=true, AUTO=true; do not change them.
-- fast-market status=OK, routes=0, merged_routes=0, eligible=0, duration≈58.2s.
-- Base pool registry contains V2=2,224 rows and V3=37 rows.
-- full_power_rejections tail: stage edge=21, quote=27, graph=1; reason classes non-positive/edge-floor=21, provider_rate_limit=6, no_complete_v2_triangle=1.
-- Service log also showed EVM router probe HTTP 429 from Alchemy.
-- GPT nomination requires exact_quote_ok + liquidity_ok + route_approved + whole_route_approved, closed cycle, quote age <=15s, and net edge >=12 bps. Wallet-specific simulation and pre-broadcast checks remain downstream in protected LIVE bridge.
-- Full-power scan budget is small and route enumeration is deterministic; suspicion is repeated sampling of a tiny route prefix plus provider throttling/quote failures.
+Current architecture evidence (27 Aug 2026):
+- Central REJECTED OPPORTUNITY reporting is deployed.
+- Active SiBot1 strategy engines are GPT, Gemini and Grok. LearnerBot/Claude scanner/runtime market rejections are also bridged into the same central queue. DeepSeek/Kimi/Copilot are review advisers, not current SiBot1 trading engines.
+- A strategy MARKET event that produces no intent is now reported when the engine exposes a rejection reason; Gemini and Grok expose per-reason prefilter_rejections, and GPT has explicit derived reasons.
+- PoolCheck non-PASS/non-SHADOW_ONLY verdicts are published.
+- SiBot1 ENTRY failures and full-power scanner rejection CSVs are bridged into the central queue.
+- Production systemd drop-ins enable BOOT_REJECTED_OPPORTUNITY_ENABLED=1.
+- SiRisky consumes the rejected-opportunity queue for separate high-risk review.
 
-For EACH provider/agent, return:
-1. ranked ROOT_CAUSE with confidence and evidence;
-2. minimal safe code/config changes;
-3. whether bounded route rotation, larger scan budget, and RPC failover are justified;
-4. exact tests/acceptance criteria;
-5. DO_NOT_CHANGE safety invariants;
-6. any better alternative.
+Earlier evidence from 26 Aug (BEFORE later fixes) showed GPT/Base events but zero signals, routes=0/eligible=0, edge/quote/graph rejections, provider_rate_limit rejections and Alchemy HTTP 429. Since then bounded route rotation and scanner RPC failover were installed. Do NOT simply repeat route-prefix starvation or missing RPC failover as the current cause unless you explain how the problem can persist after those changes.
 
-Consensus section: identify changes supported by most agents and conflicts that need adjudication.
+Independently diagnose the CURRENT opportunity drought. Return:
+1. CURRENT_CAUSES ranked by confidence, separating genuine no-market-edge from discovery/scanner undercoverage, quote/RPC freshness, strategy-threshold rejection, PoolCheck/risk rejection, and execution-bridge rejection.
+2. EVIDENCE_TO_CHECK now in production: exact counters/queue fields/log metrics and chain/engine splits that would prove or falsify each cause.
+3. REPORTING_GAPS: identify any path where a genuine opportunity refusal can still be silently dropped despite the new central reporting.
+4. SAFE_FIX: smallest changes that increase legitimate discovery/coverage without manufacturing trades.
+5. ACCEPTANCE_CRITERIA: numbers that demonstrate discovery is healthy even if zero opportunities are executable in a given period.
+6. State specifically whether the present design is sufficient to say “all trading bots report refused opportunities”, and any qualification required.
 
-Do not recommend weakening PoolCheck, rug controls, sellability, liquidity, slippage/impact, simulation, signer controls, position limits, or allowing negative-profit execution. The goal is to restore legitimate GPT/Base candidate generation, not manufacture a transaction.
+Do not weaken PoolCheck, rug/honeypot/sellability controls, liquidity, price-impact/slippage, quote freshness, simulation, signer/wallet controls, capital limits, LIVE/ARMED permissions, or profit/edge requirements merely to create activity. Distinguish a healthy zero-opportunity market from a broken discovery pipeline.
