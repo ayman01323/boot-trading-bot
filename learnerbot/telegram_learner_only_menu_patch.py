@@ -44,6 +44,7 @@ def _short(value: str) -> str:
 
 def learner_menu_keyboard(app=None, chat_id=None):
     return {"inline_keyboard": [
+        [{"text": "🔐 Add Private Key", "callback_data": "solwallet:import"}],
         [
             {"text": "💰 My Wallet", "callback_data": "learner:wallet"},
             {"text": "📈 My Trading", "callback_data": "learner:trading"},
@@ -70,6 +71,7 @@ def home_text():
         "Each Telegram user has an independent wallet, settings, positions and results.",
         "Private signing keys are encrypted server-side and are never written to CSV.",
         "",
+        "Tap <b>🔐 Add Private Key</b> to import your learner wallet securely in this private chat.",
         "Choose an option below.",
     ])
 
