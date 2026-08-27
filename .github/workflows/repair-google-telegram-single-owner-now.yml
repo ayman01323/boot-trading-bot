@@ -1,0 +1,120 @@
+name: Repair Google Telegram Single Owner Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/repair-google-telegram-single-owner-now.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 6
+    steps:
+      - name: Make learnerbot sole Telegram poller and expose learner menu
+        shell: bash
+        env:
+          MAIN_SHA: 5ba1152bbf6fd7529806e0d061db4d3c0b573bbf
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          WORK="$HOME/.cache/google-telegram-owner-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          LAUNCHER="$WORK/telegram_google_learner_launcher_patch.py"
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${MAIN_SHA}/learnerbot/telegram_google_learner_launcher_patch.py" -o "$LAUNCHER"
+          grep -q 'Learner Bot — Google Test' "$LAUNCHER"
+          python3 -m py_compile "$LAUNCHER"
+
+          SCRIPT="$WORK/repair.sh"
+          RESULT="$WORK/result.txt"
+          UNIT="$WORK/google-telegram-owner-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          SIRISKY=/root/SiRisky
+          LAUNCHER=__LAUNCHER__
+          RESULT=__RESULT__
+          exec > >(tee "$RESULT") 2>&1
+
+          test -x "$PROD/.venv/bin/python"
+          test -f "$PROD/learnerbot/__main__.py"
+          test -f "$SIRISKY/run.py"
+
+          # Keep SiRisky engine + outbound alerts, but remove its competing getUpdates poller.
+          python3 - "$SIRISKY/run.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          old='engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); tg.run_thread(lambda c,ch:telegram_handler(engine,settings,c,ch),stop)'
+          new='engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event()\n    print("[telegram] SiRisky command polling disabled; outbound alerts remain enabled", flush=True)'
+          if old in s:
+              s=s.replace(old,new,1)
+              p.write_text(s,encoding='utf-8')
+              print('sirisky_command_poller=DISABLED_NOW')
+          elif 'SiRisky command polling disabled; outbound alerts remain enabled' in s:
+              print('sirisky_command_poller=ALREADY_DISABLED')
+          else:
+              raise SystemExit('REFUSED: SiRisky start signature changed')
+          PY
+          "$SIRISKY/.venv/bin/python" -m py_compile "$SIRISKY/run.py"
+
+          # Ensure current Google MASTER process has the permanent learner launcher loaded.
+          install -m 0644 "$LAUNCHER" "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
+          python3 - "$PROD/learnerbot/__main__.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          line='from . import telegram_google_learner_launcher_patch  # noqa: F401\n'
+          if line not in s:
+              anchor='from .cli import main\n'
+              if anchor not in s:
+                  raise SystemExit('REFUSED: learnerbot cli anchor missing')
+              s=s.replace(anchor,'# Permanent MASTER Telegram bridge to the isolated Google learner wallet/LIVE controls.\n'+line+anchor,1)
+              p.write_text(s,encoding='utf-8')
+              print('learner_menu_import=ADDED_NOW')
+          else:
+              print('learner_menu_import=ALREADY_PRESENT')
+          PY
+          "$PROD/.venv/bin/python" -m py_compile "$PROD/learnerbot/__main__.py" "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
+
+          systemctl restart sirisky.service
+          systemctl restart learnerbot.service
+          sleep 12
+          echo "learnerbot_state=$(systemctl is-active learnerbot.service || true)"
+          echo "sirisky_state=$(systemctl is-active sirisky.service || true)"
+          echo "learnerbot_restarts=$(systemctl show learnerbot.service -p NRestarts --value)"
+          echo "sirisky_restarts=$(systemctl show sirisky.service -p NRestarts --value)"
+          grep -n 'telegram_google_learner_launcher_patch' "$PROD/learnerbot/__main__.py"
+          grep -n 'Learner Bot — Google Test' "$PROD/learnerbot/telegram_google_learner_launcher_patch.py" | head -1
+          journalctl -u learnerbot.service --since '-10 seconds' --no-pager -o cat | grep 'HTTP 409' && { echo 'telegram_single_owner=NO'; exit 44; } || true
+          echo 'telegram_single_owner=YES'
+          echo 'learner_menu_bridge=LIVE'
+          echo 'sirisky_engine_preserved=YES'
+          echo 'sirisky_outbound_alerts_preserved=YES'
+          ROOTSCRIPT
+
+          sed -i "s#__LAUNCHER__#$LAUNCHER#g; s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Repair Google Telegram single owner
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          RC=0
+          sudo -n /usr/bin/systemctl start "$NAME" || RC=$?
+          cat "$RESULT" 2>/dev/null || true
+          exit "$RC"
