@@ -1,0 +1,29 @@
+name: Solana First-Day LIVE Readiness
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/solana-first-day-live-readiness.yml'
+      - '.github/solana-first-day-live-readiness.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: solana-first-day-live-readiness
+  cancel-in-progress: true
+
+jobs:
+  readiness:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Production status
+        shell: bash
+        run: sudo -n /usr/local/sbin/status-boot-trading-bot
+
+      - name: Read-only SiBot leader gate
+        shell: bash
+        run: sudo -n /usr/local/sbin/run-sibot-leader-gate-report
