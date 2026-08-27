@@ -17,10 +17,11 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 30
     steps:
-      - name: Verify restricted maintenance bridge
+      - name: Initialise and verify restricted bridge
         shell: bash
         run: |
           set -euo pipefail
+          rm -f /tmp/google-folder-consolidation.txt /tmp/google-folder-backup.txt /tmp/google-folder-final.txt
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           test -x /usr/local/sbin/consolidate-google-test-bots
@@ -29,30 +30,7 @@ jobs:
           sudo -n -l /usr/local/sbin/backup-google-test-bots >/dev/null
           echo restricted_bridge=PASS
 
-      - name: Confirm consolidated physical targets
-        shell: bash
-        run: |
-          set -euo pipefail
-          BASE=/home/ayman01323/ClaudeServer/TestBots
-          PROD=$BASE/boot-trading-bot
-          SIRISKY=$BASE/SiRisky-runtime
-          WORK=$BASE/SiRisky-workspace
-          test -d "$PROD"
-          test -d "$SIRISKY"
-          test -d "$WORK"
-          test -x "$PROD/.venv/bin/python"
-          test -x "$SIRISKY/.venv/bin/python"
-          git -C "$PROD" rev-parse --is-inside-work-tree >/dev/null
-          {
-            echo CONSOLIDATION_OK=true
-            echo "base=$BASE"
-            echo "production=$PROD"
-            echo "sirisky_runtime=$SIRISKY"
-            echo "sirisky_workspace=$WORK"
-            echo 'compatibility_links=previously_verified_by_restricted_migration_wrapper'
-          } | tee /tmp/google-folder-consolidation.txt
-
-      - name: Recover or create combined backup
+      - name: Recover or verify combined backup
         shell: bash
         run: |
           set -euo pipefail
@@ -71,28 +49,33 @@ jobs:
           else
             echo RECOVERED_EXISTING_ARCHIVE=true | tee -a /tmp/google-folder-backup.txt
           fi
-          test -n "$latest"
-          test -s "$latest"
+          test -n "$latest" && test -s "$latest"
           python3 - "$latest" <<'PY'
-          import gzip, pathlib, sys
+          import gzip,pathlib,sys
           p=pathlib.Path(sys.argv[1])
-          with p.open('rb') as f:
-              assert f.read(2) == b'\x1f\x8b'
-          with gzip.open(p,'rb') as g:
-              header=g.read(512)
+          with p.open('rb') as f: assert f.read(2)==b'\x1f\x8b'
+          with gzip.open(p,'rb') as g: header=g.read(512)
           name=header[:100].split(b'\0',1)[0].decode('utf-8','replace')
           assert name.startswith('ClaudeServer'), name
           print('tar_first_entry='+name)
           PY
           trailer="$(tail -c 8 "$latest" | od -An -tx1 | tr -d ' \n')"
           test "${#trailer}" -eq 16
-          bytes="$(stat -c %s "$latest")"
           echo archive_structural_check=PASS | tee -a /tmp/google-folder-backup.txt
           echo "archive=$latest" | tee -a /tmp/google-folder-backup.txt
-          echo "archive_bytes=$bytes" | tee -a /tmp/google-folder-backup.txt
-          echo "gzip_trailer=$trailer" | tee -a /tmp/google-folder-backup.txt
+          echo "archive_bytes=$(stat -c %s "$latest")" | tee -a /tmp/google-folder-backup.txt
 
-      - name: Verify services reach active state
+      - name: Verify migration through restricted root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/consolidate-google-test-bots 2>&1 | tee /tmp/google-folder-consolidation.txt
+          grep -q '^CONSOLIDATION_OK=true$' /tmp/google-folder-consolidation.txt
+          grep -q '^production=/home/ayman01323/ClaudeServer/TestBots/boot-trading-bot$' /tmp/google-folder-consolidation.txt
+          grep -q '^sirisky_runtime=/home/ayman01323/ClaudeServer/TestBots/SiRisky-runtime$' /tmp/google-folder-consolidation.txt
+          grep -q '^sirisky_workspace=/home/ayman01323/ClaudeServer/TestBots/SiRisky-workspace$' /tmp/google-folder-consolidation.txt
+
+      - name: Wait for both services to be active
         shell: bash
         run: |
           set -euo pipefail
@@ -100,26 +83,19 @@ jobs:
             local svc="$1"
             for _ in $(seq 1 30); do
               state="$(systemctl is-active "$svc" 2>/dev/null || true)"
-              if [[ "$state" == active ]]; then
-                echo "$svc=active"
-                return 0
-              fi
+              if [[ "$state" == active ]]; then echo "$svc=active"; return 0; fi
               if [[ "$state" == failed || "$state" == inactive ]]; then
                 echo "$svc=$state" >&2
-                systemctl status "$svc" --no-pager -l 2>&1 | tail -40 >&2 || true
+                systemctl status "$svc" --no-pager -l 2>&1 | tail -50 >&2 || true
                 return 1
               fi
               sleep 2
             done
             echo "$svc=$(systemctl is-active "$svc" 2>/dev/null || true)" >&2
-            systemctl status "$svc" --no-pager -l 2>&1 | tail -40 >&2 || true
+            systemctl status "$svc" --no-pager -l 2>&1 | tail -50 >&2 || true
             return 1
           }
-          {
-            wait_active learnerbot.service
-            wait_active sirisky.service
-            echo physical_layout=PASS
-          } | tee /tmp/google-folder-final.txt
+          { wait_active learnerbot.service; wait_active sirisky.service; echo final_runtime=PASS; } | tee /tmp/google-folder-final.txt
 
       - name: Publish consolidation attestation
         if: always()
@@ -132,12 +108,9 @@ jobs:
             echo "generated_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             echo "hostname=$(hostname)"
             echo "workflow_run_id=${GITHUB_RUN_ID}"
-            echo '=== CONSOLIDATION ==='
-            cat /tmp/google-folder-consolidation.txt 2>/dev/null || true
-            echo '=== BACKUP ==='
-            cat /tmp/google-folder-backup.txt 2>/dev/null || true
-            echo '=== FINAL ==='
-            cat /tmp/google-folder-final.txt 2>/dev/null || true
+            echo '=== BACKUP ==='; cat /tmp/google-folder-backup.txt 2>/dev/null || true
+            echo '=== CONSOLIDATION ==='; cat /tmp/google-folder-consolidation.txt 2>/dev/null || true
+            echo '=== FINAL ==='; cat /tmp/google-folder-final.txt 2>/dev/null || true
           } > /tmp/google-folder-consolidation-attestation.txt
           python3 - <<'PY'
           import base64,json,os,urllib.error,urllib.request
