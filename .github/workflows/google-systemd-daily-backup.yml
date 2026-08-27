@@ -1,0 +1,127 @@
+name: Google Systemd Daily Backup
+
+on:
+  # Run at both possible UTC equivalents of 03:00 Europe/London.
+  # The job itself proceeds only when London local time is 03:00,
+  # so this remains correct through GMT/BST changes.
+  schedule:
+    - cron: '0 2 * * *'
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/google-systemd-daily-backup.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-systemd-daily-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Backup /etc/systemd/system to Google backup folder
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 30
+    env:
+      SOURCE: /etc/systemd/system
+      DEST_ROOT: /home/ayman01323/GoogleServerBuckup
+      RETENTION_DAYS: '30'
+      TZ: Europe/London
+    steps:
+      - name: Check 03:00 London schedule gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$(date +%H)" != "03" ]; then
+            echo "run_backup=false" >> "$GITHUB_OUTPUT"
+            echo "No-op: London local hour is $(date +%H), not 03."
+          else
+            echo "run_backup=true" >> "$GITHUB_OUTPUT"
+            echo "Proceeding at $(date '+%Y-%m-%d %H:%M:%S %Z')."
+          fi
+
+      - name: Verify Google runner and source
+        if: steps.gate.outputs.run_backup == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          sudo -n true
+          sudo -n test -d "$SOURCE"
+          mkdir -p "$DEST_ROOT"
+          chmod 700 "$DEST_ROOT"
+          echo "source=$SOURCE"
+          echo "destination=$DEST_ROOT"
+          df -h "$DEST_ROOT"
+
+      - name: Create dated verified systemd backup
+        if: steps.gate.outputs.run_backup == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          BACKUP_DATE="$(date +%Y-%m-%d)"
+          DAY_DIR="$DEST_ROOT/$BACKUP_DATE"
+          WORK="$(mktemp -d /tmp/google-systemd-backup.XXXXXX)"
+          trap 'rm -rf "$WORK"' EXIT
+
+          mkdir -p "$DAY_DIR"
+          chmod 700 "$DAY_DIR"
+
+          ARCHIVE="$WORK/systemd-system.tar.gz"
+          HASH="$WORK/systemd-system.tar.gz.sha256"
+          MANIFEST="$WORK/systemd-system-manifest.txt"
+
+          sudo -n tar -C /etc/systemd -czf "$ARCHIVE" system
+          sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
+          chmod 600 "$ARCHIVE"
+
+          # Verify archive can be read before publishing it.
+          tar -tzf "$ARCHIVE" >/dev/null
+          sha256sum "$ARCHIVE" > "$HASH"
+          chmod 600 "$HASH"
+
+          cat > "$MANIFEST" <<EOF
+          backup_date=$BACKUP_DATE
+          created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
+          created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          hostname=$(hostname)
+          source=$SOURCE
+          destination=$DAY_DIR
+          archive=systemd-system.tar.gz
+          EOF
+          chmod 600 "$MANIFEST"
+
+          # Atomic-ish replacement for today's files after successful verification.
+          mv -f "$ARCHIVE" "$DAY_DIR/systemd-system.tar.gz"
+          mv -f "$HASH" "$DAY_DIR/systemd-system.tar.gz.sha256"
+          mv -f "$MANIFEST" "$DAY_DIR/systemd-system-manifest.txt"
+
+          cd "$DAY_DIR"
+          sha256sum -c systemd-system.tar.gz.sha256
+
+          echo "Backup completed: $DAY_DIR"
+          ls -lh "$DAY_DIR"
+
+      - name: Apply retention policy
+        if: steps.gate.outputs.run_backup == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find "$DEST_ROOT" -mindepth 1 -maxdepth 1 -type d \
+            -regextype posix-extended -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+            -mtime +"$RETENTION_DAYS" -print -exec rm -rf {} +
+          echo "retention_days=$RETENTION_DAYS"
+
+      - name: Backup summary
+        if: always()
+        shell: bash
+        run: |
+          echo "Source: $SOURCE"
+          echo "Destination pattern: $DEST_ROOT/YYYY-MM-DD/systemd-system.tar.gz"
+          echo "Schedule: daily at 03:00 Europe/London (GMT/BST safe)"
