@@ -4,6 +4,8 @@ set -Eeuo pipefail
 # One-time bootstrap for controlled GitHub Actions -> SiRisky governed LIVE arming.
 # The runner receives passwordless sudo for ONE root-owned wrapper only.
 # The wrapper may only apply the fixed approval-gated LIVE runtime policy below.
+# Set ARM_NOW=1 when invoking this installer to apply that policy immediately
+# to the exact commit currently checked out by the self-hosted runner.
 
 RUNNER_USER="${RUNNER_USER:-ayman01323}"
 RUNNER_CHECKOUT="${RUNNER_CHECKOUT:-/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot}"
@@ -172,3 +174,9 @@ echo "Runner user: $RUNNER_USER"
 echo "Allowed root command: $WRAPPER <40-char-git-sha>"
 echo "Arbitrary passwordless sudo was NOT granted."
 echo "Manual approval and external-signature requirements remain enabled."
+
+if [[ "${ARM_NOW:-0}" == "1" ]]; then
+  TARGET_SHA="$(git -C "$RUNNER_CHECKOUT" rev-parse HEAD)"
+  echo "Applying governed LIVE policy to current runner checkout: $TARGET_SHA"
+  "$WRAPPER" "$TARGET_SHA"
+fi
