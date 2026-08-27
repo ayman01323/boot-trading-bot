@@ -138,10 +138,10 @@ jobs:
 
           echo '=== recent isolated learner errors ==='
           journalctl -u learnerbot-learn.service --since '-45 seconds' --no-pager -o cat \
-            | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409' || true
+            | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409|ModuleNotFoundError|ImportError|NameError' || true
           echo '=== recent MASTER menu errors ==='
           journalctl -u learnerbot.service --since '-45 seconds' --no-pager -o cat \
-            | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409' || true
+            | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409|ModuleNotFoundError|ImportError|NameError' || true
           ROOTSCRIPT
 
           sed -i "s#__SRC__#$SRC#g; s#__RESULT__#$RESULT#g" "$SCRIPT"
@@ -160,8 +160,13 @@ jobs:
           echo "elevation_unit=$NAME"
           sudo -n /usr/bin/systemctl link "$UNIT" 2>&1
           sudo -n /usr/bin/systemctl daemon-reload 2>&1
-          sudo -n /usr/bin/systemctl start "$NAME" 2>&1
-          cat "$RESULT"
+          START_RC=0
+          sudo -n /usr/bin/systemctl start "$NAME" 2>&1 || START_RC=$?
+          echo "elevated_start_rc=$START_RC"
+          cat "$RESULT" 2>/dev/null || true
+          if [[ "$START_RC" -ne 0 ]]; then
+            exit "$START_RC"
+          fi
 
           IR1="$(grep '^isolated_restarts_1=' "$RESULT" | tail -1 | cut -d= -f2)"
           IR2="$(grep '^isolated_restarts_2=' "$RESULT" | tail -1 | cut -d= -f2)"
