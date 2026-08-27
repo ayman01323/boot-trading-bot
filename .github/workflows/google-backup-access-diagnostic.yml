@@ -45,7 +45,12 @@ jobs:
           check_source systemd /etc/systemd/system
 
           echo '=== privilege routes ==='
-          if sudo -n true 2>/dev/null; then echo 'passwordless_sudo=yes'; else echo 'passwordless_sudo=no'; fi
+          if sudo -n true 2>/dev/null; then echo 'passwordless_sudo_all=yes'; else echo 'passwordless_sudo_all=no'; fi
+          echo "tar_path=$(command -v tar || true)"
+          if sudo -n /usr/bin/tar --version >/dev/null 2>&1; then echo 'sudo_tar_allowed=yes'; else echo 'sudo_tar_allowed=no'; fi
+          if sudo -n /usr/bin/test -d /root/SiRisky 2>/dev/null; then echo 'sudo_test_sirisky_allowed=yes'; else echo 'sudo_test_sirisky_allowed=no'; fi
+          if sudo -n /usr/bin/test -d /root/multichain-learning-bot-v2.2-fast-direct-market 2>/dev/null; then echo 'sudo_test_production_allowed=yes'; else echo 'sudo_test_production_allowed=no'; fi
+          if sudo -n /usr/bin/stat /root/SiRisky >/dev/null 2>&1; then echo 'sudo_stat_allowed=yes'; else echo 'sudo_stat_allowed=no'; fi
           if command -v docker >/dev/null 2>&1; then
             echo 'docker_installed=yes'
             if docker info >/dev/null 2>&1; then echo 'docker_access=yes'; else echo 'docker_access=no'; fi
