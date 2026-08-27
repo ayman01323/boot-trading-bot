@@ -18,7 +18,8 @@ jobs:
       - name: Install learner-only wallet and LIVE controls on Google
         shell: bash
         env:
-          SOURCE_SHA: e32cee435385bb37f3d34cef983d71b4201edc00
+          MENU_SHA: e32cee435385bb37f3d34cef983d71b4201edc00
+          RUNTIME_SHA: 894c5597c5cf0c695f1f75df39f26ebe64c2dce9
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = 'botgoogle'
@@ -27,73 +28,47 @@ jobs:
 
           WORK="$HOME/.cache/learner-only-key-menu-${GITHUB_RUN_ID}"
           mkdir -p "$WORK"
-          SRC="$WORK/telegram_google_learner_launcher_patch.py"
-          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${SOURCE_SHA}/learnerbot/telegram_google_learner_launcher_patch.py" -o "$SRC"
-          grep -q 'START LEARNER TRADING' "$SRC"
-          grep -q 'learner_new_entries_enabled' "$SRC"
-          grep -q 'learnerbot-learn.service' "$SRC"
-          python3 -m py_compile "$SRC"
+          MENU_SRC="$WORK/telegram_google_learner_launcher_patch.py"
+          LIVE_SRC="$WORK/solana_live_patch.py"
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${MENU_SHA}/learnerbot/telegram_google_learner_launcher_patch.py" -o "$MENU_SRC"
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${RUNTIME_SHA}/learnerbot/solana_live_patch.py" -o "$LIVE_SRC"
+          grep -q 'START LEARNER TRADING' "$MENU_SRC"
+          grep -q 'learner_new_entries_enabled' "$LIVE_SRC"
+          python3 -m py_compile "$MENU_SRC" "$LIVE_SRC"
 
           SCRIPT="$WORK/install.sh"
           RESULT="$WORK/result.txt"
           UNIT="$WORK/learner-only-key-menu-${GITHUB_RUN_ID}.service"
-
           cat > "$SCRIPT" <<'ROOTSCRIPT'
           #!/usr/bin/env bash
           set -Eeuo pipefail
           ROOT=/home/ayman01323/BOOT/testingbots/learn
           PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
-          SRC=__SRC__
+          MENU_SRC=__MENU_SRC__
+          LIVE_SRC=__LIVE_SRC__
           RESULT=__RESULT__
+          RUNTIME_SHA=__RUNTIME_SHA__
           exec > >(tee "$RESULT") 2>&1
           test -d "$ROOT/learnerbot"
           test -x "$PROD/.venv/bin/python"
 
-          # Stop any previous failed isolated test before changing it.
           systemctl stop learnerbot-learn.service 2>/dev/null || true
 
+          # MASTER Telegram presentation/control code.
           for target in \
-            /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py \
+            "$PROD/learnerbot/telegram_google_learner_launcher_patch.py" \
             /home/ayman01323/ClaudeServer/TestBots/boot-trading-bot/learnerbot/telegram_google_learner_launcher_patch.py; do
             if [[ -d "$(dirname "$target")" ]]; then
-              install -m 0644 "$SRC" "$target"
-              grep -q 'START LEARNER TRADING' "$target"
+              install -m 0644 "$MENU_SRC" "$target"
             fi
           done
           "$PROD/.venv/bin/python" -m py_compile "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
 
-          python3 - "$ROOT/learnerbot/solana_live_patch.py" <<'PY'
-          from pathlib import Path
-          import re, sys
-          p = Path(sys.argv[1])
-          s = p.read_text(encoding='utf-8')
-          marker = 'learner_new_entries_enabled'
-          if marker not in s:
-              pat = re.compile(r'(?m)^(\s*)if event\[(?:"action"|\'action\')\] == (?:"BUY"|\'BUY\'):\s*$')
-              m = pat.search(s)
-              if not m:
-                  raise SystemExit('REFUSED: expected Solana LIVE BUY branch not found')
-              indent = m.group(1)
-              insertion = (
-                  m.group(0) + '\n'
-                  + indent + '    if not user_bool(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "learner_new_entries_enabled", False):\n'
-                  + indent + '        actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LEARNER new entries OFF; exit monitoring remains active"})\n'
-                  + indent + '        continue'
-              )
-              s = s[:m.start()] + insertion + s[m.end():]
-              if not re.search(r'from \.user_registry import[^\n]*\buser_bool\b', s):
-                  simple = 'from .user_registry import all_users, set_user_setting, user_setting'
-                  if simple in s:
-                      s = s.replace(simple, 'from .user_registry import all_users, set_user_setting, user_bool, user_setting', 1)
-                  else:
-                      raise SystemExit('REFUSED: user_bool import form not recognised')
-              p.write_text(s, encoding='utf-8')
-              print('learner_entry_gate=APPLIED')
-          else:
-              print('learner_entry_gate=ALREADY_APPLIED')
-          PY
+          # Exact committed learner LIVE source: no uncommitted runtime patching.
+          install -m 0644 "$LIVE_SRC" "$ROOT/learnerbot/solana_live_patch.py"
           grep -q 'learner_new_entries_enabled' "$ROOT/learnerbot/solana_live_patch.py"
           "$PROD/.venv/bin/python" -m py_compile "$ROOT/learnerbot/solana_live_patch.py"
+          echo "learner_runtime_provenance=$RUNTIME_SHA"
 
           cat > /etc/systemd/system/learnerbot-learn.service <<SERVICE
           [Unit]
@@ -111,6 +86,7 @@ jobs:
           Environment=DATA_DIR=$ROOT/data
           Environment=TELEGRAM_BOT_TOKEN=
           Environment=TELEGRAM_CHAT_IDS=
+          Environment=BOOT_GIT_SHA=$RUNTIME_SHA
           ExecStart=$PROD/.venv/bin/python -m learnerbot run --sleep 30
           Restart=on-failure
           RestartSec=5
@@ -123,7 +99,7 @@ jobs:
           systemctl daemon-reload
           systemctl enable learnerbot-learn.service >/dev/null
           systemctl restart learnerbot-learn.service
-          sleep 10
+          sleep 12
           IR1=$(systemctl show learnerbot-learn.service -p NRestarts --value)
           STATE1=$(systemctl is-active learnerbot-learn.service || true)
           sleep 8
@@ -163,7 +139,7 @@ jobs:
           echo 'master_menu_stable=YES'
           ROOTSCRIPT
 
-          sed -i "s#__SRC__#$SRC#g; s#__RESULT__#$RESULT#g" "$SCRIPT"
+          sed -i "s#__MENU_SRC__#$MENU_SRC#g; s#__LIVE_SRC__#$LIVE_SRC#g; s#__RESULT__#$RESULT#g; s#__RUNTIME_SHA__#$RUNTIME_SHA#g" "$SCRIPT"
           chmod 755 "$SCRIPT"
           cat > "$UNIT" <<EOF
           [Unit]
@@ -176,7 +152,6 @@ jobs:
           chmod 644 "$UNIT"
           NAME="$(basename "$UNIT")"
 
-          echo "elevation_unit=$NAME"
           sudo -n /usr/bin/systemctl link "$UNIT" 2>&1
           sudo -n /usr/bin/systemctl daemon-reload 2>&1
           START_RC=0
@@ -188,6 +163,7 @@ jobs:
           fi
           grep -q '^isolated_runtime_stable=YES$' "$RESULT"
           grep -q '^master_menu_stable=YES$' "$RESULT"
+          grep -q "^learner_runtime_provenance=$RUNTIME_SHA$" "$RESULT"
 
           sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
           rm -f "$UNIT" "$SCRIPT" "$RESULT"
