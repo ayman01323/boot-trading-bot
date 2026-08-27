@@ -14,9 +14,24 @@ Target deployment directory:
 - LIVE execution is intentionally absent from this MVP. `run` refuses to start unless `--paper` is supplied.
 - No private key is needed for PAPER mode.
 
+## Grok research layer
+
+The bot now includes a bounded Grok research/advisory layer:
+
+- `grok_settings.py` — Grok-authored Pydantic research settings and validation.
+- `grok_strategy.py` — deterministic research scoring based on Grok's earlier draft, corrected and integrated by GPT after Grok declined the final scorer rewrite.
+- `research_adapter.py` — maps the existing host snapshot/risk model into the Grok research interface without changing canonical asset authority.
+- `docs/GROK_FLOW.md` — Grok-authored research-flow documentation with unit/interface corrections made during integration.
+
+The research layer outputs `QUALIFY` or `REJECT`, confidence `[0,1]`, modeled cost/net edge, feature scores and explicit reasons. It has no wallet, signer, broadcast, order-placement, discovery or live-execution capability.
+
+`run --paper` uses the research layer as a **pre-entry gate by default** for enabled allow-listed assets. The host still owns allow-list checks, breakers, sizing, position state, PAPER fills and exits. `--no-research-gate` is provided only for controlled comparison experiments.
+
 ## Strategy hypothesis
 
 Entry requires a fresh executable quote, reverse sell path, sufficient liquidity/volume, bounded spread/impact, positive 15-minute trend, 5-minute momentum, no sharp 1-minute reversal, and enough expected edge after conservative round-trip costs.
+
+The Grok research gate additionally requires adequate composite quality across freshness, liquidity, volume, spread, impact, 1m/5m/15m momentum and net-edge factors before the host PAPER entry engine is allowed to continue.
 
 Position size comes from account equity and volatility-adjusted stop distance, then is capped by gross exposure, chain exposure and liquidity participation.
 
@@ -28,6 +43,7 @@ All numeric values are PAPER hypotheses, not proven profitability claims.
 
 | Control | Default |
 |---|---:|
+| Research confidence | 0.60 |
 | Risk per trade | 0.35% equity |
 | Max gross position | 2.0% equity |
 | Max positions | 2 |
@@ -61,8 +77,15 @@ python3 -m venv .venv
 grok-known-assets-bot --config config.json check
 grok-known-assets-bot --config config.json list-assets
 grok-known-assets-bot --config config.json evaluate --snapshot sample_snapshots/sol_entry.json --equity 10000
-grok-known-assets-bot --config config.json run --paper --snapshots sample_snapshots --equity 10000
+grok-known-assets-bot --config config.json research --snapshot sample_snapshots/sol_entry.json --min-confidence 0.60
+grok-known-assets-bot --config config.json run --paper --snapshots sample_snapshots --equity 10000 --research-min-confidence 0.60
 grok-known-assets-bot --config config.json report
+```
+
+For a controlled A/B PAPER comparison only:
+
+```bash
+grok-known-assets-bot --config config.json run --paper --snapshots sample_snapshots --equity 10000 --no-research-gate
 ```
 
 ## Meme-token allow-list
