@@ -65,12 +65,28 @@ jobs:
             --exclude='DEPLOYED_CODE_REF.txt' \
             "$tmp/repo/" "$target/"
 
+          # The simplified Telegram presentation must exist ONLY in the isolated
+          # Google learner. Activate it at the very end of the patch chain here,
+          # rather than changing production/main startup composition.
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          target = Path(os.environ['TARGET'])
+          p = target/'learnerbot'/'final_runtime_integrity_patch.py'
+          marker = 'from . import telegram_learner_only_menu_patch  # noqa: E402,F401'
+          text = p.read_text(encoding='utf-8')
+          if marker not in text:
+              text = text.rstrip() + '\n\n# Isolated Google learner presentation only.\n' + marker + '\n'
+              p.write_text(text, encoding='utf-8')
+          PY
+
           cat > "$target/DEPLOYED_CODE_REF.txt" <<EOF
           purpose=isolated_aug17_strategy_canary
           source_branch=fix/solana-aug17-canary-restore
           source_commit=$source_sha
           historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e
           target=/home/ayman01323/BOOT/testingbots/learn
+          learner_only_telegram_menu=YES
           production_service_started_or_restarted=NO
           wallet_runtime_data_preserved=YES
           EOF
@@ -80,6 +96,8 @@ jobs:
           test -f "$target/learnerbot/solana_live_patch.py"
           test -f "$target/learnerbot/solana_liquidity_stuck_nonblocking_patch.py"
           test -f "$target/learnerbot/solana_stuck_liquidity_safe_slice_patch.py"
+          test -f "$target/learnerbot/telegram_learner_only_menu_patch.py"
+          grep -Fq 'from . import telegram_learner_only_menu_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
 
           (cd "$target" && python3 -m compileall -q learnerbot scripts)
 
@@ -93,6 +111,7 @@ jobs:
           echo "installed_path=$target"
           echo "source_commit=$source_sha"
           echo "historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e"
+          echo "learner_only_telegram_menu=YES"
           echo "wallet_runtime_data_preserved=YES"
           echo "production_service_started_or_restarted=NO"
           echo "live_execution_started=NO"
@@ -114,4 +133,5 @@ jobs:
                       print('public_wallet='+str(r.get('address') or ''))
                       break
           print('private_key_printed=NO')
+          print('telegram_menu=LEARNER_ONLY')
           PY
