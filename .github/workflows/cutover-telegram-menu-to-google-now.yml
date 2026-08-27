@@ -1,0 +1,83 @@
+name: Cut Over Telegram Menu To Google Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/cutover-telegram-menu-to-google-now.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stop-old-vps:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Stop old production Telegram poller
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "old_host=$(hostname)"
+          sudo -n -l /usr/local/sbin/quiesce-namecheap-for-google-cutover >/dev/null
+          sudo -n -l /usr/local/sbin/verify-namecheap-cutover-stopped >/dev/null
+          sudo -n /usr/local/sbin/quiesce-namecheap-for-google-cutover
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          test "$(systemctl is-active learnerbot.service 2>/dev/null || true)" != active
+          echo 'old_vps_telegram_poller=STOPPED'
+
+  activate-google-menu:
+    needs: stop-old-vps
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 6
+    steps:
+      - name: Restart Google owner and verify permanent learner main-menu button
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          test -f "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
+          grep -q '🧠 Learner Bot — Google Test' "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
+          grep -q 'telegram_google_learner_launcher_patch' "$PROD/learnerbot/__main__.py"
+
+          WORK="$HOME/.cache/google-menu-owner-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/restart.sh"
+          OUT="$WORK/out.txt"
+          UNIT="$WORK/google-menu-owner-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          exec > >(tee __OUT__) 2>&1
+          systemctl disable --now learnerbot-learn.service >/dev/null 2>&1 || true
+          systemctl restart learnerbot.service
+          sleep 12
+          echo "google_learnerbot=$(systemctl is-active learnerbot.service || true)"
+          echo "google_restarts=$(systemctl show learnerbot.service -p NRestarts --value)"
+          if journalctl -u learnerbot.service --since '-10 seconds' --no-pager -o cat | grep -q 'HTTP 409'; then
+            echo 'telegram_single_owner=NO'
+            exit 44
+          fi
+          echo 'telegram_single_owner=YES'
+          echo 'google_master_menu_owner=YES'
+          ROOTSCRIPT
+          sed -i "s#__OUT__#$OUT#g" "$SCRIPT"
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Restart Google Telegram main menu owner
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$(basename "$UNIT")"
+          cat "$OUT"
+          grep -q '^google_learnerbot=active$' "$OUT"
+          grep -q '^telegram_single_owner=YES$' "$OUT"
+          grep -q '^google_master_menu_owner=YES$' "$OUT"
+          echo 'learner_main_menu_button=READY'
