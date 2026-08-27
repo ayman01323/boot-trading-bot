@@ -1,4 +1,4 @@
-# one-shot historical public-ledger audit 2026-08-27
+# one-shot inspection trigger 2026-08-27
 name: Inspect Testing Learner Settings
 
 on:
@@ -14,91 +14,81 @@ permissions:
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Audit Aug 17-18 original Solana wallet from public ledger
+      - name: Inspect isolated learner safely
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          echo "TARGET=$target"
+          echo "--- snapshot ---"
+          cat "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          echo "--- runtime paths ---"
+          for p in "$target/CSVbot" "$target/data" "$target/CSVbot/solana_settings.csv" "$target/CSVbot/auto/solana_user_wallets.csv"; do
+            if [[ -e "$p" ]]; then echo "EXISTS $p"; else echo "MISSING $p"; fi
+          done
+          echo "--- source defaults ---"
           python3 - <<'PY'
-          import requests,time,datetime
-          from collections import defaultdict
-          RPC='https://solana-rpc.publicnode.com'
-          WALLET='6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr'
-          START=1786982400
-          END=1787097600
-          WSOL='So11111111111111111111111111111111111111112'
-          s=requests.Session(); seq=0
-          def rpc(method,params,retries=6):
-              global seq
-              seq+=1
-              for i in range(retries):
-                  try:
-                      r=s.post(RPC,json={'jsonrpc':'2.0','id':seq,'method':method,'params':params},timeout=25)
-                      if r.status_code==429:
-                          time.sleep(min(4,.5+i)); continue
-                      r.raise_for_status(); j=r.json()
-                      if j.get('error'): raise RuntimeError(str(j['error']))
-                      time.sleep(.04); return j.get('result')
-                  except Exception:
-                      if i==retries-1: raise
-                      time.sleep(min(4,.5+i))
-          sigs=[]; before=None
-          while True:
-              cfg={'limit':1000}
-              if before: cfg['before']=before
-              batch=rpc('getSignaturesForAddress',[WALLET,cfg]) or []
-              if not batch: break
-              sigs.extend(batch)
-              if min(int(x.get('blockTime') or 0) for x in batch)<START or len(batch)<1000: break
-              before=batch[-1]['signature']
-          sigs=[x for x in sigs if START<=int(x.get('blockTime') or 0)<END and x.get('err') is None]
-          sigs.sort(key=lambda x:int(x.get('blockTime') or 0))
-          print('AUDIT_WALLET='+WALLET); print('SUCCESSFUL_TX_COUNT='+str(len(sigs)))
-          rows=[]
-          for x in sigs:
-              sig=x['signature']; bt=int(x.get('blockTime') or 0)
-              tx=rpc('getTransaction',[sig,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}])
-              if not tx: continue
-              meta=tx.get('meta') or {}; msg=((tx.get('transaction') or {}).get('message') or {})
-              keys=msg.get('accountKeys') or []; pubs=[str(k.get('pubkey') if isinstance(k,dict) else k) for k in keys]
-              if WALLET not in pubs: continue
-              idx=pubs.index(WALLET); pre=(meta.get('preBalances') or [])[idx]; post=(meta.get('postBalances') or [])[idx]
-              pre_tok=defaultdict(int); post_tok=defaultdict(int)
-              for name,target in [('preTokenBalances',pre_tok),('postTokenBalances',post_tok)]:
-                  for b in meta.get(name) or []:
-                      if str(b.get('owner') or '')!=WALLET: continue
-                      target[str(b.get('mint') or '')]+=int(((b.get('uiTokenAmount') or {}).get('amount') or 0))
-              changes={m:post_tok[m]-pre_tok[m] for m in set(pre_tok)|set(post_tok) if post_tok[m]-pre_tok[m] and m!=WSOL}
-              rows.append({'bt':bt,'sig':sig,'pre':pre/1e9,'post':post/1e9,'dsol':(post-pre)/1e9,'fee':int(meta.get('fee') or 0)/1e9,'tokens':changes})
-          if not rows: raise SystemExit('NO_LEDGER_ROWS')
-          print('FIRST_PRE_BALANCE_SOL={:.9f}'.format(rows[0]['pre'])); print('FIRST_POST_BALANCE_SOL={:.9f}'.format(rows[0]['post']))
-          print('PEAK_BALANCE_SOL={:.9f}'.format(max(max(r['pre'],r['post']) for r in rows)))
-          print('END_PERIOD_BALANCE_SOL={:.9f}'.format(rows[-1]['post'])); print('TOTAL_TX_FEES_SOL={:.9f}'.format(sum(r['fee'] for r in rows)))
-          bymint=defaultdict(list)
-          for r in rows:
-              for mint,raw in r['tokens'].items(): bymint[mint].append((r,raw))
-          roundtrips=[]
-          for mint,evs in bymint.items():
-              pos=0; cycle=[]
-              for r,raw in evs:
-                  if pos==0 and raw<0: continue
-                  pos+=raw; cycle.append((r,raw))
-                  if pos==0 and cycle:
-                      roundtrips.append((cycle[0][0]['bt'],mint,sum(z['dsol'] for z,_ in cycle),sum(raw>0 for _,raw in cycle),sum(raw<0 for _,raw in cycle),cycle[0][0]['sig'],cycle[-1][0]['sig'])); cycle=[]
-          roundtrips.sort(); wins=sum(x[2]>0 for x in roundtrips); losses=sum(x[2]<0 for x in roundtrips)
-          print('ROUNDTRIP_COUNT='+str(len(roundtrips))); print('ROUNDTRIP_WINS='+str(wins)); print('ROUNDTRIP_LOSSES='+str(losses)); print('ROUNDTRIP_NET_WALLET_IMPACT_SOL={:+.9f}'.format(sum(x[2] for x in roundtrips)))
-          for bt,mint,pnl,buys,sells,fs,ls in roundtrips:
-              print('ROUNDTRIP time={} mint={} pnl_sol={:+.9f} buys={} sells={} first_sig={} last_sig={}'.format(datetime.datetime.fromtimestamp(bt,datetime.timezone.utc).isoformat(),mint,pnl,buys,sells,fs,ls))
-          other=[r for r in rows if not r['tokens'] and abs(r['dsol'])>=0.00005]
-          print('MATERIAL_NON_TOKEN_TX_COUNT='+str(len(other))); print('MATERIAL_NON_TOKEN_NET_SOL={:+.9f}'.format(sum(r['dsol'] for r in other)))
-          for r in other:
-              print('OTHER time={} delta_sol={:+.9f} pre={:.9f} post={:.9f} fee={:.9f} sig={}'.format(datetime.datetime.fromtimestamp(r['bt'],datetime.timezone.utc).isoformat(),r['dsol'],r['pre'],r['post'],r['fee'],r['sig']))
-          print('LARGEST_DROPS')
-          for r in sorted(rows,key=lambda z:z['dsol'])[:25]:
-              toks=';'.join('{}:{}'.format(k,v) for k,v in r['tokens'].items()) or 'NONE'
-              print('DROP time={} delta_sol={:+.9f} pre={:.9f} post={:.9f} fee={:.9f} tokens={} sig={}'.format(datetime.datetime.fromtimestamp(r['bt'],datetime.timezone.utc).isoformat(),r['dsol'],r['pre'],r['post'],r['fee'],toks,r['sig']))
-          print('PUBLIC_LEDGER_ONLY=true'); print('SECRET_VALUES_PRINTED=NO')
+          import ast, pathlib, re
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          src=(root/'learnerbot/solana_sibot.py').read_text(encoding='utf-8')
+          tree=ast.parse(src)
+          defaults={}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id=='DEFAULTS' for t in node.targets):
+                  defaults=ast.literal_eval(node.value)
+                  break
+          live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
+          m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)', live, re.S)
+          if m:
+              defaults.update(ast.literal_eval('{'+m.group(1)+'}'))
+          keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
+          for k in keys:
+              if k in defaults: print(f'{k}={defaults[k][0]}')
           PY
+          echo "--- runtime solana settings if present ---"
+          if [[ -f "$target/CSVbot/solana_settings.csv" ]]; then
+            python3 - <<'PY'
+          import csv, pathlib
+          p=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          allowed={'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds'}
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  if r.get('setting') in allowed: print(f"{r['setting']}={r.get('value','')}")
+          PY
+          else
+            echo "NO_RUNTIME_SETTINGS_FILE"
+          fi
+          echo "--- user/wallet readiness ---"
+          python3 - <<'PY'
+          import csv, pathlib
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
+          user_files=[root/'users.csv',root/'auto/users.csv',root/'user_registry.csv',root/'auto/user_registry.csv']
+          users=[]
+          for p in user_files:
+              if p.exists():
+                  try:
+                      with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+                      print(f'USER_FILE={p} ROWS={len(rows)}')
+                      users.extend(rows)
+                  except Exception as e: print(f'USER_FILE_ERROR={p}:{type(e).__name__}')
+          tids=[]
+          for r in users:
+              tid=str(r.get('telegram_id') or '').strip()
+              if tid and tid not in tids: tids.append(tid)
+          print('UNIQUE_TELEGRAM_USERS='+str(len(tids)))
+          wp=root/'auto/solana_user_wallets.csv'
+          if wp.exists():
+              with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+              print('SOLANA_WALLETS='+str(len(rows)))
+              for r in rows:
+                  print('WALLET address='+str(r.get('address') or '')+' signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
+          else:
+              print('SOLANA_WALLETS=0')
+          PY
+          echo "live_execution_started=NO"
+          echo "production_service_restart=NO"
