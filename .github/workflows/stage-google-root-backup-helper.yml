@@ -16,7 +16,7 @@ concurrency:
 jobs:
   stage:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 180
     steps:
       - name: Stage reviewed helper files under BOOT
         shell: bash
@@ -25,7 +25,6 @@ jobs:
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
 
-          # Remove the earlier temporary home-level staging area.
           rm -rf /home/ayman01323/.google-backup-helper
 
           STAGE=/home/ayman01323/BOOT/.backup-helper
@@ -46,5 +45,39 @@ jobs:
 
           echo "staged=$STAGE"
           find "$STAGE" -maxdepth 2 -type f -printf '%m %u:%g %p\n'
-          echo 'Install once with:'
-          echo 'sudo bash /home/ayman01323/BOOT/.backup-helper/scripts/install-google-root-backup-helper /home/ayman01323/BOOT/.backup-helper'
+
+      - name: Verify installed restricted helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x /usr/local/sbin/google-root-backup
+          cmp -s /home/ayman01323/BOOT/.backup-helper/scripts/google-root-backup /usr/local/sbin/google-root-backup || {
+            echo 'ERROR: installed helper does not match staged reviewed helper.' >&2
+            exit 1
+          }
+          sudo -n -l /usr/local/sbin/google-root-backup >/dev/null
+          echo 'Installed helper and restricted sudo rule verified.'
+
+      - name: Run protected backup now
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/google-root-backup
+
+      - name: Verify today protected backup
+        shell: bash
+        env:
+          TZ: Europe/London
+        run: |
+          set -euo pipefail
+          DAY_DIR="/home/ayman01323/GoogleServerBuckup/$(date +%Y-%m-%d)"
+          cd "$DAY_DIR"
+          test -s claude-server.tar.gz
+          test -s production-bot.tar.gz
+          test -s sirisky.tar.gz
+          test -s google-protected-folders-manifest.txt
+          sha256sum -c claude-server.tar.gz.sha256
+          sha256sum -c production-bot.tar.gz.sha256
+          sha256sum -c sirisky.tar.gz.sha256
+          echo "verified_day_dir=$DAY_DIR"
+          ls -lh claude-server.tar.gz production-bot.tar.gz sirisky.tar.gz google-protected-folders-manifest.txt
