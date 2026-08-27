@@ -1,0 +1,169 @@
+name: SiRisky HR-CWH Governed Live Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-hrcwh-deploy.yml'
+      - 'SiRisky/overrides/sirisky/engine.py'
+      - 'SiRisky/overrides/sirisky/stage3_risk.py'
+      - 'SiRisky/overrides/sirisky/stage6_monitor.py'
+      - 'SiRisky/overrides/sirisky/stage8_review.py'
+      - 'SiRisky/overrides/tests/test_hrcwh_policy.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sirisky-hrcwh-governed-live
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Verify Google runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n true
+
+      - name: Check out approved main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Deploy HR-CWH overrides with automatic rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/root/SiRisky
+          SRC="$GITHUB_WORKSPACE/SiRisky/overrides"
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP="$ROOT/data/hrcwh-code-backup-$TS"
+          sudo -n mkdir -p "$BACKUP"
+
+          for f in engine.py stage3_risk.py stage6_monitor.py stage8_review.py; do
+            sudo -n cp -a "$ROOT/sirisky/$f" "$BACKUP/$f"
+          done
+          sudo -n cp -a "$ROOT/CSV/stage3_risk.csv" "$BACKUP/stage3_risk.csv"
+          sudo -n cp -a "$ROOT/CSV/runtime.csv" "$BACKUP/runtime.csv"
+
+          rollback() {
+            rc=$?
+            if [[ $rc -ne 0 ]]; then
+              echo "HR-CWH deploy failed; restoring $BACKUP" >&2
+              for f in engine.py stage3_risk.py stage6_monitor.py stage8_review.py; do
+                sudo -n cp -a "$BACKUP/$f" "$ROOT/sirisky/$f"
+              done
+              sudo -n cp -a "$BACKUP/stage3_risk.csv" "$ROOT/CSV/stage3_risk.csv"
+              sudo -n cp -a "$BACKUP/runtime.csv" "$ROOT/CSV/runtime.csv"
+              sudo -n systemctl restart sirisky.service || true
+            fi
+            exit $rc
+          }
+          trap rollback EXIT
+
+          for f in engine.py stage3_risk.py stage6_monitor.py stage8_review.py; do
+            sudo -n install -o root -g root -m 0644 "$SRC/sirisky/$f" "$ROOT/sirisky/$f"
+          done
+
+          # Add new HR-CWH tunables without deleting existing Stage-3 controls.
+          sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+
+          root=Path(os.environ['ROOT'])
+          p=root/'CSV'/'stage3_risk.csv'
+          with p.open(newline='',encoding='utf-8') as fh:
+              rows=list(csv.DictReader(fh))
+          by={str(r.get('setting') or ''):r for r in rows}
+          additions={
+              'fast_take_profit_floor_pct':('2.0','HR-CWH executable-net profit floor; owner approved 2-5% short horizon'),
+              'fast_take_profit_cap_pct':('5.0','HR-CWH executable-net profit cap'),
+              'fast_stop_net_pct':('3.0','Fast executable adverse-move exit threshold'),
+              'warm_reversal_pct':('1.5','Exit after profitable peak reverses by this executable percentage'),
+              'hot_reversal_pct':('3.0','Immediate HOT reversal exit threshold'),
+              'fast_max_hold_cap_seconds':('300','Hard cap; strategy row may remain shorter'),
+              'lp_recent_sell_sim_max_age_sec':('300','Maximum age of explicit sell evidence for LP conditional advisory'),
+          }
+          for key,(value,notes) in additions.items():
+              if key not in by:
+                  row={'setting':key,'value':value,'notes':notes}
+                  rows.append(row); by[key]=row
+          tmp=p.with_suffix('.csv.tmp')
+          with tmp.open('w',newline='',encoding='utf-8') as fh:
+              w=csv.DictWriter(fh,fieldnames=['setting','value','notes'])
+              w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+
+          # Owner requested deploy + go LIVE. Preserve the existing governed
+          # manual-signature architecture: evaluation is LIVE, autonomous
+          # broadcast remains locked OFF.
+          rp=root/'CSV'/'runtime.csv'
+          with rp.open(newline='',encoding='utf-8') as fh:
+              rrows=list(csv.DictReader(fh))
+          rby={str(r.get('setting') or ''):r for r in rrows}
+          wanted={
+              'live_enabled':'1',
+              'broadcast_enabled':'0',
+              'auto_discovery_enabled':'1',
+              'auto_promote_to_selected':'1',
+              'manual_approval_enabled':'1',
+              'armed_manual_approval':'1',
+              'poll_seconds':'5',
+          }
+          for key,value in wanted.items():
+              if key in rby:
+                  rby[key]['value']=value
+              else:
+                  row={'setting':key,'value':value,'notes':'HR-CWH governed LIVE'}
+                  rrows.append(row); rby[key]=row
+          tmp=rp.with_suffix('.csv.tmp')
+          with tmp.open('w',newline='',encoding='utf-8') as fh:
+              w=csv.DictWriter(fh,fieldnames=['setting','value','notes'])
+              w.writeheader(); w.writerows(rrows)
+          tmp.replace(rp)
+          PY
+
+          sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python -m compileall -q sirisky"
+          sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python run.py selftest"
+          sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python '$SRC/tests/test_hrcwh_policy.py'"
+
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          sudo -n systemctl is-active --quiet sirisky.service
+          sudo -n systemctl --no-pager --full status sirisky.service | head -40
+
+          echo '=== GOVERNED LIVE FLAGS ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|armed_manual_approval|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' "$ROOT/CSV/runtime.csv"
+          echo '=== HR-CWH RISK TUNABLES ==='
+          sudo -n grep -E '^(fast_take_profit_floor_pct|fast_take_profit_cap_pct|fast_stop_net_pct|warm_reversal_pct|hot_reversal_pct|fast_max_hold_cap_seconds|lp_recent_sell_sim_max_age_sec),' "$ROOT/CSV/stage3_risk.csv"
+          echo "rollback_snapshot=$BACKUP"
+          echo 'governed_live_monitoring=YES'
+          echo 'autonomous_broadcast=NO'
+          echo 'final_signature=MANUAL_EXTERNAL'
+
+          trap - EXIT
+
+      - name: Deployment summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## SiRisky HR-CWH governed LIVE deployment'
+            echo
+            echo '- Stage 3: HARD/ADVISORY HR-CWH policy'
+            echo '- Stage 6: executable-net 2-5% fast-exit monitor'
+            echo '- Stage 8: realised HR-CWH telemetry'
+            echo '- Automatic rollback on test/deploy failure'
+            echo '- LIVE monitoring/evaluation: enabled after successful tests'
+            echo '- Autonomous broadcast: intentionally OFF'
+            echo '- Final transaction signature: manual/external'
+          } >> "$GITHUB_STEP_SUMMARY"
