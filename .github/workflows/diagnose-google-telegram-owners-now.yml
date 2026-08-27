@@ -1,0 +1,74 @@
+name: Diagnose Google Telegram Owners Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/diagnose-google-telegram-owners-now.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Identify Telegram-token process owners without printing secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          WORK="$HOME/.cache/tg-owner-diag-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/diag.py"
+          OUT="$WORK/out.txt"
+          UNIT="$WORK/tg-owner-diag-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<'PY'
+          import os, pathlib, subprocess
+          records=[]
+          token_groups={}
+          next_group=1
+          for p in pathlib.Path('/proc').iterdir():
+              if not p.name.isdigit():
+                  continue
+              try:
+                  raw=(p/'environ').read_bytes().split(b'\0')
+                  env={}
+                  for item in raw:
+                      if b'=' in item:
+                          k,v=item.split(b'=',1); env[k.decode(errors='ignore')]=v.decode(errors='ignore')
+                  token=env.get('TELEGRAM_BOT_TOKEN','')
+                  if not token:
+                      continue
+                  if token not in token_groups:
+                      token_groups[token]=next_group; next_group+=1
+                  cmd=(p/'cmdline').read_bytes().replace(b'\0',b' ').decode(errors='ignore').strip()
+                  cgroup=(p/'cgroup').read_text(errors='ignore').strip().replace('\n',' | ')
+                  records.append((int(p.name),token_groups[token],cmd,cgroup))
+              except Exception:
+                  pass
+          print(f'telegram_token_groups={len(token_groups)}')
+          for pid,g,cmd,cgroup in sorted(records):
+              safe=cmd.replace(os.environ.get('TELEGRAM_BOT_TOKEN',''),'REDACTED')
+              print(f'pid={pid} token_group={g} cmd={safe[:500]}')
+              print(f'cgroup={cgroup[:500]}')
+          for svc in ['learnerbot.service','learnerbot-learn.service','sirisky.service']:
+              r=subprocess.run(['systemctl','is-active',svc],capture_output=True,text=True)
+              print(f'{svc}={r.stdout.strip() or "unknown"}')
+          PY
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Diagnose Google Telegram process owners
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/bin/python3 $SCRIPT
+          StandardOutput=append:$OUT
+          StandardError=append:$OUT
+          EOF
+          chmod 644 "$UNIT"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$(basename "$UNIT")"
+          cat "$OUT"
