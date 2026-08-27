@@ -90,6 +90,16 @@ class MarketSnapshot:
         )
 
 
+def one_way_execution_cost_bps(snap: MarketSnapshot) -> float:
+    """Explicit route costs for one execution leg; spread is in bid/ask prices."""
+    return snap.fee_bps + snap.price_impact_bps + snap.slippage_bps
+
+
+def round_trip_execution_cost_bps(snap: MarketSnapshot) -> float:
+    """Entry-gate estimate in bps: spread plus two symmetric route-cost legs."""
+    return snap.spread_bps + 2.0 * one_way_execution_cost_bps(snap)
+
+
 @dataclass
 class Position:
     asset_key: str
@@ -102,6 +112,7 @@ class Position:
     peak_net_pct: float = -999.0
     took_tp1: bool = False
     trade_id: str = ""
+    entry_execution_cost_bps: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -283,6 +294,7 @@ class StrategyEngine:
         self.journal = journal
         self.positions: dict[str, Position] = {}
         self.start_of_day_equity: float | None = None
+        self.start_of_day_key: str | None = None
 
     def _asset(self, key: str) -> Asset:
         asset = self.assets.get(key)
@@ -293,11 +305,16 @@ class StrategyEngine:
     def _day_start(self, now: float) -> float:
         return now - (now % 86400)
 
+    def _utc_day_key(self, now: float) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime(now))
+
     def breakers_ok(self, equity: float, now: float) -> tuple[bool, str]:
         if self.risk.kill_switch:
             return False, "KILL_SWITCH"
-        if self.start_of_day_equity is None:
+        day_key = self._utc_day_key(now)
+        if self.start_of_day_equity is None or self.start_of_day_key != day_key:
             self.start_of_day_equity = self.journal.day_start_equity(now, equity)
+            self.start_of_day_key = day_key
         realised = self.journal.realised_pnl_today(self._day_start(now))
         loss_limit = -self.start_of_day_equity * self.risk.daily_realised_loss_pct / 100.0
         if realised <= loss_limit:
@@ -330,12 +347,7 @@ class StrategyEngine:
         return min(self.risk.stop_max_pct, max(self.risk.stop_min_pct, 1.5 * abs(snap.vol_5m_pct)))
 
     def _estimated_round_trip_cost_pct(self, snap: MarketSnapshot) -> float:
-        return (
-            snap.spread_bps
-            + 2.0 * snap.fee_bps
-            + 2.0 * snap.price_impact_bps
-            + 2.0 * snap.slippage_bps
-        ) / 100.0
+        return round_trip_execution_cost_bps(snap) / 100.0
 
     def _momentum_ok(self, snap: MarketSnapshot) -> tuple[bool, str]:
         if snap.ret_15m_pct <= 0:
@@ -417,6 +429,7 @@ class StrategyEngine:
         asset = self._asset(snap.asset_key)
         qty = decision.size_usd / snap.ask
         trade_id = uuid.uuid4().hex
+        entry_execution_cost_bps = one_way_execution_cost_bps(snap)
         p = Position(
             snap.asset_key,
             asset.chain,
@@ -426,6 +439,7 @@ class StrategyEngine:
             qty,
             decision.stop_pct,
             trade_id=trade_id,
+            entry_execution_cost_bps=entry_execution_cost_bps,
         )
         self.positions[p.asset_key] = p
         self.journal.event(
@@ -436,6 +450,7 @@ class StrategyEngine:
                 "entry_price": p.entry_price,
                 "quantity": qty,
                 "size_usd": decision.size_usd,
+                "entry_execution_cost_bps": entry_execution_cost_bps,
                 "paper": True,
             },
         )
@@ -443,7 +458,8 @@ class StrategyEngine:
 
     def net_return_pct(self, p: Position, snap: MarketSnapshot) -> float:
         gross = (snap.reverse_bid / p.entry_price - 1.0) * 100.0
-        return gross - (snap.fee_bps + snap.price_impact_bps + snap.slippage_bps) / 100.0
+        total_route_cost_bps = p.entry_execution_cost_bps + one_way_execution_cost_bps(snap)
+        return gross - total_route_cost_bps / 100.0
 
     def evaluate_exit(self, p: Position, snap: MarketSnapshot, now: float | None = None) -> Decision:
         now = float(now if now is not None else snap.ts)
@@ -483,8 +499,10 @@ class StrategyEngine:
         qty = p.remaining_quantity * frac
         proceeds = qty * max(0.0, snap.reverse_bid)
         cost_basis = qty * p.entry_price
-        exit_cost = proceeds * (snap.fee_bps + snap.price_impact_bps + snap.slippage_bps) / 10_000.0
-        pnl = proceeds - exit_cost - cost_basis
+        entry_cost = cost_basis * p.entry_execution_cost_bps / 10_000.0
+        exit_execution_cost_bps = one_way_execution_cost_bps(snap)
+        exit_cost = proceeds * exit_execution_cost_bps / 10_000.0
+        pnl = proceeds - cost_basis - entry_cost - exit_cost
         p.remaining_quantity -= qty
         if decision.reason == "TAKE_PROFIT_1":
             p.took_tp1 = True
@@ -499,6 +517,8 @@ class StrategyEngine:
                 "reason": decision.reason,
                 "quantity": qty,
                 "realised_pnl_usd": pnl,
+                "entry_cost_usd": entry_cost,
+                "exit_cost_usd": exit_cost,
                 "paper": True,
                 "remaining_quantity": max(0.0, p.remaining_quantity),
             },
