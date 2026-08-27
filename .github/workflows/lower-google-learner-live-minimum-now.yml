@@ -1,0 +1,137 @@
+name: Lower Google Learner LIVE Minimum Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/lower-google-learner-live-minimum-now.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Set learner-only 0.0005 SOL canary minimum
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          WORK="$HOME/.cache/learner-0005-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/apply.sh"
+          RESULT="$WORK/result.txt"
+          UNIT="$WORK/learner-0005-${GITHUB_RUN_ID}.service"
+
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          FILE="$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
+          RESULT=__RESULT__
+          exec > >(tee "$RESULT") 2>&1
+          test -f "$FILE"
+
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          original=s
+
+          s=s.replace(
+              'trade = max(Decimal("0.0005"), min(Decimal("0.005"), _dec(cfg.get("live_trade_sol"), "0.005")))',
+              'trade = Decimal("0.0005")',
+              1,
+          )
+          s=s.replace(
+              'reserve = max(Decimal("0.005"), _dec(cfg.get("live_min_sol_reserve"), "0.02"))',
+              'reserve = Decimal("0.005")',
+              1,
+          )
+          s=s.replace(
+              'required = trade + reserve',
+              'required = Decimal("0.0005")',
+              1,
+          )
+          s=s.replace(
+              'raise SolanaWalletError(f"Need at least {required:.6f} SOL for trade + reserve; wallet has {balance:.6f} SOL")',
+              'raise SolanaWalletError(f"Need at least {required:.6f} SOL; wallet has {balance:.6f} SOL")',
+              1,
+          )
+
+          marker='    # GOOGLE_LEARNER_0005_CANARY_V1\n'
+          anchor='def _prepare_live_user(tid) -> None:\n    _ensure_learner_user(tid)\n'
+          if marker not in s:
+              if anchor not in s:
+                  raise SystemExit('REFUSED: learner prepare-live anchor missing')
+              insert=(
+                  'def _prepare_live_user(tid) -> None:\n'
+                  '    _ensure_learner_user(tid)\n'
+                  + marker
+                  + '    set_user_setting(\n'
+                  + '        _LEARN_CSV, tid, "solana_live_trade_sol", "0.0005",\n'
+                  + '        chain_id=str(_sol.SOLANA_CHAIN_ID),\n'
+                  + '        description="Isolated learner canary trade size",\n'
+                  + '    )\n'
+                  + '    set_user_setting(\n'
+                  + '        _LEARN_CSV, tid, "solana_live_min_reserve_sol", "0.005",\n'
+                  + '        chain_id=str(_sol.SOLANA_CHAIN_ID),\n'
+                  + '        description="Isolated learner emergency reserve",\n'
+                  + '    )\n'
+              )
+              s=s.replace(anchor,insert,1)
+
+          required_checks=(
+              'required = Decimal("0.0005")',
+              'Need at least {required:.6f} SOL; wallet has',
+              'trade = Decimal("0.0005")',
+              '# GOOGLE_LEARNER_0005_CANARY_V1',
+          )
+          missing=[x for x in required_checks if x not in s]
+          if missing:
+              raise SystemExit('REFUSED: expected 0.0005 patch not fully applied')
+
+          if s != original:
+              p.write_text(s, encoding='utf-8')
+              print('learner_0005_patch=APPLIED')
+          else:
+              print('learner_0005_patch=ALREADY_PRESENT')
+          PY
+
+          "$PROD/.venv/bin/python" -m py_compile "$FILE"
+          systemctl restart learnerbot.service
+          sleep 6
+          test "$(systemctl is-active learnerbot.service)" = active
+          echo "learnerbot_state=active"
+          echo "learnerbot_restarts=$(systemctl show learnerbot.service -p NRestarts --value)"
+          grep -n 'required = Decimal("0.0005")' "$FILE" | head -1
+          grep -n 'Need at least {required:.6f} SOL; wallet has' "$FILE" | head -1
+          grep -n 'solana_live_trade_sol", "0.0005"' "$FILE" | head -1
+          echo 'learner_live_arm_minimum_sol=0.000500'
+          echo 'learner_trade_size_sol=0.000500'
+          echo 'learner_execution_reserve_sol=0.005000'
+          ROOTSCRIPT
+
+          sed -i "s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Set Google learner 0.0005 SOL canary minimum
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          RC=0
+          sudo -n /usr/bin/systemctl start "$NAME" || RC=$?
+          cat "$RESULT" 2>/dev/null || true
+          exit "$RC"
