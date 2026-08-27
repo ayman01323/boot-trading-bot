@@ -2,7 +2,7 @@ name: Inspect BOOT VPS sudo capabilities
 
 on:
   push:
-    branches: [main]
+    branches: [fix/solana-aug17-canary-restore]
     paths:
       - '.github/workflows/inspect-boot-vps-sudo.yml'
   workflow_dispatch:
@@ -22,14 +22,20 @@ jobs:
           echo '=== identity ==='
           id
           echo '=== sudo -n -l ==='
-          sudo -n -l
+          sudo -n -l || true
           echo '=== known wrappers ==='
           for p in \
             /usr/local/sbin/deploy-boot-trading-bot \
             /usr/local/sbin/status-boot-trading-bot \
             /usr/local/sbin/restart-boot-trading-bot \
+            /usr/local/sbin/check-boot-wallet \
             /usr/local/sbin/run-sibot-leader-gate-report \
             /usr/local/sbin/prepare-google-production-bot \
             /usr/local/sbin/verify-google-production-bot; do
             if [[ -e "$p" ]]; then ls -l "$p"; else echo "MISSING $p"; fi
           done
+          echo '=== repo permissions ==='
+          repo=/root/multichain-learning-bot-v2.2-fast-direct-market
+          stat -c '%A %U:%G %n' "$repo" "$repo/.git" "$repo/.git/config" 2>/dev/null || true
+          test -r "$repo/.git/config" && echo repo_readable=YES || echo repo_readable=NO
+          test -w "$repo/.git/config" && echo repo_writable=YES || echo repo_writable=NO
