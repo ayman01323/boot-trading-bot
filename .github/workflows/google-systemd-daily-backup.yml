@@ -1,5 +1,6 @@
 name: Google Systemd Daily Backup
 
+# Dedicated protected backup for the active systemd service definitions.
 on:
   # Run at both possible UTC equivalents of 03:00 Europe/London.
   # The job itself proceeds only when London local time is 03:00,
@@ -81,7 +82,6 @@ jobs:
           sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
           chmod 600 "$ARCHIVE"
 
-          # Verify archive can be read before publishing it.
           tar -tzf "$ARCHIVE" >/dev/null
           sha256sum "$ARCHIVE" > "$HASH"
           chmod 600 "$HASH"
@@ -97,7 +97,6 @@ jobs:
           EOF
           chmod 600 "$MANIFEST"
 
-          # Atomic-ish replacement for today's files after successful verification.
           mv -f "$ARCHIVE" "$DAY_DIR/systemd-system.tar.gz"
           mv -f "$HASH" "$DAY_DIR/systemd-system.tar.gz.sha256"
           mv -f "$MANIFEST" "$DAY_DIR/systemd-system-manifest.txt"
