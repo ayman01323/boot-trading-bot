@@ -1,4 +1,3 @@
-# Re-triggered 2026-08-27 to restore governed LIVE after SHADOW deployment.
 name: SiRisky HR-CWH Governed LIVE Armed
 
 on:
@@ -20,14 +19,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Verify Google runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
-          sudo -n true
-
       - name: Check out approved main
         uses: actions/checkout@v4
         with:
@@ -35,90 +26,51 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Arm governed LIVE mode with rollback
+      - name: Verify restricted governed-LIVE operation
         shell: bash
         run: |
           set -euo pipefail
-          ROOT=/root/SiRisky
-          TS="$(date -u +%Y%m%dT%H%M%SZ)"
-          BACKUP="$ROOT/data/live-armed-runtime-backup-$TS.csv"
-          sudo -n cp -a "$ROOT/CSV/runtime.csv" "$BACKUP"
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          if [[ ! -x /usr/local/sbin/sirisky-governed-live-arm ]]; then
+            echo 'ERROR: restricted SiRisky governed-LIVE sudo wrapper is not installed.' >&2
+            echo 'Install it once as root with scripts/install_sirisky_governed_live_ops.sh.' >&2
+            exit 2
+          fi
+          sudo -n -l /usr/local/sbin/sirisky-governed-live-arm >/dev/null
 
-          rollback() {
-            rc=$?
-            if [[ $rc -ne 0 ]]; then
-              echo "LIVE arm failed; restoring runtime" >&2
-              sudo -n cp -a "$BACKUP" "$ROOT/CSV/runtime.csv"
-              sudo -n systemctl restart sirisky.service || true
-            fi
-            exit $rc
-          }
-          trap rollback EXIT
+      - name: Arm governed LIVE through restricted root wrapper
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/sirisky-governed-live-arm "$GITHUB_SHA"
 
-          sudo -n env ROOT="$ROOT" python3 - <<'PY'
-          import csv, os
-          from pathlib import Path
-
-          root=Path(os.environ['ROOT'])
-          p=root/'CSV'/'runtime.csv'
-          with p.open(newline='',encoding='utf-8') as fh:
-              rows=list(csv.DictReader(fh))
-          by={str(r.get('setting') or ''):r for r in rows}
-          wanted={
-              'live_enabled':'1',
-              'broadcast_enabled':'1',
-              'auto_discovery_enabled':'1',
-              'auto_promote_to_selected':'1',
-              'manual_approval_enabled':'1',
-              'armed_manual_approval':'1',
-              'manual_approval_require_external_signature':'1',
-              'poll_seconds':'5',
-          }
-          for key,value in wanted.items():
-              if key in by:
-                  by[key]['value']=value
-              else:
-                  row={'setting':key,'value':value,'notes':'HR-CWH governed LIVE armed'}
-                  rows.append(row); by[key]=row
-          tmp=p.with_suffix('.csv.tmp')
-          with tmp.open('w',newline='',encoding='utf-8') as fh:
-              w=csv.DictWriter(fh,fieldnames=['setting','value','notes'])
-              w.writeheader(); w.writerows(rows)
-          tmp.replace(p)
-          PY
-
-          sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python -m compileall -q sirisky"
-          sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python run.py selftest"
-
-          sudo -n grep -q '^live_enabled,1,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^broadcast_enabled,1,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^manual_approval_enabled,1,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^armed_manual_approval,1,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^manual_approval_require_external_signature,1,' "$ROOT/CSV/runtime.csv"
-
-          sudo -n systemctl restart sirisky.service
-          sleep 3
-          sudo -n systemctl is-active --quiet sirisky.service
-
-          echo '=== GOVERNED LIVE ARMED FLAGS ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|armed_manual_approval|manual_approval_require_external_signature|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' "$ROOT/CSV/runtime.csv"
-          echo "rollback_snapshot=$BACKUP"
-          echo 'governed_live_armed=YES'
-          echo 'manual_external_signature=REQUIRED'
-
-          trap - EXIT
-
-      - name: Deployment summary
-        if: always()
+      - name: Successful deployment summary
+        if: success()
         shell: bash
         run: |
           {
-            echo '## SiRisky HR-CWH governed LIVE armed'
+            echo '## SiRisky governed LIVE state applied'
             echo
-            echo '- LIVE mode: ON'
-            echo '- Broadcast path: ARMED'
+            echo '- trading_mode: LIVE'
+            echo '- live_enabled: 1'
+            echo '- broadcast_enabled: 1'
             echo '- Automatic discovery/evaluation: ON'
             echo '- Manual approval gate: ON'
             echo '- External signature: REQUIRED'
-            echo '- HR-CWH hard risk controls remain unchanged'
+            echo '- Telegram direct real-money execution: OFF'
+            echo '- Service restart and active-state assertion: PASSED'
+            echo
+            echo '> This is approval-gated LIVE readiness. It does not bypass the external-signature requirement.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Failed deployment summary
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## SiRisky governed LIVE state NOT applied'
+            echo
+            echo '- Do not treat this workflow run as proof that LIVE/broadcast is enabled.'
+            echo '- Inspect the failed step before changing trading state.'
           } >> "$GITHUB_STEP_SUMMARY"
