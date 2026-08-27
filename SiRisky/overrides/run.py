@@ -79,11 +79,80 @@ def telegram_handler(engine, settings, cmd, chat):
     return "SiRisky commands: /status /pending /check /runone"
 
 
+def _fmt_pct(value):
+    try:return f"{float(value):+.4f}%"
+    except Exception:return "n/a"
+
+
+def _fmt_health(value):
+    try:return f"{float(value):.4f}%"
+    except Exception:return "n/a"
+
+
+def _format_result_notice(result,settings):
+    status=str(result.get("status") or "")
+    if status=="CANDIDATE_BATCH_NO_OPEN":
+        attempted=int(result.get("attempted_candidates") or 0)
+        lines=[
+            "SiRisky candidate batch: NO OPEN",
+            f"Attempted: {attempted} | Stage 3 passed: {int(result.get('stage3_passed_candidates') or 0)} | Stage 5 failed: {int(result.get('execution_rejects') or 0)} | Risk rejected: {int(result.get('risk_rejects') or 0)}",
+        ]
+        for row in result.get("candidate_results") or []:
+            idx=int(row.get("candidate") or 0)
+            row_status=str(row.get("status") or "")
+            if row.get("stage3_passed") is True and row_status=="EXECUTION_REJECT":
+                path="S3 PASS → S5 FAILED"
+            elif row.get("stage3_passed") is True:
+                path="S3 PASS"
+            elif row.get("stage3_passed") is False:
+                path="S3 REJECT"
+            else:
+                path=row_status or "NOT EVALUATED"
+            lines.extend([
+                "",
+                f"Candidate {idx}/{attempted}: {path}",
+                f"Mint: {row.get('mint') or 'n/a'}",
+                f"Pool: {row.get('pool_id') or 'n/a'}",
+            ])
+            if row.get("forecast_net_pct") is not None:
+                lines.append(f"Forecast: {_fmt_pct(row.get('forecast_net_pct'))} | Exit health: {_fmt_health(row.get('exit_health_pct'))}")
+            reason="|".join(str(x) for x in (row.get("reasons") or [])) or str(row.get("error") or "")
+            if reason: lines.append(f"Reason: {reason[:260]}")
+        return "\n".join(lines)[:3500]
+
+    if status in {"RISK_REJECT","EXECUTION_REJECT"}:
+        required=result.get("min_forecast_net_pct")
+        if required is None:
+            required=(settings.risk().get("min_forecast_net_pct") or 0.25)
+        lines=[
+            f"SiRisky: {status}",
+            f"Mint: {result.get('mint') or 'n/a'}",
+            f"Pool: {result.get('pool_id') or 'n/a'}",
+            f"Stage 3: {'PASS' if result.get('stage3_passed') is True else 'REJECT'}",
+            f"Forecast: {_fmt_pct(result.get('forecast_net_pct'))} | Required: {_fmt_pct(required)}",
+            f"Exit health: {_fmt_health(result.get('exit_health_pct'))}",
+        ]
+        reason="|".join(str(x) for x in (result.get("reasons") or [])) or str(result.get("error") or "")
+        if reason: lines.append(f"Reason: {reason[:500]}")
+        return "\n".join(lines)[:3500]
+
+    if status=="EXIT_EXECUTION_RETRY":
+        return (f"SiRisky: EXIT retry\nPosition: {result.get('position_id') or 'n/a'}\n"
+                f"Reason: {result.get('exit_reason') or 'n/a'}\nStage 5: {result.get('error') or 'FAILED'}")[:3500]
+    return "SiRisky: "+json.dumps(result,default=str)[:3500]
+
+
 def _result_notice_key(result):
     status=str(result.get("status") or "")
-    if status=="RISK_REJECT":
+    if status=="CANDIDATE_BATCH_NO_OPEN":
+        rows=result.get("candidate_results") or []
+        compact=tuple((str(r.get("mint") or ""),str(r.get("status") or ""),str(r.get("error") or ""),tuple(str(x) for x in (r.get("reasons") or []))) for r in rows)
+        return (status,compact)
+    if status in {"RISK_REJECT","EXECUTION_REJECT"}:
         reasons=tuple(str(x) for x in (result.get("reasons") or []))
-        return (status,str(result.get("pool_id") or ""),reasons)
+        return (status,str(result.get("mint") or ""),str(result.get("pool_id") or ""),reasons,str(result.get("error") or ""))
+    if status=="EXIT_EXECUTION_RETRY":
+        return (status,str(result.get("position_id") or ""),str(result.get("error") or ""))
     if status=="MANUAL_APPROVAL_PREP_FAILED":
         return (status,str(result.get("error") or ""),str(result.get("order_id") or ""))
     return (status,)
@@ -104,14 +173,14 @@ def start(settings):
                     tg.send(ManualApprovalGate(settings).format_for_user(result["proposal"]))
             elif status in {"OPENED","CLOSED"}:
                 # State-changing events are always important enough for Telegram.
-                tg.send("SiRisky: "+json.dumps(result,default=str)[:3500])
-            elif status in {"RISK_REJECT","MANUAL_APPROVAL_PREP_FAILED"}:
+                tg.send(_format_result_notice(result,settings))
+            elif status in {"RISK_REJECT","EXECUTION_REJECT","CANDIDATE_BATCH_NO_OPEN","EXIT_EXECUTION_RETRY","MANUAL_APPROVAL_PREP_FAILED"}:
                 # These can repeat every poll. Keep them in stdout every cycle,
                 # but only repeat the same Telegram notice every five minutes.
                 print("SiRisky: "+json.dumps(result,default=str),flush=True)
                 now=time.time(); key=_result_notice_key(result)
                 if key!=last_result_key or (now-last_result_notice)>=300:
-                    tg.send("SiRisky: "+json.dumps(result,default=str)[:3500])
+                    tg.send(_format_result_notice(result,settings))
                     last_result_key=key; last_result_notice=now
         except Exception as exc:
             trace=_safe_trace(exc); key=f"{type(exc).__name__}:{trace}"; now=time.time()
