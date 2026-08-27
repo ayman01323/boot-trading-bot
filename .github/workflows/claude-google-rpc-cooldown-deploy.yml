@@ -1,0 +1,179 @@
+name: Claude Google RPC Cooldown Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-rpc-cooldown-deploy.yml'
+      - 'learnerbot/solana_rpc_failover_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-rpc-cooldown-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      STATE_FILE: /home/ayman01323/ClaudeServer/runtime/data/claude_bot_state.json
+      SERVICE: claude-trading-bot.service
+    steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Google runner, service and OFF state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test "$(systemctl is-active "$SERVICE")" = active
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['STATE_FILE'])
+          if path.exists():
+              raw = json.loads(path.read_text(encoding='utf-8'))
+          else:
+              raw = {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print(f'effective_state={effective}')
+          if effective != 'OFF':
+              raise SystemExit('Refusing RPC hot-deploy: Claude effective state is not OFF')
+          PY
+
+      - name: Verify bounded managed checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$MANAGED_REPO/.git"
+          origin="$(git -C "$MANAGED_REPO" remote get-url origin)"
+          case "$origin" in
+            "https://github.com/${GITHUB_REPOSITORY}"|"https://github.com/${GITHUB_REPOSITORY}.git") ;;
+            *) echo "Unexpected managed origin: $origin" >&2; exit 2 ;;
+          esac
+
+          if [[ -n "$(git -C "$MANAGED_REPO" status --porcelain -- learnerbot/solana_rpc_failover_patch.py)" ]]; then
+            echo 'Refusing RPC hot-deploy: target RPC file has local server edits' >&2
+            exit 3
+          fi
+
+          mapfile -t dirty < <(git -C "$MANAGED_REPO" status --porcelain | sed -E 's/^.. //' | sort -u)
+          allowed=(
+            'claude-trading-bot/solana_execution_risk_patch.py'
+            'claude-trading-bot/telegram_control_patch.py'
+            'learnerbot/sibot1_runtime_diag_export_patch.py'
+          )
+          for path in "${dirty[@]}"; do
+            ok=false
+            for allow in "${allowed[@]}"; do
+              [[ "$path" == "$allow" ]] && ok=true && break
+            done
+            if [[ "$ok" != true ]]; then
+              echo "Refusing RPC hot-deploy: unexpected dirty path: $path" >&2
+              exit 4
+            fi
+          done
+          printf 'bounded_dirty_paths=%s\n' "${dirty[*]:-(none)}"
+
+      - name: Verify trusted RPC cooldown source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f learnerbot/solana_rpc_failover_patch.py
+          grep -q 'rate_limit_cooldown=true' learnerbot/solana_rpc_failover_patch.py
+          grep -q 'SOLANA_RPC_429_COOLDOWN_SECONDS' learnerbot/solana_rpc_failover_patch.py
+          grep -q 'SOLANA_RPC_MAX_INFLIGHT_PER_ENDPOINT' learnerbot/solana_rpc_failover_patch.py
+          echo 'trusted_rpc_cooldown_source=PASS'
+
+      - name: Hot-deploy only tested RPC file
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0644 learnerbot/solana_rpc_failover_patch.py \
+            "$MANAGED_REPO/learnerbot/solana_rpc_failover_patch.py"
+          "$MANAGED_REPO/.venv/bin/python" -m py_compile \
+            "$MANAGED_REPO/learnerbot/solana_rpc_failover_patch.py"
+          echo 'bounded_rpc_hotdeploy_compile=PASS'
+
+      - name: Restart only isolated Claude service
+        id: restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "restart_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+          sudo -n systemctl restart "$SERVICE"
+          sleep 20
+          test "$(systemctl is-active "$SERVICE")" = active
+          systemctl show "$SERVICE" -p MainPID -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+
+      - name: Verify RPC cooldown runtime and OFF state
+        shell: bash
+        env:
+          RESTART_EPOCH: ${{ steps.restart.outputs.restart_epoch }}
+        run: |
+          set -euo pipefail
+          log="$(sudo -n journalctl -u "$SERVICE" --since "@${RESTART_EPOCH}" --no-pager)"
+          printf '%s\n' "$log" | grep '\[solana-rpc-failover\].*rate_limit_cooldown=true.*burst_spread=true'
+          printf '%s\n' "$log" | grep '\[trading-runtime-invariant\] OK'
+          printf '%s\n' "$log" | grep '\[final-runtime-integrity\] OK'
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ['STATE_FILE'])
+          raw = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print(f'post_restart_effective_state={effective}')
+          if effective != 'OFF':
+              raise SystemExit('Post-restart state is not OFF')
+          PY
+          if printf '%s\n' "$log" | grep -Eq 'Traceback|Main process exited|Failed with result'; then
+            echo 'Fatal runtime error detected after RPC hot-deploy' >&2
+            exit 5
+          fi
+          echo 'CLAUDE_RPC_COOLDOWN_HOTDEPLOY_OK'
+          echo 'ARM_LIVE_NOT_PERFORMED=true'
+          echo 'TRANSACTION_BROADCAST=false'
+          echo 'RPC_URLS_LOGGED=false'
+
+      - name: Observe post-restart RPC pressure
+        shell: bash
+        env:
+          RESTART_EPOCH: ${{ steps.restart.outputs.restart_epoch }}
+        run: |
+          set -euo pipefail
+          sleep 90
+          log="$(sudo -n journalctl -u "$SERVICE" --since "@${RESTART_EPOCH}" --no-pager || true)"
+          rpc429="$(printf '%s\n' "$log" | grep -Ec 'Solana RPC .*HTTP 429|HTTP 429' || true)"
+          cooling="$(printf '%s\n' "$log" | grep -Ec 'temporarily cooling down' || true)"
+          rpcerrs="$(printf '%s\n' "$log" | grep -Ec 'SolanaRpcEndpointError|Solana RPC .*HTTP [45][0-9][0-9]' || true)"
+          echo "post_restart_rpc_429_count=$rpc429"
+          echo "post_restart_rpc_cooling_count=$cooling"
+          echo "post_restart_rpc_error_count=$rpcerrs"
+          echo 'post_restart_observation_complete=true'
+
+      - name: Boundary summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Bounded operation only:'
+          echo '- required Claude effective state OFF before deployment'
+          echo '- copied only learnerbot/solana_rpc_failover_patch.py'
+          echo '- restarted only claude-trading-bot.service'
+          echo '- did not ARM LIVE'
+          echo '- did not sign or broadcast a transaction'
+          echo '- did not read or modify wallet/RPC secrets'
