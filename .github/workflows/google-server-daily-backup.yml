@@ -1,8 +1,11 @@
 name: Google Server Daily Backup
 
 on:
+  # Run at both UTC equivalents of 03:00 Europe/London.
+  # The first step gates execution so exactly the 03:00 London run proceeds.
   schedule:
-    - cron: '15 3 * * *'
+    - cron: '0 2 * * *'
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -16,15 +19,31 @@ jobs:
   backup:
     name: Daily protected Google-server folders backup
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
-      DEST: /home/ayman01323/GoogleServerBuckup
+      DEST_ROOT: /home/ayman01323/GoogleServerBuckup
       PROD: /root/multichain-learning-bot-v2.2-fast-direct-market
       CLAUDE: /home/ayman01323/ClaudeServer
       SIRISKY: /root/SiRisky
-      RETENTION_DAYS: '14'
+      BOOT: /home/ayman01323/BOOT
+      RETENTION_DAYS: '30'
+      TZ: Europe/London
     steps:
+      - name: Check 03:00 London schedule gate
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$(date +%H)" != "03" ]; then
+            echo "run_backup=false" >> "$GITHUB_OUTPUT"
+            echo "No-op: London local hour is $(date +%H), not 03."
+          else
+            echo "run_backup=true" >> "$GITHUB_OUTPUT"
+            echo "Proceeding at $(date '+%Y-%m-%d %H:%M:%S %Z')."
+          fi
+
       - name: Verify Google runner and source folders
+        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -34,29 +53,37 @@ jobs:
           sudo -n test -d "$PROD"
           test -d "$CLAUDE"
           sudo -n test -d "$SIRISKY"
-          mkdir -p "$DEST"
-          chmod 700 "$DEST"
+          test -d "$BOOT"
+          mkdir -p "$DEST_ROOT"
+          chmod 700 "$DEST_ROOT"
           echo "production=$PROD"
           echo "claude=$CLAUDE"
           echo "sirisky=$SIRISKY"
-          echo "destination=$DEST"
-          df -h "$DEST"
+          echo "boot=$BOOT"
+          echo "destination=$DEST_ROOT"
+          df -h "$DEST_ROOT"
 
       - name: Create verified daily archives
+        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
           umask 077
+          BACKUP_DATE="$(date +%Y-%m-%d)"
           STAMP="$(date -u +%Y-%m-%d_%H-%M-%SZ)"
+          DAY_DIR="$DEST_ROOT/$BACKUP_DATE"
           WORK="$(mktemp -d /tmp/google-daily-backup.XXXXXX)"
           trap 'rm -rf "$WORK"' EXIT
+
+          mkdir -p "$DAY_DIR"
+          chmod 700 "$DAY_DIR"
 
           make_root_archive() {
             label="$1"
             source="$2"
             parent="$(dirname "$source")"
             base="$(basename "$source")"
-            out="$WORK/${label}-${STAMP}.tar.gz"
+            out="$WORK/${label}.tar.gz"
             sudo -n tar -C "$parent" -czf "$out" "$base"
             sudo -n chown "$(id -u):$(id -g)" "$out"
             chmod 600 "$out"
@@ -70,7 +97,7 @@ jobs:
             source="$2"
             parent="$(dirname "$source")"
             base="$(basename "$source")"
-            out="$WORK/${label}-${STAMP}.tar.gz"
+            out="$WORK/${label}.tar.gz"
             tar -C "$parent" -czf "$out" "$base"
             chmod 600 "$out"
             tar -tzf "$out" >/dev/null
@@ -81,39 +108,44 @@ jobs:
           make_root_archive production-bot "$PROD"
           make_user_archive claude-server "$CLAUDE"
           make_root_archive sirisky "$SIRISKY"
+          make_user_archive boot "$BOOT"
 
-          cat > "$WORK/manifest-${STAMP}.txt" <<EOF
+          cat > "$WORK/google-server-manifest.txt" <<EOF
+          backup_date=$BACKUP_DATE
+          created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
           created_utc=$STAMP
           hostname=$(hostname)
           production_source=$PROD
           claude_source=$CLAUDE
           sirisky_source=$SIRISKY
-          destination=$DEST
+          boot_source=$BOOT
+          destination=$DAY_DIR
           retention_days=$RETENTION_DAYS
           EOF
-          chmod 600 "$WORK/manifest-${STAMP}.txt"
+          chmod 600 "$WORK/google-server-manifest.txt"
 
-          mv "$WORK"/* "$DEST"/
-          chmod 600 "$DEST"/*-${STAMP}.*
+          mv -f "$WORK"/* "$DAY_DIR"/
+          chmod 600 "$DAY_DIR"/*
+
+          cd "$DAY_DIR"
+          sha256sum -c production-bot.tar.gz.sha256
+          sha256sum -c claude-server.tar.gz.sha256
+          sha256sum -c sirisky.tar.gz.sha256
+          sha256sum -c boot.tar.gz.sha256
 
           echo 'Created:'
-          ls -lh "$DEST"/*-${STAMP}.*
+          ls -lh "$DAY_DIR"
 
       - name: Apply local retention policy
+        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          find "$DEST" -maxdepth 1 -type f \
-            \( -name 'production-bot-*.tar.gz' -o \
-               -name 'production-bot-*.tar.gz.sha256' -o \
-               -name 'claude-server-*.tar.gz' -o \
-               -name 'claude-server-*.tar.gz.sha256' -o \
-               -name 'sirisky-*.tar.gz' -o \
-               -name 'sirisky-*.tar.gz.sha256' -o \
-               -name 'manifest-*.txt' \) \
-            -mtime +"$RETENTION_DAYS" -print -delete
+          find "$DEST_ROOT" -mindepth 1 -maxdepth 1 -type d \
+            -regextype posix-extended -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}' \
+            -mtime +"$RETENTION_DAYS" -print -exec rm -rf {} +
           echo "retention_days=$RETENTION_DAYS"
-          df -h "$DEST"
+          df -h "$DEST_ROOT"
 
       - name: Backup summary
         if: always()
@@ -123,5 +155,6 @@ jobs:
           echo "- $PROD"
           echo "- $CLAUDE"
           echo "- $SIRISKY"
-          echo "Destination: $DEST"
-          echo 'Schedule: daily at 03:15 UTC'
+          echo "- $BOOT"
+          echo "Destination pattern: $DEST_ROOT/YYYY-MM-DD/"
+          echo 'Schedule: daily at 03:00 Europe/London (GMT/BST safe)'
