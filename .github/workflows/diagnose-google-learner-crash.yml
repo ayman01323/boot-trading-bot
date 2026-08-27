@@ -1,0 +1,54 @@
+name: Diagnose Google Learner Crash
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/diagnose-google-learner-crash.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Capture sanitised learner journal through one-shot root unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          WORK="$HOME/.cache/learner-crash-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          OUT="$WORK/journal.txt"
+          SCRIPT="$WORK/capture.sh"
+          UNIT="$WORK/capture-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<EOF
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          journalctl -u learnerbot.service -n 180 --no-pager -o cat \
+            | sed -E 's#https://api\.telegram\.org/bot[^ /]+#https://api.telegram.org/botREDACTED#g' \
+            | sed -E 's#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=([^[:space:]]+)#\1=REDACTED#g' \
+            > '$OUT'
+          chown $(id -u):$(id -g) '$OUT'
+          chmod 600 '$OUT'
+          EOF
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Capture sanitised learnerbot journal
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$NAME"
+          cat "$OUT"
+          sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
+          rm -f "$UNIT" "$SCRIPT" "$OUT"
+          sudo -n /usr/bin/systemctl daemon-reload
