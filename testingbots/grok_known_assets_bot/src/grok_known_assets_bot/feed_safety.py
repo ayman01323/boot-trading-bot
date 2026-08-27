@@ -43,6 +43,7 @@ class JupiterRouteEvidence:
     fees_bps: float
     slippage_bps: float
     route_id: str = ""
+    asset_pool_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class PoolSafetyEvidence:
     is_freezable: bool | None = None
     top10_holders_pct: float | None = None
     liquidity_locked_pct: float | None = None
+    approved_pool_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -195,6 +197,29 @@ class SafeSnapshotBuilder:
             raise FeedSafetyError("POOL_SAFETY_REJECT")
         return age_ms
 
+    def _validate_route_pool_coverage(
+        self,
+        asset: Asset,
+        route: JupiterRouteEvidence,
+        evidence: PoolSafetyEvidence | None,
+    ) -> None:
+        """Require safety coverage for every target-asset pool used by a non-native route."""
+        if asset.is_native:
+            return
+        if not self.policy.require_rugcheck_for_non_native:
+            return
+        if evidence is None:
+            raise FeedSafetyError("MISSING_POOL_SAFETY")
+        route_pools = {pool_id.strip() for pool_id in route.asset_pool_ids if pool_id.strip()}
+        if not route_pools:
+            raise FeedSafetyError("MISSING_JUPITER_ASSET_POOL_IDS")
+        approved = {pool_id.strip() for pool_id in evidence.approved_pool_ids if pool_id.strip()}
+        if not approved:
+            raise FeedSafetyError("MISSING_APPROVED_POOL_IDS")
+        uncovered = sorted(route_pools - approved)
+        if uncovered:
+            raise FeedSafetyError("UNSAFE_JUPITER_ROUTE_POOL:" + ",".join(uncovered))
+
     @staticmethod
     def _freshest_value(
         observations: tuple[ProviderObservation, ...], field_name: str
@@ -235,6 +260,7 @@ class SafeSnapshotBuilder:
 
         market_ages.append(self._validate_jupiter(asset, jupiter, int(now_ms)))
         pool_age = self._validate_pool_safety(asset, pool_safety, int(now_ms))
+        self._validate_route_pool_coverage(asset, jupiter, pool_safety)
 
         prices = [
             float(o.price_usd)

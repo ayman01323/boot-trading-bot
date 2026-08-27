@@ -47,13 +47,15 @@ The PAPER qualification path requires normalized Jupiter evidence for both direc
 
 Jupiter supplies the executable bid/ask/reverse bid and execution-cost fields. Display-site prices never override the executable route.
 
+For a non-native asset, Jupiter evidence must also identify every route pool that directly touches the target asset (`asset_pool_ids`). Every such pool must be present in the fresh Pool Capital-Safety evidence's `approved_pool_ids`. A route with missing target-asset pool identifiers, missing safety coverage, or any uncovered target-asset pool fails closed before a strategy snapshot is produced.
+
 ## Pool capital-safety evidence
 
 Non-native tokens require fresh pool-safety evidence before a normalized snapshot is produced. The safety adapter uses an explicit `passed` result from the upstream Pool Capital-Safety/RugCheck policy rather than guessing whether a vendor-specific numeric score is high-good or low-good.
 
-Native assets can omit RugCheck evidence.
+The pool-safety evidence also carries the exact approved target-asset pool IDs used to bind current Jupiter routes to the safety decision. Native assets can omit RugCheck evidence.
 
-## Units
+## Units and PAPER cost accounting
 
 Field names are the contract:
 
@@ -62,15 +64,22 @@ Field names are the contract:
 - `_usd`: US dollars
 - `_ms`: milliseconds since Unix epoch or elapsed milliseconds as named
 
-The host round-trip cost model is:
+The entry-gate round-trip cost estimate is:
 
-`spread + 2*fee + 2*impact + 2*slippage`
+`spread + 2*(fee + impact + slippage)`
 
 all in basis points, converted to percentage points exactly once.
 
+PAPER realised PnL does not charge spread a second time because the entry ask and exit reverse bid already contain the bid/ask difference. Instead it stores the entry-side `fee + impact + slippage` when the PAPER position opens, allocates that entry cost pro-rata across partial exits, and charges the current exit-side `fee + impact + slippage` on each close. Exit-trigger net return uses the same entry-plus-exit route-cost basis. This keeps qualification estimates and PAPER accounting comparable without double-counting spread.
+
 ## Persistent breaker semantics
 
-The SQLite journal now persists the UTC day-start equity baseline. Restarting the PAPER process cannot silently reset the daily realised-loss breaker baseline.
+The SQLite journal persists one UTC day-start equity baseline per calendar day.
+
+- On the first evaluation seen for a UTC day, that equity becomes the day's stored baseline.
+- A mid-day PAPER process restart reloads the already stored baseline; it does not replace it with current equity.
+- If the process remains running across UTC midnight, `StrategyEngine` detects the new UTC day and loads/creates that new day's baseline using the first equity observed after rollover.
+- The previous day's baseline is never reused for the new day.
 
 Consecutive losses are counted by completed `TRADE_RESULT` events, not partial `CLOSE` events. TP1 partial exits therefore do not count as separate wins/losses. Partial PnL is accumulated until the trade is fully closed, when one completed trade result is emitted.
 
@@ -82,7 +91,8 @@ Before a real provider collector is connected:
 2. No symbol-only or wrong-address record may produce a validated snapshot.
 3. Stale or conflicting providers must fail closed.
 4. Jupiter forward and reverse evidence must be present and fresh.
-5. Non-native tokens must pass pool-safety validation.
+5. Non-native tokens must pass pool-safety validation and every Jupiter target-asset route pool must be safety-approved.
 6. Market-data and safety-evidence ages must remain separate.
-7. Fee, spread, impact and slippage units must produce deterministic cost results.
-8. PAPER startup/execution boundaries remain unchanged; no live execution adapter may be introduced by this layer.
+7. Fee, spread, impact and slippage units must produce deterministic cost results; PAPER PnL must charge both entry and exit route costs without charging spread twice.
+8. Mid-day restart and UTC-day rollover breaker semantics must pass tests.
+9. PAPER startup/execution boundaries remain unchanged; no live execution adapter may be introduced by this layer.

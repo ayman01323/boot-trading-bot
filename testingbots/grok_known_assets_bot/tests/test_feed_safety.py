@@ -1,6 +1,13 @@
 import pytest
 
-from grok_known_assets_bot.core import Asset, Journal, RiskConfig, StrategyEngine
+from grok_known_assets_bot.core import (
+    Asset,
+    Decision,
+    Journal,
+    MarketSnapshot,
+    RiskConfig,
+    StrategyEngine,
+)
 from grok_known_assets_bot.feed_safety import (
     FeedSafetyError,
     JupiterRouteEvidence,
@@ -64,6 +71,7 @@ def route(*, address="NATIVE", age_ms=500, **overrides):
         fees_bps=5.0,
         slippage_bps=7.0,
         route_id="jup-route-1",
+        asset_pool_ids=("pool-1",),
     )
     row.update(overrides)
     return JupiterRouteEvidence(**row)
@@ -80,6 +88,7 @@ def rug(*, address="VerifiedMint111", age_ms=120_000, passed=True, **overrides):
         is_freezable=False,
         top10_holders_pct=30.0,
         liquidity_locked_pct=90.0,
+        approved_pool_ids=("pool-1",),
     )
     row.update(overrides)
     return PoolSafetyEvidence(**row)
@@ -124,6 +133,30 @@ def test_failed_pool_safety_rejects_before_strategy():
             observations=(observation(address="VerifiedMint111"),),
             jupiter=route(address="VerifiedMint111"),
             pool_safety=rug(passed=False),
+            now_ms=NOW_MS,
+        )
+
+
+def test_non_native_route_pool_must_be_safety_approved():
+    with pytest.raises(FeedSafetyError, match="UNSAFE_JUPITER_ROUTE_POOL:pool-2"):
+        builder().build(
+            chain="solana",
+            address="VerifiedMint111",
+            observations=(observation(address="VerifiedMint111"),),
+            jupiter=route(address="VerifiedMint111", asset_pool_ids=("pool-1", "pool-2")),
+            pool_safety=rug(approved_pool_ids=("pool-1",)),
+            now_ms=NOW_MS,
+        )
+
+
+def test_non_native_route_must_identify_target_asset_pools():
+    with pytest.raises(FeedSafetyError, match="MISSING_JUPITER_ASSET_POOL_IDS"):
+        builder().build(
+            chain="solana",
+            address="VerifiedMint111",
+            observations=(observation(address="VerifiedMint111"),),
+            jupiter=route(address="VerifiedMint111", asset_pool_ids=()),
+            pool_safety=rug(),
             now_ms=NOW_MS,
         )
 
@@ -260,12 +293,66 @@ def test_round_trip_cost_model_includes_explicit_slippage(tmp_path):
     assert engine._estimated_round_trip_cost_pct(env.snapshot) == pytest.approx(0.54)
 
 
+def test_paper_pnl_charges_entry_and_exit_route_costs(tmp_path):
+    risk = RiskConfig()
+    engine = StrategyEngine(assets(), risk, Journal(tmp_path / "state.sqlite3"))
+    snap = MarketSnapshot(
+        asset_key="solana:SOL:NATIVE",
+        ts=1000.0,
+        bid=99.9,
+        ask=100.0,
+        reverse_bid=99.9,
+        liquidity_usd=1_000_000.0,
+        volume_5m_usd=100_000.0,
+        ret_1m_pct=0.4,
+        ret_5m_pct=1.2,
+        ret_15m_pct=2.0,
+        vol_5m_pct=1.5,
+        spread_bps=10.0,
+        price_impact_bps=10.0,
+        fee_bps=5.0,
+        sellable=True,
+        slippage_bps=7.0,
+    )
+    position = engine.open_paper(
+        snap, Decision("ENTER", "TEST", size_usd=1000.0, stop_pct=3.0)
+    )
+    assert position.entry_execution_cost_bps == pytest.approx(22.0)
+    assert engine.net_return_pct(position, snap) == pytest.approx(-0.54)
+    pnl = engine.close_paper(
+        position, snap, Decision("EXIT", "TEST_EXIT", exit_fraction=1.0)
+    )
+    # Gross -$1.00 from bid/ask plus $2.20 entry route cost and $2.1978 exit cost.
+    assert pnl == pytest.approx(-5.3978)
+
+
 def test_day_start_equity_persists_across_restart(tmp_path):
     db = tmp_path / "state.sqlite3"
     first = Journal(db)
     assert first.day_start_equity(1_800_000_000.0, 10_000.0) == 10_000.0
     second = Journal(db)
     assert second.day_start_equity(1_800_000_100.0, 7_500.0) == 10_000.0
+
+
+def test_engine_midday_restart_uses_original_day_baseline(tmp_path):
+    db = tmp_path / "state.sqlite3"
+    now = 1_800_000_000.0
+    first = StrategyEngine(assets(), RiskConfig(), Journal(db))
+    assert first.breakers_ok(10_000.0, now) == (True, "OK")
+    restarted = StrategyEngine(assets(), RiskConfig(), Journal(db))
+    assert restarted.breakers_ok(7_500.0, now + 60.0) == (True, "OK")
+    assert restarted.start_of_day_equity == pytest.approx(10_000.0)
+
+
+def test_engine_rolls_to_new_utc_day_baseline_without_restart(tmp_path):
+    engine = StrategyEngine(assets(), RiskConfig(), Journal(tmp_path / "state.sqlite3"))
+    day_one = 1_800_000_000.0
+    next_day = day_one - (day_one % 86400) + 86400 + 1.0
+    assert engine.breakers_ok(10_000.0, day_one) == (True, "OK")
+    first_key = engine.start_of_day_key
+    assert engine.breakers_ok(9_000.0, next_day) == (True, "OK")
+    assert engine.start_of_day_key != first_key
+    assert engine.start_of_day_equity == pytest.approx(9_000.0)
 
 
 def test_partial_close_does_not_count_as_consecutive_loss(tmp_path):
