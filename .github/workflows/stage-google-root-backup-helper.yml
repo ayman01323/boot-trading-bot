@@ -49,6 +49,44 @@ jobs:
           echo "staged=$STAGE"
           find "$STAGE" -maxdepth 2 -type f -printf '%m %u:%g %p\n'
 
+      - name: Backup BOOT now
+        shell: bash
+        env:
+          TZ: Europe/London
+        run: |
+          set -euo pipefail
+          umask 077
+          SOURCE=/home/ayman01323/BOOT
+          DEST_ROOT=/home/ayman01323/GoogleServerBuckup
+          DAY_DIR="$DEST_ROOT/$(date +%Y-%m-%d)"
+          WORK="$(mktemp -d /tmp/google-boot-now.XXXXXX)"
+          trap 'rm -rf "$WORK"' EXIT
+          mkdir -p "$DAY_DIR"
+          chmod 700 "$DEST_ROOT" "$DAY_DIR"
+
+          tar --warning=no-file-changed -C "$SOURCE" -czf "$WORK/boot.tar.gz" . || rc=$?
+          rc="${rc:-0}"
+          if [ "$rc" -gt 1 ]; then
+            echo "BOOT tar failed with rc=$rc" >&2
+            exit "$rc"
+          fi
+          tar -tzf "$WORK/boot.tar.gz" >/dev/null
+          entries="$(tar -tzf "$WORK/boot.tar.gz" | wc -l)"
+          bytes="$(stat -c '%s' "$WORK/boot.tar.gz")"
+          test "$entries" -ge 5
+          test "$bytes" -ge 4096
+          (cd "$WORK" && sha256sum boot.tar.gz > boot.tar.gz.sha256)
+          printf 'source=%s\nentries=%s\nbytes=%s\ncreated_london=%s\n' \
+            "$SOURCE" "$entries" "$bytes" "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$WORK/boot.stats"
+          install -m 600 "$WORK/boot.tar.gz" "$DAY_DIR/boot.tar.gz"
+          install -m 600 "$WORK/boot.tar.gz.sha256" "$DAY_DIR/boot.tar.gz.sha256"
+          install -m 600 "$WORK/boot.stats" "$DAY_DIR/boot.stats"
+          cd "$DAY_DIR"
+          sha256sum -c boot.tar.gz.sha256
+          echo "BOOT backup completed: $DAY_DIR"
+          cat boot.stats
+          ls -lh boot.tar.gz boot.tar.gz.sha256 boot.stats
+
       - name: Verify installed restricted helper
         shell: bash
         run: |
