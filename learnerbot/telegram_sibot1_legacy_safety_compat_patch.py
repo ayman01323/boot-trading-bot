@@ -44,3 +44,10 @@ from . import telegram_sibot1_signer_menu_patch as _sibot1_signer_menu  # noqa: 
 # and delete the duplicate Telegram message immediately. Existing encrypted signer
 # material is left unchanged.
 from . import telegram_sibot1_duplicate_secret_scrub_patch as _sibot1_duplicate_secret_scrub  # noqa: E402,F401
+
+# Owner-requested controlled rollback of Solana *strategy policy* to the known-good
+# 17-Aug configuration. This loads only after final_runtime_integrity_patch and all
+# late presentation/liveness layers have composed. The patch independently verifies
+# that current execution, simulation, reserve, exit-circuit and LIQUIDITY_STUCK
+# non-blocking safety hooks remain authoritative before enabling the canary policy.
+from . import solana_aug17_canary_restore_patch as _solana_aug17_canary  # noqa: E402,F401
