@@ -1,0 +1,97 @@
+name: Google MASTER Menu Hotfix
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/google-master-menu-hotfix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-master-menu-hotfix
+  cancel-in-progress: false
+
+env:
+  MAIN_SHA: b8cab4977c9eb7561af6bb261ccef78986427809
+
+jobs:
+  verify-old-stopped:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Confirm old VPS cannot poll Telegram
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          echo 'old_vps_telegram_owner=STOPPED'
+
+  patch-google-menu:
+    needs: verify-old-stopped
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Stage exact menu files from current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          WORK="$HOME/.cache/google-master-menu-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${MAIN_SHA}/learnerbot/telegram_google_learner_launcher_patch.py" -o "$WORK/telegram_google_learner_launcher_patch.py"
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${MAIN_SHA}/learnerbot/telegram_master_ai_health_tree_patch.py" -o "$WORK/telegram_master_ai_health_tree_patch.py"
+          grep -q 'Learner Bot — Google Test' "$WORK/telegram_google_learner_launcher_patch.py"
+          grep -q 'telegram_google_learner_launcher_patch' "$WORK/telegram_master_ai_health_tree_patch.py"
+          python3 -m py_compile "$WORK/telegram_google_learner_launcher_patch.py" "$WORK/telegram_master_ai_health_tree_patch.py"
+          echo "work=$WORK" >> "$GITHUB_ENV"
+
+      - name: Install only the MASTER menu files through a one-shot root unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET=/root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot
+          SCRIPT="$work/apply-menu-hotfix.sh"
+          UNIT="$work/google-master-menu-hotfix-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<EOF
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          install -m 0644 '$work/telegram_google_learner_launcher_patch.py' '$TARGET/telegram_google_learner_launcher_patch.py'
+          install -m 0644 '$work/telegram_master_ai_health_tree_patch.py' '$TARGET/telegram_master_ai_health_tree_patch.py'
+          /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m py_compile '$TARGET/telegram_google_learner_launcher_patch.py' '$TARGET/telegram_master_ai_health_tree_patch.py'
+          /usr/bin/systemctl restart learnerbot.service
+          EOF
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=One-shot Google MASTER Telegram menu hotfix
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$NAME"
+          sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
+          sudo -n /usr/bin/systemctl daemon-reload
+          sleep 10
+          sudo -n /usr/bin/systemctl is-active --quiet learnerbot.service
+          sudo -n /usr/local/sbin/status-boot-trading-bot
+          rm -rf "$work"
+          echo 'google_master_menu_hotfix=INSTALLED'
+
+      - name: Verify Google owns the live Telegram runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 10
+          sudo -n /usr/bin/systemctl is-active --quiet learnerbot.service
+          sudo -n /usr/local/sbin/status-google-production-cutover
+          sudo -n /usr/bin/systemctl --no-pager --full status learnerbot.service | tail -n 35
+          echo 'MASTER_TELEGRAM_OWNER=GOOGLE_ONLY'
