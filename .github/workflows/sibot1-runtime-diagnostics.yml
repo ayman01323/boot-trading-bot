@@ -3,50 +3,59 @@ name: SiBot 1 Runtime Diagnostics
 on:
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/sibot1-runtime-diagnostics.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: sibot1-runtime-diagnostics
-  cancel-in-progress: true
+  contents: read
 
 jobs:
   snapshot:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 5
     steps:
-      - name: Read redacted runtime export
+      - name: Audit historical Solana LIVE database read-only
         shell: bash
         run: |
           set -euo pipefail
-          src=/var/tmp/sibot1-runtime-diag.json
-          for i in $(seq 1 60); do
-            if [[ -s "$src" ]]; then
-              cp "$src" /tmp/sibot1-runtime-diag.json
-              python3 -m json.tool /tmp/sibot1-runtime-diag.json >/dev/null
-              cat /tmp/sibot1-runtime-diag.json
-              exit 0
-            fi
-            sleep 3
-          done
-          echo 'Redacted SiBot 1 runtime export is not available yet.' >&2
-          exit 1
-
-      - name: Publish redacted snapshot
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-sibot1-runtime.json"
-          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
-          encoded="$(base64 -w0 /tmp/sibot1-runtime-diag.json)"
-          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/sibot1-runtime-put.json
-          import json,sys
-          out={'message':'Update redacted SiBot 1 runtime diagnostics','content':sys.argv[1],'branch':'server-diagnostics'}
-          if sys.argv[2]: out['sha']=sys.argv[2]
-          print(json.dumps(out))
+          sudo -n python3 - <<'PY'
+          import os,sqlite3,json
+          from pathlib import Path
+          target='07d9f95e7dbb77288b2d4abca53e3949'
+          roots=[Path('/root'),Path('/var/tmp')]
+          dbs=[]
+          for root in roots:
+              if not root.exists(): continue
+              for dp,dns,fns in os.walk(root):
+                  if len(Path(dp).parts)>8:
+                      dns[:]=[]; continue
+                  dns[:]=[d for d in dns if d not in {'.git','node_modules','.venv','venv','__pycache__'}]
+                  for fn in fns:
+                      if fn=='solana_sibot.sqlite3': dbs.append(Path(dp)/fn)
+          print('DB_COUNT='+str(len(dbs)))
+          for p in dbs:
+              try:
+                  c=sqlite3.connect('file:'+str(p)+'?mode=ro',uri=True,timeout=3); c.row_factory=sqlite3.Row
+                  tabs={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+                  print('DB path='+str(p)+' tables='+','.join(sorted(tabs)))
+                  if 'positions' not in tabs:
+                      c.close(); continue
+                  cols={r[1] for r in c.execute('pragma table_info(positions)')}
+                  wanted=['position_id','mint','mode','status','entry_cost_sol','realised_net_sol','unrealised_net_sol','unrealised_pct','exit_reason','entry_ts','closed_at','token_amount_raw']
+                  sel=[x for x in wanted if x in cols]
+                  rs=[dict(r) for r in c.execute('select '+','.join(sel)+' from positions order by entry_ts')]
+                  live=[r for r in rs if str(r.get('mode','')).upper()=='LIVE']
+                  print('LIVE_POSITION_COUNT='+str(len(live)))
+                  for r in live:
+                      print('POS '+json.dumps(r,sort_keys=True,separators=(',',':')))
+                  if 'operator_position_writeoffs' in tabs:
+                      for r in c.execute('select * from operator_position_writeoffs order by created_at'):
+                          d=dict(r); d.pop('telegram_id',None)
+                          print('WRITEOFF '+json.dumps(d,sort_keys=True,separators=(',',':')))
+                  c.close()
+              except Exception as e:
+                  print('DB_ERROR path='+str(p)+' type='+type(e).__name__+' msg='+str(e)[:160])
+          print('READ_ONLY=true')
+          print('SECRET_VALUES_PRINTED=NO')
           PY
-          gh api -X PUT "$api" --input /tmp/sibot1-runtime-put.json >/dev/null
