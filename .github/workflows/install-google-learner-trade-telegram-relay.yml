@@ -1,0 +1,251 @@
+name: Install Google Learner Trade Telegram Relay
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/install-google-learner-trade-telegram-relay.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-learner-trade-telegram-relay
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install and verify learner trade relay
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          WORK="$HOME/.cache/learner-relay-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/install.sh"
+          RESULT="$WORK/result.txt"
+          UNIT="$WORK/learner-relay-${GITHUB_RUN_ID}.service"
+
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          RELAY=/home/ayman01323/.local/libexec/google_learner_telegram_relay.py
+          RELAY_ENV=/home/ayman01323/.config/google-learner-telegram-relay.env
+          RELAY_STATE=/home/ayman01323/.local/state/google-learner-telegram-relay.json
+          SERVICE=/etc/systemd/system/google-learner-telegram-relay.service
+          RESULT=__RESULT__
+          exec > >(tee "$RESULT") 2>&1
+
+          test -d "$PROD"
+          test -d "$LEARN"
+          test -f "$PROD/.env"
+          TOKEN_LINE="$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$PROD/.env" || true)"
+          test -n "$TOKEN_LINE"
+          test -n "${TOKEN_LINE#TELEGRAM_BOT_TOKEN=}"
+
+          install -d -m 0755 -o ayman01323 -g ayman01323 /home/ayman01323/.local/libexec
+          install -d -m 0700 -o ayman01323 -g ayman01323 /home/ayman01323/.config /home/ayman01323/.local/state
+          printf '%s\n' "$TOKEN_LINE" > "$RELAY_ENV"
+          chmod 0600 "$RELAY_ENV"
+          chown ayman01323:ayman01323 "$RELAY_ENV"
+
+          cat > "$RELAY" <<'PY'
+          #!/usr/bin/env python3
+          import csv, html, json, os, sqlite3, subprocess, time, urllib.parse, urllib.request
+          from pathlib import Path
+
+          LEARN=Path('/home/ayman01323/BOOT/testingbots/learn')
+          DB=LEARN/'data'/'solana_sibot.sqlite3'
+          SETTINGS=LEARN/'CSVbot'/'user_trading_settings.csv'
+          STATE=Path('/home/ayman01323/.local/state/google-learner-telegram-relay.json')
+          TOKEN=os.environ.get('TELEGRAM_BOT_TOKEN','').strip().strip('"').strip("'")
+          POLL=5
+
+          def send(tid, text):
+              if not TOKEN or not tid: return False
+              data=urllib.parse.urlencode({'chat_id':str(tid),'text':text,'parse_mode':'HTML','disable_web_page_preview':'true'}).encode()
+              req=urllib.request.Request(f'https://api.telegram.org/bot{TOKEN}/sendMessage',data=data,method='POST')
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as r:
+                      return 200 <= r.status < 300
+              except Exception:
+                  return False
+
+          def active_runtime():
+              try:
+                  return subprocess.run(['systemctl','is-active','--quiet','learnerbot-learn.service'],timeout=3).returncode==0
+              except Exception: return False
+
+          def enabled_users():
+              out=set()
+              if not SETTINGS.exists(): return out
+              try:
+                  with SETTINGS.open('r',encoding='utf-8-sig',newline='') as f:
+                      for r in csv.DictReader(f):
+                          if str(r.get('setting') or '') in {'learner_new_entries_enabled','solana_live_enabled'} and str(r.get('value') or '').strip().lower() in {'1','true','yes','on','y'}:
+                              tid=str(r.get('telegram_id') or '').strip()
+                              if tid: out.add(tid)
+              except Exception: pass
+              return out
+
+          def load_state():
+              try: return json.loads(STATE.read_text())
+              except Exception: return {'seen_buy':[], 'seen_sell':[], 'positions':{}, 'started':False}
+
+          def save_state(s):
+              tmp=STATE.with_suffix('.tmp')
+              tmp.write_text(json.dumps(s,sort_keys=True),encoding='utf-8')
+              os.replace(tmp,STATE)
+
+          def rows():
+              if not DB.exists(): return []
+              try:
+                  con=sqlite3.connect(f'file:{DB}?mode=ro',uri=True,timeout=2)
+                  con.row_factory=sqlite3.Row
+                  data=[dict(r) for r in con.execute("SELECT position_id,telegram_id,mint,mode,status,entry_cost_sol,entry_ts,leader_buy_signature,current_exit_sol,unrealised_net_sol,unrealised_pct,realised_net_sol,exit_signature,exit_reason,closed_at,updated_at FROM positions WHERE mode='LIVE' ORDER BY updated_at").fetchall()]
+                  con.close(); return data
+              except Exception: return []
+
+          def fnum(v):
+              try: return float(v or 0)
+              except Exception: return 0.0
+
+          state=load_state()
+          current=rows()
+          if not state.get('started'):
+              state['seen_buy']=[str(r.get('position_id')) for r in current]
+              state['seen_sell']=[str(r.get('position_id')) for r in current if str(r.get('status'))=='CLOSED' and r.get('exit_signature')]
+              state['positions']={str(r.get('position_id')):{'pct':fnum(r.get('unrealised_pct')),'last':int(time.time())} for r in current if str(r.get('status'))=='OPEN'}
+              state['started']=True
+              save_state(state)
+              users=enabled_users()
+              open_rows=[r for r in current if str(r.get('status'))=='OPEN']
+              for tid in users:
+                  send(tid, '✅ <b>LEARNER TRADE UPDATES ACTIVE</b>\nGoogle learner runtime: <b>%s</b>\nOpen LIVE positions: <b>%d</b>\nYou will receive confirmed BUY, position-move, and SELL/P&amp;L updates here.' % ('🟢 RUNNING' if active_runtime() else '🔴 STOPPED', len([r for r in open_rows if str(r.get('telegram_id'))==tid])))
+              for r in open_rows:
+                  tid=str(r.get('telegram_id') or '')
+                  send(tid, '📌 <b>CURRENT LEARNER LIVE POSITION</b>\nToken: <code>%s</code>\nEntry cost: <b>%.9f SOL</b>\nCurrent P&amp;L: <b>%+.3f%%</b>' % (html.escape(str(r.get('mint') or '')), fnum(r.get('entry_cost_sol')), fnum(r.get('unrealised_pct'))))
+
+          while True:
+              current=rows(); now=int(time.time())
+              seen_buy=set(state.get('seen_buy') or [])
+              seen_sell=set(state.get('seen_sell') or [])
+              pos_state=state.setdefault('positions',{})
+              for r in current:
+                  pid=str(r.get('position_id') or '')
+                  tid=str(r.get('telegram_id') or '')
+                  if not pid or not tid: continue
+                  if pid not in seen_buy:
+                      send(tid, '🚀 <b>LEARNER LIVE BUY CONFIRMED</b>\nSpend: <b>%.9f SOL</b>\nToken: <code>%s</code>\nTX: <code>%s</code>' % (fnum(r.get('entry_cost_sol')), html.escape(str(r.get('mint') or '')), html.escape(str(r.get('leader_buy_signature') or ''))))
+                      seen_buy.add(pid)
+                      pos_state[pid]={'pct':fnum(r.get('unrealised_pct')),'last':now}
+                  if str(r.get('status'))=='OPEN':
+                      pct=fnum(r.get('unrealised_pct')); net=fnum(r.get('unrealised_net_sol'))
+                      prev=pos_state.get(pid,{'pct':pct,'last':now})
+                      elapsed=now-int(prev.get('last') or now); delta=abs(pct-fnum(prev.get('pct')))
+                      if (elapsed>=60 and delta>=2.0) or elapsed>=900:
+                          icon='🟢' if net>0 else ('🔴' if net<0 else '⚪')
+                          send(tid, '%s <b>LEARNER POSITION UPDATE</b>\nToken: <code>%s</code>\nUnrealised P&amp;L: <b>%+.9f SOL (%+.3f%%)</b>' % (icon, html.escape(str(r.get('mint') or '')), net, pct))
+                          pos_state[pid]={'pct':pct,'last':now}
+                  elif str(r.get('status'))=='CLOSED' and r.get('exit_signature') and pid not in seen_sell:
+                      pnl=fnum(r.get('realised_net_sol')); icon='💚' if pnl>0 else ('❤️' if pnl<0 else '🍉')
+                      send(tid, '%s <b>LEARNER LIVE SELL CONFIRMED</b>\nToken: <code>%s</code>\nReason: <code>%s</code>\nRealised P&amp;L: <b>%+.9f SOL</b>\nTX: <code>%s</code>' % (icon, html.escape(str(r.get('mint') or '')), html.escape(str(r.get('exit_reason') or '')), pnl, html.escape(str(r.get('exit_signature') or ''))))
+                      seen_sell.add(pid); pos_state.pop(pid,None)
+              state['seen_buy']=sorted(seen_buy)[-1000:]
+              state['seen_sell']=sorted(seen_sell)[-1000:]
+              save_state(state)
+              time.sleep(POLL)
+          PY
+          chmod 0755 "$RELAY"
+          chown ayman01323:ayman01323 "$RELAY"
+
+          cat > "$SERVICE" <<EOF
+          [Unit]
+          Description=Google isolated learner trade Telegram relay
+          After=network-online.target learnerbot.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=ayman01323
+          Group=ayman01323
+          EnvironmentFile=$RELAY_ENV
+          ExecStart=/usr/bin/python3 $RELAY
+          Restart=always
+          RestartSec=3
+          NoNewPrivileges=true
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          chmod 0644 "$SERVICE"
+          systemctl daemon-reload
+          systemctl enable --now google-learner-telegram-relay.service
+          sleep 3
+          test "$(systemctl is-active google-learner-telegram-relay.service)" = active
+
+          python3 - "$LEARN/CSVbot/user_trading_settings.csv" <<'PY'
+          import csv,sys
+          path=sys.argv[1]
+          live=entries=0
+          try:
+              with open(path,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      on=str(r.get('value') or '').strip().lower() in {'1','true','yes','on','y'}
+                      if r.get('setting')=='solana_live_enabled' and on: live+=1
+                      if r.get('setting')=='learner_new_entries_enabled' and on: entries+=1
+          except FileNotFoundError: pass
+          print(f'learner_live_users={live}')
+          print(f'learner_entry_enabled_users={entries}')
+          PY
+
+          LIVE_USERS="$(python3 - "$LEARN/CSVbot/user_trading_settings.csv" <<'PY'
+          import csv,sys
+          n=0
+          try:
+              with open(sys.argv[1],encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      if r.get('setting')=='learner_new_entries_enabled' and str(r.get('value') or '').strip().lower() in {'1','true','yes','on','y'}: n+=1
+          except FileNotFoundError: pass
+          print(n)
+          PY
+          )"
+          if [[ "$LIVE_USERS" -gt 0 ]] && systemctl list-unit-files learnerbot-learn.service --no-legend 2>/dev/null | grep -q learnerbot-learn.service; then
+            if [[ "$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)" != active ]]; then
+              systemctl start learnerbot-learn.service
+              sleep 3
+            fi
+          fi
+
+          echo "master_menu_service=$(systemctl is-active learnerbot.service 2>/dev/null || true)"
+          echo "learner_runtime_service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "telegram_trade_relay=$(systemctl is-active google-learner-telegram-relay.service)"
+          echo "telegram_trade_updates=BUY+POSITION+SELL_PNL"
+          echo "private_keys_printed=NO"
+          ROOTSCRIPT
+
+          sed -i "s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 0755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Install Google learner Telegram trade relay
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 0644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          RC=0
+          sudo -n /usr/bin/systemctl start "$NAME" || RC=$?
+          cat "$RESULT" 2>/dev/null || true
+          exit "$RC"
