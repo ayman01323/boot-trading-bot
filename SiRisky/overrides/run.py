@@ -168,7 +168,7 @@ def _result_notice_key(result):
     if status=="EXIT_EXECUTION_RETRY":
         return (status,str(result.get("position_id") or ""),str(result.get("error") or ""))
     if status=="MANUAL_APPROVAL_PREP_FAILED":
-        return (status,str(result.get("error") or ""),str(result.get("order_id") or ""))
+        return (status,str(result.get("position_id") or "ENTRY"),str(result.get("error") or ""))
     return (status,)
 
 
@@ -220,7 +220,8 @@ def start(settings):
                 # Operational failures remain more responsive, with duplicate suppression.
                 print("SiRisky: "+json.dumps(result,default=str),flush=True)
                 now=time.time(); key=_result_notice_key(result)
-                if key!=last_result_key or (now-last_result_notice)>=300:
+                operational_interval=_runtime_interval(settings,"telegram_operational_notice_seconds",900,300)
+                if key!=last_result_key or (now-last_result_notice)>=operational_interval:
                     tg.send(_format_result_notice(result,settings))
                     last_result_key=key; last_result_notice=now
         except Exception as exc:

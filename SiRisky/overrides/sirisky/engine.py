@@ -175,7 +175,7 @@ class SiRiskyEngine:
                         "risk_reasons":risk.reasons}
             except Exception as exc:
                 return {**common,"status":"MANUAL_APPROVAL_PREP_FAILED","stage3_passed":True,
-                        "order_id":order.order_id,"error":type(exc).__name__}
+                        "order_id":order.order_id,"error":(str(exc)[:240] or type(exc).__name__)}
 
         # Stage 5: execution only. A failed/no-route candidate is a normal
         # automatic-engine outcome, not a process-wide RuntimeError. In SHADOW
@@ -299,7 +299,7 @@ class SiRiskyEngine:
                         "temperature":ev.get("temperature")}
             except Exception as exc:
                 return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,
-                        "position_id":pos.get("position_id"),"error":type(exc).__name__}
+                        "position_id":pos.get("position_id"),"error":(str(exc)[:240] or type(exc).__name__)}
 
         # Failed exits must leave the position OPEN so Stage 6 can retry on the
         # next cycle. Only a successful Stage-5 SELL may flow to Closed/7/8.
