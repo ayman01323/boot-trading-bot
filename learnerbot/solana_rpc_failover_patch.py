@@ -12,6 +12,7 @@ from . import solana_sibot as _sol
 
 
 _TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
+_ENDPOINT_LOCAL_FAILOVER_HTTP = {401, 403}
 _TRANSIENT_RPC_TEXT = (
     "429",
     "rate limit",
@@ -61,6 +62,14 @@ def _transient_cooldown() -> float:
     return _float_env("SOLANA_RPC_TRANSIENT_COOLDOWN_SECONDS", 3.0, low=0.25, high=30.0)
 
 
+def _auth_failure_cooldown() -> float:
+    # 401/403 normally indicate an endpoint-local credential/provider problem,
+    # not a request that should be retried against the same endpoint. Quarantine
+    # that endpoint long enough to avoid an auth-error storm while allowing
+    # healthy configured fallbacks to continue serving requests.
+    return _float_env("SOLANA_RPC_AUTH_COOLDOWN_SECONDS", 300.0, low=10.0, high=3600.0)
+
+
 def _max_inflight_per_endpoint() -> int:
     return _int_env("SOLANA_RPC_MAX_INFLIGHT_PER_ENDPOINT", 2, low=1, high=16)
 
@@ -76,11 +85,13 @@ class SolanaRpcEndpointError(RuntimeError):
         transient: bool,
         status_code: int = 0,
         retry_after_seconds: float = 0.0,
+        endpoint_local_failover: bool = False,
     ):
         self.method = str(method)
         self.transient = bool(transient)
         self.status_code = int(status_code or 0)
         self.retry_after_seconds = max(0.0, float(retry_after_seconds or 0.0))
+        self.endpoint_local_failover = bool(endpoint_local_failover)
         super().__init__(f"Solana RPC {self.method}: {str(detail)[:240]}")
 
 
@@ -166,6 +177,7 @@ def _post_one(url: str, method: str, params: list) -> Any:
             transient=status in _TRANSIENT_HTTP,
             status_code=status,
             retry_after_seconds=_retry_after(response),
+            endpoint_local_failover=status in _ENDPOINT_LOCAL_FAILOVER_HTTP,
         )
 
     try:
@@ -292,7 +304,18 @@ def _release_endpoint(
             state["rate_limit_strikes"] = 0
             return
 
-        if error is None or not error.transient:
+        if error is None:
+            return
+
+        if error.endpoint_local_failover:
+            state["rate_limit_strikes"] = 0
+            state["cooldown_until"] = max(
+                float(state["cooldown_until"]),
+                now + _auth_failure_cooldown(),
+            )
+            return
+
+        if not error.transient:
             return
 
         if _is_rate_limited(error):
@@ -340,7 +363,7 @@ def rpc_failover(app, method: str, params: list):
         except SolanaRpcEndpointError as exc:
             _release_endpoint(url, success=False, error=exc)
             last = exc
-            if not exc.transient:
+            if not exc.transient and not exc.endpoint_local_failover:
                 raise
             continue
         except Exception:
@@ -361,8 +384,8 @@ def install() -> None:
     _sol._rpc = rpc_failover
     print(
         "[solana-rpc-failover] multi_endpoint=true helius_fallback=true "
-        "public_rpc_last=true rate_limit_cooldown=true burst_spread=true "
-        "secret_safe_errors=true"
+        "public_rpc_last=true rate_limit_cooldown=true auth_endpoint_quarantine=true "
+        "burst_spread=true secret_safe_errors=true"
     )
 
 
