@@ -1,0 +1,81 @@
+name: Install Known-Good Learner Snapshot 2026-08-17
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/install-known-good-learner-2026-08-17.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-known-good-learner-2026-08-17
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify isolated Google runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+      - name: Check out exact known-good 17 August snapshot
+        uses: actions/checkout@v4
+        with:
+          ref: a524c530e19a70f8b303dc9a3e65b3ac9596705e
+          path: known-good-learner
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install snapshot into testingbots learn
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$GITHUB_WORKSPACE/known-good-learner"
+          target=/home/ayman01323/BOOT/testingbots/learn
+          parent="$(dirname "$target")"
+          mkdir -p "$parent"
+
+          if [[ -e "$target" ]]; then
+            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            backup="${target}.backup-${stamp}"
+            mv "$target" "$backup"
+            echo "existing_target_backup=$backup"
+          fi
+
+          mkdir -p "$target"
+          cp -a "$src"/. "$target"/
+          rm -rf "$target/.git"
+
+          cat > "$target/KNOWN_GOOD_SNAPSHOT.txt" <<'EOF'
+          Known-good Solana Learner/SiBot source snapshot
+          Date: 2026-08-17
+          Source repository: ayman01323/boot-trading-bot
+          Source commit: a524c530e19a70f8b303dc9a3e65b3ac9596705e
+          Purpose: isolated comparison/testing only
+          Production service restarted: NO
+          EOF
+
+      - name: Verify installed snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -f "$target/learnerbot/solana_sibot.py"
+          test -f "$target/learnerbot/solana_live_executor.py"
+          test -f "$target/learnerbot/solana_live_patch.py"
+          test -f "$target/learnerbot/solana_wallet_store.py"
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          grep -Fq 'a524c530e19a70f8b303dc9a3e65b3ac9596705e' "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          echo "snapshot_target=$target"
+          echo "snapshot_source=a524c530e19a70f8b303dc9a3e65b3ac9596705e"
+          echo "production_service_restart=NO"
+          echo "live_execution_started=NO"
+          find "$target/learnerbot" -maxdepth 1 -type f | sort | sed -n '1,20p'
