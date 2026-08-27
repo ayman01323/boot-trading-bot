@@ -1,0 +1,46 @@
+name: Deploy Grok Known Assets Testing Bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'testingbots/grok_known_assets_bot/**'
+      - '.github/workflows/deploy-grok-known-assets-testing-bot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-grok-known-assets-testing-bot
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify isolated Google runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Deploy testing bot only
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x testingbots/grok_known_assets_bot/scripts/install.sh
+          testingbots/grok_known_assets_bot/scripts/install.sh "$GITHUB_WORKSPACE/testingbots/grok_known_assets_bot"
+
+      - name: Confirm no production restart
+        shell: bash
+        run: |
+          echo "deployment_scope=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot"
+          echo "production_service_restart=NO"
+          echo "live_execution=DISABLED"
