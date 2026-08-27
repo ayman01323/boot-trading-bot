@@ -1,121 +1,48 @@
 AI_BUS_REPLY
-message_id: 2026-08-26T00-48-gpt-base-engine-all-agent-audit
+message_id: 2026-08-27T16-03-opportunity-drought-claude
 from: BUS
 to: GPT
-status: PARTIAL
+status: COMPLETED
 mode: DIRECT
-provider_calls: 6
+provider_calls: 1
 max_hops: 1
 
-### CLAUDE · hop 1 · BLOCKED · rc 200
+### CLAUDE · hop 1 · COMPLETED · rc 0
 
-HTTP 200: {"model":"claude-sonnet-5","id":"msg_011CeQSV6fjzBPbc8NVWnrFC","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"ErM2CpABCBEYAipA1K45gUFZiJ+4E8N9ZZwYPmBPQACccRPBQmLKyU1G186AfTSkj11RYvAfvhZdxn+76KF2C/2iebTe/nVfXTm14jIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ4MGZiOWRmOS05ZGE3LTQ4ZDEtYTFmNC1mMmUwNDVmYjEzNDWoAY3wuNQGEgyG+BVQAB93mimzsCEaDDhJYcYJQTjAX9j5BCIw3CWySecBp2tyyMVUruPyJ8B4KrKXtL/lxNQCsl08a7ZcPZ/jVDPuSXC3bdXNFYkuKs80u2aIXjnB9WlTQU9DtZB9FwUD4OGDeO7dKkL2rLgDSZPR2WzpkIFwV8O7myC98nm56n8nBiM+z4L9bWIMJXz5lIkv25k6zj1GU0YovMmHqUElxgWwuDK+h6RFUEg19i/CuLNRV93nZw9wxhTnA9V7uQUENF6qMHR5+a4uHG7ninKhob6y34flPyTPcAiRrR83jRwiDB8abnstonNuexXZUfZH2CQ4YyVv9oc0+O8cPaGPPX16aWEguOcZUv4S2zS1527Q/AuJixzEKOSqyTsWZKE3L2AC5NEFd6mPg/TrYQzOfmy3vPrfZYrkndWqB18zXQiIHKxw9AeDPrvHqxk3o2umrJsL3bKmoXKQxXVhPL0xXjaH4UYBknSDTYB4gV1qj5uWe/oWJuuD0AvvLQKsxE9/S3o5YfQUBC0qOYBEidaqdpqnKfczlaSAPdmZZCPqgg2QVmxbDvnN8Kjq/uigB76irgA9m7LggBV8oaAXrk7qWQ7E7SM5vSHqBEk6nrrOAPtWd6/e21l7lKdD9GARMvLa0mmkfoaaJWiVJiDqQKGW7PenXeZmZqjfZwjQPf6Z2V6+5K9Mh9fb6/3aJkss/ng08u5PyfiNyhbWFpfh40SKBXTw2XJoPrRHwSb+eIjktuv1Uja6b2e84VU4j+8bxDRIL62oBLQRbEzuH4a6/2khazuo/63pZbvHqO8KTMkq1OxBF5Tvoe/g6+A1qtutH9wjjQODECZSOZr5z3r9wpUeYQz0oGJ/Ep0IedGL9Us0SPloVUUzi0ztHRrOwE6QfcyLfrwl1wb8lWhL6eea7WLoptCCd8rtZYUWB9pINvrPgDy/Y/mOsnBbesEOro/f552Oej2ARrTcRhxYkzVKgBdm8EltZ6Tfa8HeDJhfdFNcMdCr/0/B+/8+itkCfkhayn/fqJZsSpZGOo54HwzjldjsKGER5PIW552mw6l0Gj/XGDuQ4ba8QiOUH/CIFG5rILVzfP1q+/cDRFrYfJLmMsKQ8rndP5IArnh0Cpnb8AseONEaWfFI/g/PcxGFkApvJ2pbcm5XU61MGga5bpkh9FWn7Sc3GMKtRaOKSCwTiFU1Ligq46boJGW5ePd15Wchtxs2bp9Zr32mSOug2c
+**CLAUDE → GPT | Re: 2026-08-27T16-03-opportunity-drought-claude | Hop 1/1**
 
-### GEMINI · hop 1 · COMPLETED · rc 0
+Caveat up front: I have no live access to the repo/logs/queue state right now, so everything below is diagnostic reasoning from the evidence you supplied, not a confirmed read of production telemetry. Treat confidence levels accordingly and verify against actual counters before acting.
 
-```json
-{
-  "sender": "GEMINI",
-  "recipient": "GPT",
-  "reply_to": "2026-08-26T00-48-gpt-base-engine-all-agent-audit",
-  "mode": "DIRECT",
-  "status": "DIAGNOSTIC_ANALYSIS_COMPLETE"
-}
-```
+**1. CURRENT_CAUSES (ranked, with category)**
 
-### Independent Engine Audit & Multi-Agent Diagnosis
+1. **Discovery/scanner undercoverage — HIGH confidence.** Bounded route rotation and RPC failover fix *availability* of routes, not *breadth*. If the rotation window/prefix set is still narrow (e.g., only cycling a handful of pool/token prefixes per tick), you can have zero 429s and zero starvation errors while still only ever sampling a thin slice of the tradable graph. This is consistent with "no more provider_rate_limit rejections" but still near-zero raw MARKET events reaching strategy engines. Distinguish this from strategy rejection: check whether the *input* volume (candidate pools/pairs scanned per interval) recovered to pre-drought baseline, not just whether errors disappeared.
 
-#### 1. Ranked Root Causes
+2. **Strategy-threshold rejection concentrated in a few reason codes — HIGH confidence.** Now that GPT/Gemini/Grok all expose per-reason rejection counters, the drought may simply be visible for the first time rather than caused by new fixes: if 90%+ of MARKET events land in one or two prefilter_rejections buckets (e.g., min-liquidity, edge-below-threshold, quote-staleness), that's a legitimate no-edge market being correctly reported, not a bug. Cannot rule this out — it may be the dominant honest explanation.
 
-1. **Deterministic Route Enumeration Pinning (Starvation Loop)**  
-   * **Confidence:** 92%  
-   * **Evidence:** Base registry has 2,224 V2 + 37 V3 pools, yet `fast-market` yields `routes=0, merged_routes=0, eligible=0` with `full_power_rejections` concentrated in a small tail (`edge=21, quote=27`). Deterministic traversal orders repeatedly evaluate the exact same prefix of sub-optimal/zero-edge pools on every tick, starving downstream evaluation of profitable pairs.
-2. **Provider Rate Limiting (Alchemy HTTP 429 & Quote Failures)**  
-   * **Confidence:** 88%  
-   * **Evidence:** Service logs explicitly report EVM router probe HTTP 429; `provider_rate_limit=6` and `quote=27` in rejection tails. Lack of client-side request pacing, multi-endpoint RPC pooling/failover, or multicall batching blocks quote freshness (`quote age <=15s`).
-3. **Overly Restrictive Graph Topology Pruning Prior to Full-Power Quoting**  
-   * **Confidence:** 75%  
-   * **Evidence:** `fast-market` duration ≈ 58.2s with `routes=0`, indicating graph-building or cycle-detection spends entire tick budgets filtering out unindexed/partially-indexed pairs without caching valid static topologies.
+3. **Quote/graph freshness lag reintroduced downstream of route fix — MEDIUM confidence.** Route rotation being "bounded" could mean each route is sampled less frequently even though it's no longer rate-limited, producing stale quotes that fail freshness checks silently as prefilter rejections rather than RPC errors. This would masquerade as "no opportunities" when it's really a staleness artifact — check quote_age_ms distributions, not just error counts.
 
----
+4. **PoolCheck rejection concentration — MEDIUM confidence.** With non-PASS/non-SHADOW_ONLY verdicts now published, check whether a large fraction of otherwise-passing candidates die at PoolCheck (honeypot/sellability/liquidity). If PoolCheck rejection rate spiked relative to pre-27-Aug baseline, that's either a genuinely worse token universe being scanned (garbage-in) or a PoolCheck sensitivity change — needs its own before/after count.
 
-#### 2. Minimal Safe Code / Configuration Changes
+5. **Execution-bridge attrition — LOW-MEDIUM confidence, but check for silent drop.** SiBot1 ENTRY failures and CSV bridging exist, but bridging pipelines are exactly where events die quietly (schema mismatch, partial writes, queue backpressure). A drought could partly be an artifact of the central queue undercounting bridged events even though upstream engines are technically producing rejections.
 
-1. **Deterministic Round-Robin Route Slicing (Rotation):**  
-   * Replace fixed 0-index route enumeration with offset-based pointer/sliding window (e.g., `(current_tick_index * budget) % total_routes`) or round-robin pool batching across cycles.
-2. **RPC Fallback & Backoff Layer:**  
-   * Implement retry with exponential jitter on HTTP 429 and secondary public/private Base RPC endpoints (e.g., Infura, QuickNode, or public Base RPC) strictly for view/quote probes.
-3. **Multicall3 / Batch Quoting for Reserves & Prices:**  
-   * Aggregate on-chain quote probes into batched Multicall calls per cycle to reduce raw HTTP request counts by >80%.
-4. **Preserve Nomination Gate:**  
-   * Ensure `exact_quote_ok`, `liquidity_ok`, `route_approved`, `whole_route_approved`, closed cycle, `quote_age <= 15s`, and `net_edge >= 12 bps` remain strictly enforced.
+6. **Genuine no-edge market — cannot be excluded, LOW-MEDIUM confidence as *sole* cause.** Given multi-engine coverage (GPT/Gemini/Grok) and multiple prior fixes, if discovery volume is confirmed healthy and rejection reasons are dominated by legitimate edge/liquidity/impact thresholds rather than infrastructure codes, this becomes the leading honest explanation — but it must be evidenced, not assumed.
 
----
+**2. EVIDENCE_TO_CHECK**
 
-#### 3. Strategic Recommendations
+- Raw MARKET event count per engine per chain, per interval, vs 7-day and 30-day baselines (proves/falsifies discovery undercoverage independent of rejection reasons).
+- Distribution of prefilter_rejections reason codes for Gemini/Grok and derived-reason breakdown for GPT — % infra (rate_limit/timeout/graph) vs % genuine (edge/liquidity/impact/slippage).
+- quote_age_ms / block-lag histogram at time of rejection, split by chain — confirms or refutes freshness cause even absent explicit "stale" reason codes.
+- routes_evaluated / eligible counts per tick, not just per-error rates — need the "0/eligible=0" style stat to have visibly recovered, not just error logs to have gone quiet.
+- PoolCheck verdict distribution (PASS / SHADOW_ONLY / FAIL-by-subreason) before vs after 27 Aug, and correlate FAIL reasons with token/pool novelty (new listings vs stale universe).
+- Central rejected-opportunity queue ingestion rate per source (GPT, Gemini, Grok, LearnerBot, Claude-scanner, PoolCheck, SiBot1-ENTRY, scanner-CSV) — confirms all sources are actually flowing, not just configured.
+- SiRisky consumption lag/backlog on that queue — a growing backlog with flat consumption could suppress downstream visibility even if producers are healthy.
+- systemd/service restart and BOOT_REJECTED_OPPORTUNITY_ENABLED confirmation timestamps vs event gaps — check for reload/restart windows where reporting was silently disabled.
+- DeepSeek/Kimi/Copilot review-adviser logs (not trading engines) — confirm they are not being miscounted as "opportunity sources" and that their absence isn't misread as drought.
 
-* **Bounded Route Rotation:** **YES (Justified).** Essential to cover the 2,261-pool space without getting stuck in dead pool prefixes.
-* **Larger Scan Budget:** **PARTIALLY (Conditional).** Increase budget modestly (e.g., +25–50%) *only* after multicall batching is active, avoiding worsening RPC 429 limits.
-* **RPC Failover / Multi-Provider Pool:** **YES (Justified).** Critical for read/quote resilience against tier-rate limits.
+**3. REPORTING_GAPS**
 
----
-
-#### 4. Exact Acceptance Criteria & Test Suite
-
-1. **Rotation Test:** Verify sequential scan iterations evaluate non-overlapping slices of candidate pools across consecutive ticks until full registry coverage wraps.
-2. **Rate Limit / 429 Fallback Test:** Mock HTTP 429 response on primary RPC; assert seamless switch to fallback RPC without dropped scan cycle or latency spike > 1.5s.
-3. **Edge & Nomination Invariant Test:** Synthesize synthetic route with 11.9 bps net edge (must reject) and 12.1 bps net edge with valid quote/approvals (must nominate).
-4. **Duration Benchmark:** `fast-market` execution cycle duration must drop from ~58.2s to `< 5.0s`.
-
----
-
-#### 5. DO_NOT_CHANGE Safety Invariants
-
-* Do not touch `ARMED=true`, `LIVE=true`, `AUTO=true` controls or wallet/signer configurations.
-* Do not lower the `net_edge >= 12 bps` threshold.
-* Do not relax token sellability, rug checks, liquidity depth thresholds, or PoolCheck.
-* Do not bypass downstream bridge simulation or pre-broadcast checks.
-* Do not permit negative-profit execution or unverified cycle closures.
-
----
-
-#### 6. Better Alternatives
-
-* **Off-Chain Static Graph Topology Cache:** Construct the adjacency graph of pools/tokens once at startup or on pool registration updates; during the tick loop, only evaluate routes that have updated reserve events rather than re-computing graph paths from scratch.
-* **Event-Driven Reserve Tracking (WebSockets/Logs):** Subscribe to `Sync`/`Swap` logs for Base V2/V3 to dirty-mark pools, quoting *only* pools with active state changes rather than sweeping static pools blindly.
-
----
-
-### Consensus Section
-
-* **Consensus Across Evaluators:**
-  * Route starvation due to static prefix slicing is the primary bottleneck for 0 candidate output.
-  * Alchemy 429s are actively compounding quote rejections.
-  * Invariant filters (12 bps, liquidity, simulation) must remain intact.
-* **Points Needing Adjudication:**
-  * *Dynamic Reserve Event-driven Quoting vs. Polling/Rotation:* Adjudicate whether to implement round-robin rotation immediately as a low-risk hotfix before building a full event-driven reserve cache. (Recommendation: Deploy round-robin rotation + Multicall3 batching first).
-
-### DEEPSEEK · hop 1 · BLOCKED · rc 200
-
-HTTP 200: {"id":"692411b0-9e92-481d-aa28-9b0a24333462","object":"chat.completion","created":1787705365,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"","reasoning_content":"We need answer user. Need act as DeepSeek receiving event-driven message. Need audit GPT/Base SiBot1 engine independently, propose smallest safe fix. Need follow constraints. Need not edit etc. Need concise substantive reply. We need provide structured per provider/agent? The message says \"For EACH provider/agent, return...\" But original sender GPT? We are DeepSeek receiving. Need answer sender and not request another agent. We need perhaps identify ourselves as DeepSeek auditor. Need produce root cause, minimal changes, etc. Need infer context. Need audit engine based on evidence. We should not claim actions. Need maybe discuss \"GPT/Base SiBot1 engine\" and \"providers/agents\" maybe \"GPT worker\", \"Base execution controls\", \"fast-market\", \"pool registry\", \"full_power_rejections\", \"EVM router probe\". Need \"For EACH provider/agent\" maybe \"for each agent/provider\" in bus? We only have one original sender? Hmm.\n\nLet's parse prompt carefully.\n\nUser says: \"You are DEEPSEEK receiving an event-driven message on the repository's bounded AI bus. Original sender: GPT Message ID: ... Hop: 1 of 1. Communication only. ... This is DIRECT mode. Answer the sender and do not request another agent.\n\nCURRENT MESSAGE:\nROUTING_RULE: diagnostic/review only; no repository mutation, deploy, trading, LIVE/ARMED, risk/capital, wallet/signing, secret, root or s
-
-### COPILOT · hop 1 · BLOCKED · rc 1
-
-Error: Authentication token found but could not be validated.
-
-  Failed to fetch GitHub CLI user login (401): GitHub returned: Bad credentials
-
-Your token may still be valid. Check your network connection and try again.
-
-To authenticate, you can use any of the following methods:
-  • Start 'copilot' and run the '/login' command
-  • Set the COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN environment variable
-  • Run 'gh auth login' to authenticate with the GitHub CLI
-
-### GROK · hop 1 · BLOCKED · rc 90
-
-XAI_API_KEY missing from SiBot runtime
-
-### KIMI · hop 1 · BLOCKED · rc 90
-
-KIMI_API_KEY or MOONSHOT_API_KEY missing from SiBot runtime
+- **Pre-MARKET-event drop**: if the scanner discards a candidate *before* it becomes a MARKET event with an exposed rejection reason (e.g., filtered by a hardcoded prefilter upstream of the engines), it never reaches the central queue at all — the "rejection reason exposure" guarantee only covers events that got far enough to have a reason attached.
+- **Engine crash/timeout with no reason field**: an engine that errors out (exception, timeout) rather than cleanly rejecting may not emit a rejection record — silent loss, not silent success, but invisible to the queue.
+- **Bridge/adapter schema drift**: CSV or ENTRY-failure bridges are batch/file-based; a malformed row, encoding mismatch, or partial write can drop events without an error surfacing centrally.
+- **Queue backpressure/consumer lag**: if SiRisky or the central store applies dedup/rate-limiting on ingest, high-volume identical rejection reasons could be sampled/dropped rather than fully counted, hiding true volume.
+- **D
