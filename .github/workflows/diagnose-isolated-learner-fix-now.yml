@@ -1,0 +1,35 @@
+name: Diagnose Isolated Learner Fix Now
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/diagnose-isolated-learner-fix-now.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect failed fix and learner file ownership
+        shell: bash
+        run: |
+          set -u
+          echo "user=$(id -un)"
+          echo "uid=$(id -u)"
+          FILE=/home/ayman01323/BOOT/testingbots/learn/learnerbot/polygon_live_enable_migration.py
+          ls -l "$FILE" || true
+          test -w "$FILE" && echo file_writable=YES || echo file_writable=NO
+          grep -n 'ISOLATED_SOLANA_LEARNER_SKIP_POLYGON_V1' "$FILE" || true
+          echo '--- failed result ---'
+          cat /home/ayman01323/.cache/fix-isolated-learner-polygon-33118090050/result.txt 2>/dev/null || true
+          echo '--- failed unit status ---'
+          systemctl status fix-isolated-learner-polygon-33118090050.service --no-pager 2>&1 || true
+          echo '--- failed unit journal ---'
+          journalctl -u fix-isolated-learner-polygon-33118090050.service --no-pager -n 80 2>&1 || true
+          echo '--- learner status ---'
+          systemctl status learnerbot-learn.service --no-pager -n 20 2>&1 || true
