@@ -2,7 +2,9 @@
 set -euo pipefail
 umask 077
 
-# Fixed-purpose helper for backing up only the two root-owned bot folders.
+# Fixed-purpose protected backup helper.
+# Source/config is maintained under /home/ayman01323/BOOT, but this installed
+# copy is root-owned so the sudo rule cannot be replaced by an unprivileged user.
 # It accepts no arguments and never executes caller-supplied paths or commands.
 if [ "$#" -ne 0 ]; then
   echo 'This helper accepts no arguments.' >&2
@@ -12,6 +14,7 @@ fi
 RUN_USER='ayman01323'
 RUN_GROUP='ayman01323'
 DEST_ROOT='/home/ayman01323/GoogleServerBuckup'
+CLAUDE='/home/ayman01323/ClaudeServer'
 PROD='/root/multichain-learning-bot-v2.2-fast-direct-market'
 SIRISKY='/root/SiRisky'
 TZ='Europe/London'
@@ -19,10 +22,10 @@ export TZ
 
 BACKUP_DATE="$(date +%Y-%m-%d)"
 DAY_DIR="$DEST_ROOT/$BACKUP_DATE"
-WORK="$(mktemp -d /tmp/google-root-backup.XXXXXX)"
+WORK="$(mktemp -d /tmp/google-protected-backup.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
-for src in "$PROD" "$SIRISKY"; do
+for src in "$CLAUDE" "$PROD" "$SIRISKY"; do
   test -d "$src"
 done
 
@@ -34,36 +37,54 @@ make_archive() {
   parent="$(dirname "$source")"
   base="$(basename "$source")"
   archive="$WORK/${label}.tar.gz"
-  tar -C "$parent" -czf "$archive" "$base"
+
+  # These are live application trees. Root access prevents permission omissions.
+  # GNU tar may report files changing while read; tolerate only that live-tree
+  # condition, then require the resulting gzip/tar structure and checksum to pass.
+  set +e
+  tar --warning=no-file-changed -C "$parent" -czf "$archive" "$base"
+  rc=$?
+  set -e
+  if [ "$rc" -gt 1 ]; then
+    echo "tar failed for $source with rc=$rc" >&2
+    exit "$rc"
+  fi
   tar -tzf "$archive" >/dev/null
   (cd "$WORK" && sha256sum "${label}.tar.gz" > "${label}.tar.gz.sha256")
 }
 
+make_archive claude-server "$CLAUDE"
 make_archive production-bot "$PROD"
 make_archive sirisky "$SIRISKY"
 
-cat > "$WORK/google-root-folders-manifest.txt" <<EOF
+cat > "$WORK/google-protected-folders-manifest.txt" <<EOF
 backup_date=$BACKUP_DATE
 created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
 created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 hostname=$(hostname)
+claude_source=$CLAUDE
 production_source=$PROD
 sirisky_source=$SIRISKY
 destination=$DAY_DIR
+note=live application trees; tar rc=1 is tolerated only for concurrent file-change warnings
 EOF
 
 for f in \
+  claude-server.tar.gz claude-server.tar.gz.sha256 \
   production-bot.tar.gz production-bot.tar.gz.sha256 \
   sirisky.tar.gz sirisky.tar.gz.sha256 \
-  google-root-folders-manifest.txt; do
+  google-protected-folders-manifest.txt; do
   install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/$f" "$DAY_DIR/$f"
 done
 
 cd "$DAY_DIR"
+sha256sum -c claude-server.tar.gz.sha256
 sha256sum -c production-bot.tar.gz.sha256
 sha256sum -c sirisky.tar.gz.sha256
 
-echo "Root-folder backup completed: $DAY_DIR"
-ls -lh "$DAY_DIR"/production-bot.tar.gz "$DAY_DIR"/sirisky.tar.gz \
-       "$DAY_DIR"/production-bot.tar.gz.sha256 "$DAY_DIR"/sirisky.tar.gz.sha256 \
-       "$DAY_DIR"/google-root-folders-manifest.txt
+echo "Protected backup completed: $DAY_DIR"
+ls -lh \
+  "$DAY_DIR"/claude-server.tar.gz "$DAY_DIR"/claude-server.tar.gz.sha256 \
+  "$DAY_DIR"/production-bot.tar.gz "$DAY_DIR"/production-bot.tar.gz.sha256 \
+  "$DAY_DIR"/sirisky.tar.gz "$DAY_DIR"/sirisky.tar.gz.sha256 \
+  "$DAY_DIR"/google-protected-folders-manifest.txt
