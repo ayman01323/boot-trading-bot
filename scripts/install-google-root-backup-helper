@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo 'Run this installer with sudo/root.' >&2
+  exit 1
+fi
+
+REPO_ROOT="${1:-/home/ayman01323/BOOT}"
+HELPER_SRC="$REPO_ROOT/scripts/google-root-backup"
+SUDOERS_SRC="$REPO_ROOT/config/google-root-backup.sudoers"
+
+if [ ! -f "$HELPER_SRC" ] || [ ! -f "$SUDOERS_SRC" ]; then
+  echo "Required files not found under $REPO_ROOT." >&2
+  exit 1
+fi
+
+install -o root -g root -m 0755 "$HELPER_SRC" /usr/local/sbin/google-root-backup
+install -o root -g root -m 0440 "$SUDOERS_SRC" /etc/sudoers.d/google-root-backup
+visudo -cf /etc/sudoers.d/google-root-backup
+
+# Prove the rule is syntactically installed; do not run a backup here.
+ls -l /usr/local/sbin/google-root-backup /etc/sudoers.d/google-root-backup
+echo 'Restricted Google root backup helper installed.'
