@@ -1,0 +1,76 @@
+name: Rejected Opportunity Live Status
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/rejected-opportunity-status.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  status:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    env:
+      QUEUE_ROOT: /home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY
+    steps:
+      - name: Inspect central queue without sudo
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee /tmp/rejected-opportunity-status.json
+          import json, os, sqlite3, time
+          from pathlib import Path
+          root=Path(os.environ['QUEUE_ROOT'])
+          db=root/'high_risk_queue.sqlite3'
+          out={
+              'schema_version': 1,
+              'checked_epoch': int(time.time()),
+              'host': 'botgoogle',
+              'queue_root': str(root),
+              'queue_exists': db.is_file(),
+              'queue_writable_by_runner': os.access(db, os.W_OK) if db.exists() else False,
+              'sources': [],
+              'statuses': {},
+              'sirisky_decisions': {},
+              'totals': {'candidates':0,'observations':0,'decisions':0},
+          }
+          if db.is_file():
+              conn=sqlite3.connect(db)
+              conn.row_factory=sqlite3.Row
+              for table,key in [('candidates','candidates'),('refusal_observations','observations'),('sirisky_decisions','decisions')]:
+                  out['totals'][key]=int(conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0])
+              out['sources']=[dict(r) for r in conn.execute(
+                  'SELECT source_bot,COUNT(*) AS observations,MAX(observed_at) AS latest_observed_at '
+                  'FROM refusal_observations GROUP BY source_bot ORDER BY source_bot'
+              )]
+              out['statuses']={str(r['status']):int(r['n']) for r in conn.execute(
+                  'SELECT status,COUNT(*) AS n FROM candidates GROUP BY status ORDER BY status'
+              )}
+              out['sirisky_decisions']={str(r['decision']):int(r['n']) for r in conn.execute(
+                  'SELECT decision,COUNT(*) AS n FROM sirisky_decisions GROUP BY decision ORDER BY decision'
+              )}
+              conn.close()
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+
+      - name: Publish redacted status snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-rejected-opportunity-status.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/rejected-opportunity-status.json)"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/rejected-opportunity-put.json
+          import json,sys
+          out={'message':'Update rejected opportunity live status','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: out['sha']=sys.argv[2]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/rejected-opportunity-put.json >/dev/null
+          echo "status_snapshot=published"
