@@ -51,8 +51,8 @@ jobs:
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
-          sudo -n true
-          sudo -n test -d "$SOURCE"
+          test -d "$SOURCE"
+          test -r "$SOURCE"
           mkdir -p "$DEST_ROOT"
           chmod 700 "$DEST_ROOT"
           echo "source=$SOURCE"
@@ -78,12 +78,17 @@ jobs:
           HASH="$WORK/systemd-system.tar.gz.sha256"
           MANIFEST="$WORK/systemd-system-manifest.txt"
 
-          sudo -n tar -C /etc/systemd -czf "$ARCHIVE" system
-          sudo -n chown "$(id -u):$(id -g)" "$ARCHIVE"
+          # /etc/systemd/system service definitions are readable by the runner;
+          # no root privilege is required merely to archive them.
+          tar -C /etc/systemd -czf "$ARCHIVE" system
           chmod 600 "$ARCHIVE"
-
           tar -tzf "$ARCHIVE" >/dev/null
-          sha256sum "$ARCHIVE" > "$HASH"
+
+          # Store a portable checksum containing only the archive basename.
+          (
+            cd "$WORK"
+            sha256sum systemd-system.tar.gz > systemd-system.tar.gz.sha256
+          )
           chmod 600 "$HASH"
 
           cat > "$MANIFEST" <<EOF
