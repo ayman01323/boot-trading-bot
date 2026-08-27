@@ -122,6 +122,33 @@ class Stage1Data:
         d = str(dex or "").lower()
         return any(x in d for x in allowed)
 
+    def _failed_mints_on_cooldown(self, now: int) -> dict[str, int]:
+        """Recent failed SHADOW BUY mints that should not be retried yet."""
+        rt = self.settings.runtime()
+        if str(rt.get("trading_mode") or "SHADOW").strip().upper() != "SHADOW":
+            return {}
+        cooldown = max(0, min(3600, _int(rt.get("failed_mint_cooldown_seconds"), 180)))
+        if cooldown <= 0:
+            return {}
+        cutoff = int(now) - cooldown
+        latest = {}
+        try:
+            rows = read_rows(self.settings.csv_dir / "executions.csv")
+        except Exception:
+            return {}
+        for row in rows[-500:]:
+            if str(row.get("action") or "").upper() != "BUY":
+                continue
+            if str(row.get("mode") or "").upper() != "SHADOW":
+                continue
+            if str(row.get("status") or "").upper() != "FAILED":
+                continue
+            ts = _int(row.get("timestamp"), 0)
+            mint = str(row.get("mint") or "").strip()
+            if mint and ts >= cutoff:
+                latest[mint] = max(ts, latest.get(mint, 0))
+        return latest
+
     def _enrich_dexscreener(self, pair_address: str) -> dict:
         try:
             r = requests.get(
@@ -187,6 +214,8 @@ class Stage1Data:
         min_liquidity = max(0.0, _num(rt.get("auto_min_liquidity_usd"), 250.0))
         max_age = max(60, _int(rt.get("auto_max_age_seconds"), 7200))
         probe_sol = max(0.000001, _num(rt.get("auto_probe_sol"), 0.0005))
+        cooldown_mints = self._failed_mints_on_cooldown(now)
+        cooldown_skips = 0
 
         try:
             response = requests.get(
@@ -217,6 +246,9 @@ class Stage1Data:
             if base_mint in {WSOL_MINT, USDC_MINT} and quote_mint not in {WSOL_MINT, USDC_MINT}:
                 base_mint, quote_mint = quote_mint, base_mint
             if not pair_address or not base_mint or base_mint in {WSOL_MINT, USDC_MINT}:
+                continue
+            if base_mint in cooldown_mints:
+                cooldown_skips += 1
                 continue
             if dex and not self._dex_allowed(dex):
                 continue
@@ -271,10 +303,38 @@ class Stage1Data:
             )
 
         candidates.sort(key=lambda r: (-_num(r.get("score"), 0), _int(r.get("age_seconds"), max_age)))
-        candidates = candidates[:limit]
+
+        # A mint can appear in multiple new-pool records. Keep only the
+        # highest-ranked pool for each mint so one failed route is never tried
+        # five times in the same candidate batch.
+        unique_candidates = []
+        seen_mints = set()
+        duplicate_mint_skips = 0
+        for row in candidates:
+            mint = str(row.get("base_mint") or "").strip()
+            if mint in seen_mints:
+                duplicate_mint_skips += 1
+                continue
+            seen_mints.add(mint)
+            unique_candidates.append(row)
+        candidates = unique_candidates[:limit]
+
         write_rows_atomic(self.candidate_path, CANDIDATE_HEADERS, candidates)
-        self._save_state(status="OK", count=len(candidates), source_count=len(raw_pools))
-        return {"status": "OK", "count": len(candidates), "source_count": len(raw_pools), "updated": True}
+        self._save_state(
+            status="OK",
+            count=len(candidates),
+            source_count=len(raw_pools),
+            cooldown_skips=cooldown_skips,
+            duplicate_mint_skips=duplicate_mint_skips,
+        )
+        return {
+            "status": "OK",
+            "count": len(candidates),
+            "source_count": len(raw_pools),
+            "cooldown_skips": cooldown_skips,
+            "duplicate_mint_skips": duplicate_mint_skips,
+            "updated": True,
+        }
 
     def discover_if_due(self) -> dict:
         return self.discover(force=False)
