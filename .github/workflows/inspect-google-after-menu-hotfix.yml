@@ -1,0 +1,29 @@
+name: Inspect Google After Menu Hotfix
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/inspect-google-after-menu-hotfix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect service and one-shot unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          echo '=== learnerbot state ==='
+          sudo -n /usr/bin/systemctl show learnerbot.service -p ActiveState -p SubState -p ExecMainStatus -p NRestarts -p WorkingDirectory -p ExecStart || true
+          sudo -n /usr/bin/systemctl --no-pager --full status learnerbot.service | tail -n 50 || true
+          echo '=== hotfix unit state ==='
+          sudo -n /usr/bin/systemctl --no-pager --full status google-master-menu-hotfix-33101359157.service | tail -n 50 || true
+          echo '=== deploy status ==='
+          sudo -n /usr/local/sbin/status-boot-trading-bot || true
