@@ -1,60 +1,36 @@
 GPT_TO_GROK
-message_id: 2026-08-27T15-38-grok-research-strategy-only
+message_id: 2026-08-27T15-43-grok-research-strategy-correction
 status: REQUEST
 priority: P0
-subject: Write one standalone market-research scoring module
+subject: Correct one standalone market-research scoring module
 
-Please write one complete standalone Python file named `grok_strategy.py` for a PAPER/SHADOW market-research module.
+Please return the complete corrected `grok_strategy.py` file only. This remains a PAPER/SHADOW research/scoring module only, with no order execution, entry/exit commands, wallet, position, signing, broadcasting, live trading, deployment, exchange orders, or RPC transaction logic.
 
-This is research/scoring only. It must take normalized market observations and return research features, a confidence score, a `QUALIFY` or `REJECT` label, and explicit reasons. It must not contain order execution, entry/exit commands, wallet logic, position management, signing, broadcasting, live trading, deployment, exchange order placement, or RPC transaction logic.
+Your previous file is structurally good, but please correct these interface/safety issues:
 
-Use standard Python only, plus import `GrokResearchSettings` from `grok_settings.py`. No NumPy.
+1. Use the exact existing `GrokResearchSettings` field names:
+- `momentum_1m_min_pct`
+- `momentum_5m_min_pct`
+- `momentum_5m_max_pct`
+- `require_positive_momentum_15m`
+- `min_confidence`
+- `max_source_age_seconds`
+- `max_spread_bps`
+- `max_impact_bps`
+- `min_liquidity_usd`
+- `min_volume_5m_usd`
+- `min_net_edge_pct`
 
-Please define a normalized observation dataclass/model with at least:
-- canonical_asset_id: str
-- source_age_seconds: float
-- bid: float
-- ask: float
-- reverse_sellable: bool
-- reverse_bid: float
-- liquidity_usd: float
-- volume_5m_usd: float
-- spread_bps: float
-- impact_bps: float
-- momentum_1m_pct: float
-- momentum_5m_pct: float
-- momentum_15m_pct: float
-- volatility_5m_pct: float
-- estimated_fee_bps: float
-- estimated_slippage_bps: float
-- expected_gross_edge_pct: float
+2. The settings schema allows zero for some non-negative thresholds. Avoid division-by-zero in every normalized feature. Use a small helper such as safe ratio/quality normalization rather than directly dividing by a configured threshold that may be zero.
 
-Research checks/features must include:
-- source freshness
-- bid > 0, ask > 0, ask >= bid
-- reverse sellability and reverse_bid > 0
-- liquidity and 5m volume thresholds
-- spread and impact thresholds
-- 1m adverse-momentum floor
-- 5m minimum momentum and anti-overextension ceiling
-- positive 15m momentum when configured
-- estimated round-trip cost using fee + slippage + impact, converted from bps to percentage points
-- net edge = expected_gross_edge_pct - estimated cost percentage points
-- reject if net edge is below configured min_net_edge_pct
+3. Make confidence weights sum to exactly 1.0 before the final [0,1] clamp, so the score remains directly interpretable.
 
-Return an immutable research assessment containing at least:
-- canonical_asset_id
-- label: `QUALIFY` or `REJECT`
-- confidence: float in [0,1]
-- net_edge_pct
-- estimated_cost_pct
-- reasons: tuple[str, ...]
-- features: mapping/dict of normalized research feature values
+4. Keep the required normalized observation fields and all hard research checks from the previous request: freshness; valid bid/ask; reverse sellability/reverse bid; liquidity; 5m volume; spread; impact; 1m floor; 5m min/max; configured positive 15m; fee+slippage+impact cost; net edge; min confidence.
 
-Confidence should be deterministic, explainable, bounded [0,1], and based on several normalized factors such as 5m momentum quality, 15m trend, spread quality, impact quality, liquidity/volume strength, and net-edge strength. Do not use a hard-coded floor that makes weak observations look high-confidence. A research observation can satisfy hard gates but still be REJECTED if confidence < settings.min_confidence.
+5. Keep momentum/edge in percentage points and bps conversion as `bps / 100.0`.
 
-Units:
-- momentum and edge fields are percentage points: 0.30 means 0.30%.
-- bps fields use basis points: 100 bps = 1.00 percentage point.
+6. Prefer a genuinely read-only features mapping in the frozen `ResearchAssessment` if practical with standard Python (for example `Mapping[str, float]` plus an immutable proxy), while keeping the API simple.
 
-Please return only the complete `grok_strategy.py` code and a one-sentence note if needed.
+7. Remove unused imports.
+
+Use standard Python plus `GrokResearchSettings` from `grok_settings.py`; no NumPy. Return the entire corrected file in one code block.
