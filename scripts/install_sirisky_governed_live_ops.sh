@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 # One-time bootstrap for controlled GitHub Actions -> SiRisky governed LIVE arming.
 # The runner receives passwordless sudo for ONE root-owned wrapper only.
-# The wrapper may only apply the fixed approval-gated LIVE runtime policy below.
+# The wrapper is kept under the root-owned SiRisky bot directory, not /usr/local/sbin.
 # Set ARM_NOW=1 when invoking this installer to apply that policy immediately
 # to the exact commit currently checked out by the self-hosted runner.
 
@@ -11,7 +11,7 @@ RUNNER_USER="${RUNNER_USER:-ayman01323}"
 RUNNER_CHECKOUT="${RUNNER_CHECKOUT:-/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot}"
 SIRISKY_DIR="${SIRISKY_DIR:-/root/SiRisky}"
 SERVICE_NAME="${SERVICE_NAME:-sirisky.service}"
-WRAPPER="/usr/local/sbin/sirisky-governed-live-arm"
+WRAPPER="$SIRISKY_DIR/ops/sirisky-governed-live-arm"
 SUDOERS="/etc/sudoers.d/sirisky-governed-live"
 
 if [[ $EUID -ne 0 ]]; then
@@ -35,6 +35,10 @@ if [[ ! -d "$SIRISKY_DIR" || ! -x "$SIRISKY_DIR/.venv/bin/python" ]]; then
   echo "SiRisky runtime not found: $SIRISKY_DIR" >&2
   exit 2
 fi
+
+mkdir -p "$SIRISKY_DIR/ops"
+chown root:root "$SIRISKY_DIR/ops"
+chmod 0755 "$SIRISKY_DIR/ops"
 
 cat >"$WRAPPER" <<'EOF'
 #!/usr/bin/env bash
@@ -166,7 +170,8 @@ chmod 0440 "$SUDOERS"
 chown root:root "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null
 
-# Prove the exact runner identity can invoke the wrapper without granting arbitrary sudo.
+# Prove the exact runner identity can invoke the root-owned bot-local wrapper
+# without granting arbitrary sudo.
 sudo -u "$RUNNER_USER" sudo -n -l "$WRAPPER" >/dev/null
 
 echo "SiRisky governed LIVE GitHub operation installed."
