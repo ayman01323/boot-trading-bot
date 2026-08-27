@@ -1,22 +1,17 @@
-name: SiRisky HR-CWH Auto Shadow Deploy
+name: SiRisky HR-CWH Governed LIVE Armed
 
 on:
   push:
     branches: [main]
     paths:
       - '.github/workflows/sirisky-hrcwh-deploy.yml'
-      - 'SiRisky/overrides/sirisky/engine.py'
-      - 'SiRisky/overrides/sirisky/stage3_risk.py'
-      - 'SiRisky/overrides/sirisky/stage6_monitor.py'
-      - 'SiRisky/overrides/sirisky/stage8_review.py'
-      - 'SiRisky/overrides/tests/test_hrcwh_policy.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: sirisky-hrcwh-auto-shadow
+  group: sirisky-hrcwh-governed-live-armed
   cancel-in-progress: false
 
 jobs:
@@ -39,122 +34,76 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Deploy HR-CWH AUTO SHADOW with automatic rollback
+      - name: Arm governed LIVE mode with rollback
         shell: bash
         run: |
           set -euo pipefail
           ROOT=/root/SiRisky
-          SRC="$GITHUB_WORKSPACE/SiRisky/overrides"
           TS="$(date -u +%Y%m%dT%H%M%SZ)"
-          BACKUP="$ROOT/data/hrcwh-code-backup-$TS"
-          sudo -n mkdir -p "$BACKUP"
-
-          for f in engine.py stage3_risk.py stage6_monitor.py stage8_review.py; do
-            sudo -n cp -a "$ROOT/sirisky/$f" "$BACKUP/$f"
-          done
-          sudo -n cp -a "$ROOT/CSV/stage3_risk.csv" "$BACKUP/stage3_risk.csv"
-          sudo -n cp -a "$ROOT/CSV/runtime.csv" "$BACKUP/runtime.csv"
+          BACKUP="$ROOT/data/live-armed-runtime-backup-$TS.csv"
+          sudo -n cp -a "$ROOT/CSV/runtime.csv" "$BACKUP"
 
           rollback() {
             rc=$?
             if [[ $rc -ne 0 ]]; then
-              echo "HR-CWH AUTO SHADOW deploy failed; restoring $BACKUP" >&2
-              for f in engine.py stage3_risk.py stage6_monitor.py stage8_review.py; do
-                sudo -n cp -a "$BACKUP/$f" "$ROOT/sirisky/$f"
-              done
-              sudo -n cp -a "$BACKUP/stage3_risk.csv" "$ROOT/CSV/stage3_risk.csv"
-              sudo -n cp -a "$BACKUP/runtime.csv" "$ROOT/CSV/runtime.csv"
+              echo "LIVE arm failed; restoring runtime" >&2
+              sudo -n cp -a "$BACKUP" "$ROOT/CSV/runtime.csv"
               sudo -n systemctl restart sirisky.service || true
             fi
             exit $rc
           }
           trap rollback EXIT
 
-          for f in engine.py stage3_risk.py stage6_monitor.py stage8_review.py; do
-            sudo -n install -o root -g root -m 0644 "$SRC/sirisky/$f" "$ROOT/sirisky/$f"
-          done
-
           sudo -n env ROOT="$ROOT" python3 - <<'PY'
           import csv, os
           from pathlib import Path
 
           root=Path(os.environ['ROOT'])
-          p=root/'CSV'/'stage3_risk.csv'
+          p=root/'CSV'/'runtime.csv'
           with p.open(newline='',encoding='utf-8') as fh:
               rows=list(csv.DictReader(fh))
           by={str(r.get('setting') or ''):r for r in rows}
-          additions={
-              'fast_take_profit_floor_pct':('2.0','HR-CWH executable-net profit floor; 2-5% short horizon'),
-              'fast_take_profit_cap_pct':('5.0','HR-CWH executable-net profit cap'),
-              'fast_stop_net_pct':('3.0','Fast executable adverse-move exit threshold'),
-              'warm_reversal_pct':('1.5','Exit after profitable peak reverses by this executable percentage'),
-              'hot_reversal_pct':('3.0','Immediate HOT reversal exit threshold'),
-              'fast_max_hold_cap_seconds':('300','Hard cap; strategy row may remain shorter'),
-              'lp_recent_sell_sim_max_age_sec':('300','Maximum age of explicit sell evidence for LP conditional advisory'),
+          wanted={
+              'live_enabled':'1',
+              'broadcast_enabled':'1',
+              'auto_discovery_enabled':'1',
+              'auto_promote_to_selected':'1',
+              'manual_approval_enabled':'1',
+              'armed_manual_approval':'1',
+              'manual_approval_require_external_signature':'1',
+              'poll_seconds':'5',
           }
-          for key,(value,notes) in additions.items():
-              if key not in by:
-                  row={'setting':key,'value':value,'notes':notes}
+          for key,value in wanted.items():
+              if key in by:
+                  by[key]['value']=value
+              else:
+                  row={'setting':key,'value':value,'notes':'HR-CWH governed LIVE armed'}
                   rows.append(row); by[key]=row
           tmp=p.with_suffix('.csv.tmp')
           with tmp.open('w',newline='',encoding='utf-8') as fh:
               w=csv.DictWriter(fh,fieldnames=['setting','value','notes'])
               w.writeheader(); w.writerows(rows)
           tmp.replace(p)
-
-          # Automatic end-to-end SHADOW execution. Discovery, candidate evaluation,
-          # BUY simulation, monitoring and SELL simulation run without manual approval.
-          # Real-money transaction broadcast remains hard-locked OFF.
-          rp=root/'CSV'/'runtime.csv'
-          with rp.open(newline='',encoding='utf-8') as fh:
-              rrows=list(csv.DictReader(fh))
-          rby={str(r.get('setting') or ''):r for r in rrows}
-          wanted={
-              'live_enabled':'1',
-              'broadcast_enabled':'0',
-              'auto_discovery_enabled':'1',
-              'auto_promote_to_selected':'1',
-              'manual_approval_enabled':'0',
-              'armed_manual_approval':'0',
-              'poll_seconds':'5',
-          }
-          for key,value in wanted.items():
-              if key in rby:
-                  rby[key]['value']=value
-              else:
-                  row={'setting':key,'value':value,'notes':'HR-CWH AUTO SHADOW'}
-                  rrows.append(row); rby[key]=row
-          tmp=rp.with_suffix('.csv.tmp')
-          with tmp.open('w',newline='',encoding='utf-8') as fh:
-              w=csv.DictWriter(fh,fieldnames=['setting','value','notes'])
-              w.writeheader(); w.writerows(rrows)
-          tmp.replace(rp)
           PY
 
           sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python -m compileall -q sirisky"
           sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python run.py selftest"
-          sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python '$SRC/tests/test_hrcwh_policy.py'"
 
-          # Safety assertions: AUTO SHADOW must never enable real transaction broadcast.
-          sudo -n grep -q '^broadcast_enabled,0,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^manual_approval_enabled,0,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^armed_manual_approval,0,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^auto_discovery_enabled,1,' "$ROOT/CSV/runtime.csv"
-          sudo -n grep -q '^auto_promote_to_selected,1,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^live_enabled,1,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^broadcast_enabled,1,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^manual_approval_enabled,1,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^armed_manual_approval,1,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^manual_approval_require_external_signature,1,' "$ROOT/CSV/runtime.csv"
 
           sudo -n systemctl restart sirisky.service
           sleep 3
           sudo -n systemctl is-active --quiet sirisky.service
-          sudo -n systemctl --no-pager --full status sirisky.service | head -40
 
-          echo '=== AUTO SHADOW FLAGS ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|armed_manual_approval|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' "$ROOT/CSV/runtime.csv"
-          echo '=== HR-CWH RISK TUNABLES ==='
-          sudo -n grep -E '^(fast_take_profit_floor_pct|fast_take_profit_cap_pct|fast_stop_net_pct|warm_reversal_pct|hot_reversal_pct|fast_max_hold_cap_seconds|lp_recent_sell_sim_max_age_sec),' "$ROOT/CSV/stage3_risk.csv"
+          echo '=== GOVERNED LIVE ARMED FLAGS ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|armed_manual_approval|manual_approval_require_external_signature|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' "$ROOT/CSV/runtime.csv"
           echo "rollback_snapshot=$BACKUP"
-          echo 'automatic_shadow_execution=YES'
-          echo 'autonomous_broadcast=NO'
-          echo 'manual_approval=NO'
+          echo 'governed_live_armed=YES'
+          echo 'manual_external_signature=REQUIRED'
 
           trap - EXIT
 
@@ -163,14 +112,12 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## SiRisky HR-CWH AUTO SHADOW deployment'
+            echo '## SiRisky HR-CWH governed LIVE armed'
             echo
-            echo '- Stage 3: HARD/ADVISORY HR-CWH policy'
-            echo '- Stage 6: executable-net 2-5% fast-exit monitor'
-            echo '- Stage 8: realised HR-CWH telemetry'
-            echo '- Automatic rollback on test/deploy failure'
+            echo '- LIVE mode: ON'
+            echo '- Broadcast path: ARMED'
             echo '- Automatic discovery/evaluation: ON'
-            echo '- Automatic BUY/SELL simulation: ON'
-            echo '- Manual approval: OFF'
-            echo '- Autonomous real-money broadcast: OFF'
+            echo '- Manual approval gate: ON'
+            echo '- External signature: REQUIRED'
+            echo '- HR-CWH hard risk controls remain unchanged'
           } >> "$GITHUB_STEP_SUMMARY"
