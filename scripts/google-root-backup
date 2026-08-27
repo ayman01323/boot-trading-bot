@@ -34,22 +34,44 @@ install -d -o "$RUN_USER" -g "$RUN_GROUP" -m 700 "$DEST_ROOT" "$DAY_DIR"
 make_archive() {
   label="$1"
   source="$2"
-  parent="$(dirname "$source")"
-  base="$(basename "$source")"
   archive="$WORK/${label}.tar.gz"
+  resolved="$(readlink -f -- "$source")"
 
-  # These are live application trees. Root access prevents permission omissions.
+  if [ -z "$resolved" ] || [ ! -d "$resolved" ]; then
+    echo "Cannot resolve source directory: $source" >&2
+    exit 1
+  fi
+
+  echo "$resolved" > "$WORK/${label}.realpath"
+
+  # Archive the CONTENTS of the real directory, not a top-level symlink object.
+  # Internal symlinks remain symlinks; only the configured source path itself is resolved.
   # GNU tar may report files changing while read; tolerate only that live-tree
-  # condition, then require the resulting gzip/tar structure and checksum to pass.
+  # condition, then require the resulting gzip/tar structure and sanity gates to pass.
   set +e
-  tar --warning=no-file-changed -C "$parent" -czf "$archive" "$base"
+  tar --warning=no-file-changed -C "$resolved" -czf "$archive" .
   rc=$?
   set -e
   if [ "$rc" -gt 1 ]; then
-    echo "tar failed for $source with rc=$rc" >&2
+    echo "tar failed for $source (resolved=$resolved) with rc=$rc" >&2
     exit "$rc"
   fi
+
   tar -tzf "$archive" >/dev/null
+  entry_count="$(tar -tzf "$archive" | wc -l)"
+  size_bytes="$(stat -c '%s' "$archive")"
+
+  if [ "$entry_count" -lt 5 ]; then
+    echo "Backup sanity check failed for $source: only $entry_count archive entries" >&2
+    exit 1
+  fi
+  if [ "$size_bytes" -lt 4096 ]; then
+    echo "Backup sanity check failed for $source: archive only $size_bytes bytes" >&2
+    exit 1
+  fi
+
+  printf 'source=%s\nresolved=%s\nentries=%s\nbytes=%s\n' \
+    "$source" "$resolved" "$entry_count" "$size_bytes" > "$WORK/${label}.stats"
   (cd "$WORK" && sha256sum "${label}.tar.gz" > "${label}.tar.gz.sha256")
 }
 
@@ -63,16 +85,19 @@ created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
 created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 hostname=$(hostname)
 claude_source=$CLAUDE
+claude_resolved=$(cat "$WORK/claude-server.realpath")
 production_source=$PROD
+production_resolved=$(cat "$WORK/production-bot.realpath")
 sirisky_source=$SIRISKY
+sirisky_resolved=$(cat "$WORK/sirisky.realpath")
 destination=$DAY_DIR
-note=live application trees; tar rc=1 is tolerated only for concurrent file-change warnings
+note=source path is resolved before archiving; internal symlinks are preserved; tar rc=1 is tolerated only for concurrent file-change warnings
 EOF
 
 for f in \
-  claude-server.tar.gz claude-server.tar.gz.sha256 \
-  production-bot.tar.gz production-bot.tar.gz.sha256 \
-  sirisky.tar.gz sirisky.tar.gz.sha256 \
+  claude-server.tar.gz claude-server.tar.gz.sha256 claude-server.stats \
+  production-bot.tar.gz production-bot.tar.gz.sha256 production-bot.stats \
+  sirisky.tar.gz sirisky.tar.gz.sha256 sirisky.stats \
   google-protected-folders-manifest.txt; do
   install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/$f" "$DAY_DIR/$f"
 done
@@ -83,6 +108,7 @@ sha256sum -c production-bot.tar.gz.sha256
 sha256sum -c sirisky.tar.gz.sha256
 
 echo "Protected backup completed: $DAY_DIR"
+cat claude-server.stats production-bot.stats sirisky.stats
 ls -lh \
   "$DAY_DIR"/claude-server.tar.gz "$DAY_DIR"/claude-server.tar.gz.sha256 \
   "$DAY_DIR"/production-bot.tar.gz "$DAY_DIR"/production-bot.tar.gz.sha256 \
