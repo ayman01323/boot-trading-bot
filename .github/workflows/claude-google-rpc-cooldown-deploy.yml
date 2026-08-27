@@ -72,6 +72,8 @@ jobs:
 
           mapfile -t dirty < <(git -C "$MANAGED_REPO" status --porcelain | sed -E 's/^.. //' | sort -u)
           allowed=(
+            'claude-trading-bot/claude_bot_patches.py'
+            'claude-trading-bot/claude_runtime_health_patch.py'
             'claude-trading-bot/solana_execution_risk_patch.py'
             'claude-trading-bot/telegram_control_patch.py'
             'learnerbot/sibot1_runtime_diag_export_patch.py'
@@ -170,10 +172,10 @@ jobs:
         if: always()
         shell: bash
         run: |
-          echo 'Bounded operation only:'
-          echo '- required Claude effective state OFF before deployment'
-          echo '- copied only learnerbot/solana_rpc_failover_patch.py'
-          echo '- restarted only claude-trading-bot.service'
-          echo '- did not ARM LIVE'
-          echo '- did not sign or broadcast a transaction'
-          echo '- did not read or modify wallet/RPC secrets'
+          echo 'Bounded operation scope:'
+          echo '- requires Claude effective state OFF before deployment'
+          echo '- may copy only learnerbot/solana_rpc_failover_patch.py'
+          echo '- may restart only claude-trading-bot.service'
+          echo '- never ARMs LIVE'
+          echo '- never signs or broadcasts a transaction'
+          echo '- never reads or modifies wallet/RPC secrets'
