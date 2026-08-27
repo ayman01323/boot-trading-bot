@@ -1,0 +1,125 @@
+name: SiRisky Manual Approval Jupiter Hotfix
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-manual-approval-jupiter-hotfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-main:
+    runs-on: ubuntu-latest
+    outputs:
+      patch_sha: ${{ steps.commit.outputs.patch_sha }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Patch detailed Jupiter error and stable Telegram dedupe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          engine = Path('SiRisky/overrides/sirisky/engine.py')
+          text = engine.read_text(encoding='utf-8')
+          old = '"error":type(exc).__name__}'
+          new = '"error":(str(exc)[:240] or type(exc).__name__)}'
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'expected 2 manual-approval error sites, found {count}')
+          engine.write_text(text.replace(old, new), encoding='utf-8')
+
+          run = Path('SiRisky/overrides/run.py')
+          text = run.read_text(encoding='utf-8')
+          old_key = 'return (status,str(result.get("error") or ""),str(result.get("order_id") or ""))'
+          new_key = 'return (status,str(result.get("position_id") or "ENTRY"),str(result.get("error") or ""))'
+          if text.count(old_key) != 1:
+              raise SystemExit('manual approval dedupe key pattern not found exactly once')
+          text = text.replace(old_key, new_key)
+
+          old_send = 'now=time.time(); key=_result_notice_key(result)\n                if key!=last_result_key or (now-last_result_notice)>=300:'
+          new_send = 'now=time.time(); key=_result_notice_key(result)\n                operational_interval=_runtime_interval(settings,"telegram_operational_notice_seconds",900,300)\n                if key!=last_result_key or (now-last_result_notice)>=operational_interval:'
+          if text.count(old_send) != 1:
+              raise SystemExit('operational alert interval pattern not found exactly once')
+          run.write_text(text.replace(old_send, new_send), encoding='utf-8')
+          PY
+
+          python3 -m py_compile SiRisky/overrides/run.py SiRisky/overrides/sirisky/engine.py
+          git diff --check
+          git diff -- SiRisky/overrides/run.py SiRisky/overrides/sirisky/engine.py
+
+      - name: Commit hotfix to main
+        id: commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'sirisky-hotfix'
+          git config user.email 'sirisky-hotfix@users.noreply.github.com'
+          git add SiRisky/overrides/run.py SiRisky/overrides/sirisky/engine.py
+          git commit -m 'Fix SiRisky Jupiter prep diagnostics and Telegram spam'
+          git push origin HEAD:main
+          sha="$(git rev-parse HEAD)"
+          echo "patch_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Committed SiRisky hotfix: $sha"
+
+  deploy-botgoogle:
+    needs: patch-main
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Check out patched main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact approved patch SHA
+        shell: bash
+        env:
+          PATCH_SHA: ${{ needs.patch-main.outputs.patch_sha }}
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(git rev-parse HEAD)" = "$PATCH_SHA"
+          test -x /usr/local/sbin/sirisky-shadow-deploy
+          test -x /root/SiRisky/ops/sirisky-governed-live-arm
+          sudo -n -l /usr/local/sbin/sirisky-shadow-deploy >/dev/null
+          sudo -n -l /root/SiRisky/ops/sirisky-governed-live-arm >/dev/null
+
+      - name: Deploy patched code fail-safe in SHADOW
+        shell: bash
+        env:
+          PATCH_SHA: ${{ needs.patch-main.outputs.patch_sha }}
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/sirisky-shadow-deploy "$PATCH_SHA"
+
+      - name: Re-arm governed LIVE
+        shell: bash
+        env:
+          PATCH_SHA: ${{ needs.patch-main.outputs.patch_sha }}
+        run: |
+          set -euo pipefail
+          sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$PATCH_SHA"
+
+      - name: Observe first patched retry without secrets
+        shell: bash
+        run: |
+          set +e
+          sleep 8
+          echo '=== SERVICE ==='
+          systemctl is-active sirisky.service
+          echo '=== RECENT SIRISKY STATUS ==='
+          journalctl -u sirisky.service --since '-20 seconds' --no-pager 2>/dev/null \
+            | grep -E 'MANUAL_APPROVAL_PREP_FAILED|WAITING_FOR_MANUAL_APPROVAL|SiRisky:' \
+            | tail -20 \
+            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
+          exit 0
