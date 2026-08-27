@@ -1,0 +1,144 @@
+name: Fix Isolated Learner Polygon Startup Now
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/fix-isolated-learner-polygon-startup-now.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fix-isolated-learner-polygon-startup-now
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Patch isolated learner only and verify stable runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          WORK="$HOME/.cache/fix-isolated-learner-polygon-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/fix.sh"
+          RESULT="$WORK/result.txt"
+          UNIT="$WORK/fix-isolated-learner-polygon-${GITHUB_RUN_ID}.service"
+
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          FILE="$LEARN/learnerbot/polygon_live_enable_migration.py"
+          RESULT=__RESULT__
+          exec > >(tee "$RESULT") 2>&1
+
+          test -d "$LEARN"
+          test -f "$FILE"
+          test -x "$LEARN/.venv/bin/python" || test -x "$LEARN/.wallet-venv/bin/python"
+
+          python3 - "$FILE" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          marker='    # ISOLATED_SOLANA_LEARNER_SKIP_POLYGON_V1\n'
+          anchor='def enable_polygon_live(app) -> None:\n    marker = Path(app.data_dir) / MARKER\n'
+          if marker not in s:
+              if anchor not in s:
+                  raise SystemExit('REFUSED: polygon migration anchor missing')
+              replacement=(
+                  'def enable_polygon_live(app) -> None:\n'
+                  + marker
+                  + '    isolated_data = Path("/home/ayman01323/BOOT/testingbots/learn/data").resolve()\n'
+                  + '    try:\n'
+                  + '        if Path(app.data_dir).resolve() == isolated_data:\n'
+                  + '            print("[polygon-live] skipped=true reason=isolated-solana-learner")\n'
+                  + '            return\n'
+                  + '    except Exception:\n'
+                  + '        pass\n'
+                  + '    marker = Path(app.data_dir) / MARKER\n'
+              )
+              s=s.replace(anchor,replacement,1)
+              p.write_text(s,encoding='utf-8')
+              print('polygon_isolated_guard=APPLIED')
+          else:
+              print('polygon_isolated_guard=ALREADY_PRESENT')
+          if 'ISOLATED_SOLANA_LEARNER_SKIP_POLYGON_V1' not in p.read_text(encoding='utf-8'):
+              raise SystemExit('REFUSED: guard not present after patch')
+          PY
+
+          PYBIN="$LEARN/.venv/bin/python"
+          [[ -x "$PYBIN" ]] || PYBIN="$LEARN/.wallet-venv/bin/python"
+          "$PYBIN" -m py_compile "$FILE"
+
+          systemctl reset-failed learnerbot-learn.service || true
+          BEFORE="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo 0)"
+          systemctl restart learnerbot-learn.service
+          sleep 10
+          STATE1="$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          R1="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo 0)"
+          sleep 20
+          STATE2="$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          R2="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo 0)"
+
+          echo "learner_state_after_10s=$STATE1"
+          echo "learner_state_after_30s=$STATE2"
+          echo "restarts_before=$BEFORE"
+          echo "restarts_after_10s=$R1"
+          echo "restarts_after_30s=$R2"
+          test "$STATE1" = active
+          test "$STATE2" = active
+          test "$R2" = "$R1"
+
+          DB="$LEARN/data/solana_sibot.sqlite3"
+          if [[ -f "$DB" ]]; then
+            python3 - "$DB" <<'PY'
+          import sqlite3,sys
+          db=sys.argv[1]
+          con=sqlite3.connect(f'file:{db}?mode=ro',uri=True,timeout=3)
+          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          print('learner_db=READY')
+          print('positions_table=' + ('YES' if 'positions' in tables else 'NO'))
+          if 'positions' in tables:
+              print('live_positions_total='+str(con.execute("select count(*) from positions where mode='LIVE'").fetchone()[0]))
+              print('live_positions_open='+str(con.execute("select count(*) from positions where mode='LIVE' and status='OPEN'").fetchone()[0]))
+          con.close()
+          PY
+          else
+            echo 'learner_db=MISSING'
+          fi
+
+          echo "telegram_relay=$(systemctl is-active google-learner-telegram-relay.service 2>/dev/null || true)"
+          echo "master_menu=$(systemctl is-active learnerbot.service 2>/dev/null || true)"
+          echo 'production_polygon_files_changed=NO'
+          echo 'isolated_learner_polygon_migration=SKIPPED'
+          journalctl -u learnerbot-learn.service --since '2 minutes ago' --no-pager 2>/dev/null \
+            | grep -Ei 'polygon-live|RuntimeError|Traceback|started|ready|error|warning' \
+            | tail -40 \
+            | sed -E 's#https?://[^ ]+#URL_REDACTED#g' || true
+          ROOTSCRIPT
+
+          sed -i "s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 0755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Fix isolated learner Polygon startup crash
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 0644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT" >/dev/null
+          sudo -n /usr/bin/systemctl daemon-reload
+          RC=0
+          sudo -n /usr/bin/systemctl start "$NAME" || RC=$?
+          cat "$RESULT" 2>/dev/null || true
+          exit "$RC"
