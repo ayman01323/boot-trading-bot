@@ -318,6 +318,12 @@ def process_leader_event(app, event: dict):
         if rank is None:
             continue
         if event["action"] == "BUY":
+            # Learner-only STOP blocks new BUYs but deliberately leaves
+            # solana_live_enabled on so open LIVE positions can still be
+            # monitored and exited by the existing safety/leader rules.
+            if not user_bool(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "learner_new_entries_enabled", False):
+                actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LEARNER new entries OFF; exit monitoring remains active"})
+                continue
             max_positions = max(1, min(5, _sol._int(cfg.get("live_max_positions"), 1)))
             if _open_live_count(app, tid) >= max_positions or _sol._open_position(app, tid, event["mint"]):
                 actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LIVE position limit/already held"})
