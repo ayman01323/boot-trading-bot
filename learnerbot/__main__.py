@@ -177,5 +177,7 @@ from . import ai_agent_ws_runtime_patch  # noqa: F401
 # Absolute final fail-closed composition gate after every late runtime wrapper.
 # Verification only: never repairs/rebinds a hook or changes trading settings.
 from . import final_runtime_integrity_patch  # noqa: F401
+# Permanent MASTER Telegram bridge to the isolated Google learner wallet/LIVE controls.
+from . import telegram_google_learner_launcher_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
