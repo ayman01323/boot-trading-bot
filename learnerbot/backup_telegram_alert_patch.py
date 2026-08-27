@@ -19,6 +19,9 @@ _PREV_APP = _cli._app
 POLL_SECONDS = 60
 FAILURE_ALERT_INTERVAL_SECONDS = 60 * 60
 FIRST_FAILURE_HOUR_LOCAL = 4
+# Temporarily silence only BotBuc backup FAILURE Telegram alerts. The backup
+# worker/retries and the one-off SUCCESS verification notification remain active.
+FAILURE_ALERTS_ENABLED = False
 
 
 def _log(message: str) -> None:
@@ -174,6 +177,9 @@ def check_backup_alerts(app, now: datetime | None = None) -> str:
         _send_success_once(app, day, verification)
         return "success"
 
+    if not FAILURE_ALERTS_ENABLED:
+        return "failure-alerts-disabled"
+
     first_failure = now.replace(
         hour=FIRST_FAILURE_HOUR_LOCAL,
         minute=0,
@@ -215,7 +221,7 @@ def start_backup_alert_thread(app) -> threading.Thread | None:
         )
         thread.start()
         _STARTED = True
-        _log("MASTER success alerts + hourly failure alerts enabled")
+        _log("MASTER success alerts enabled; backup failure alerts temporarily disabled")
         return thread
 
 
