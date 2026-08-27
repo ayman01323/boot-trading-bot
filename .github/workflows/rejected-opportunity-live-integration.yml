@@ -1,0 +1,332 @@
+name: Rejected Opportunity Live Integration
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/rejected_opportunity_publisher.py'
+      - 'SiRisky/overrides/sirisky/rejected_queue.py'
+      - 'scripts/install_rejected_opportunity_live_integration.py'
+      - '.github/workflows/rejected-opportunity-live-integration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rejected-opportunity-live-integration
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    env:
+      MAIN_ROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
+      CLAUDE_ROOT: /home/ayman01323/ClaudeServer/boot-trading-bot
+      SIRISKY_ROOT: /root/SiRisky
+      BOOT_ROOT: /home/ayman01323/BOOT
+      QUEUE_ROOT: /home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY
+      CODE_ROOT: /home/ayman01323/BOOT/datacentre/rejected_router
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify runner and compile installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n true
+          python3 -m py_compile scripts/install_rejected_opportunity_live_integration.py \
+            learnerbot/rejected_opportunity_publisher.py \
+            SiRisky/overrides/sirisky/rejected_queue.py
+          test -d "$MAIN_ROOT/learnerbot"
+          test -d "$SIRISKY_ROOT/sirisky"
+          echo "runner_and_source_preflight=PASS"
+
+      - name: Backup current runtime files
+        shell: bash
+        run: |
+          set -euo pipefail
+          TS="$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP="$BOOT_ROOT/backups/rejected-opportunity-$TS"
+          sudo -n mkdir -p "$BACKUP/main" "$BACKUP/sirisky" "$BACKUP/claude"
+          for f in \
+            learnerbot/solana_pool_risk_gate.py \
+            learnerbot/sibot1_solana_live_bridge_patch.py \
+            learnerbot/sibot1_live_bridge_patch.py; do
+            sudo -n cp -a "$MAIN_ROOT/$f" "$BACKUP/main/$(basename "$f")"
+          done
+          sudo -n cp -a "$SIRISKY_ROOT/sirisky/engine.py" "$BACKUP/sirisky/engine.py"
+          sudo -n cp -a "$SIRISKY_ROOT/CSV/runtime.csv" "$BACKUP/sirisky/runtime.csv"
+          if [[ -d "$CLAUDE_ROOT/learnerbot" ]]; then
+            sudo -n cp -a "$CLAUDE_ROOT/learnerbot/solana_pool_risk_gate.py" "$BACKUP/claude/solana_pool_risk_gate.py"
+          fi
+          echo "BACKUP=$BACKUP" >> "$GITHUB_ENV"
+          echo "backup=$BACKUP"
+
+      - name: Install latest central queue code
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$QUEUE_ROOT" "$CODE_ROOT"
+          rm -rf "$CODE_ROOT/boot_platform"
+          cp -a boot_platform "$CODE_ROOT/boot_platform"
+          for bot in learnerbot claude gpt gemini grok future; do
+            mkdir -p "$QUEUE_ROOT/inbox/$bot" "$QUEUE_ROOT/processed/$bot" "$QUEUE_ROOT/failed/$bot"
+          done
+          PYTHONPATH="$CODE_ROOT" BOOT_REJECTED_OPPORTUNITY_DIR="$QUEUE_ROOT" \
+            python3 -m boot_platform.rejected_opportunity_queue --root "$QUEUE_ROOT" init
+          chmod 0755 "$BOOT_ROOT/data/candidates" "$QUEUE_ROOT" "$CODE_ROOT"
+          chmod 0660 "$QUEUE_ROOT/high_risk_queue.sqlite3" || true
+          echo "central_queue_code=INSTALLED"
+
+      - name: Patch current running bot code
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_WORKSPACE" --main-root "$MAIN_ROOT" --sirisky-root "$SIRISKY_ROOT")
+          if [[ -d "$CLAUDE_ROOT/learnerbot" ]]; then
+            args+=(--claude-root "$CLAUDE_ROOT")
+          fi
+          sudo -n python3 scripts/install_rejected_opportunity_live_integration.py "${args[@]}"
+
+          sudo -n python3 -m py_compile \
+            "$MAIN_ROOT/learnerbot/rejected_opportunity_publisher.py" \
+            "$MAIN_ROOT/learnerbot/solana_pool_risk_gate.py" \
+            "$MAIN_ROOT/learnerbot/sibot1_solana_live_bridge_patch.py" \
+            "$MAIN_ROOT/learnerbot/sibot1_live_bridge_patch.py" \
+            "$SIRISKY_ROOT/sirisky/rejected_queue.py" \
+            "$SIRISKY_ROOT/sirisky/engine.py"
+          if [[ -d "$CLAUDE_ROOT/learnerbot" ]]; then
+            sudo -n python3 -m py_compile \
+              "$CLAUDE_ROOT/learnerbot/rejected_opportunity_publisher.py" \
+              "$CLAUDE_ROOT/learnerbot/solana_pool_risk_gate.py"
+          fi
+          echo "runtime_patch_compile=PASS"
+
+      - name: Enable SiRisky automatic queue consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env ROOT="$SIRISKY_ROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'CSV'/'runtime.csv'
+          with p.open(newline='',encoding='utf-8') as fh:
+              rows=list(csv.DictReader(fh))
+          fields=list(rows[0].keys()) if rows else ['setting','value','notes']
+          by={str(r.get('setting') or ''):r for r in rows}
+          wanted={
+              'rejected_opportunity_consumer_enabled':'1',
+              'rejected_opportunity_claim_lease_seconds':'120',
+          }
+          for key,value in wanted.items():
+              if key in by:
+                  by[key]['value']=value
+              else:
+                  row={k:'' for k in fields}
+                  row.update({'setting':key,'value':value,'notes':'Central REJECTED OPPORTUNITY queue'})
+                  rows.append(row); by[key]=row
+          tmp=p.with_suffix('.csv.tmp')
+          with tmp.open('w',newline='',encoding='utf-8') as fh:
+              w=csv.DictWriter(fh,fieldnames=fields)
+              w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+          PY
+          sudo -n grep -q '^rejected_opportunity_consumer_enabled,1,' "$SIRISKY_ROOT/CSV/runtime.csv"
+          echo "sirisky_queue_consumer=ENABLED"
+
+      - name: Install root bridge fallback service
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n tee /etc/systemd/system/boot-rejected-opportunity-bridge.service >/dev/null <<EOF
+          [Unit]
+          Description=BOOT Central Rejected Opportunity Bridge
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=root
+          Environment="PYTHONPATH=$CODE_ROOT"
+          Environment="BOOT_REJECTED_OPPORTUNITY_DIR=$QUEUE_ROOT"
+          ExecStart=/usr/bin/python3 -m boot_platform.rejected_opportunity_bridge --root "$QUEUE_ROOT" --sibot1-db "$MAIN_ROOT/data/sibot1_solana_live_bridge.sqlite3" --sibot1-db "$CLAUDE_ROOT/data/sibot1_solana_live_bridge.sqlite3" --sibot1-db "$CLAUDE_ROOT/runtime/data/sibot1_solana_live_bridge.sqlite3" --loop-seconds 2
+          Restart=always
+          RestartSec=2
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sudo -n systemctl daemon-reload
+          sudo -n systemctl enable --now boot-rejected-opportunity-bridge.service
+          sleep 2
+          sudo -n systemctl is-active --quiet boot-rejected-opportunity-bridge.service
+          echo "root_bridge_service=ACTIVE"
+
+      - name: Enable direct publisher environment on running bots
+        shell: bash
+        run: |
+          set -euo pipefail
+          make_dropin() {
+            unit="$1"; source_bot="$2"
+            sudo -n mkdir -p "/etc/systemd/system/${unit}.d"
+            sudo -n tee "/etc/systemd/system/${unit}.d/rejected-opportunity.conf" >/dev/null <<EOF
+          [Service]
+          Environment="BOOT_REJECTED_OPPORTUNITY_ENABLED=1"
+          Environment="BOOT_REJECTED_OPPORTUNITY_DIR=$QUEUE_ROOT"
+          Environment="BOOT_REJECTED_OPPORTUNITY_CODE_ROOT=$CODE_ROOT"
+          Environment="BOOT_REJECTED_SOURCE_BOT=$source_bot"
+          EOF
+          }
+
+          MAIN_UNITS=()
+          while read -r unit; do
+            [[ -z "$unit" ]] && continue
+            wd="$(sudo -n systemctl show "$unit" -p WorkingDirectory --value 2>/dev/null || true)"
+            ex="$(sudo -n systemctl show "$unit" -p ExecStart --value 2>/dev/null || true)"
+            if [[ "$wd $ex" == *"$MAIN_ROOT"* ]]; then
+              MAIN_UNITS+=("$unit")
+              make_dropin "$unit" learnerbot
+            fi
+          done < <(sudo -n systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}')
+
+          if sudo -n systemctl cat claude-trading-bot.service >/dev/null 2>&1; then
+            make_dropin claude-trading-bot.service claude
+          fi
+          make_dropin sirisky.service sirisky
+          sudo -n systemctl daemon-reload
+
+          printf '%s\n' "${MAIN_UNITS[@]}" > "$RUNNER_TEMP/rejected-main-units.txt"
+          echo "main_units=${MAIN_UNITS[*]:-(none)}"
+
+      - name: Test direct writers without polluting live queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          for bot in learnerbot claude gpt gemini grok; do
+            BOOT_REJECTED_OPPORTUNITY_ENABLED=1 \
+            BOOT_REJECTED_SOURCE_BOT="$bot" \
+            BOOT_REJECTED_OPPORTUNITY_DIR="$TMP/$bot" \
+            BOOT_REJECTED_OPPORTUNITY_CODE_ROOT="$CODE_ROOT" \
+            PYTHONPATH="$MAIN_ROOT:$CODE_ROOT" \
+            "$MAIN_ROOT/.venv/bin/python" - <<'PY'
+          import os
+          from learnerbot.rejected_opportunity_publisher import publish_rejection
+          r=publish_rejection(chain='solana', token_address='WriterSmokeMint', source=os.environ['BOOT_REJECTED_SOURCE_BOT'],
+              rejection_class='LP_CONCENTRATION_RISK', rejection_reason='LP unlocked smoke test',
+              source_event_id='writer-smoke', require_market_reason=False,
+              payload={'risk_class':'LP_CONCENTRATION_RISK'})
+          assert r is not None
+          print('writer_smoke='+os.environ['BOOT_REJECTED_SOURCE_BOT']+':PASS')
+          PY
+          done
+
+      - name: Restart live services safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -s "$RUNNER_TEMP/rejected-main-units.txt" ]]; then
+            while read -r unit; do
+              [[ -z "$unit" ]] && continue
+              sudo -n systemctl restart "$unit"
+            done < "$RUNNER_TEMP/rejected-main-units.txt"
+          fi
+          if sudo -n systemctl cat claude-trading-bot.service >/dev/null 2>&1; then
+            sudo -n systemctl restart claude-trading-bot.service
+          fi
+          sudo -n systemctl restart sirisky.service
+          sleep 12
+
+          if [[ -s "$RUNNER_TEMP/rejected-main-units.txt" ]]; then
+            while read -r unit; do
+              [[ -z "$unit" ]] && continue
+              test "$(sudo -n systemctl is-active "$unit")" = active
+            done < "$RUNNER_TEMP/rejected-main-units.txt"
+          fi
+          if sudo -n systemctl cat claude-trading-bot.service >/dev/null 2>&1; then
+            test "$(sudo -n systemctl is-active claude-trading-bot.service)" = active
+          fi
+          test "$(sudo -n systemctl is-active sirisky.service)" = active
+          echo "live_service_restart=PASS"
+
+      - name: Verify production hooks and queue activity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'rejected_opportunity_publisher import publish_rejection' "$MAIN_ROOT/learnerbot/solana_pool_risk_gate.py"
+          grep -q 'source_runtime.*sibot1_solana_live_bridge' "$MAIN_ROOT/learnerbot/sibot1_solana_live_bridge_patch.py"
+          grep -q 'source_runtime.*sibot1_evm_live_bridge' "$MAIN_ROOT/learnerbot/sibot1_live_bridge_patch.py"
+          grep -q 'REJECTED_OPPORTUNITY_QUEUE' "$SIRISKY_ROOT/sirisky/engine.py"
+          grep -q 'rejected_opportunity_consumer_enabled,1' "$SIRISKY_ROOT/CSV/runtime.csv"
+          if [[ -d "$CLAUDE_ROOT/learnerbot" ]]; then
+            grep -q 'rejected_opportunity_publisher import publish_rejection' "$CLAUDE_ROOT/learnerbot/solana_pool_risk_gate.py"
+          fi
+
+          sleep 8
+          sudo -n env QUEUE_ROOT="$QUEUE_ROOT" python3 - <<'PY'
+          import json, os, sqlite3
+          from pathlib import Path
+          db=Path(os.environ['QUEUE_ROOT'])/'high_risk_queue.sqlite3'
+          conn=sqlite3.connect(db)
+          conn.row_factory=sqlite3.Row
+          print('=== QUEUE SOURCES ===')
+          rows=conn.execute("SELECT source_bot,COUNT(*) n,MAX(observed_at) latest FROM refusal_observations GROUP BY source_bot ORDER BY source_bot").fetchall()
+          for r in rows:
+              print(f"source_bot={r['source_bot']} observations={r['n']} latest={r['latest']}")
+          print('=== QUEUE STATUS ===')
+          for r in conn.execute("SELECT status,COUNT(*) n FROM candidates GROUP BY status ORDER BY status"):
+              print(f"status={r['status']} count={r['n']}")
+          print('=== SIRISKY DECISIONS ===')
+          for r in conn.execute("SELECT decision,COUNT(*) n,MAX(examined_at) latest FROM sirisky_decisions GROUP BY decision ORDER BY decision"):
+              print(f"decision={r['decision']} count={r['n']} latest={r['latest']}")
+          print('=== RECENT OBSERVATIONS ===')
+          for r in conn.execute("SELECT source_bot,candidate_id,rejection_class,observed_at FROM refusal_observations ORDER BY observation_id DESC LIMIT 12"):
+              print(json.dumps(dict(r),sort_keys=True))
+          conn.close()
+          PY
+
+          echo '=== SERVICE USERS ==='
+          echo "sirisky_user=$(sudo -n systemctl show sirisky.service -p User --value)"
+          if sudo -n systemctl cat claude-trading-bot.service >/dev/null 2>&1; then
+            echo "claude_user=$(sudo -n systemctl show claude-trading-bot.service -p User --value)"
+          fi
+          if [[ -s "$RUNNER_TEMP/rejected-main-units.txt" ]]; then
+            while read -r unit; do
+              [[ -z "$unit" ]] && continue
+              echo "main_unit=$unit user=$(sudo -n systemctl show "$unit" -p User --value) active=$(sudo -n systemctl is-active "$unit")"
+            done < "$RUNNER_TEMP/rejected-main-units.txt"
+          fi
+          echo "integration_verify=PASS"
+
+      - name: Failure rollback note
+        if: failure()
+        shell: bash
+        run: |
+          echo "Integration failed. Runtime backups are at: ${BACKUP:-unknown}"
+          echo "No automatic rollback is attempted after a service restart because concurrent runtime changes may have occurred; backup path is retained for controlled recovery."
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## REJECTED OPPORTUNITY live integration'
+            echo
+            echo "- Queue: \`$QUEUE_ROOT/high_risk_queue.sqlite3\`"
+            echo '- Direct source hooks: Learnerbot pool-risk, SiBot1 Solana engines, SiBot1 EVM/GPT, Claude pool-risk'
+            echo '- Root bridge fallback/backfill: enabled'
+            echo '- SiRisky NEW/RECHECK consumer: enabled'
+            echo '- SiRisky still uses normal Stage 1-5 and manual/signing gates'
+            echo "- Backup: \`${BACKUP:-unknown}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
