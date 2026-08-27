@@ -1,0 +1,55 @@
+name: BOOT VPS Safe Space Recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/boot-vps-safe-space-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: boot-vps-safe-space-recovery
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 8
+    steps:
+      - name: Free runner-owned ephemeral disk space only
+        shell: bash
+        run: |
+          set -u
+          echo '=== BEFORE ==='
+          df -h / || true
+          df -ih / || true
+          du -sh /opt/actions-runner/_diag /opt/actions-runner/_work/_temp "$HOME/.cache" 2>/dev/null || true
+
+          # Runner diagnostic logs are telemetry, not production data. Keep files
+          # touched in the last hour so active jobs are not disturbed.
+          find /opt/actions-runner/_diag -type f -mmin +60 -user "$(id -un)" -delete 2>/dev/null || true
+
+          # GitHub Actions temporary files are disposable after their job. Remove
+          # only runner-owned files/directories older than two hours.
+          find /opt/actions-runner/_work/_temp -mindepth 1 -mmin +120 -user "$(id -un)" -delete 2>/dev/null || true
+          find /opt/actions-runner/_work/_temp -mindepth 1 -type d -empty -mmin +120 -user "$(id -un)" -delete 2>/dev/null || true
+
+          # Language/package caches are reproducible and do not contain bot DBs,
+          # wallet state or repository working data.
+          if [[ -d "$HOME/.cache" ]]; then
+            find "$HOME/.cache" -mindepth 1 -user "$(id -un)" -delete 2>/dev/null || true
+          fi
+
+          # Clear only stale runner-owned /tmp artefacts. Production files under
+          # /root and /var/tmp/boot are deliberately untouched.
+          find /tmp -xdev -user "$(id -un)" -mmin +360 -type f -delete 2>/dev/null || true
+          find /tmp -xdev -user "$(id -un)" -mmin +360 -type d -empty -delete 2>/dev/null || true
+
+          sync || true
+          echo '=== AFTER ==='
+          df -h / || true
+          df -ih / || true
+          du -sh /opt/actions-runner/_diag /opt/actions-runner/_work/_temp "$HOME/.cache" 2>/dev/null || true
