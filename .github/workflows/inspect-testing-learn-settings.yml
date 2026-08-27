@@ -1,0 +1,96 @@
+name: Inspect Testing Learner Settings
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-testing-learn-settings.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect isolated learner safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          echo "TARGET=$target"
+          echo "--- snapshot ---"
+          cat "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          echo "--- runtime paths ---"
+          for p in "$target/CSVbot" "$target/data" "$target/CSVbot/solana_settings.csv" "$target/CSVbot/auto/solana_user_wallets.csv"; do
+            if [[ -e "$p" ]]; then echo "EXISTS $p"; else echo "MISSING $p"; fi
+          done
+          echo "--- source defaults ---"
+          python3 - <<'PY'
+          import ast, pathlib, re
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          src=(root/'learnerbot/solana_sibot.py').read_text(encoding='utf-8')
+          tree=ast.parse(src)
+          defaults={}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id=='DEFAULTS' for t in node.targets):
+                  defaults=ast.literal_eval(node.value)
+                  break
+          live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
+          m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)', live, re.S)
+          if m:
+              extra=ast.literal_eval('{'+m.group(1)+'}')
+              defaults.update(extra)
+          keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
+          for k in keys:
+              if k in defaults: print(f'{k}={defaults[k][0]}')
+          PY
+          echo "--- runtime solana settings if present ---"
+          if [[ -f "$target/CSVbot/solana_settings.csv" ]]; then
+            python3 - <<'PY'
+          import csv, pathlib
+          p=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          allowed={'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds'}
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  if r.get('setting') in allowed: print(f"{r['setting']}={r.get('value','')}")
+          PY
+          else
+            echo "NO_RUNTIME_SETTINGS_FILE"
+          fi
+          echo "--- user/wallet readiness ---"
+          python3 - <<'PY'
+          import csv, pathlib
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
+          user_files=[root/'users.csv',root/'auto/users.csv',root/'user_registry.csv',root/'auto/user_registry.csv']
+          users=[]
+          for p in user_files:
+              if p.exists():
+                  try:
+                      with p.open(encoding='utf-8-sig',newline='') as f:
+                          rows=list(csv.DictReader(f))
+                      print(f'USER_FILE={p} ROWS={len(rows)}')
+                      users.extend(rows)
+                  except Exception as e: print(f'USER_FILE_ERROR={p}:{type(e).__name__}')
+          tids=[]
+          for r in users:
+              tid=str(r.get('telegram_id') or '').strip()
+              if tid and tid not in tids: tids.append(tid)
+          print('UNIQUE_TELEGRAM_USERS='+str(len(tids)))
+          wp=root/'auto/solana_user_wallets.csv'
+          if wp.exists():
+              with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+              print('SOLANA_WALLETS='+str(len(rows)))
+              for r in rows:
+                  addr=str(r.get('address') or '')
+                  print('WALLET address='+addr+' signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
+          else:
+              print('SOLANA_WALLETS=0')
+          PY
+          echo "live_execution_started=NO"
+          echo "production_service_restart=NO"
