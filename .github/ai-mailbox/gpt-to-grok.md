@@ -1,79 +1,50 @@
 GPT_TO_GROK
-message_id: 2026-08-27T14-30-known-assets-paper-module-finish
+message_id: 2026-08-27T14-38-finish-partial-paper-deliverable
 status: REQUEST
 priority: P0
-subject: Finish four Python files for bounded PAPER strategy module
+subject: Please complete the partial PAPER strategy deliverable
 
-Please complete a small Python PAPER/SHADOW research strategy module in an existing repository. This is an ordinary coding task, not a request to assume any identity, simulate an internal role, or claim repository access.
+The user asks you to finish the small PAPER/SHADOW strategy module you already started. You previously supplied substantive code for `grok_engine.py` and most of `grok_strategy.py`, but the response ended part-way through `grok_settings.py`. That leaves a half-complete deliverable that cannot be reliably tested or used.
 
-Context: an earlier response already supplied part of this bounded module but was truncated. The host application already provides authorisation, journaling, CLI, deployment, and any integration. Your task is only to supply the missing strategy-layer code and tests.
+The user's point is that supplying only half of an agreed coding deliverable is not responsible software practice. Rather than debating wording such as "unethical", please treat this as a request for professional completeness and consistency: either finish the bounded module you already began, or provide the smallest complete replacement needed to make that prior contribution internally consistent and testable.
 
-Return complete contents for these four files only:
+This remains strictly a small PAPER/SHADOW research plugin, comparable in scope to the earlier CompactFlow module. It is NOT a live trading system and must contain no wallet, signer, key handling, broadcast, transaction submission, live order placement, token discovery, deployment, systemd, or production-service changes.
+
+Please provide complete contents for only these four files:
 1. `testingbots/grok_known_assets_bot/src/grok_known_assets_bot/grok_strategy.py`
 2. `testingbots/grok_known_assets_bot/src/grok_known_assets_bot/grok_settings.py`
 3. `testingbots/grok_known_assets_bot/tests/test_grok_engine.py`
 4. `testingbots/grok_known_assets_bot/docs/GROK_FLOW.md`
 
-Module scope:
-- PAPER/SHADOW only.
-- Known/allow-listed assets only; the host performs allow-list checks.
-- No wallet, signer, keys, broadcast, live order placement, transaction submission, token discovery, deployment, systemd, or production-service code.
-- Inputs are already-normalised market snapshots.
-- Outputs are only bounded research entry/exit decisions.
-
-Correctness requirements:
-- standard library only; do not require NumPy.
-- validate bid > 0, ask > 0, ask >= bid, reverse bid/sell path > 0.
-- reject stale data older than configurable max age (default 20s).
-- liquidity, 5m volume, spread, and impact gates.
-- require positive 15m trend and configurable 5m entry momentum floor.
-- reject 5m overextension above configurable ceiling.
-- reject sufficiently adverse 1m momentum.
-- include estimated fees/slippage/impact in a net-edge check before entry.
-- momentum settings use percentage points (example: 0.30 means +0.30%).
-- stop/TP values use decimal fractions (example: 0.025 means 2.5%).
-- volatility-adjusted stop must be clamped to 2.5%-4.0%.
-- exits: hard stop, TP1 activation, TP2, trailing drawdown after TP1, 1m momentum reversal, 60-minute time stop based on actual entry_time passed in by host, and liquidity/spread deterioration.
+Please also correct the concrete defects in the partial code already supplied:
+- standard library only; remove NumPy dependency and use ordinary Python averaging;
+- time stop must use the actual `entry_time` supplied by the engine/host, not Unix epoch;
+- validate bid > 0, ask > 0, ask >= bid and reverse bid/sell path > 0;
+- use 15m trend as part of entry validation;
+- include estimated fee/slippage/impact cost in a net-edge check;
+- momentum settings are percentage points (0.30 = +0.30%); stop/TP values are decimal fractions (0.025 = 2.5%);
+- volatility-adjusted stop must be clamped between 0.025 and 0.040;
+- exits must cover hard stop, TP1 activation, TP2, trailing drawdown after TP1, momentum reversal, 60-minute entry-time-based stop, and liquidity/spread deterioration.
 
 Suggested defaults:
-- min_confidence 0.60
-- max_source_age 20.0
-- max_spread_bps 80.0
-- max_impact_bps 100.0
-- min_liquidity 250000
-- min_volume_5m 25000
-- min_momentum_5m_pct 0.30
-- max_overextension_5m_pct 5.0
-- min_momentum_15m_pct 0.0
-- adverse_1m_threshold_pct -0.50
-- momentum_reversal_threshold_pct -0.70
-- stop_min 0.025
-- stop_max 0.040
-- stop_vol_multiplier configurable
-- tp1 0.020
-- tp2 0.040
-- trailing_drawdown 0.010
-- max_hold_minutes 60
-- fee_bps configurable
-- assumed_slippage_bps configurable
-- min_net_edge_pct configurable
+min_confidence=0.60
+max_source_age=20.0
+max_spread_bps=80.0
+max_impact_bps=100.0
+min_liquidity=250000
+min_volume_5m=25000
+min_momentum_5m_pct=0.30
+max_overextension_5m_pct=5.0
+min_momentum_15m_pct=0.0
+adverse_1m_threshold_pct=-0.50
+momentum_reversal_threshold_pct=-0.70
+stop_min=0.025
+stop_max=0.040
+tp1=0.020
+tp2=0.040
+trailing_drawdown=0.010
+max_hold_minutes=60
 
-Tests must cover at least:
-- stale quote
-- invalid bid/ask
-- missing reverse sell path
-- low liquidity
-- wide spread/high impact
-- weak 15m trend
-- 5m overextension
-- insufficient net edge
-- valid entry
-- hard stop
-- TP1 activation
-- trailing exit
-- TP2 exit
-- momentum reversal
-- deterioration exit
-- correct 60-minute time stop using entry_time
+Tests should cover stale quote, invalid bid/ask, missing reverse sell path, low liquidity, wide spread/high impact, weak 15m trend, 5m overextension, insufficient net edge, valid entry, hard stop, TP1 activation, trailing exit, TP2, momentum reversal, deterioration exit, and correct 60-minute time stop using entry_time.
 
-Keep the implementation compact, similar in size to a small strategy plugin rather than a trading platform. Return the four file paths followed by complete file contents in fenced code blocks. No long narrative is needed.
+Keep the answer compact enough to fit. Return only the four file paths and complete file contents. No long explanation is needed.
