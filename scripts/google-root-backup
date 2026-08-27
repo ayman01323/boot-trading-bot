@@ -31,10 +31,11 @@ done
 
 install -d -o "$RUN_USER" -g "$RUN_GROUP" -m 700 "$DEST_ROOT" "$DAY_DIR"
 
-make_archive() {
-  label="$1"
+make_zip() {
+  filename="$1"
   source="$2"
-  archive="$WORK/${label}.tar.gz"
+  root_name="$3"
+  archive="$WORK/${filename}.zip"
   resolved="$(readlink -f -- "$source")"
 
   if [ -z "$resolved" ] || [ ! -d "$resolved" ]; then
@@ -42,42 +43,80 @@ make_archive() {
     exit 1
   fi
 
-  echo "$resolved" > "$WORK/${label}.realpath"
+  python3 - "$resolved" "$archive" "$root_name" <<'PY'
+import os
+import stat
+import sys
+import zipfile
+from pathlib import Path
 
-  # Archive the CONTENTS of the real directory, not a top-level symlink object.
-  # Internal symlinks remain symlinks; only the configured source path itself is resolved.
-  # GNU tar may report files changing while read; tolerate only that live-tree
-  # condition, then require the resulting gzip/tar structure and sanity gates to pass.
-  set +e
-  tar --warning=no-file-changed -C "$resolved" -czf "$archive" .
-  rc=$?
-  set -e
-  if [ "$rc" -gt 1 ]; then
-    echo "tar failed for $source (resolved=$resolved) with rc=$rc" >&2
-    exit "$rc"
-  fi
+src = Path(sys.argv[1])
+out = Path(sys.argv[2])
+root_name = sys.argv[3].rstrip('/')
 
-  tar -tzf "$archive" >/dev/null
-  entry_count="$(tar -tzf "$archive" | wc -l)"
+
+def add_symlink(zf, path, arcname):
+    info = zipfile.ZipInfo(arcname)
+    info.create_system = 3
+    info.external_attr = (stat.S_IFLNK | 0o777) << 16
+    zf.writestr(info, os.readlink(path).encode())
+
+with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
+    for current, dirs, files in os.walk(src, topdown=True, followlinks=False):
+        current_path = Path(current)
+        rel = current_path.relative_to(src)
+        arcdir = root_name if str(rel) == '.' else f"{root_name}/{rel.as_posix()}"
+
+        info = zipfile.ZipInfo(arcdir.rstrip('/') + '/')
+        info.create_system = 3
+        info.external_attr = (stat.S_IFDIR | 0o755) << 16
+        zf.writestr(info, b'')
+
+        for dirname in list(dirs):
+            p = current_path / dirname
+            if p.is_symlink():
+                add_symlink(zf, p, f"{arcdir}/{dirname}")
+                dirs.remove(dirname)
+
+        for filename in files:
+            p = current_path / filename
+            arcname = f"{arcdir}/{filename}"
+            if p.is_symlink():
+                add_symlink(zf, p, arcname)
+            else:
+                zf.write(p, arcname)
+
+with zipfile.ZipFile(out, 'r') as zf:
+    bad = zf.testzip()
+    if bad is not None:
+        raise SystemExit(f"ZIP integrity failure at {bad}")
+    entries = len(zf.infolist())
+
+size = out.stat().st_size
+if entries < 5:
+    raise SystemExit(f"ZIP sanity failure: only {entries} entries")
+if size < 4096:
+    raise SystemExit(f"ZIP sanity failure: only {size} bytes")
+print(f"entries={entries}")
+print(f"bytes={size}")
+PY
+
+  entries="$(python3 - "$archive" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'r') as zf:
+    print(len(zf.infolist()))
+PY
+)"
   size_bytes="$(stat -c '%s' "$archive")"
 
-  if [ "$entry_count" -lt 5 ]; then
-    echo "Backup sanity check failed for $source: only $entry_count archive entries" >&2
-    exit 1
-  fi
-  if [ "$size_bytes" -lt 4096 ]; then
-    echo "Backup sanity check failed for $source: archive only $size_bytes bytes" >&2
-    exit 1
-  fi
-
   printf 'source=%s\nresolved=%s\nentries=%s\nbytes=%s\n' \
-    "$source" "$resolved" "$entry_count" "$size_bytes" > "$WORK/${label}.stats"
-  (cd "$WORK" && sha256sum "${label}.tar.gz" > "${label}.tar.gz.sha256")
+    "$source" "$resolved" "$entries" "$size_bytes" > "$WORK/${filename}.stats"
+  (cd "$WORK" && sha256sum "${filename}.zip" > "${filename}.zip.sha256")
 }
 
-make_archive claude-server "$CLAUDE"
-make_archive production-bot "$PROD"
-make_archive sirisky "$SIRISKY"
+make_zip ClaudeServer "$CLAUDE" ClaudeServer
+make_zip multichain-learning-bot-v2.2-fast-direct-market "$PROD" multichain-learning-bot-v2.2-fast-direct-market
+make_zip SiRisky "$SIRISKY" SiRisky
 
 cat > "$WORK/google-protected-folders-manifest.txt" <<EOF
 backup_date=$BACKUP_DATE
@@ -85,32 +124,36 @@ created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
 created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
 hostname=$(hostname)
 claude_source=$CLAUDE
-claude_resolved=$(cat "$WORK/claude-server.realpath")
 production_source=$PROD
-production_resolved=$(cat "$WORK/production-bot.realpath")
 sirisky_source=$SIRISKY
-sirisky_resolved=$(cat "$WORK/sirisky.realpath")
 destination=$DAY_DIR
-note=source path is resolved before archiving; internal symlinks are preserved; tar rc=1 is tolerated only for concurrent file-change warnings
+format=zip
+note=each configured folder is stored as a separate ZIP; configured top-level symlinks are resolved; internal symlinks are preserved as symlink entries
 EOF
 
 for f in \
-  claude-server.tar.gz claude-server.tar.gz.sha256 claude-server.stats \
-  production-bot.tar.gz production-bot.tar.gz.sha256 production-bot.stats \
-  sirisky.tar.gz sirisky.tar.gz.sha256 sirisky.stats \
+  ClaudeServer.zip ClaudeServer.zip.sha256 ClaudeServer.stats \
+  multichain-learning-bot-v2.2-fast-direct-market.zip multichain-learning-bot-v2.2-fast-direct-market.zip.sha256 multichain-learning-bot-v2.2-fast-direct-market.stats \
+  SiRisky.zip SiRisky.zip.sha256 SiRisky.stats \
   google-protected-folders-manifest.txt; do
   install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/$f" "$DAY_DIR/$f"
 done
 
 cd "$DAY_DIR"
-sha256sum -c claude-server.tar.gz.sha256
-sha256sum -c production-bot.tar.gz.sha256
-sha256sum -c sirisky.tar.gz.sha256
+sha256sum -c ClaudeServer.zip.sha256
+sha256sum -c multichain-learning-bot-v2.2-fast-direct-market.zip.sha256
+sha256sum -c SiRisky.zip.sha256
 
-echo "Protected backup completed: $DAY_DIR"
-cat claude-server.stats production-bot.stats sirisky.stats
+# Remove legacy tar archives only after all new ZIPs are installed and verified.
+rm -f \
+  claude-server.tar.gz claude-server.tar.gz.sha256 claude-server.stats \
+  production-bot.tar.gz production-bot.tar.gz.sha256 production-bot.stats \
+  sirisky.tar.gz sirisky.tar.gz.sha256 sirisky.stats
+
+echo "Protected ZIP backup completed: $DAY_DIR"
+cat ClaudeServer.stats multichain-learning-bot-v2.2-fast-direct-market.stats SiRisky.stats
 ls -lh \
-  "$DAY_DIR"/claude-server.tar.gz "$DAY_DIR"/claude-server.tar.gz.sha256 \
-  "$DAY_DIR"/production-bot.tar.gz "$DAY_DIR"/production-bot.tar.gz.sha256 \
-  "$DAY_DIR"/sirisky.tar.gz "$DAY_DIR"/sirisky.tar.gz.sha256 \
+  "$DAY_DIR"/ClaudeServer.zip \
+  "$DAY_DIR"/multichain-learning-bot-v2.2-fast-direct-market.zip \
+  "$DAY_DIR"/SiRisky.zip \
   "$DAY_DIR"/google-protected-folders-manifest.txt
