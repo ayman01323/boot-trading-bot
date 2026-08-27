@@ -1,0 +1,238 @@
+name: Create BOOT Platform Server Skeleton
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/create-boot-platform-skeleton.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  create-skeleton:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Create /srv/BOOT skeleton only
+        shell: bash
+        run: |
+          set -euo pipefail
+          OWNER="$(id -un)"
+          GROUP="$(id -gn)"
+          ROOT=/srv/BOOT
+
+          sudo install -d -o "$OWNER" -g "$GROUP" -m 0755 "$ROOT"
+
+          dirs=(
+            bots
+            bots/learnerbot
+            bots/claude
+            bots/sibot1
+            bots/sibot1/gpt
+            bots/sibot1/gemini
+            bots/sibot1/grok
+            bots/sirisky
+
+            datacentre
+            datacentre/collectors
+            datacentre/collectors/solana
+            datacentre/collectors/evm
+            datacentre/collectors/dex
+            datacentre/collectors/wallets
+            datacentre/collectors/risk
+            datacentre/hot_positions
+            datacentre/normaliser
+            datacentre/feature_engine
+            datacentre/candidate_registry
+            datacentre/candidate_router
+            datacentre/rejected_router
+            datacentre/event_bus
+            datacentre/quote_service
+            datacentre/risk_evidence
+            datacentre/cache
+            datacentre/api
+
+            strategies
+            strategies/workers
+            strategies/buy
+            strategies/sell
+            strategies/selector
+            strategies/marketplace_adapter
+
+            portfolio
+            portfolio/portfolio_controller
+            portfolio/trade_multiplexer
+            portfolio/capital_manager
+            portfolio/position_manager
+            portfolio/order_manager
+            portfolio/fee_engine
+            portfolio/reconciliation
+
+            execution
+            execution/solana
+            execution/evm
+            execution/simulation
+            execution/nonce_manager
+            execution/receipt_manager
+
+            marketplace
+            marketplace/bot_registry
+            marketplace/listings
+            marketplace/creator_accounts
+            marketplace/user_allocations
+            marketplace/ratings
+            marketplace/revenue_share
+
+            users
+            users/accounts
+            users/wallets
+            users/permissions
+            users/preferences
+
+            accounting
+            accounting/user_accounts
+            accounting/system_owner
+            accounting/running_costs
+            accounting/pnl
+            accounting/billing
+            accounting/invoices
+            accounting/fees
+            accounting/reconciliation
+
+            marketing
+            marketing/current_users
+            marketing/growth_plan
+            marketing/campaigns
+            marketing/funnel
+            marketing/analytics
+
+            ai_strategy_monitor
+            ai_strategy_monitor/agents
+            ai_strategy_monitor/reviews
+            ai_strategy_monitor/recommendations
+            ai_strategy_monitor/history
+
+            engineering_monitor
+            engineering_monitor/health
+            engineering_monitor/latency
+            engineering_monitor/resources
+            engineering_monitor/incidents
+            engineering_monitor/recommendations
+            engineering_monitor/history
+
+            strategy_factory
+            strategy_factory/research
+            strategy_factory/experiments
+            strategy_factory/backtests
+            strategy_factory/shadow
+            strategy_factory/canary
+            strategy_factory/live_candidates
+            strategy_factory/reviews
+
+            reporting
+            reporting/realtime
+            reporting/hourly
+            reporting/daily
+            reporting/weekly
+            reporting/monthly
+            reporting/incidents
+            reporting/audit
+            reporting/weak_points
+            reporting/users
+            reporting/system_owner
+
+            common
+            common/CSV
+            common/CSV/bots
+            common/CSV/strategies
+            common/CSV/risk
+            common/CSV/capital
+            common/CSV/data_sources
+            common/CSV/chains
+            common/CSV/dex
+            common/schemas
+            common/contracts
+            common/libraries
+
+            data
+            data/market
+            data/hot
+            data/candidates
+            data/rejected
+            data/strategies
+            data/strategies/learnerbot
+            data/strategies/claude
+            data/strategies/gpt
+            data/strategies/gemini
+            data/strategies/grok
+            data/strategies/sirisky
+            data/learning
+            data/positions
+            data/orders
+            data/trades
+            data/capital
+            data/users
+            data/marketplace
+            data/accounting
+            data/reports
+            data/archive
+            data/postgres
+            data/redis
+
+            runtime
+            runtime/learnerbot
+            runtime/claude
+            runtime/sibot1
+            runtime/sibot1/gpt
+            runtime/sibot1/gemini
+            runtime/sibot1/grok
+            runtime/sirisky
+            runtime/workers
+
+            logs
+            logs/datacentre
+            logs/strategies
+            logs/portfolio
+            logs/execution
+            logs/reporting
+            logs/marketplace
+
+            scripts
+            systemd
+            backups
+          )
+
+          for d in "${dirs[@]}"; do
+            sudo install -d -o "$OWNER" -g "$GROUP" -m 0755 "$ROOT/$d"
+          done
+
+          sudo install -d -o "$OWNER" -g "$GROUP" -m 0700 "$ROOT/secrets"
+
+          echo "=== BOOT SKELETON CREATED ==="
+          echo "root=$ROOT"
+          echo "owner=$OWNER:$GROUP"
+          echo "directories=$(find "$ROOT" -type d | wc -l)"
+          echo
+          find "$ROOT" -maxdepth 3 -type d -printf '%p\n' | sort
+
+      - name: Verify critical folders
+        shell: bash
+        run: |
+          set -euo pipefail
+          for p in \
+            /srv/BOOT/datacentre/hot_positions \
+            /srv/BOOT/data/strategies \
+            /srv/BOOT/portfolio/trade_multiplexer \
+            /srv/BOOT/accounting/billing \
+            /srv/BOOT/marketing/growth_plan \
+            /srv/BOOT/ai_strategy_monitor \
+            /srv/BOOT/engineering_monitor \
+            /srv/BOOT/strategy_factory \
+            /srv/BOOT/reporting/weak_points \
+            /srv/BOOT/secrets; do
+            test -d "$p"
+          done
+          test "$(stat -c '%a' /srv/BOOT/secrets)" = "700"
+          echo "[PASS] BOOT skeleton critical folders verified"
