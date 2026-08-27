@@ -165,3 +165,8 @@ from . import sibot1_trade_event_telegram_patch as _sibot1_trade_event_telegram 
 # Untracked on-chain holdings are recorded as RECONCILIATION_OWNED only; they never
 # become ordinary AI EXIT authority. All execution safety gates remain unchanged.
 from . import sibot1_solana_candidate_state_fix_patch as _sibot1_solana_candidate_state_fix  # noqa: E402,F401
+
+# Reporting-only enhancement loaded last so it sees the final state-aware Solana
+# candidate processor. LIVE PoolCheck block alerts gain a clickable DexScreener
+# search-by-mint link without adding an API/RPC call or changing any safety gate.
+from . import sibot1_solana_poolcheck_dex_link_patch as _sibot1_solana_poolcheck_dex_link  # noqa: E402,F401
