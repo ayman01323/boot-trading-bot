@@ -1,0 +1,43 @@
+name: Diagnose Google Restricted Root Bridge
+
+on:
+  push:
+    branches:
+      - gpt/consolidate-google-test-bots
+    paths:
+      - '.github/workflows/diagnose-google-root-bridge.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect available restricted root helpers
+        shell: bash
+        run: |
+          set -u
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo '=== candidate helpers ==='
+          for p in \
+            /usr/local/sbin/prepare-google-production-bot \
+            /usr/local/sbin/refresh-google-production-bot \
+            /usr/local/sbin/verify-google-production-bot \
+            /usr/local/sbin/backup-namecheap-google \
+            /usr/local/sbin/prepare-namecheap-google-migration \
+            /usr/local/sbin/transfer-namecheap-google-migration \
+            /usr/local/sbin/deploy-boot-trading-bot \
+            /usr/local/sbin/status-boot-trading-bot \
+            /usr/local/sbin/restart-boot-trading-bot; do
+            if [[ -e "$p" ]]; then
+              echo "present=$p"
+              sudo -n -l "$p" 2>&1 | sed 's/^/sudo_list: /' || true
+            else
+              echo "missing=$p"
+            fi
+          done
+          echo '=== sudoers filenames (names only) ==='
+          ls -1 /etc/sudoers.d 2>/dev/null || true
