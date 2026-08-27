@@ -1,4 +1,4 @@
-name: Restore Google WinSCP SSH Access
+name: Diagnose Recurring Google SSH Key Rejection
 
 on:
   push:
@@ -10,42 +10,66 @@ on:
 permissions:
   contents: read
 
-# Existing workflow second-push trigger for Google self-hosted runner.
 jobs:
-  restore-winscp-key:
-    name: Restore WinSCP key for ayman01323 on Google
+  diagnose-google-ssh:
+    name: Diagnose effective SSH authentication on botgoogle
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Add WinSCP public key idempotently
+      - name: Read-only SSH diagnostics
         shell: bash
         run: |
-          set -euo pipefail
+          set -u
           test "$(hostname)" = 'botgoogle'
           test "$(id -un)" = 'ayman01323'
 
-          KEY_TYPE='ssh-ed25519'
           KEY_BODY='AAAAC3NzaC1lZDI1NTE5AAAAIHpZkKAbpMnmuf83u+SbzomxHo6aNjBPbJipZW2aGhok'
-          KEY_LINE="$KEY_TYPE $KEY_BODY winscp-ayman"
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo "home=$HOME"
+          getent passwd "$(id -un)" | awk -F: '{print "passwd_home="$6" shell="$7}'
 
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          touch "$HOME/.ssh/authorized_keys"
-          chmod 600 "$HOME/.ssh/authorized_keys"
-
-          if grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"; then
-            echo 'WINSCP_KEY_ALREADY_PRESENT=true'
+          stat -c 'home_mode=%a home_owner=%U:%G' "$HOME" || true
+          stat -c 'ssh_dir_mode=%a ssh_dir_owner=%U:%G' "$HOME/.ssh" || true
+          if [[ -f "$HOME/.ssh/authorized_keys" ]]; then
+            stat -c 'authorized_keys_mode=%a authorized_keys_owner=%U:%G size=%s' "$HOME/.ssh/authorized_keys" || true
+            echo "authorized_key_lines=$(grep -cve '^[[:space:]]*$' "$HOME/.ssh/authorized_keys" || true)"
+            if grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"; then
+              echo 'winscp_key_present_in_authorized_keys=true'
+              grep -F "$KEY_BODY" "$HOME/.ssh/authorized_keys" | head -1 | ssh-keygen -lf /dev/stdin | awk '{print "winscp_installed_fingerprint="$2}' || true
+            else
+              echo 'winscp_key_present_in_authorized_keys=false'
+            fi
           else
-            printf '%s\n' "$KEY_LINE" >> "$HOME/.ssh/authorized_keys"
-            echo 'WINSCP_KEY_ADDED=true'
+            echo 'authorized_keys_missing=true'
           fi
 
-          chmod 600 "$HOME/.ssh/authorized_keys"
-          test "$(stat -c '%U' "$HOME/.ssh/authorized_keys")" = 'ayman01323'
-          grep -Fq "$KEY_BODY" "$HOME/.ssh/authorized_keys"
+          meta() {
+            local path="$1"
+            curl -fsS -H 'Metadata-Flavor: Google' --max-time 5 "http://metadata.google.internal/computeMetadata/v1/$path" 2>/dev/null || true
+          }
+          echo "instance_enable_oslogin=$(meta instance/attributes/enable-oslogin)"
+          echo "project_enable_oslogin=$(meta project/attributes/enable-oslogin)"
+          echo "instance_block_project_ssh_keys=$(meta instance/attributes/block-project-ssh-keys)"
 
-          EXPECTED_FP="$(printf '%s\n' "$KEY_LINE" | ssh-keygen -lf /dev/stdin | awk '{print $2}')"
-          INSTALLED_FP="$(grep -F "$KEY_BODY" "$HOME/.ssh/authorized_keys" | head -1 | ssh-keygen -lf /dev/stdin | awk '{print $2}')"
-          test "$EXPECTED_FP" = "$INSTALLED_FP"
-          echo "winscp_key_fingerprint=$INSTALLED_FP"
-          echo 'WINSCP_SSH_ACCESS_KEY_VERIFIED=true'
+          for svc in ssh sshd google-guest-agent google-oslogin-cache google-osconfig-agent; do
+            state="$(systemctl is-active "$svc" 2>/dev/null || true)"
+            [[ -n "$state" ]] && echo "service_${svc}=$state"
+          done
+
+          if sudo -n true >/dev/null 2>&1; then
+            echo 'runner_passwordless_sudo=true'
+            if command -v sshd >/dev/null 2>&1; then
+              echo 'SSHD_EFFECTIVE_BEGIN'
+              sudo -n sshd -T -C user=ayman01323,host=botgoogle,addr=127.0.0.1 2>/dev/null \
+                | grep -E '^(pubkeyauthentication|authorizedkeysfile|authorizedkeyscommand|authorizedkeyscommanduser|passwordauthentication|kbdinteractiveauthentication|usepam) ' || true
+              echo 'SSHD_EFFECTIVE_END'
+            fi
+            echo 'SSHD_RELEVANT_CONFIG_BEGIN'
+            sudo -n grep -RniE '^[[:space:]]*(PubkeyAuthentication|AuthorizedKeysFile|AuthorizedKeysCommand|AuthorizedKeysCommandUser|PasswordAuthentication|UsePAM|AuthenticationMethods)[[:space:]]' /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null || true
+            echo 'SSHD_RELEVANT_CONFIG_END'
+          else
+            echo 'runner_passwordless_sudo=false'
+          fi
+
+          echo 'SSH_DIAGNOSTIC_COMPLETE=true'
