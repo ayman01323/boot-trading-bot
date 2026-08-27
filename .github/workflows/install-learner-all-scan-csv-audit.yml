@@ -19,7 +19,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Install schema-adaptive permanent CSV audit
+      - name: Install permanent exact DB-triggered CSV audit
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -34,181 +34,156 @@ jobs:
           #!/usr/bin/env bash
           set -Eeuo pipefail
           LEARN=/home/ayman01323/BOOT/testingbots/learn
+          DB="$LEARN/data/solana_sibot.sqlite3"
           DAEMON=/home/ayman01323/.local/libexec/google_learner_all_scan_csv_audit.py
           SERVICE=/etc/systemd/system/google-learner-all-scan-csv-audit.service
           RESULT=__RESULT__
           exec > >(tee "$RESULT") 2>&1
 
           test -d "$LEARN"
+          test -f "$DB"
           install -d -m 0755 -o ayman01323 -g ayman01323 /home/ayman01323/.local/libexec
+          install -d -m 0755 -o ayman01323 -g ayman01323 /home/ayman01323/.local/state
           install -d -m 0755 -o ayman01323 -g ayman01323 "$LEARN/CSVbot/auto"
+
+          # Install the audit table and exact INSERT/UPDATE triggers as root. The
+          # long-running CSV exporter can then remain unprivileged and DB-read-only.
+          python3 - "$DB" <<'PY'
+          import sqlite3,sys
+          db=sys.argv[1]
+          targets=('candidates','history_status','trades','rankings','leaders','leader_events','positions','live_execution_attempts')
+          def qi(s): return '"'+str(s).replace('"','""')+'"'
+          def columns(c,t): return [str(r[1]) for r in c.execute(f'PRAGMA table_info({qi(t)})')]
+          def pks(c,t):
+              rows=list(c.execute(f'PRAGMA table_info({qi(t)})'))
+              return [n for _,n in sorted((int(r[5]),str(r[1])) for r in rows if int(r[5] or 0)>0)]
+          def wcol(cols):
+              for n in ('wallet','leader_wallet','from_addr','owner_wallet'):
+                  if n in cols: return n
+              return None
+          def jexpr(cols):
+              x=[]
+              for col in cols:
+                  x += ["'"+col.replace("'","''")+"'", 'NEW.'+qi(col)]
+              return 'json_object('+','.join(x)+')'
+          def pkexpr(pk):
+              if not pk: return 'cast(NEW.rowid as text)'
+              return " || '|' || ".join("coalesce(cast(NEW.%s as text),'')"%qi(x) for x in pk)
+          def wexpr(w): return "''" if not w else "coalesce(cast(NEW.%s as text),'')"%qi(w)
+
+          c=sqlite3.connect(db,timeout=30)
+          c.execute('PRAGMA busy_timeout=30000')
+          c.execute('PRAGMA journal_mode=WAL')
+          c.execute('''CREATE TABLE IF NOT EXISTS csv_scan_audit(
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_table TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_epoch INTEGER NOT NULL,
+            wallet TEXT,
+            primary_key TEXT,
+            row_json TEXT NOT NULL
+          )''')
+          present={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+          installed=0
+          for t in targets:
+              if t not in present: continue
+              cols=columns(c,t); pk=pks(c,t); w=wcol(cols)
+              if not cols: continue
+              for event in ('INSERT','UPDATE'):
+                  trg=f'csv_audit_{t}_{event.lower()}'
+                  c.execute(f'DROP TRIGGER IF EXISTS {qi(trg)}')
+                  c.execute(f'''CREATE TRIGGER {qi(trg)} AFTER {event} ON {qi(t)}
+                  BEGIN
+                    INSERT INTO csv_scan_audit(source_table,event_type,event_epoch,wallet,primary_key,row_json)
+                    VALUES('{t}','{event}',CAST(strftime('%s','now') AS INTEGER),{wexpr(w)},{pkexpr(pk)},{jexpr(cols)});
+                  END''')
+                  installed+=1
+          c.commit()
+          print('audit_table=INSTALLED')
+          print('audit_triggers='+str(installed))
+          c.close()
+          PY
 
           cat > "$DAEMON" <<'PY'
           #!/usr/bin/env python3
           from __future__ import annotations
-          import csv, json, os, sqlite3, time
-          from datetime import datetime, timezone
+          import csv,json,os,sqlite3,time
+          from datetime import datetime,timezone
           from pathlib import Path
 
           LEARN=Path('/home/ayman01323/BOOT/testingbots/learn')
           DB=LEARN/'data'/'solana_sibot.sqlite3'
           OUT=LEARN/'CSVbot'/'auto'/'solana_all_scan_records.csv'
-          STATE=LEARN/'data'/'.solana_all_scan_csv_audit.state'
-          BASELINE_DONE=LEARN/'data'/'.solana_all_scan_csv_baseline.done'
-          POLL=1.0
+          STATE=Path('/home/ayman01323/.local/state/google_learner_all_scan_csv_audit.state')
+          BASELINE_DONE=Path('/home/ayman01323/.local/state/google_learner_all_scan_csv_baseline.done')
           TARGETS=('candidates','history_status','trades','rankings','leaders','leader_events','positions','live_execution_attempts')
           HEAD=['audit_id','recorded_utc','source_table','event_type','wallet','primary_key','full_data_json']
 
-          def utc_epoch_iso(epoch):
-              return datetime.fromtimestamp(int(epoch),timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
-
-          def utc_now():
-              return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
-
-          def qi(name):
-              return '"'+str(name).replace('"','""')+'"'
-
-          def connect():
-              c=sqlite3.connect(DB,timeout=30.0)
+          def iso(epoch): return datetime.fromtimestamp(int(epoch),timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+          def now(): return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+          def qi(s): return '"'+str(s).replace('"','""')+'"'
+          def conn():
+              c=sqlite3.connect(f'file:{DB}?mode=ro',uri=True,timeout=30)
               c.row_factory=sqlite3.Row
               c.execute('PRAGMA busy_timeout=30000')
-              c.execute('PRAGMA journal_mode=WAL')
-              c.execute('PRAGMA synchronous=NORMAL')
               return c
-
-          def tables(c):
-              return {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
-
-          def cols(c, table):
-              return [str(r[1]) for r in c.execute(f'PRAGMA table_info({qi(table)})')]
-
-          def pk_cols(c, table):
-              rows=list(c.execute(f'PRAGMA table_info({qi(table)})'))
-              out=[(int(r[5]),str(r[1])) for r in rows if int(r[5] or 0)>0]
-              return [name for _,name in sorted(out)]
-
-          def wallet_col(columns):
-              for name in ('wallet','leader_wallet','from_addr','owner_wallet'):
-                  if name in columns: return name
+          def tables(c): return {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+          def cols(c,t): return [str(r[1]) for r in c.execute(f'PRAGMA table_info({qi(t)})')]
+          def pks(c,t):
+              rows=list(c.execute(f'PRAGMA table_info({qi(t)})'))
+              return [n for _,n in sorted((int(r[5]),str(r[1])) for r in rows if int(r[5] or 0)>0)]
+          def wcol(columns):
+              for n in ('wallet','leader_wallet','from_addr','owner_wallet'):
+                  if n in columns:return n
               return None
-
-          def json_expr(columns):
-              pieces=[]
-              for col in columns:
-                  pieces.append("'"+col.replace("'","''")+"'")
-                  pieces.append('NEW.'+qi(col))
-              return 'json_object('+','.join(pieces)+')'
-
-          def pk_expr(primary):
-              if not primary: return "cast(NEW.rowid as text)"
-              terms=["coalesce(cast(NEW.%s as text),'')"%qi(c) for c in primary]
-              return " || '|' || ".join(terms)
-
-          def wallet_expr(wcol):
-              return "''" if not wcol else "coalesce(cast(NEW.%s as text),'')"%qi(wcol)
-
-          def ensure_audit(c):
-              c.execute('''CREATE TABLE IF NOT EXISTS csv_scan_audit(
-                audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_table TEXT NOT NULL,
-                event_type TEXT NOT NULL,
-                event_epoch INTEGER NOT NULL,
-                wallet TEXT,
-                primary_key TEXT,
-                row_json TEXT NOT NULL
-              )''')
-              present=tables(c)
-              installed=0
-              for table in TARGETS:
-                  if table not in present: continue
-                  columns=cols(c,table)
-                  if not columns: continue
-                  primary=pk_cols(c,table)
-                  wcol=wallet_col(columns)
-                  for event in ('INSERT','UPDATE'):
-                      trg=f'csv_audit_{table}_{event.lower()}'
-                      c.execute(f'DROP TRIGGER IF EXISTS {qi(trg)}')
-                      sql=f'''CREATE TRIGGER {qi(trg)} AFTER {event} ON {qi(table)}
-                      BEGIN
-                        INSERT INTO csv_scan_audit(source_table,event_type,event_epoch,wallet,primary_key,row_json)
-                        VALUES('{table}','{event}',CAST(strftime('%s','now') AS INTEGER),
-                               {wallet_expr(wcol)},{pk_expr(primary)},{json_expr(columns)});
-                      END'''
-                      c.execute(sql)
-                      installed+=1
-              c.commit()
-              return installed
-
           def ensure_csv():
               OUT.parent.mkdir(parents=True,exist_ok=True)
               if not OUT.exists() or OUT.stat().st_size==0:
                   with OUT.open('w',encoding='utf-8',newline='') as f:
-                      csv.writer(f).writerow(HEAD)
-                      f.flush(); os.fsync(f.fileno())
-
+                      csv.writer(f).writerow(HEAD); f.flush(); os.fsync(f.fileno())
           def baseline(c):
               if BASELINE_DONE.exists(): return 0
-              ensure_csv()
-              present=tables(c)
-              count=0
+              ensure_csv(); n=0; present=tables(c)
               with OUT.open('a',encoding='utf-8',newline='') as f:
                   w=csv.writer(f)
-                  for table in TARGETS:
-                      if table not in present: continue
-                      columns=cols(c,table)
-                      primary=pk_cols(c,table)
-                      wcol=wallet_col(columns)
-                      for r in c.execute(f'SELECT * FROM {qi(table)}'):
+                  for t in TARGETS:
+                      if t not in present: continue
+                      cc=cols(c,t); pk=pks(c,t); wc=wcol(cc)
+                      for r in c.execute(f'SELECT * FROM {qi(t)}'):
                           d={k:r[k] for k in r.keys()}
-                          wallet=str(d.get(wcol) or '') if wcol else ''
-                          pkey='|'.join(str(d.get(k) or '') for k in primary) if primary else ''
-                          w.writerow(['',utc_now(),table,'BASELINE',wallet,pkey,json.dumps(d,separators=(',',':'),ensure_ascii=False,default=str)])
-                          count+=1
+                          wallet=str(d.get(wc) or '') if wc else ''
+                          key='|'.join(str(d.get(k) or '') for k in pk)
+                          w.writerow(['',now(),t,'BASELINE',wallet,key,json.dumps(d,separators=(',',':'),ensure_ascii=False,default=str)])
+                          n+=1
                   f.flush(); os.fsync(f.fileno())
-              tmp=BASELINE_DONE.with_suffix('.tmp')
-              tmp.write_text(str(count)+'\n',encoding='utf-8')
-              os.replace(tmp,BASELINE_DONE)
-              return count
-
+              tmp=BASELINE_DONE.with_suffix('.tmp'); tmp.write_text(str(n)+'\n'); os.replace(tmp,BASELINE_DONE)
+              return n
           def load_last():
-              try: return int(STATE.read_text().strip() or '0')
-              except Exception: return 0
-
+              try:return int(STATE.read_text().strip() or '0')
+              except Exception:return 0
           def save_last(v):
-              tmp=STATE.with_suffix('.tmp')
-              tmp.write_text(str(int(v))+'\n',encoding='utf-8')
-              os.replace(tmp,STATE)
-
+              tmp=STATE.with_suffix('.tmp'); tmp.write_text(str(int(v))+'\n'); os.replace(tmp,STATE)
           def drain(c,last):
               rows=c.execute('SELECT audit_id,source_table,event_type,event_epoch,wallet,primary_key,row_json FROM csv_scan_audit WHERE audit_id>? ORDER BY audit_id LIMIT 5000',(last,)).fetchall()
-              if not rows: return last,0
+              if not rows:return last,0
               ensure_csv()
               with OUT.open('a',encoding='utf-8',newline='') as f:
                   w=csv.writer(f)
-                  for r in rows:
-                      w.writerow([r['audit_id'],utc_epoch_iso(r['event_epoch']),r['source_table'],r['event_type'],r['wallet'] or '',r['primary_key'] or '',r['row_json']])
+                  for r in rows:w.writerow([r['audit_id'],iso(r['event_epoch']),r['source_table'],r['event_type'],r['wallet'] or '',r['primary_key'] or '',r['row_json']])
                   f.flush(); os.fsync(f.fileno())
-              last=int(rows[-1]['audit_id']); save_last(last)
-              return last,len(rows)
+              last=int(rows[-1]['audit_id']); save_last(last); return last,len(rows)
 
-          print(f'[learner-csv-audit] output={OUT} poll={POLL}s append_only=true private_keys=false schema_adaptive=true',flush=True)
+          print('[learner-csv-audit] append_only=true db_mode=read_only private_keys=false poll=1s',flush=True)
           last=load_last()
           while True:
               try:
-                  if not DB.exists():
-                      time.sleep(POLL); continue
-                  with connect() as c:
-                      ntrg=ensure_audit(c)
-                      nbase=baseline(c)
-                      last,ndrained=drain(c,last)
-                      if nbase or ndrained:
-                          print(f'[learner-csv-audit] baseline={nbase} appended={ndrained} triggers={ntrg} last={last}',flush=True)
-                  time.sleep(POLL)
+                  with conn() as c:
+                      b=baseline(c); last,n=drain(c,last)
+                      if b or n: print(f'[learner-csv-audit] baseline={b} appended={n} last={last}',flush=True)
+                  time.sleep(1)
               except Exception as e:
-                  print('[learner-csv-audit] warning='+type(e).__name__+':'+str(e)[:400],flush=True)
-                  time.sleep(3)
+                  print('[learner-csv-audit] warning='+type(e).__name__+':'+str(e)[:400],flush=True); time.sleep(3)
           PY
-
           chmod 0755 "$DAEMON"
           chown ayman01323:ayman01323 "$DAEMON"
           python3 -m py_compile "$DAEMON"
@@ -218,7 +193,6 @@ jobs:
           Description=Google isolated learner permanent all-scan CSV audit
           After=network-online.target learnerbot-learn.service
           Wants=network-online.target
-
           [Service]
           Type=simple
           User=ayman01323
@@ -228,7 +202,6 @@ jobs:
           RestartSec=3
           NoNewPrivileges=true
           PrivateTmp=true
-
           [Install]
           WantedBy=multi-user.target
           EOF
@@ -240,25 +213,20 @@ jobs:
 
           echo "csv_audit_service=$(systemctl is-active google-learner-all-scan-csv-audit.service 2>/dev/null || true)"
           echo "csv_audit_restarts=$(systemctl show google-learner-all-scan-csv-audit.service -p NRestarts --value 2>/dev/null || true)"
-          journalctl -u google-learner-all-scan-csv-audit.service --since '1 minute ago' --no-pager -n 30 || true
+          journalctl -u google-learner-all-scan-csv-audit.service --since '1 minute ago' --no-pager -n 20 || true
           test "$(systemctl is-active google-learner-all-scan-csv-audit.service)" = active
           test -s "$LEARN/CSVbot/auto/solana_all_scan_records.csv"
-
-          echo "learner_runtime=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          echo "telegram_relay=$(systemctl is-active google-learner-telegram-relay.service 2>/dev/null || true)"
           echo "csv_path=$LEARN/CSVbot/auto/solana_all_scan_records.csv"
           echo "csv_lines=$(wc -l < "$LEARN/CSVbot/auto/solana_all_scan_records.csv")"
-          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          echo "learner_runtime=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "telegram_relay=$(systemctl is-active google-learner-telegram-relay.service 2>/dev/null || true)"
+          python3 - "$DB" <<'PY'
           import sqlite3,sys
           c=sqlite3.connect(sys.argv[1])
-          tabs={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
-          trgs={r[0] for r in c.execute("select name from sqlite_master where type='trigger' and name like 'csv_audit_%'")}
-          print('audit_table=' + ('YES' if 'csv_scan_audit' in tabs else 'NO'))
-          print('audit_triggers='+str(len(trgs)))
-          print('audit_events='+str(c.execute('select count(*) from csv_scan_audit').fetchone()[0] if 'csv_scan_audit' in tabs else 0))
+          print('audit_events='+str(c.execute('select count(*) from csv_scan_audit').fetchone()[0]))
+          print('audit_triggers='+str(c.execute("select count(*) from sqlite_master where type='trigger' and name like 'csv_audit_%'").fetchone()[0]))
           c.close()
           PY
-          echo 'records=all discovered/history/trades/rankings/leaders/events/positions/execution-attempts'
           echo 'private_keys_recorded=NO'
           ROOTSCRIPT
 
