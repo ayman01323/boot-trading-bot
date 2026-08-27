@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+# Fixed-purpose helper for backing up only the two root-owned bot folders.
+# It accepts no arguments and never executes caller-supplied paths or commands.
+if [ "$#" -ne 0 ]; then
+  echo 'This helper accepts no arguments.' >&2
+  exit 2
+fi
+
+RUN_USER='ayman01323'
+RUN_GROUP='ayman01323'
+DEST_ROOT='/home/ayman01323/GoogleServerBuckup'
+PROD='/root/multichain-learning-bot-v2.2-fast-direct-market'
+SIRISKY='/root/SiRisky'
+TZ='Europe/London'
+export TZ
+
+BACKUP_DATE="$(date +%Y-%m-%d)"
+DAY_DIR="$DEST_ROOT/$BACKUP_DATE"
+WORK="$(mktemp -d /tmp/google-root-backup.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
+
+for src in "$PROD" "$SIRISKY"; do
+  test -d "$src"
+done
+
+install -d -o "$RUN_USER" -g "$RUN_GROUP" -m 700 "$DEST_ROOT" "$DAY_DIR"
+
+make_archive() {
+  label="$1"
+  source="$2"
+  parent="$(dirname "$source")"
+  base="$(basename "$source")"
+  archive="$WORK/${label}.tar.gz"
+  tar -C "$parent" -czf "$archive" "$base"
+  tar -tzf "$archive" >/dev/null
+  (cd "$WORK" && sha256sum "${label}.tar.gz" > "${label}.tar.gz.sha256")
+}
+
+make_archive production-bot "$PROD"
+make_archive sirisky "$SIRISKY"
+
+cat > "$WORK/google-root-folders-manifest.txt" <<EOF
+backup_date=$BACKUP_DATE
+created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
+created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+hostname=$(hostname)
+production_source=$PROD
+sirisky_source=$SIRISKY
+destination=$DAY_DIR
+EOF
+
+for f in \
+  production-bot.tar.gz production-bot.tar.gz.sha256 \
+  sirisky.tar.gz sirisky.tar.gz.sha256 \
+  google-root-folders-manifest.txt; do
+  install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/$f" "$DAY_DIR/$f"
+done
+
+cd "$DAY_DIR"
+sha256sum -c production-bot.tar.gz.sha256
+sha256sum -c sirisky.tar.gz.sha256
+
+echo "Root-folder backup completed: $DAY_DIR"
+ls -lh "$DAY_DIR"/production-bot.tar.gz "$DAY_DIR"/sirisky.tar.gz \
+       "$DAY_DIR"/production-bot.tar.gz.sha256 "$DAY_DIR"/sirisky.tar.gz.sha256 \
+       "$DAY_DIR"/google-root-folders-manifest.txt
