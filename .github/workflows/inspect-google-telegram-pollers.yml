@@ -1,0 +1,30 @@
+name: Inspect Google Telegram Pollers
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/inspect-google-telegram-pollers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Telegram-owning services without secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          echo '=== learnerbot ==='
+          sudo -n /usr/bin/systemctl show learnerbot.service -p ActiveState -p SubState -p WorkingDirectory -p ExecStart || true
+          echo '=== sirisky ==='
+          sudo -n /usr/bin/systemctl show sirisky.service -p ActiveState -p SubState -p WorkingDirectory -p ExecStart || true
+          echo '=== sirisky recent telegram lines ==='
+          sudo -n /usr/bin/systemctl --no-pager --full status sirisky.service | tail -n 30 | sed -E 's#https://api\.telegram\.org/bot[^ /]+#https://api.telegram.org/botREDACTED#g' || true
+          echo '=== learner recent telegram lines ==='
+          sudo -n /usr/bin/systemctl --no-pager --full status learnerbot.service | tail -n 30 | sed -E 's#https://api\.telegram\.org/bot[^ /]+#https://api.telegram.org/botREDACTED#g' || true
