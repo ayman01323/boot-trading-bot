@@ -5,6 +5,7 @@ on:
     paths:
       - 'SiRisky/overrides/run.py'
       - 'SiRisky/overrides/sirisky/engine.py'
+      - 'SiRisky/overrides/sirisky/stage1_data.py'
       - 'SiRisky/overrides/sirisky/stage3_risk.py'
       - 'SiRisky/overrides/sirisky/stage5_trade.py'
       - '.github/workflows/sirisky-auto-shadow-engine.yml'
@@ -32,12 +33,14 @@ jobs:
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           sudo -n cp -a /root/SiRisky/run.py "/root/SiRisky/run.py.${stamp}.pre-shadow-fix.bak"
           sudo -n cp -a /root/SiRisky/sirisky/engine.py "/root/SiRisky/sirisky/engine.py.${stamp}.pre-shadow-fix.bak"
+          sudo -n cp -a /root/SiRisky/sirisky/stage1_data.py "/root/SiRisky/sirisky/stage1_data.py.${stamp}.pre-shadow-fix.bak"
           sudo -n cp -a /root/SiRisky/sirisky/stage3_risk.py "/root/SiRisky/sirisky/stage3_risk.py.${stamp}.pre-shadow-fix.bak"
           sudo -n cp -a /root/SiRisky/sirisky/stage5_trade.py "/root/SiRisky/sirisky/stage5_trade.py.${stamp}.pre-shadow-fix.bak"
 
           echo '=== INSTALL RUNTIME ==='
           sudo -n install -m 0644 SiRisky/overrides/run.py /root/SiRisky/run.py
           sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage1_data.py /root/SiRisky/sirisky/stage1_data.py
           sudo -n install -m 0644 SiRisky/overrides/sirisky/stage3_risk.py /root/SiRisky/sirisky/stage3_risk.py
           sudo -n install -m 0644 SiRisky/overrides/sirisky/stage5_trade.py /root/SiRisky/sirisky/stage5_trade.py
 
@@ -55,6 +58,7 @@ jobs:
             'auto_discovery_enabled':('1','Continuously discover fresh Solana pools'),
             'auto_promote_to_selected':('1','Feed ranked Stage-1 candidates into Stage-2/3 automatically'),
             'auto_evaluate_candidate_limit':('5','Evaluate up to five ranked candidates per entry cycle'),
+            'failed_mint_cooldown_seconds':('180','Skip a SHADOW BUY mint for three minutes after Stage-5 execution failure'),
             'manual_approval_enabled':('1','Retained for any non-SHADOW/live-money path'),
             'manual_approval_require_external_signature':('1','Retained for any non-SHADOW/live-money path'),
             'broadcast_enabled':('0','Hard lock: SHADOW workflow never broadcasts a real transaction'),
@@ -91,11 +95,14 @@ jobs:
           echo '=== FORECAST BANDS ==='
           sudo -n bash -lc 'test ! -f /root/SiRisky/CSV/forecast_bands.csv || tail -n 12 /root/SiRisky/CSV/forecast_bands.csv'
 
+          echo '=== DISCOVERY FILTER STATE ==='
+          sudo -n bash -lc 'test ! -f /root/SiRisky/data/stage1_discovery_state.json || cat /root/SiRisky/data/stage1_discovery_state.json'
+
           echo '=== RECENT SANITISED SERVICE ERRORS ==='
           sudo -n journalctl -u sirisky.service --since '-2 minutes' --no-pager | grep -E 'SiRisky cycle error|Started|Stopped' | tail -40 || true
 
           echo '=== RUNTIME ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(trading_mode|paper_auto_trade_enabled|live_enabled|broadcast_enabled|manual_approval_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit)$/' /root/SiRisky/CSV/runtime.csv
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(trading_mode|paper_auto_trade_enabled|live_enabled|broadcast_enabled|manual_approval_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit|failed_mint_cooldown_seconds)$/' /root/SiRisky/CSV/runtime.csv
 
           echo '=== FINAL SAFETY ==='
           test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
