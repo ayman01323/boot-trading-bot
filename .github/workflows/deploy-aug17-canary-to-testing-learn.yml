@@ -5,6 +5,8 @@ on:
     branches: [fix/solana-aug17-canary-restore]
     paths:
       - '.github/workflows/deploy-aug17-canary-to-testing-learn.yml'
+      - 'learnerbot/telegram_learner_only_menu_patch.py'
+      - 'learnerbot/telegram_learner_identity_patch.py'
   workflow_dispatch:
 
 permissions:
@@ -42,6 +44,7 @@ jobs:
           preserve="$tmp/preserve.sha256"
           : > "$preserve"
           for f in \
+            "$target/.env" \
             "$target/CSVbot/solana_settings.csv" \
             "$target/CSVbot/auto/solana_user_wallets.csv" \
             "$target/data/.solana_wallet_store.key" \
@@ -56,6 +59,7 @@ jobs:
           rsync -a --delete \
             --exclude='.git/' \
             --exclude='.github/' \
+            --exclude='.env' \
             --exclude='CSVbot/' \
             --exclude='data/' \
             --exclude='private/' \
@@ -65,19 +69,23 @@ jobs:
             --exclude='DEPLOYED_CODE_REF.txt' \
             "$tmp/repo/" "$target/"
 
-          # The simplified Telegram presentation must exist ONLY in the isolated
-          # Google learner. Activate it at the very end of the patch chain here,
-          # rather than changing production/main startup composition.
+          # The simplified Telegram presentation and visible identity must exist
+          # ONLY in the isolated Google learner. Activate both at the very end
+          # of the patch chain here rather than changing production/main startup.
           TARGET="$target" python3 - <<'PY'
           import os
           from pathlib import Path
           target = Path(os.environ['TARGET'])
           p = target/'learnerbot'/'final_runtime_integrity_patch.py'
-          marker = 'from . import telegram_learner_only_menu_patch  # noqa: E402,F401'
-          text = p.read_text(encoding='utf-8')
-          if marker not in text:
-              text = text.rstrip() + '\n\n# Isolated Google learner presentation only.\n' + marker + '\n'
-              p.write_text(text, encoding='utf-8')
+          markers = [
+              'from . import telegram_learner_only_menu_patch  # noqa: E402,F401',
+              'from . import telegram_learner_identity_patch  # noqa: E402,F401',
+          ]
+          text = p.read_text(encoding='utf-8').rstrip()
+          for marker in markers:
+              if marker not in text:
+                  text += '\n' + marker
+          p.write_text(text + '\n', encoding='utf-8')
           PY
 
           cat > "$target/DEPLOYED_CODE_REF.txt" <<EOF
@@ -87,6 +95,7 @@ jobs:
           historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e
           target=/home/ayman01323/BOOT/testingbots/learn
           learner_only_telegram_menu=YES
+          learner_telegram_identity=GOOGLE_TEST_NOT_PRODUCTION
           production_service_started_or_restarted=NO
           wallet_runtime_data_preserved=YES
           EOF
@@ -97,7 +106,9 @@ jobs:
           test -f "$target/learnerbot/solana_liquidity_stuck_nonblocking_patch.py"
           test -f "$target/learnerbot/solana_stuck_liquidity_safe_slice_patch.py"
           test -f "$target/learnerbot/telegram_learner_only_menu_patch.py"
+          test -f "$target/learnerbot/telegram_learner_identity_patch.py"
           grep -Fq 'from . import telegram_learner_only_menu_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
+          grep -Fq 'from . import telegram_learner_identity_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
 
           (cd "$target" && python3 -m compileall -q learnerbot scripts)
 
@@ -112,6 +123,7 @@ jobs:
           echo "source_commit=$source_sha"
           echo "historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e"
           echo "learner_only_telegram_menu=YES"
+          echo "learner_telegram_identity=GOOGLE_TEST_NOT_PRODUCTION"
           echo "wallet_runtime_data_preserved=YES"
           echo "production_service_started_or_restarted=NO"
           echo "live_execution_started=NO"
@@ -134,4 +146,5 @@ jobs:
                       break
           print('private_key_printed=NO')
           print('telegram_menu=LEARNER_ONLY')
+          print('telegram_identity=LEARNER_BOT_GOOGLE_TEST_NOT_PRODUCTION')
           PY
