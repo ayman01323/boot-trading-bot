@@ -34,15 +34,19 @@ def observation_from_snapshot(
     *,
     now: float,
 ) -> NormalizedObservation:
-    """Map the existing normalized host snapshot into Grok's research interface.
+    """Map the normalized host snapshot into Grok's research interface.
 
-    The fee/slippage mapping deliberately reproduces the host's existing
-    round-trip cost model:
-        spread + 2*fee + 2*impact
-    because GrokStrategy adds fee + slippage + impact.
+    Units are explicit in field names: bps for spread/fees/impact/slippage,
+    percentage points for momentum and edge. The mapping reproduces the host's
+    round-trip cost model exactly:
+        spread + 2*fee + 2*impact + 2*slippage.
+    GrokStrategy adds fee + slippage + impact, so the adapter groups one impact
+    leg and both slippage legs into estimated_slippage_bps.
     """
     estimated_fee_bps = 2.0 * snap.fee_bps
-    estimated_slippage_bps = snap.spread_bps + snap.price_impact_bps
+    estimated_slippage_bps = (
+        snap.spread_bps + snap.price_impact_bps + 2.0 * snap.slippage_bps
+    )
     return NormalizedObservation(
         canonical_asset_id=snap.asset_key,
         source_age_seconds=max(0.0, float(now) - snap.ts),
