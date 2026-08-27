@@ -1,0 +1,116 @@
+name: Grok Known Assets Audit Relay Once
+
+on:
+  push:
+    branches: [ai-mailbox]
+    paths:
+      - '.github/workflows/grok-known-assets-audit-relay-once.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: grok-known-assets-audit-relay-once
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 20
+    env:
+      SRC: /tmp/grok-known-assets-audit-${{ github.run_id }}
+      RELAY_VENV: /tmp/grok-known-assets-audit-venv-${{ github.run_id }}
+      AI_COST_DB_PATH: /var/tmp/boot-google-ai-cost-router.sqlite3
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+      XAI_COUNCIL_MODEL: ${{ vars.XAI_COUNCIL_MODEL || 'grok-4.20-non-reasoning' }}
+
+    steps:
+      - name: Verify Google communication runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+      - name: Clone trusted current main to isolated temp directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$SRC" "$RELAY_VENV"
+          git clone --depth 1 --branch main "https://github.com/${GITHUB_REPOSITORY}.git" "$SRC"
+          git -C "$SRC" rev-parse HEAD
+
+      - name: Select pending Grok mailbox request
+        id: mailbox
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          python3 scripts/provider_git_mailbox_bridge.py select-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --provider grok \
+            --message-output /tmp/grok-known-assets-audit-request.md \
+            > /tmp/grok-known-assets-audit-meta.env
+          cat /tmp/grok-known-assets-audit-meta.env
+          cat /tmp/grok-known-assets-audit-meta.env >> "$GITHUB_OUTPUT"
+
+      - name: Fail if audit request is not pending
+        if: steps.mailbox.outputs.pending != 'true'
+        shell: bash
+        run: |
+          echo 'Expected pending Grok audit request was not found.' >&2
+          exit 1
+
+      - name: Build isolated provider environment
+        if: steps.mailbox.outputs.pending == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RELAY_VENV"
+          "$RELAY_VENV/bin/python" -m pip install --disable-pip-version-check -q python-dotenv
+
+      - name: Ask Grok review-only audit
+        if: steps.mailbox.outputs.pending == 'true'
+        id: provider
+        shell: bash
+        env:
+          MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
+        run: |
+          set +e
+          cd "$SRC"
+          source_sha="$(git rev-parse HEAD)"
+          PYTHONPATH="$SRC" "$RELAY_VENV/bin/python" scripts/ai_mailbox_provider_relay.py \
+            --provider grok \
+            --message-id "$MESSAGE_ID" \
+            --source-sha "$source_sha" \
+            --input /tmp/grok-known-assets-audit-request.md \
+            --output /tmp/grok-known-assets-audit-reply.md \
+            2>/tmp/grok-known-assets-audit-error.txt
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          if [[ $rc -ne 0 || ! -s /tmp/grok-known-assets-audit-reply.md ]]; then
+            cat /tmp/grok-known-assets-audit-error.txt >&2 || true
+            exit "$rc"
+          fi
+
+      - name: Publish Grok audit reply
+        if: steps.mailbox.outputs.pending == 'true' && steps.provider.outputs.rc == '0'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MESSAGE_ID: ${{ steps.mailbox.outputs.message_id }}
+        run: |
+          set -euo pipefail
+          cd "$SRC"
+          python3 scripts/provider_git_mailbox_bridge.py publish-live \
+            --repo "$GITHUB_REPOSITORY" \
+            --provider grok \
+            --request-id "$MESSAGE_ID" \
+            --reply-file /tmp/grok-known-assets-audit-reply.md
+
+      - name: Clean isolated temp files
+        if: always()
+        shell: bash
+        run: rm -rf "$SRC" "$RELAY_VENV" /tmp/grok-known-assets-audit-*.md /tmp/grok-known-assets-audit-*.txt /tmp/grok-known-assets-audit-*.env
