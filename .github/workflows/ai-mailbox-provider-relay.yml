@@ -44,8 +44,9 @@ jobs:
       matrix:
         provider: [deepseek, gemini, grok, kimi, copilot]
     env:
+      RELAY_REPO: ${{ github.workspace }}/relay-${{ matrix.provider }}
       RELAY_VENV: /tmp/strategy-factory-provider-${{ matrix.provider }}-${{ github.run_id }}
-      PYTHONPATH: ${{ github.workspace }}
+      PYTHONPATH: ${{ github.workspace }}/relay-${{ matrix.provider }}
       # The normal BOOT runtime DB is root-owned. Mailbox calls use a separate,
       # persistent Google-runner cost ledger so the communication relay retains
       # budget accounting without needing root access or touching trading state.
@@ -84,6 +85,7 @@ jobs:
           ref: main
           fetch-depth: 1
           persist-credentials: false
+          path: relay-${{ matrix.provider }}
 
       - name: Detect new fixed Strategy Factory fallback request
         if: steps.selected.outputs.run == 'true'
@@ -94,7 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/provider_git_mailbox_bridge.py select-live \
+          python3 "$RELAY_REPO/scripts/provider_git_mailbox_bridge.py" select-live \
             --repo "$GITHUB_REPOSITORY" \
             --provider "$PROVIDER" \
             --message-output /tmp/strategy-factory-in.md \
@@ -116,8 +118,10 @@ jobs:
         run: |
           set -euo pipefail
           "$RELAY_VENV/bin/python" - <<'PY'
+          import os
           import runpy
-          ns = runpy.run_path('scripts/ai_mailbox_provider_relay.py', run_name='ai_mailbox_provider_relay_import_check')
+          path = os.path.join(os.environ['RELAY_REPO'], 'scripts', 'ai_mailbox_provider_relay.py')
+          ns = runpy.run_path(path, run_name='ai_mailbox_provider_relay_import_check')
           if 'call_provider' not in ns:
               raise SystemExit('provider relay import check failed')
           print('provider_relay_import=ok')
@@ -162,7 +166,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          "$RELAY_VENV/bin/python" scripts/ai_mailbox_provider_relay.py \
+          "$RELAY_VENV/bin/python" "$RELAY_REPO/scripts/ai_mailbox_provider_relay.py" \
             --provider "$PROVIDER" \
             --message-id "$MESSAGE_ID" \
             --source-sha "$SOURCE_SHA" \
@@ -192,7 +196,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/provider_git_mailbox_bridge.py publish-live \
+          python3 "$RELAY_REPO/scripts/provider_git_mailbox_bridge.py" publish-live \
             --repo "$GITHUB_REPOSITORY" \
             --provider "$SENDER" \
             --request-id "$MESSAGE_ID" \
