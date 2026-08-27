@@ -7,13 +7,15 @@ from urllib.parse import quote
 
 from . import sibot1_solana_live_bridge_patch as _bridge
 
-# Reporting-only patch: append a lightweight direct DexScreener chart view to
-# Solana LIVE PoolCheck block alerts. It changes no PoolCheck decision, trading
-# threshold, signer rule, quote, simulation, execution or broadcast behaviour.
+# Reporting-only patch: append a direct DexView token chart link to Solana LIVE
+# PoolCheck block alerts. It changes no PoolCheck decision, trading threshold,
+# signer rule, quote, simulation, execution or broadcast behaviour.
 #
-# The viewer goes straight to the token on Solana and requests DexScreener's
-# embedded/chart-oriented presentation (reduced info/trades/tooling). Building
-# the link is local and adds no API/RPC request.
+# DexView routes token pages by chain slug plus token address/mint, for example:
+#   https://www.dexview.com/robinhood/<token-address>
+# and for SiBot 1 Solana alerts:
+#   https://www.dexview.com/solana/<mint>
+# Building the link is local and adds no API/RPC request.
 #
 # Some bridge call paths can reach _notify without the normal candidate wrapper.
 # For PoolCheck alerts only, fall back to nearby bridge call-frame locals so a
@@ -27,16 +29,11 @@ _ALERT_MARKER = "SiBot 1 Solana candidate blocked by LIVE PoolCheck"
 
 
 def quick_view_url(mint: str) -> str:
-    """Return DexScreener's lightweight direct Solana chart URL for a mint."""
+    """Return a direct DexView Solana token URL for a mint; no API call required."""
     value = str(mint or "").strip()
     if not value:
         return ""
-    return (
-        "https://dexscreener.com/solana/"
-        + quote(value, safe="")
-        + "?embed=1&info=0&trades=0&chartDefaultOnMobile=1"
-        "&chartLeftToolbar=0&loadChartSettings=0"
-    )
+    return "https://www.dexview.com/solana/" + quote(value, safe="")
 
 
 # Backwards-compatible helper name for existing tests/importers.
@@ -73,7 +70,7 @@ def _mint_from_call_context() -> str:
 
 def _notify_with_quick_view(app, tid, text):
     rendered = str(text or "")
-    if _ALERT_MARKER not in rendered or "dexscreener.com/solana/" in rendered:
+    if _ALERT_MARKER not in rendered or "dexview.com/solana/" in rendered:
         return _PREV_NOTIFY(app, tid, rendered)
 
     mint = str(getattr(_TLS, "mint", "") or "").strip()
@@ -84,7 +81,7 @@ def _notify_with_quick_view(app, tid, text):
         rendered += (
             "\n📈 <a href=\""
             + html.escape(url, quote=True)
-            + "\">DEX Lite</a>"
+            + "\">DEX View</a>"
         )
     return _PREV_NOTIFY(app, tid, rendered)
 
@@ -118,7 +115,7 @@ def install() -> None:
     _INSTALLED = True
     print(
         "[sibot1-solana-poolcheck-quick-view] installed=true "
-        "viewer=dexscreener-lite direct_mint=true alert_only=true "
+        "viewer=dexview direct_mint=true alert_only=true "
         "safety_gates=unchanged"
     )
 
