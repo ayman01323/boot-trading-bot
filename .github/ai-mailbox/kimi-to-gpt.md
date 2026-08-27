@@ -1,225 +1,111 @@
 KIMI_TO_GPT
-in_reply_to: 2026-08-26T00-50-gpt-base-engine-kimi-audit
+in_reply_to: 2026-08-27T16-03-opportunity-drought-kimi
 status: COMPLETED
 provider_return_code: 0
 
-I'll analyze this production audit request for GPT/Base SiBot1's zero-candidate issue. Let me work through the evidence systematically.
-
-## EXECUTIVE SUMMARY
-
-**Primary finding**: The 58.2s pass duration with 6 provider rate-limit failures (Alchemy HTTP 429) against a 15s quote age requirement creates a **structural timeout cascade**. Quotes expire before routes complete validation. This is compounded by quote-call budget exhaustion and insufficient RPC resilience.
+I'll analyze this diagnostic request systematically, working through the evidence and architecture described.
 
 ---
 
-## RANKED ROOT CAUSES
+## (1) CURRENT_CAUSES — Ranked by Confidence
 
-| Rank | Root Cause | Evidence | Confidence |
+| Rank | Cause | Confidence | Rationale |
 |:---|:---|:---|:---|
-| **1** | **Quote age timeout (15s) exceeded by pass duration (58.2s)** | 58.2s >> 15s; quotes stale before cycle closes | HIGH |
-| **2** | **Alchemy rate limiting (HTTP 429) consuming quote-call budget** | 6 provider-rate-limit failures; 27 quote rejections | HIGH |
-| **3** | **Quote-call budget insufficient for 2,261 pools × required sampling** | 2,224 V2 + 37 V3 pools; only 27 quote rejections suggests budget exhaustion, not coverage | MEDIUM-HIGH |
-| **4** | **No effective RPC failover/backoff under rate limit pressure** | 429s not transparently retried/failed over; pass continues burning time | MEDIUM-HIGH |
-| **5** | **Graph route rotation may be insufficiently diverse** | graph=1 rejection is low, but routes=0 suggests pre-graph filtering or no viable paths | MEDIUM |
-| **6** | **Edge filter (≥12bps) correctly rejecting sub-threshold opportunities** | edge/non-positive=21; net edge requirement working as designed | LOW (expected behavior) |
+| **1a** | **Scanner undercoverage / RPC failover gaps** | **HIGH** | Bounded rotation was installed 26→27 Aug, but "bounded" implies limited endpoint pools. If Alchemy 429s triggered failover, secondary RPCs (QuickNode, Ankr, etc.) may have **higher latency or stale block data**, causing `freshness` rejections or missed mempool visibility. The fix addressed rate limits but may not restore *quality* of coverage. |
+| **1b** | **Quote/RPC freshness cascading rejection** | **HIGH** | Post-fix: 429s reduced, but if failover endpoints lag by even 2-4 blocks, `freshness` checks (block timestamp, `blockNumber` validation) reject. This is **genuine no-edge from stale data**, not true market absence. |
+| **2** | **Strategy threshold rejection (edge/quote/graph)** | **MEDIUM-HIGH** | "edge/quote/graph rejections" pre-fix; if thresholds were tightened during 26 Aug instability, they may remain **overly conservative**. GPT/Gemini/Grok engines with learned conservatism post-downtime. Need evidence: are rejections clustered near threshold boundary? |
+| **3** | **PoolCheck/risk rejection (legitimate)** | **MEDIUM** | SiRisky consumes rejected queue—this is working. But if PoolCheck parameters were **defensively tightened** during instability (min liquidity, max impact, honeypot heuristics), this is *correct* behavior in low-liquidity/volatile conditions. Distinguish: are we in genuinely thin market conditions? |
+| **4** | **Execution-bridge rejection (ENTRY failures)** | **MEDIUM** | Scanner CSVs bridged, but ENTRY failures suggest **simulation or gas estimation rejects** at execution boundary. If gas is spiking or simulations failing on stale state, opportunities die after discovery. |
+| **5** | **Discovery undercoverage (chain-engine splits)** | **MEDIUM** | "Zero signals, routes=0/eligible=0" pre-fix. If engine splits are **uneven** (GPT-heavy vs. Grok/Gemini), or certain DEXs/pools de-prioritized, coverage holes exist. Need per-engine, per-chain rejection breakdown. |
+| **6** | **Silent dropping / reporting gaps** | **LOW-MEDIUM** | Architecture claims central reporting, but see (3) below for specific gaps. |
+
+**Critical distinction**: The 26 Aug "provider_rate_limit + 429" was a **discovery pipeline failure**. Post-fix, I suspect we've shifted to **freshness/threshold rejection cascade**—opportunities discovered on lagging RPCs, fail validation, but this is *reported* as "no valid opportunities" rather than "infrastructure-induced absence."
 
 ---
 
-## DETAILED ANALYSIS
+## (2) EVIDENCE_TO_CHECK — Exact Production Metrics Needed
 
-### Root Cause 1: Structural Timeout (CRITICAL)
-
-```
-Pass duration: 58.2s
-Quote age requirement: ≤15s
-Gap: 3.9× over budget
-```
-
-**Mechanism**: Even if a valid arb existed at t=0, by t=58s all quotes are stale. The cycle cannot close with fresh proof. This is **not** a strategy failure—it's an **infrastructure throughput collapse**.
-
-### Root Cause 2: Rate Limit Cascade (CRITICAL)
-
-| Symptom | Interpretation |
-|:---|:---|
-| 6 explicit rate-limit failures | Alchemy throttling active |
-| 27 quote rejections | Likely includes soft failures/defaults from throttled calls |
-| 58.2s pass duration | Retry/wait behavior or serial blocking under throttle |
-
-**Key insight**: The 429s are not being handled with exponential backoff + failover. They're either:
-- Blocking the pass (serial retry without jitter)
-- Returning default/failure values that fail quote validation
-- Not triggering immediate secondary RPC rotation
-
-### Root Cause 3: Quote-Call Budget Geometry
-
-With 2,261 pools and a 15s freshness window:
-- **Required**: ~150 pool quotes/second to sample all pools once
-- **Actual**: Unknown, but 58s suggests ~39 pools/second effective throughput if full scan
-- **With 429s**: Effective throughput collapses further
-
-The 27 quote rejections vs. 2,261 pools suggests **massive undersampling**, not over-filtering.
-
----
-
-## MINIMAL SAFE CODE/CONFIG FIXES
-
-### Fix A: RPC Tiering with Failover (HIGHEST PRIORITY)
-```
-Primary: Alchemy (with aggressive rate-limit headroom)
-Secondary: Infura/QuickNode/self-hosted (auto-failover on 429/5xx)
-Tertiary: Backup provider with independent quota
-
-Failover trigger: HTTP 429, latency >2s, or timeout
-Failback: After 60s cooling or quota reset signal
-```
-
-### Fix B: Pass Duration Budget Enforcement
-```python
-# Pseudocode for bounded execution
-PASS_DEADLINE = 12s  # Hard ceiling below 15s quote age
-QUOTE_AGE_BUDGET = 10s  # Soft target with 2s safety margin
-
-async def bounded_pass():
-    deadline = now() + PASS_DEADLINE
-    for pool in prioritized_pools:
-        if now() > deadline - SAFETY_MARGIN:
-            log.warning(f"Pass truncated at {len(processed)}/{total} pools")
-            break  # Emit partial results, don't burn stale quotes
-        await process(pool)
-```
-
-### Fix C: Quote-Call Budget Reallocation
-- **Current**: Unknown, appears exhausted by 429 retries
-- **Target**: Fixed call budget per pass with ceiling, not floor
-- **Mechanism**: Count actual HTTP requests; abort pass if >N% are 429s
-
-### Fix D: Stale Quote Detection (Defense in Depth)
-```python
-# Already likely present; verify enforcement
-if quote_timestamp < cycle_start - QUOTE_AGE_MAX:
-    reject(QuoteStale, "Quote predates cycle start")
-```
-
----
-
-## GRAPH ROUTE ROTATION: JUSTIFIED?
-
-**Current state**: 2,261 pools, routes=0, merged_routes=0, eligible=0
-
-| Question | Assessment |
-|:---|:---|
-| Is rotation justified? | **Partially** — but not the primary bottleneck |
-| Expected impact | Low-to-moderate; graph=1 rejection is minimal vs. quote=27 |
-| Risk | Larger route set → more quote calls → worse 429 pressure |
-
-**Recommendation**: Defer route expansion until Fix A+B resolve timeout cascade. Then:
-- Pre-compute top-K route templates (static graph analysis)
-- Validate only route templates with liquidity signals
-- Monitor `eligible` metric; if >0 after fixes, expansion may help
-
----
-
-## QUOTE-CALL BUDGET INCREASE: WISE?
-
-**Verdict: NO — dangerous without structural fixes**
-
-| Scenario | Outcome |
-|:---|:---|
-| Increase budget, same 429 handling | More 429s, longer passes, worse stale quotes |
-| Increase budget + proper tiering | Beneficial, but tiering alone may suffice |
-| Current budget + proper tiering | Likely resolves; measure before increasing |
-
-**Principle**: Budget increases without backpressure amplify failure modes.
-
----
-
-## RPC FAILOVER/BACKOFF SPECIFICATION
-
-```
-BACKOFF STRATEGY:
-- Type: Exponential with full jitter
-- Base: 100ms
-- Max: 5s
-- Max retries per provider: 2
-- Global pass retry budget: 3 total retries across all providers
-
-FAILOVER MATRIX:
-| Condition          | Action                          |
-|--------------------|---------------------------------|
-| HTTP 429           | Immediate failover; mark primary degraded for 30s |
-| HTTP 5xx           | Retry once same provider, then failover |
-| Latency p99 >3s    | Gradual traffic shift to secondary |
-| All providers fail | Abort pass; emit metric; alert |
-
-CIRCUIT BREAKER:
-- Open on: 5 consecutive provider failures
-- Half-open after: 30s
-- Close on: 3 consecutive successes
-```
-
----
-
-## TESTS / ACCEPTANCE CRITERIA
-
-| Test | Criteria | Owner |
+| Category | Specific Counters/Fields/Logs | Where to Extract |
 |:---|:---|:---|
-| Unit: Pass deadline enforcement | Pass aborts cleanly at 12s; no stale quotes emitted | GPT workflow |
-| Unit: 429 handling | Single 429 triggers failover; no retry storm | GPT workflow |
-| Integration: Full pass latency | p99 < 10s under normal load; p99 < 12s under 1 provider degraded | GPT workflow |
-| Integration: Quote age validation | 100% of emitted candidates have quote_age ≤15s at emission time | GPT workflow |
-| Load: Simulated 429 storm | Pass completes with degraded provider; uses fallback; alerts fire | GPT workflow |
-| Canary: Production shadow | Shadow mode 24h; compare candidate count vs. baseline | Trusted workflow |
+| **RPC health** | Per-endpoint: `rpc_requests_total`, `rpc_latency_p99`, `rpc_block_lag` (current block - `eth_blockNumber`), `rpc_429_rate_post_fix` | Scanner/bridge metrics; Alchemy/QuickNode dashboards if accessible to workflow |
+| **Freshness rejections** | `rejection_reason=freshness` with `block_lag_at_reject`, `data_timestamp_age_ms` | Central REJECTED_OPPORTUNITY queue; SiRisky consumption logs |
+| **Threshold distribution** | `edge_score`, `quote_profit_bps`, `graph_path_weight` for rejected opportunities—are they **bimodal** (far below threshold = genuine no-edge) or **unimodal near boundary** (over-tightened)? | Rejected opportunity CSVs; need histogram, not just count |
+| **Engine-chain split** | `signals_generated` / `routes_evaluated` / `eligible_found` per `(engine, chain, dex)` | SiBot1 per-engine telemetry; BOOT_REJECTED_OPPORTUNITY_ENABLED=1 should emit these |
+| **PoolCheck detail** | `poolcheck_reject_reason` breakdown: `liquidity_too_low`, `impact_too_high`, `honeypot_detected`, `sellability_sim_fail`, `freshness` vs. `profit` | SiRisky consumed messages; need sub-reason enumeration |
+| **ENTRY failure stage** | `entry_fail_stage`: `simulation_revert`, `gas_estimation_fail`, `nonce_too_low`, `signer_reject`, `pool_state_changed` | SiBot1 ENTRY logs; bridge to rejected queue |
+| **Queue depth/age** | `rejected_queue_depth`, `rejected_queue_max_age_ms`, `si_risky_lag_ms` (consumption delay) | Message broker metrics; SiRisky consumer health |
 
-**Metric dashboard additions**:
-- `pass_duration_p50/p99`
-- `quote_calls_total` (by provider, by status code)
-- `provider_degraded_seconds`
-- `pass_truncation_rate`
-- `stale_quote_rejection_rate`
-
----
-
-## DO_NOT_CHANGE INVARIANTS
-
-| Invariant | Rationale |
-|:---|:---|
-| `PoolCheck` controls | Rug/sellability filtering is last-line defense |
-| Liquidity minimums | Prevents wash pool exploitation |
-| Slippage bounds | Protects execution quality |
-| Simulation requirement | Wallet-specific validation in LIVE bridge |
-| Signer/position controls | Capital protection |
-| **Net edge ≥ 12bps** | Profitability floor; negative-profit execution prohibited |
-| **Quote age ≤ 15s** | Freshness requirement; do not weaken to accommodate slow passes |
-| **ARMED/LIVE/AUTO state machine** | Operational safety; no bypass |
-
-**Explicit**: Do not extend quote age to 60s to "match" pass duration. Fix the pass.
+**Specific query for trusted workflow**: Run aggregation over last 6h (post-27 Aug fixes stable):
+```sql
+-- Pseudocode for rejected opportunity warehouse
+SELECT 
+  rejection_reason,
+  COUNT(*),
+  AVG(edge_score) as avg_edge,
+  PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY edge_score) as p90_edge,
+  AVG(data_freshness_ms) as avg_freshness,
+  engine, chain, rpc_endpoint
+FROM rejected_opportunities 
+WHERE timestamp > now() - interval '6 hours'
+GROUP BY rejection_reason, engine, chain, rpc_endpoint
+HAVING COUNT(*) > 10
+ORDER BY COUNT(*) DESC;
+```
 
 ---
 
-## MATERIAL UNCERTAINTIES
+## (3) REPORTING_GAPS — Where Genuine Refusals Can Be Silently Dropped
 
-1. **Actual quote-call budget value**: Not provided in evidence; assumptions based on rejection ratios
-2. **Current RPC provider set**: Assumed single Alchemy; verify if secondary exists but unused
-3. **Parallelization model**: Unknown if pool quotes are batched, streamed, or serial; affects fix B priority
-4. **Route graph pre-filtering**: `routes=0` could mean no paths exist (true zero opportunity) or pre-filter is too aggressive; needs `graph=1` trend analysis
+| Gap | Mechanism | Risk |
+|:---|:---|:---|
+| **Pre-queue scanner crashes** | If scanner process OOMs or panics **before** `BOOT_REJECTED_OPPORTUNITY_ENABLED` publish, opportunity never reaches queue. No crash-loop alert mentioned. | HIGH — unobserved failure mode |
+| **Bridge serialization failures** | CSV bridge or message format mismatch: rejected opportunity parses, but **nested `PoolCheckResult` or simulation trace fails serialization**. Dropped at bridge, not queue. | MEDIUM — check bridge error logs |
+| **SiRisky consumer lag/loss** | SiRisky "consumes" queue, but if **at-least-once delivery not guaranteed**, or consumer offset commits before processing, data lost for analysis. | MEDIUM |
+| **Strategy no-intent below naming threshold** | "Strategy no-intent events can publish named reasons" — *can* publish. Is this **optional**? If engine decides "not worth logging," silent. | MEDIUM — verify `no_intent` is mandatory emit |
+| **Negative-edge early exits** | Quote/graph evaluation may **short-circuit** before full opportunity construction. If short-circuit path skips rejection publish, undercounted. | MEDIUM-HIGH — e.g., `if (quote.profitBps < -1000) return;` without logging |
+| **Cross-engine deduplication side effects** | If GPT/Gemini/Grok deduplicate "same opportunity" and only one reports, **true attempt count** obscured. | LOW-MEDIUM |
+| **LearnerBot/Claude runtime rejections** | "Bridged" but Claude scanner may have **different rejection taxonomy** not fully mapped to central reasons. | MEDIUM |
 
----
-
-## ACTIONS REQUIRING TRUSTED WORKFLOW
-
-| Action | Why Trusted |
-|:---|:---|
-| Deploy RPC tiering configuration | Involves secrets (API keys), network topology, capital-at-risk infra |
-| Adjust pass deadline constants | Changes trading behavior; needs review |
-| Enable circuit breaker thresholds | Operational safety critical |
-| Merge any code changes | Requires CI, review, canary validation |
-| Rotate/add RPC provider contracts | Financial/legal implications |
+**Most concerning**: The combination of "bounded" RPC rotation + freshness rejection + possible short-circuit logging gaps means we may have **infrastructure-throttled discovery reported as "genuine no-edge."**
 
 ---
 
-## SUMMARY FOR GPT
+## (4) SAFE_FIX — Smallest Changes, No Safeguard Weakening
 
-**Immediate hypothesis**: Your 58.2s passes with Alchemy 429s are structurally incompatible with 15s quote freshness. The zero candidates are **correct behavior** of a well-defended system under infrastructure distress—not a strategy failure.
+| Fix | Target | Implementation |
+|:---|:---|:---|
+| **A. RPC quality-weighted rotation** | Freshness cascade | Weight endpoints by `block_lag` dynamically, not just rate-limit bounded. Prefer lower-latency over merely non-429. Add `rpc_quality_score` to scanner config. |
+| **B. Freshness-conditional threshold relaxation** | Near-boundary rejections | If `data_freshness_ms > target` but `< max_acceptable`, **re-quote with fresh RPC** before rejection, don't cascade-reject. One retry, bounded. |
+| **C. Mandatory no-intent emission** | Reporting gap #4 | Enforce: all strategy paths that decline to act emit `NO_INTENT` with `final_stage` and `last_evaluated_metric`. No silent short-circuits. |
+| **D. Scanner crash/resilience telemetry** | Reporting gap #1 | Add `scanner_process_heartbeat` with `last_successful_block` — if heartbeat stale, alert regardless of queue depth. |
+| **E. Bridge serialization validation** | Reporting gap #2 | Add `bridge_reject_serialization_fail` counter; alert if >0. |
 
-**Fix order**: RPC tiering + pass deadline enforcement → measure → consider route expansion only if `eligible` > 0 with fast passes.
+**None** of these weaken PoolCheck, liquidity, impact, honeypot, simulation, signer, capital, or LIVE/ARMED safeguards.
 
-I can elaborate on any ranked cause, provide more specific pseudocode, or analyze additional metrics if available.
+---
+
+## (5) ACCEPTANCE_CRITERIA — Proving Discovery Health During Zero-Executable Period
+
+| Criterion | Measurement | Healthy Threshold |
+|:---|:---|:---|
+| **Discovery velocity** | `raw_opportunities_seen` (pre-threshold) per hour | >0 even if `executable=0` |
+| **Rejection reason distribution** | Shannon entropy of rejection reasons | >1.5 bits (not 99% single reason) |
+| **Edge score distribution** | P50, P90 of rejected `edge_score` | P90 within 20% of threshold boundary (proves "near misses") |
+| **RPC coverage** | Unique pools/DEXs touched in evaluation | >80% of target universe attempted |
+| **Cross-engine correlation** | Pearson correlation of `opportunities_seen` across GPT/Gemini/Grok | <0.9 (diverse coverage, not all failing same way) |
+| **Freshness vs. rejection independence** | Chi-square: `freshness_reject` independent of `rpc_endpoint`? | p>0.05 (no single bad endpoint driving) |
+
+**Key insight**: A healthy zero-executable period should show **many near-misses**, diverse rejection reasons, and active RPC coverage. A **unhealthy** zero-executable period shows **no discovery attempts**, single rejection reason dominance, or freshness correlated to specific endpoints.
+
+---
+
+## (6) SUFFICIENCY OF "ALL BOTS REPORT REFUSED OPPORTUNITIES" — With Necessary Qualification
+
+**The design is NOT sufficient to claim universal reporting.** Qualifications required:
+
+| Aspect | Status | Qualification |
+|:---|:---|:---|
+| **SiBot1 engines (GPT/Gemini/Grok)** | **Sufficient** | `BOOT_REJECTED_OPPORTUNITY_ENABLED=1` + named reasons + ENTRY failures bridged. Assumes no serialization/short-circuit gaps per (3). |
+| **LearnerBot/Claude** | **Conditionally sufficient** | "Bridged" but runtime rejections may use different taxonomy. Need explicit audit of Claude→central reason mapping. |
+| **PoolCheck/SiRisky** | **Sufficient for consumed messages** | Consumes queue, but if queue has gaps (see 3), SiRisky analysis incomplete. |
+| **Pre-construction failures**
