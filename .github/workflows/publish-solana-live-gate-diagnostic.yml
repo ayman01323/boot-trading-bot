@@ -1,0 +1,80 @@
+name: Publish Solana LIVE Gate Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-solana-live-gate-diagnostic.yml'
+      - '.github/solana-live-gate-diagnostic.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-solana-live-gate-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    env:
+      BRIDGE: /var/tmp/boot/latest_loss_forensics.json
+      OUT_BRANCH: server-diagnostics
+      OUT_PATH: diagnostics/latest-solana-live-gate.json
+    steps:
+      - name: Extract sanitised Solana LIVE gate evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$BRIDGE"
+          python3 - "$BRIDGE" <<'PY' > /tmp/solana-live-gate.json
+          import json,sys,time
+          src=json.load(open(sys.argv[1],encoding='utf-8'))
+          incident=src.get('solana_aug18_incident') or {}
+          if not incident.get('available'):
+              raise SystemExit('sanitised Solana incident evidence is unavailable')
+          generated=int(src.get('generated_epoch') or 0)
+          age=max(0,int(time.time())-generated) if generated else None
+          windows=incident.get('timeline_windows') or {}
+          current=windows.get('post_698e284_commit') or {}
+          out={
+              'schema_version': 1,
+              'source_generated_epoch': generated,
+              'source_age_seconds': age,
+              'incident_generated_utc': incident.get('generated_utc'),
+              'decision_rows_seen': incident.get('decision_rows_seen',0),
+              'current_window': {
+                  'pnl': current.get('pnl') or {},
+                  'decision_counts': current.get('decision_counts') or {},
+                  'top_decision_reasons': current.get('top_decision_reasons') or {},
+              },
+              'all_live_positions': incident.get('all_live_positions') or {},
+              'open_positions': incident.get('open_positions') or [],
+              'worker_latest_state': incident.get('worker_latest_state') or {},
+              'privacy': incident.get('privacy') or src.get('privacy') or '',
+              'read_only': True,
+              'trading_state_changed': False,
+          }
+          print(json.dumps(out,indent=2,sort_keys=True))
+          PY
+          python3 -m json.tool /tmp/solana-live-gate.json >/dev/null
+          cat /tmp/solana-live-gate.json
+
+      - name: Publish diagnostic snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/${OUT_PATH}"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=${OUT_BRANCH}" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/solana-live-gate.json)"
+          python3 - "$encoded" "$existing_sha" "$OUT_BRANCH" <<'PY' > /tmp/solana-live-gate-put.json
+          import json,sys
+          out={'message':'Update sanitised Solana LIVE gate diagnostic','content':sys.argv[1],'branch':sys.argv[3]}
+          if sys.argv[2]: out['sha']=sys.argv[2]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/solana-live-gate-put.json >/dev/null
