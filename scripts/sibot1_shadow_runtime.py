@@ -13,6 +13,12 @@ if str(ROOT) not in sys.path:
 # observed market evidence when the very narrow primary source windows are quiet.
 # This patch cannot sign/broadcast and does not change PoolCheck or LIVE gates.
 from sibot1_engines._shared import market_relaxation_patch as _market_relaxation_patch  # noqa: F401,E402
+# Every SiBot1 strategy-level refusal is written to the central REJECTED OPPORTUNITY
+# data queue. The worker remains fail-closed for trading and fail-open for reporting.
+from sibot1_engines._shared import rejected_reporting as _rejected_reporting  # noqa: F401,E402
+# Central PoolCheck refusals are also reported, but the patch never changes the
+# verdict or turns a rejection into an execution approval.
+from sibot1_engines._shared import rejected_poolcheck_patch as _rejected_poolcheck_patch  # noqa: F401,E402
 # The exporter observes only paper-filled SiBot 1 intents and writes sanitized
 # candidate records for the separate protected execution bridge. It does not
 # attach a signer or change the SHADOW/PAPER runtime boundary.
