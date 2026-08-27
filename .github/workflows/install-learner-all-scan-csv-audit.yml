@@ -12,14 +12,14 @@ permissions:
 
 concurrency:
   group: install-learner-all-scan-csv-audit
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   install:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Install exact DB-triggered CSV audit for isolated learner
+      - name: Install schema-adaptive permanent CSV audit
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -54,33 +54,19 @@ jobs:
           DB=LEARN/'data'/'solana_sibot.sqlite3'
           OUT=LEARN/'CSVbot'/'auto'/'solana_all_scan_records.csv'
           STATE=LEARN/'data'/'.solana_all_scan_csv_audit.state'
+          BASELINE_DONE=LEARN/'data'/'.solana_all_scan_csv_baseline.done'
           POLL=1.0
-
-          TABLES={
-            'candidates': ['wallet','first_seen','last_seen','swap_events','last_signature','updated_at'],
-            'history_status': ['wallet','fetched_at','coverage_start_ts','coverage_end_ts','signatures','swaps','closed_trades','truncated','error'],
-            'trades': ['trade_id','wallet','mint','decimals','buy_signature','sell_signature','buy_ts','sell_ts','token_amount_raw','cost_sol','proceeds_sol','net_sol','hold_seconds','source','updated_at'],
-            'rankings': ['telegram_id','lookback_days','rank','wallet','gross_profit_sol','gross_loss_sol','net_profit_sol','wins','losses','closed_trades','win_rate','updated_at'],
-            'leaders': ['telegram_id','rank','wallet','net_profit_sol','win_rate','closed_trades','selected_at','updated_at'],
-            'leader_events': ['event_id','leader_wallet','signature','action','mint','decimals','token_amount_raw','sol_amount','sell_pct','slot','event_ts','created_at'],
-            'positions': ['position_id','telegram_id','leader_wallet','leader_rank','mint','mode','status','token_amount_raw','entry_cost_sol','entry_ts','leader_buy_signature','leader_entry_sol','leader_entry_token_raw','signal_count','current_exit_sol','unrealised_net_sol','unrealised_pct','peak_unrealised_pct','leader_exit_pending','realised_net_sol','exit_signature','exit_reason','closed_at','updated_at'],
-          }
-          PK={
-            'candidates':['wallet'], 'history_status':['wallet'], 'trades':['trade_id'],
-            'rankings':['telegram_id','wallet'], 'leaders':['telegram_id','wallet'],
-            'leader_events':['event_id'], 'positions':['position_id'],
-          }
-          WALLET_FIELD={
-            'candidates':'wallet','history_status':'wallet','trades':'wallet','rankings':'wallet',
-            'leaders':'wallet','leader_events':'leader_wallet','positions':'leader_wallet',
-          }
+          TARGETS=('candidates','history_status','trades','rankings','leaders','leader_events','positions','live_execution_attempts')
           HEAD=['audit_id','recorded_utc','source_table','event_type','wallet','primary_key','full_data_json']
+
+          def utc_epoch_iso(epoch):
+              return datetime.fromtimestamp(int(epoch),timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
 
           def utc_now():
               return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
 
-          def qident(name):
-              return '"'+name.replace('"','""')+'"'
+          def qi(name):
+              return '"'+str(name).replace('"','""')+'"'
 
           def connect():
               c=sqlite3.connect(DB,timeout=30.0)
@@ -90,21 +76,36 @@ jobs:
               c.execute('PRAGMA synchronous=NORMAL')
               return c
 
-          def existing_tables(c):
+          def tables(c):
               return {r[0] for r in c.execute("select name from sqlite_master where type='table'")}
 
-          def json_expr(cols, prefix='NEW'):
-              parts=[]
-              for col in cols:
-                  parts += [repr(col), f'{prefix}.{qident(col)}']
-              return 'json_object('+','.join(parts)+')'
+          def cols(c, table):
+              return [str(r[1]) for r in c.execute(f'PRAGMA table_info({qi(table)})')]
 
-          def pk_expr(table, prefix='NEW'):
-              cols=PK[table]
-              if len(cols)==1:
-                  return f"coalesce(cast({prefix}.{qident(cols[0])} as text),'')"
-              pieces=[f"coalesce(cast({prefix}.{qident(c)} as text),'')" for c in cols]
-              return " || '|' || ".join(pieces)
+          def pk_cols(c, table):
+              rows=list(c.execute(f'PRAGMA table_info({qi(table)})'))
+              out=[(int(r[5]),str(r[1])) for r in rows if int(r[5] or 0)>0]
+              return [name for _,name in sorted(out)]
+
+          def wallet_col(columns):
+              for name in ('wallet','leader_wallet','from_addr','owner_wallet'):
+                  if name in columns: return name
+              return None
+
+          def json_expr(columns):
+              pieces=[]
+              for col in columns:
+                  pieces.append("'"+col.replace("'","''")+"'")
+                  pieces.append('NEW.'+qi(col))
+              return 'json_object('+','.join(pieces)+')'
+
+          def pk_expr(primary):
+              if not primary: return "cast(NEW.rowid as text)"
+              terms=["coalesce(cast(NEW.%s as text),'')"%qi(c) for c in primary]
+              return " || '|' || ".join(terms)
+
+          def wallet_expr(wcol):
+              return "''" if not wcol else "coalesce(cast(NEW.%s as text),'')"%qi(wcol)
 
           def ensure_audit(c):
               c.execute('''CREATE TABLE IF NOT EXISTS csv_scan_audit(
@@ -116,31 +117,27 @@ jobs:
                 primary_key TEXT,
                 row_json TEXT NOT NULL
               )''')
-              tabs=existing_tables(c)
-              for table, cols in TABLES.items():
-                  if table not in tabs:
-                      continue
-                  wf=WALLET_FIELD[table]
-                  for event,timing in [('INSERT','INSERT'),('UPDATE','UPDATE')]:
+              present=tables(c)
+              installed=0
+              for table in TARGETS:
+                  if table not in present: continue
+                  columns=cols(c,table)
+                  if not columns: continue
+                  primary=pk_cols(c,table)
+                  wcol=wallet_col(columns)
+                  for event in ('INSERT','UPDATE'):
                       trg=f'csv_audit_{table}_{event.lower()}'
-                      c.execute(f'DROP TRIGGER IF EXISTS {qident(trg)}')
-                      sql=f'''CREATE TRIGGER {qident(trg)} AFTER {timing} ON {qident(table)}
+                      c.execute(f'DROP TRIGGER IF EXISTS {qi(trg)}')
+                      sql=f'''CREATE TRIGGER {qi(trg)} AFTER {event} ON {qi(table)}
                       BEGIN
                         INSERT INTO csv_scan_audit(source_table,event_type,event_epoch,wallet,primary_key,row_json)
-                        VALUES({repr(table)},{repr(event)},CAST(strftime('%s','now') AS INTEGER),
-                               cast(NEW.{qident(wf)} as text),{pk_expr(table)}, {json_expr(cols)});
+                        VALUES('{table}','{event}',CAST(strftime('%s','now') AS INTEGER),
+                               {wallet_expr(wcol)},{pk_expr(primary)},{json_expr(columns)});
                       END'''
                       c.execute(sql)
+                      installed+=1
               c.commit()
-
-          def load_last_id():
-              try: return int(STATE.read_text().strip() or '0')
-              except Exception: return 0
-
-          def save_last_id(v):
-              tmp=STATE.with_suffix('.tmp')
-              tmp.write_text(str(int(v))+'\n',encoding='utf-8')
-              os.replace(tmp,STATE)
+              return installed
 
           def ensure_csv():
               OUT.parent.mkdir(parents=True,exist_ok=True)
@@ -149,54 +146,72 @@ jobs:
                       csv.writer(f).writerow(HEAD)
                       f.flush(); os.fsync(f.fileno())
 
-          def append_rows(rows):
-              if not rows: return
+          def baseline(c):
+              if BASELINE_DONE.exists(): return 0
+              ensure_csv()
+              present=tables(c)
+              count=0
+              with OUT.open('a',encoding='utf-8',newline='') as f:
+                  w=csv.writer(f)
+                  for table in TARGETS:
+                      if table not in present: continue
+                      columns=cols(c,table)
+                      primary=pk_cols(c,table)
+                      wcol=wallet_col(columns)
+                      for r in c.execute(f'SELECT * FROM {qi(table)}'):
+                          d={k:r[k] for k in r.keys()}
+                          wallet=str(d.get(wcol) or '') if wcol else ''
+                          pkey='|'.join(str(d.get(k) or '') for k in primary) if primary else ''
+                          w.writerow(['',utc_now(),table,'BASELINE',wallet,pkey,json.dumps(d,separators=(',',':'),ensure_ascii=False,default=str)])
+                          count+=1
+                  f.flush(); os.fsync(f.fileno())
+              tmp=BASELINE_DONE.with_suffix('.tmp')
+              tmp.write_text(str(count)+'\n',encoding='utf-8')
+              os.replace(tmp,BASELINE_DONE)
+              return count
+
+          def load_last():
+              try: return int(STATE.read_text().strip() or '0')
+              except Exception: return 0
+
+          def save_last(v):
+              tmp=STATE.with_suffix('.tmp')
+              tmp.write_text(str(int(v))+'\n',encoding='utf-8')
+              os.replace(tmp,STATE)
+
+          def drain(c,last):
+              rows=c.execute('SELECT audit_id,source_table,event_type,event_epoch,wallet,primary_key,row_json FROM csv_scan_audit WHERE audit_id>? ORDER BY audit_id LIMIT 5000',(last,)).fetchall()
+              if not rows: return last,0
               ensure_csv()
               with OUT.open('a',encoding='utf-8',newline='') as f:
                   w=csv.writer(f)
                   for r in rows:
-                      ts=datetime.fromtimestamp(int(r['event_epoch']),timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
-                      w.writerow([r['audit_id'],ts,r['source_table'],r['event_type'],r['wallet'] or '',r['primary_key'] or '',r['row_json']])
+                      w.writerow([r['audit_id'],utc_epoch_iso(r['event_epoch']),r['source_table'],r['event_type'],r['wallet'] or '',r['primary_key'] or '',r['row_json']])
                   f.flush(); os.fsync(f.fileno())
+              last=int(rows[-1]['audit_id']); save_last(last)
+              return last,len(rows)
 
-          def baseline(c):
-              # One-time baseline captures every existing scan-derived row before live auditing continues.
-              if STATE.exists() or not OUT.exists() or OUT.stat().st_size>0:
-                  return
-              tabs=existing_tables(c)
-              ensure_csv()
-              with OUT.open('a',encoding='utf-8',newline='') as f:
-                  w=csv.writer(f)
-                  for table,cols in TABLES.items():
-                      if table not in tabs: continue
-                      rows=c.execute(f'SELECT * FROM {qident(table)}').fetchall()
-                      for r in rows:
-                          d={col:r[col] for col in cols if col in r.keys()}
-                          wallet=str(d.get(WALLET_FIELD[table]) or '')
-                          pkey='|'.join(str(d.get(k) or '') for k in PK[table])
-                          w.writerow(['',utc_now(),table,'BASELINE',wallet,pkey,json.dumps(d,separators=(',',':'),ensure_ascii=False,default=str)])
-                  f.flush(); os.fsync(f.fileno())
-
-          print(f'[learner-csv-audit] output={OUT} poll={POLL}s mode=append-only exact-db-insert-update no-private-keys=true', flush=True)
-          last=load_last_id()
+          print(f'[learner-csv-audit] output={OUT} poll={POLL}s append_only=true private_keys=false schema_adaptive=true',flush=True)
+          last=load_last()
           while True:
               try:
                   if not DB.exists():
                       time.sleep(POLL); continue
                   with connect() as c:
-                      ensure_audit(c)
-                      baseline(c)
-                      rows=c.execute('SELECT audit_id,source_table,event_type,event_epoch,wallet,primary_key,row_json FROM csv_scan_audit WHERE audit_id>? ORDER BY audit_id LIMIT 5000',(last,)).fetchall()
-                      if rows:
-                          append_rows(rows)
-                          last=int(rows[-1]['audit_id']); save_last_id(last)
+                      ntrg=ensure_audit(c)
+                      nbase=baseline(c)
+                      last,ndrained=drain(c,last)
+                      if nbase or ndrained:
+                          print(f'[learner-csv-audit] baseline={nbase} appended={ndrained} triggers={ntrg} last={last}',flush=True)
                   time.sleep(POLL)
               except Exception as e:
-                  print('[learner-csv-audit] warning='+type(e).__name__+':'+str(e)[:240], flush=True)
+                  print('[learner-csv-audit] warning='+type(e).__name__+':'+str(e)[:400],flush=True)
                   time.sleep(3)
           PY
+
           chmod 0755 "$DAEMON"
           chown ayman01323:ayman01323 "$DAEMON"
+          python3 -m py_compile "$DAEMON"
 
           cat > "$SERVICE" <<EOF
           [Unit]
@@ -219,12 +234,16 @@ jobs:
           EOF
           chmod 0644 "$SERVICE"
           systemctl daemon-reload
-          systemctl enable --now google-learner-all-scan-csv-audit.service
-          sleep 4
-          test "$(systemctl is-active google-learner-all-scan-csv-audit.service)" = active
-          test -f "$LEARN/CSVbot/auto/solana_all_scan_records.csv"
+          systemctl enable google-learner-all-scan-csv-audit.service
+          systemctl restart google-learner-all-scan-csv-audit.service
+          sleep 5
 
-          echo "csv_audit_service=$(systemctl is-active google-learner-all-scan-csv-audit.service)"
+          echo "csv_audit_service=$(systemctl is-active google-learner-all-scan-csv-audit.service 2>/dev/null || true)"
+          echo "csv_audit_restarts=$(systemctl show google-learner-all-scan-csv-audit.service -p NRestarts --value 2>/dev/null || true)"
+          journalctl -u google-learner-all-scan-csv-audit.service --since '1 minute ago' --no-pager -n 30 || true
+          test "$(systemctl is-active google-learner-all-scan-csv-audit.service)" = active
+          test -s "$LEARN/CSVbot/auto/solana_all_scan_records.csv"
+
           echo "learner_runtime=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
           echo "telegram_relay=$(systemctl is-active google-learner-telegram-relay.service 2>/dev/null || true)"
           echo "csv_path=$LEARN/CSVbot/auto/solana_all_scan_records.csv"
@@ -239,7 +258,7 @@ jobs:
           print('audit_events='+str(c.execute('select count(*) from csv_scan_audit').fetchone()[0] if 'csv_scan_audit' in tabs else 0))
           c.close()
           PY
-          echo 'records=candidates+history_status+trades+rankings+leaders+leader_events+positions'
+          echo 'records=all discovered/history/trades/rankings/leaders/events/positions/execution-attempts'
           echo 'private_keys_recorded=NO'
           ROOTSCRIPT
 
