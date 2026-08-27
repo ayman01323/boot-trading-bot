@@ -40,7 +40,6 @@ jobs:
 
           test -d "$LEARN"
           test -f "$FILE"
-          test -x "$LEARN/.venv/bin/python" || test -x "$LEARN/.wallet-venv/bin/python"
 
           python3 - "$FILE" <<'PY'
           from pathlib import Path
@@ -73,9 +72,7 @@ jobs:
               raise SystemExit('REFUSED: guard not present after patch')
           PY
 
-          PYBIN="$LEARN/.venv/bin/python"
-          [[ -x "$PYBIN" ]] || PYBIN="$LEARN/.wallet-venv/bin/python"
-          "$PYBIN" -m py_compile "$FILE"
+          python3 -m py_compile "$FILE"
 
           systemctl reset-failed learnerbot-learn.service || true
           BEFORE="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo 0)"
