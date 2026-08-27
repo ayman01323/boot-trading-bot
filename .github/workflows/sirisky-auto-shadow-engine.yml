@@ -1,0 +1,88 @@
+name: SiRisky Automatic Shadow Engine
+
+on:
+  push:
+    paths:
+      - 'SiRisky/overrides/sirisky/engine.py'
+      - '.github/workflows/sirisky-auto-shadow-engine.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy automatic Stage 1-8 shadow engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n test -d /root/SiRisky
+
+          echo '=== BACKUP ENGINE ==='
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/engine.py "/root/SiRisky/sirisky/engine.py.${stamp}.pre-auto-shadow.bak"
+
+          echo '=== INSTALL ENGINE ==='
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
+
+          echo '=== SET AUTOMATIC SHADOW MODE ==='
+          sudo -n python3 - /root/SiRisky/CSV/runtime.csv <<'PY'
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+          by={str(r.get('setting') or ''):r for r in rows}
+          updates={
+            'trading_mode':('SHADOW','Automatic Stage 1-8 paper/shadow lifecycle; no real broadcast'),
+            'paper_auto_trade_enabled':('1','Automatically progress Stage 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 4 -> 5 -> 7 -> 8 in SHADOW'),
+            'live_enabled':('1','Use live market data while execution remains SHADOW'),
+            'auto_discovery_enabled':('1','Continuously discover fresh Solana pools'),
+            'auto_promote_to_selected':('1','Feed ranked Stage-1 candidates into Stage-2/3 automatically'),
+            'auto_evaluate_candidate_limit':('5','Evaluate up to five ranked candidates per entry cycle'),
+            'manual_approval_enabled':('1','Retained for any non-SHADOW/live-money path'),
+            'manual_approval_require_external_signature':('1','Retained for any non-SHADOW/live-money path'),
+            'broadcast_enabled':('0','Hard lock: SHADOW workflow never broadcasts a real transaction'),
+            'telegram_manual_run_enabled':('0','Telegram cannot directly execute a real transaction'),
+          }
+          for k,(v,note) in updates.items():
+            if k in by:
+              by[k]['value']=v; by[k]['notes']=note
+            else:
+              row={'setting':k,'value':v,'notes':note}; rows.append(row); by[k]=row
+          with p.open('w',encoding='utf-8',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=['setting','value','notes']); w.writeheader(); w.writerows(rows)
+          PY
+
+          echo '=== SAFETY ASSERTIONS ==='
+          test "$(sudo -n awk -F, '$1=="trading_mode"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 'SHADOW'
+          test "$(sudo -n awk -F, '$1=="paper_auto_trade_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+
+          echo '=== COMPILE + TEST ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -m compileall -q sirisky run.py tests'
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py selftest'
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
+
+          echo '=== RESTART ==='
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
+          test "$(systemctl is-active sirisky.service)" = 'active'
+
+          echo '=== ONE AUTOMATIC SHADOW CYCLE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py once' || true
+
+          echo '=== RUNTIME ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(trading_mode|paper_auto_trade_enabled|live_enabled|broadcast_enabled|manual_approval_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit)$/' /root/SiRisky/CSV/runtime.csv
+
+          echo '=== FINAL SAFETY ==='
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
+          echo 'automatic_shadow_engine=YES'
+          echo 'real_transaction_broadcast=NO'
