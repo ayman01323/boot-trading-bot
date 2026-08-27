@@ -17,6 +17,14 @@ OPEN_HEADERS=["position_id","opportunity_id","strategy_id","age_class","temperat
 RISK_HEADERS=["timestamp","opportunity_id","pool_id","mint","passed","reasons","forecast_net_pct","exit_health_pct"]
 ORDER_HEADERS=["timestamp","order_id","action","mint","amount_raw","opportunity_id","reason"]
 
+RISK_META_KEYS=(
+    "risk_flags","rugcheck_risks","poolcheck_risks","risk_text",
+    "lp_concentration_risk","lp_depth_test_pass","lp_depth_test_slippage_pct",
+    "recent_sell_sim_age_sec","lp_unlock_transparent","no_recent_liquidity_withdrawal",
+    "reverse_quote_present","active_liquidity_removal","catastrophic_price_impact",
+    "failed_simulation","stale_quote","malicious_deployer","wallet_signer_overlap","no_sell",
+)
+
 class SiRiskyEngine:
     def __init__(self, settings=None):
         self.settings=settings or Settings.load(); self.s1=Stage1Data(self.settings); self.s2=Stage2Strategy(self.settings); self.s3=Stage3Risk(self.settings); self.s4=Stage4Dispatcher(); self.s5=Stage5Trade(self.settings); self.s6=Stage6Monitor(self.settings); self.s7=Stage7Cycle(self.settings); self.s8=Stage8Review(self.settings); self.approvals=ManualApprovalGate(self.settings)
@@ -55,6 +63,15 @@ class SiRiskyEngine:
     def _evaluate_pool_for_entry(self,pool,discovery):
         try:
             probe=float(pool.get("probe_sol") or 0.0005); snap=self.s1.snapshot(pool,probe)
+            # Preserve optional PoolCheck/RugCheck evidence supplied by a selected
+            # pool or future Stage-1 enrichment. Stage 3 decides how each flag is
+            # enforced; the engine never interprets it.
+            for key in RISK_META_KEYS:
+                if key in pool and str(pool.get(key) or "").strip() != "":
+                    snap.meta[key]=pool.get(key)
+            # A successful Stage-1 round trip already obtained an executable
+            # reverse quote, unless an upstream source explicitly says otherwise.
+            snap.meta.setdefault("reverse_quote_present", True)
         except Exception as exc:
             return {"status":"CANDIDATE_QUOTE_REJECT","pool_id":str(pool.get("pool_id") or ""),"error":type(exc).__name__,"discovery":discovery}
         opp=self.s2.create_opportunity(snap,pool)
@@ -64,8 +81,8 @@ class SiRiskyEngine:
         order=self.s4.buy_order(opp); self._log_order(order)
         if self._manual_approval_enabled():
             try:
-                prepared=self.approvals.prepare(order,{"pool_id":opp.pool_id,"strategy_id":opp.strategy_id,"exit_health_pct":opp.snapshot.exit_health_pct})
-                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,"proposal":prepared["proposal"],"new_proposal":prepared["created"],"discovery":discovery}
+                prepared=self.approvals.prepare(order,{"pool_id":opp.pool_id,"strategy_id":opp.strategy_id,"exit_health_pct":opp.snapshot.exit_health_pct,"risk_reasons":"|".join(risk.reasons)})
+                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,"proposal":prepared["proposal"],"new_proposal":prepared["created"],"risk_reasons":risk.reasons,"discovery":discovery}
             except Exception as exc:
                 return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,"error":type(exc).__name__,"discovery":discovery}
         result=self.s5.execute(order)
@@ -108,13 +125,13 @@ class SiRiskyEngine:
         rows=self.open_positions()
         if not rows: return {"status":"NO_OPEN_POSITION"}
         pos=rows[0]; ev=self.s6.evaluate(pos)
-        if ev["decision"]=="HOLD": return {"status":"HOLD","position_id":pos["position_id"],"net_pct":ev["net_pct"]}
+        if ev["decision"]=="HOLD": return {"status":"HOLD","position_id":pos["position_id"],"net_pct":ev["net_pct"],"temperature":ev.get("temperature"),"peak_net_pct":ev.get("peak_net_pct")}
         if int(ev.get("sell_raw") or 0)<=0: return {"status":"EXIT_BLOCKED_ZERO_BALANCE","position_id":pos["position_id"]}
         order=self.s4.exit_order(pos,ev["reason"],int(ev["sell_raw"])); self._log_order(order)
         if self._manual_approval_enabled():
             try:
-                prepared=self.approvals.prepare(order,{"pool_id":str(pos.get("pool_id") or ""),"strategy_id":str(pos.get("strategy_id") or ""),"exit_health_pct":ev.get("exit_health_pct") or ""})
-                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,"position_id":pos.get("position_id"),"proposal":prepared["proposal"],"new_proposal":prepared["created"],"exit_reason":ev.get("reason")}
+                prepared=self.approvals.prepare(order,{"pool_id":str(pos.get("pool_id") or ""),"strategy_id":str(pos.get("strategy_id") or ""),"exit_health_pct":ev.get("exit_health_pct") or "","temperature":ev.get("temperature") or "","net_pct":ev.get("net_pct")})
+                return {"status":"WAITING_FOR_MANUAL_APPROVAL","order_id":order.order_id,"position_id":pos.get("position_id"),"proposal":prepared["proposal"],"new_proposal":prepared["created"],"exit_reason":ev.get("reason"),"temperature":ev.get("temperature")}
             except Exception as exc:
                 return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,"position_id":pos.get("position_id"),"error":type(exc).__name__}
         sell=self.s5.execute(order)
