@@ -1,0 +1,60 @@
+name: Google Backup Access Diagnostic
+
+on:
+  push:
+    paths:
+      - '.github/workflows/google-backup-access-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Check backup source access without changing permissions
+        shell: bash
+        run: |
+          set -u
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo "uid_groups=$(id)"
+          echo "home=$HOME"
+          echo
+
+          check_source() {
+            label="$1"
+            src="$2"
+            echo "=== $label ==="
+            echo "path=$src"
+            if test -e "$src"; then echo "exists=yes"; else echo "exists=no_or_unreachable"; fi
+            if test -d "$src"; then echo "directory=yes"; else echo "directory=no_or_unreachable"; fi
+            if test -r "$src"; then echo "readable=yes"; else echo "readable=no"; fi
+            if test -x "$src"; then echo "traversable=yes"; else echo "traversable=no"; fi
+            stat -c 'mode=%a owner=%U group=%G path=%n' "$src" 2>&1 || true
+            namei -l "$src" 2>&1 || true
+            echo
+          }
+
+          check_source production /root/multichain-learning-bot-v2.2-fast-direct-market
+          check_source sirisky /root/SiRisky
+          check_source claude /home/ayman01323/ClaudeServer
+          check_source boot /home/ayman01323/BOOT
+          check_source systemd /etc/systemd/system
+
+          echo '=== privilege routes ==='
+          if sudo -n true 2>/dev/null; then echo 'passwordless_sudo=yes'; else echo 'passwordless_sudo=no'; fi
+          if command -v docker >/dev/null 2>&1; then
+            echo 'docker_installed=yes'
+            if docker info >/dev/null 2>&1; then echo 'docker_access=yes'; else echo 'docker_access=no'; fi
+          else
+            echo 'docker_installed=no'
+          fi
+          if command -v podman >/dev/null 2>&1; then
+            echo 'podman_installed=yes'
+            if podman info >/dev/null 2>&1; then echo 'podman_access=yes'; else echo 'podman_access=no'; fi
+          else
+            echo 'podman_installed=no'
+          fi
