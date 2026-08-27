@@ -45,26 +45,7 @@ jobs:
           test -f "$PROD/learnerbot/__main__.py"
           test -f "$SIRISKY/run.py"
 
-          # Keep SiRisky engine + outbound alerts, but remove its competing getUpdates poller.
-          python3 - "$SIRISKY/run.py" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text(encoding='utf-8')
-          old='engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); tg.run_thread(lambda c,ch:telegram_handler(engine,settings,c,ch),stop)'
-          new='engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event()\n    print("[telegram] SiRisky command polling disabled; outbound alerts remain enabled", flush=True)'
-          if old in s:
-              s=s.replace(old,new,1)
-              p.write_text(s,encoding='utf-8')
-              print('sirisky_command_poller=DISABLED_NOW')
-          elif 'SiRisky command polling disabled; outbound alerts remain enabled' in s:
-              print('sirisky_command_poller=ALREADY_DISABLED')
-          else:
-              raise SystemExit('REFUSED: SiRisky start signature changed')
-          PY
-          "$SIRISKY/.venv/bin/python" -m py_compile "$SIRISKY/run.py"
-
-          # Ensure current Google MASTER process has the permanent learner launcher loaded.
+          # Ensure current Google MASTER process has the learner launcher loaded.
           install -m 0644 "$LAUNCHER" "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
           python3 - "$PROD/learnerbot/__main__.py" <<'PY'
           from pathlib import Path
@@ -84,16 +65,48 @@ jobs:
           PY
           "$PROD/.venv/bin/python" -m py_compile "$PROD/learnerbot/__main__.py" "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
 
+          # Keep SiRisky engine and outbound notifications, but make its command
+          # polling method a no-op so learnerbot is the single getUpdates owner.
+          python3 - "$SIRISKY/run.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          marker='# GOOGLE_SINGLE_TELEGRAM_OWNER_V1'
+          if marker not in s:
+              anchor='from sirisky.telegram import TelegramClient\n'
+              if anchor not in s:
+                  raise SystemExit('REFUSED: TelegramClient import anchor missing')
+              block=(
+                  anchor
+                  + marker+'\n'
+                  + '_sirisky_original_run_thread = TelegramClient.run_thread\n'
+                  + 'def _sirisky_outbound_only_run_thread(self, *args, **kwargs):\n'
+                  + '    return None\n'
+                  + 'TelegramClient.run_thread = _sirisky_outbound_only_run_thread\n'
+              )
+              s=s.replace(anchor,block,1)
+              p.write_text(s,encoding='utf-8')
+              print('sirisky_command_poller=DISABLED_NOW')
+          else:
+              print('sirisky_command_poller=ALREADY_DISABLED')
+          PY
+          "$SIRISKY/.venv/bin/python" -m py_compile "$SIRISKY/run.py"
+
           systemctl restart sirisky.service
           systemctl restart learnerbot.service
-          sleep 12
+          sleep 14
           echo "learnerbot_state=$(systemctl is-active learnerbot.service || true)"
           echo "sirisky_state=$(systemctl is-active sirisky.service || true)"
           echo "learnerbot_restarts=$(systemctl show learnerbot.service -p NRestarts --value)"
           echo "sirisky_restarts=$(systemctl show sirisky.service -p NRestarts --value)"
           grep -n 'telegram_google_learner_launcher_patch' "$PROD/learnerbot/__main__.py"
           grep -n 'Learner Bot — Google Test' "$PROD/learnerbot/telegram_google_learner_launcher_patch.py" | head -1
-          journalctl -u learnerbot.service --since '-10 seconds' --no-pager -o cat | grep 'HTTP 409' && { echo 'telegram_single_owner=NO'; exit 44; } || true
+          grep -n 'GOOGLE_SINGLE_TELEGRAM_OWNER_V1' "$SIRISKY/run.py" | head -1
+          if journalctl -u learnerbot.service --since '-10 seconds' --no-pager -o cat | grep -q 'HTTP 409'; then
+            echo 'telegram_single_owner=NO'
+            exit 44
+          fi
           echo 'telegram_single_owner=YES'
           echo 'learner_menu_bridge=LIVE'
           echo 'sirisky_engine_preserved=YES'
