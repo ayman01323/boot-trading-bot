@@ -1,0 +1,115 @@
+name: Claude Google No-Trade Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-no-trade-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-no-trade-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    env:
+      SERVICE: claude-trading-bot.service
+      STATE_FILE: /home/ayman01323/ClaudeServer/runtime/data/claude_bot_state.json
+      CSV_DIR: /home/ayman01323/ClaudeServer/runtime/CSVbot
+    steps:
+      - name: Verify Google runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+
+      - name: Current Claude control state
+        shell: bash
+        run: |
+          set -euo pipefail
+          active="$(systemctl is-active "$SERVICE" || true)"
+          echo "service_active=$active"
+          systemctl show "$SERVICE" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['STATE_FILE'])
+          raw = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print(f'effective_state={effective}')
+          print(f'drawdown_latched={str(halted).lower()}')
+          print(f'open_positions={int(raw.get("open_positions") or 0)}')
+          PY
+          test "$active" = active
+
+      - name: Isolated platform LIVE and AUTO flags
+        shell: bash
+        run: |
+          set -euo pipefail
+          CSV_DIR="$CSV_DIR" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root = Path(os.environ['CSV_DIR'])
+          keys = ('trading_enabled','live_trading_enabled','auto_trading_enabled','sibot_auto_trade_enabled','recommendation_mode')
+          truthy = {'1','true','yes','on','armed','live','auto'}
+          total_truthy = 0
+          for name in ('live_trading_settings.csv','auto_trading_settings.csv','user_trading_settings.csv'):
+              p = root / name
+              if not p.exists():
+                  print(f'{name}=MISSING')
+                  continue
+              with p.open('r', encoding='utf-8-sig', newline='') as f:
+                  rows = list(csv.DictReader(f))
+              hits=[]
+              for i,r in enumerate(rows, start=2):
+                  for k in keys:
+                      if k in r and str(r.get(k,'')).strip().lower() in truthy:
+                          hits.append((i,k,str(r.get(k,''))))
+              total_truthy += len(hits)
+              print(f'{name}_rows={len(rows)} truthy_arming_fields={len(hits)}')
+              for line,key,value in hits[:10]:
+                  print(f'{name}:line={line} {key}={value}')
+          print(f'isolated_truthy_arming_fields_total={total_truthy}')
+          PY
+
+      - name: Recent opportunity pipeline and execution evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(sudo -n journalctl -u "$SERVICE" --since '30 minutes ago' --no-pager || true)"
+          count() { printf '%s\n' "$log" | grep -Ec "$1" || true; }
+          echo "rpc_429_count=$(count 'Solana RPC .*HTTP 429|HTTP 429')"
+          echo "rpc_error_count=$(count 'SolanaRpcEndpointError|Solana RPC .*HTTP [45][0-9][0-9]')"
+          echo "leader_signature_events=$(count '\[sibot-solana-leader-signature\]')"
+          echo "leader_alignment_events=$(count '\[solana-leader-edge-alignment\]')"
+          echo "fast_market_scan_events=$(count '\[fast-market-scan\]')"
+          echo "live_route_scan_events=$(count '\[live-route-scan\]')"
+          echo "copy_top20_events=$(count '\[copy-top20\]')"
+          echo "buy_word_events=$(count '(^|[^A-Z])BUY([^A-Z]|$)')"
+          echo "sell_word_events=$(count '(^|[^A-Z])SELL([^A-Z]|$)')"
+          echo "broadcast_word_events=$(count 'broadcast')"
+          echo "position_word_events=$(count 'position')"
+
+          for tag in '[solana-leader-edge-alignment]' '[fast-market-scan]' '[live-route-scan]' '[copy-top20]'; do
+            line="$(printf '%s\n' "$log" | grep -F "$tag" | tail -1 || true)"
+            if [[ -n "$line" ]]; then
+              printf 'latest_%s=%s\n' "$(printf '%s' "$tag" | tr -cd '[:alnum:]-')" "$line" \
+                | sed -E 's/[A-Za-z0-9]{32,}/[redacted]/g'
+            else
+              printf 'latest_%s=NONE\n' "$(printf '%s' "$tag" | tr -cd '[:alnum:]-')"
+            fi
+          done
+          echo 'rpc_urls_logged=false'
+          echo 'wallet_secrets_read=false'
+          echo 'live_state_changed=false'
+          echo 'service_restarted=false'
+          echo 'transaction_broadcast_by_diagnostic=false'
