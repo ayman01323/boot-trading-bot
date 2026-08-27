@@ -48,6 +48,14 @@ jobs:
           else
             echo 'latest_alignment=NONE'
           fi
+
+          echo 'sanitized_rpc_errors_begin'
+          printf '%s\n' "$log" \
+            | grep -E 'SolanaRpcEndpointError|Solana RPC .*HTTP [45][0-9][0-9]' \
+            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s/[A-Za-z0-9_-]{32,}/[redacted]/g' \
+            | tail -30 || true
+          echo 'sanitized_rpc_errors_end'
+
           echo 'rpc_urls_logged=false'
           echo 'live_state_changed=false'
           test "$active" = active
