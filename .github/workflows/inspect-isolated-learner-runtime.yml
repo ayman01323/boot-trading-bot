@@ -1,0 +1,50 @@
+name: Inspect Isolated Learner Runtime
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/inspect-isolated-learner-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect isolated learner runtime safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          echo "root_exists=$([[ -d "$ROOT" ]] && echo YES || echo NO)"
+          echo "known_good_marker=$([[ -f "$ROOT/KNOWN_GOOD_SNAPSHOT.txt" ]] && echo YES || echo NO)"
+          echo "venv_exists=$([[ -x "$ROOT/.venv/bin/python" ]] && echo YES || echo NO)"
+          echo "wallet_venv_exists=$([[ -x "$ROOT/.wallet-venv/bin/python" ]] && echo YES || echo NO)"
+          echo '=== matching processes ==='
+          pgrep -af '/home/ayman01323/BOOT/testingbots/learn|testingbots/learn' | sed -E 's#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=[^ ]+#\1=REDACTED#g' || true
+          echo '=== systemd units containing learner path ==='
+          sudo -n /usr/bin/systemctl list-unit-files --type=service --no-pager | grep -Ei 'learn|boot' || true
+          for unit in $(sudo -n /usr/bin/systemctl list-unit-files --type=service --no-legend | awk '{print $1}' | grep -Ei 'learn|boot' || true); do
+            txt=$(sudo -n /usr/bin/systemctl cat "$unit" 2>/dev/null || true)
+            if grep -qF "$ROOT" <<<"$txt"; then
+              echo "UNIT=$unit"
+              echo "$txt" | grep -E '^(ExecStart|WorkingDirectory|User)=' || true
+              echo "ACTIVE=$(sudo -n /usr/bin/systemctl is-active "$unit" || true)"
+            fi
+          done
+          echo '=== learner files ==='
+          for f in "$ROOT/CSVbot/users.csv" "$ROOT/CSVbot/user_trading_settings.csv" "$ROOT/CSVbot/solana_settings.csv" "$ROOT/data/solana_sibot.sqlite3"; do
+            echo "$(basename "$f")=$([[ -f "$f" ]] && echo YES || echo NO)"
+          done
+          if [[ -f "$ROOT/CSVbot/solana_settings.csv" ]]; then
+            awk -F, 'NR==1 || $1=="live_trade_sol" || $1=="live_min_sol_reserve" || $1=="live_max_positions" || $1=="enabled" {print}' "$ROOT/CSVbot/solana_settings.csv" || true
+          fi
+          if [[ -f "$ROOT/.env" ]]; then
+            echo '=== env key names only ==='
+            sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1=SET/p' "$ROOT/.env" | grep -E '^(TELEGRAM_|SOLANA_|JUPITER_|CSV_DIR|DATA_DIR)' || true
+          fi
