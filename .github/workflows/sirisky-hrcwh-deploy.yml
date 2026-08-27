@@ -32,18 +32,19 @@ jobs:
           set -euo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          if [[ ! -x /usr/local/sbin/sirisky-governed-live-arm ]]; then
-            echo 'ERROR: restricted SiRisky governed-LIVE sudo wrapper is not installed.' >&2
+          WRAPPER=/root/SiRisky/ops/sirisky-governed-live-arm
+          if [[ ! -x "$WRAPPER" ]]; then
+            echo 'ERROR: restricted SiRisky governed-LIVE wrapper is not installed under the bot folder.' >&2
             echo 'Install it once as root with scripts/install_sirisky_governed_live_ops.sh.' >&2
             exit 2
           fi
-          sudo -n -l /usr/local/sbin/sirisky-governed-live-arm >/dev/null
+          sudo -n -l "$WRAPPER" >/dev/null
 
-      - name: Arm governed LIVE through restricted root wrapper
+      - name: Arm governed LIVE through bot-local restricted root wrapper
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n /usr/local/sbin/sirisky-governed-live-arm "$GITHUB_SHA"
+          sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$GITHUB_SHA"
 
       - name: Successful deployment summary
         if: success()
@@ -52,6 +53,7 @@ jobs:
           {
             echo '## SiRisky governed LIVE state applied'
             echo
+            echo '- Bot-local wrapper: /root/SiRisky/ops/sirisky-governed-live-arm'
             echo '- trading_mode: LIVE'
             echo '- live_enabled: 1'
             echo '- broadcast_enabled: 1'
