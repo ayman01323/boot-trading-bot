@@ -85,7 +85,8 @@ class ValidatedSnapshotEnvelope:
     canonical_chain: str
     canonical_address: str
     snapshot: MarketSnapshot
-    data_max_age_ms: int
+    market_data_max_age_ms: int
+    safety_evidence_max_age_ms: int
     provider_disagreement_pct: float
     field_sources: Mapping[str, str]
     provenance: tuple[ProviderObservation, ...]
@@ -155,12 +156,7 @@ class SafeSnapshotBuilder:
             raise FeedSafetyError(f"STALE_PROVIDER:{provider}:{age_ms}")
         return age_ms
 
-    def _validate_jupiter(
-        self,
-        asset: Asset,
-        route: JupiterRouteEvidence,
-        now_ms: int,
-    ) -> int:
+    def _validate_jupiter(self, asset: Asset, route: JupiterRouteEvidence, now_ms: int) -> int:
         if _identity(route.chain, route.address) != _identity(asset.chain, asset.address):
             raise FeedSafetyError("JUPITER_IDENTITY_MISMATCH")
         age_ms = max(0, now_ms - int(route.checked_at_ms))
@@ -201,8 +197,7 @@ class SafeSnapshotBuilder:
 
     @staticmethod
     def _freshest_value(
-        observations: tuple[ProviderObservation, ...],
-        field_name: str,
+        observations: tuple[ProviderObservation, ...], field_name: str
     ) -> tuple[float, str]:
         eligible = [o for o in observations if getattr(o, field_name) is not None]
         if not eligible:
@@ -225,11 +220,11 @@ class SafeSnapshotBuilder:
         asset = self._asset_for_identity(chain, address)
         canonical_identity = _identity(asset.chain, asset.address)
 
-        ages: list[int] = []
+        market_ages: list[int] = []
         for obs in observations:
             if _identity(obs.chain, obs.address) != canonical_identity:
                 raise FeedSafetyError(f"PROVIDER_IDENTITY_MISMATCH:{obs.provider}")
-            ages.append(
+            market_ages.append(
                 self._validate_timestamp(
                     provider=obs.provider,
                     source_timestamp_ms=int(obs.source_timestamp_ms),
@@ -238,12 +233,14 @@ class SafeSnapshotBuilder:
                 )
             )
 
-        ages.append(self._validate_jupiter(asset, jupiter, int(now_ms)))
+        market_ages.append(self._validate_jupiter(asset, jupiter, int(now_ms)))
         pool_age = self._validate_pool_safety(asset, pool_safety, int(now_ms))
-        if pool_safety is not None:
-            ages.append(pool_age)
 
-        prices = [float(o.price_usd) for o in observations if o.price_usd is not None and o.price_usd > 0.0]
+        prices = [
+            float(o.price_usd)
+            for o in observations
+            if o.price_usd is not None and o.price_usd > 0.0
+        ]
         disagreement_pct = 0.0
         if len(prices) >= 2:
             low, high = min(prices), max(prices)
@@ -263,8 +260,8 @@ class SafeSnapshotBuilder:
         if spread_bps < 0.0 or spread_bps > self.risk.max_spread_bps:
             raise FeedSafetyError(f"JUPITER_SPREAD_OUT_OF_RANGE:{spread_bps:.4f}")
 
-        data_max_age_ms = max(ages) if ages else 0
-        conservative_ts = (int(now_ms) - data_max_age_ms) / 1000.0
+        market_data_max_age_ms = max(market_ages) if market_ages else 0
+        conservative_ts = (int(now_ms) - market_data_max_age_ms) / 1000.0
         snapshot = MarketSnapshot(
             asset_key=asset.key,
             ts=conservative_ts,
@@ -305,7 +302,8 @@ class SafeSnapshotBuilder:
             canonical_chain=asset.chain,
             canonical_address=asset.address,
             snapshot=snapshot,
-            data_max_age_ms=data_max_age_ms,
+            market_data_max_age_ms=market_data_max_age_ms,
+            safety_evidence_max_age_ms=pool_age,
             provider_disagreement_pct=round(disagreement_pct, 6),
             field_sources=field_sources,
             provenance=tuple(observations),
