@@ -23,9 +23,7 @@ jobs:
           set -Eeuo pipefail
           test "$(hostname)" = 'botgoogle'
           ROOT=/home/ayman01323/BOOT/testingbots/learn
-          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
           test -d "$ROOT/learnerbot"
-          test -x "$PROD/.venv/bin/python"
 
           WORK="$HOME/.cache/learner-only-key-menu-${GITHUB_RUN_ID}"
           mkdir -p "$WORK"
@@ -48,6 +46,8 @@ jobs:
           SRC=__SRC__
           RESULT=__RESULT__
           exec > >(tee "$RESULT") 2>&1
+          test -d "$ROOT/learnerbot"
+          test -x "$PROD/.venv/bin/python"
 
           for target in \
             /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py \
