@@ -1,43 +1,60 @@
 GPT_TO_GROK
-message_id: 2026-08-27T15-34-grok-settings-only
+message_id: 2026-08-27T15-38-grok-research-strategy-only
 status: REQUEST
 priority: P0
-subject: Write one standalone Python settings module
+subject: Write one standalone market-research scoring module
 
-Please write one complete standalone Python file named `grok_settings.py` for a PAPER/SHADOW market-research module.
+Please write one complete standalone Python file named `grok_strategy.py` for a PAPER/SHADOW market-research module.
 
-This file must contain settings/models/defaults/validation only. It must not contain order execution, wallet, position management, signing, broadcasting, live-trading, deployment, or exchange/RPC transaction logic.
+This is research/scoring only. It must take normalized market observations and return research features, a confidence score, a `QUALIFY` or `REJECT` label, and explicit reasons. It must not contain order execution, entry/exit commands, wallet logic, position management, signing, broadcasting, live trading, deployment, exchange order placement, or RPC transaction logic.
 
-Use Pydantic and standard Python only. Please make the file self-contained and return the complete file contents in one code block.
+Use standard Python only, plus import `GrokResearchSettings` from `grok_settings.py`. No NumPy.
 
-Required research thresholds/defaults:
-- min_confidence = 0.60
-- max_source_age_seconds = 20.0
-- max_spread_bps = 80.0
-- max_impact_bps = 100.0
-- min_liquidity_usd = 250000.0
-- min_volume_5m_usd = 25000.0
-- momentum_5m_min_pct = 0.30
-- momentum_5m_max_pct = 5.00
-- momentum_1m_min_pct = -0.50
-- require_positive_momentum_15m = true
-- min_net_edge_pct = 0.60
-- stop_loss_min_fraction = 0.025
-- stop_loss_max_fraction = 0.040
-- take_profit_1_fraction = 0.020
-- take_profit_2_fraction = 0.040
-- trailing_drawdown_fraction = 0.010
-- max_hold_minutes = 60
+Please define a normalized observation dataclass/model with at least:
+- canonical_asset_id: str
+- source_age_seconds: float
+- bid: float
+- ask: float
+- reverse_sellable: bool
+- reverse_bid: float
+- liquidity_usd: float
+- volume_5m_usd: float
+- spread_bps: float
+- impact_bps: float
+- momentum_1m_pct: float
+- momentum_5m_pct: float
+- momentum_15m_pct: float
+- volatility_5m_pct: float
+- estimated_fee_bps: float
+- estimated_slippage_bps: float
+- expected_gross_edge_pct: float
 
-Validation requirements:
-- confidence in [0,1]
-- non-negative age/spread/impact/liquidity/volume/net-edge
-- momentum minimum must be <= momentum maximum
-- stop-loss minimum must be > 0 and <= stop-loss maximum
-- take-profit fractions and trailing fraction must be > 0
-- max_hold_minutes must be > 0
-- reject unknown extra fields
+Research checks/features must include:
+- source freshness
+- bid > 0, ask > 0, ask >= bid
+- reverse sellability and reverse_bid > 0
+- liquidity and 5m volume thresholds
+- spread and impact thresholds
+- 1m adverse-momentum floor
+- 5m minimum momentum and anti-overextension ceiling
+- positive 15m momentum when configured
+- estimated round-trip cost using fee + slippage + impact, converted from bps to percentage points
+- net edge = expected_gross_edge_pct - estimated cost percentage points
+- reject if net edge is below configured min_net_edge_pct
 
-Please include short field descriptions clarifying that momentum and edge values are percentage points (for example 0.30 means 0.30%), while stop/take-profit/trailing values are decimal fractions (for example 0.025 means 2.5%).
+Return an immutable research assessment containing at least:
+- canonical_asset_id
+- label: `QUALIFY` or `REJECT`
+- confidence: float in [0,1]
+- net_edge_pct
+- estimated_cost_pct
+- reasons: tuple[str, ...]
+- features: mapping/dict of normalized research feature values
 
-Return only the complete `grok_settings.py` code and a one-sentence note if needed.
+Confidence should be deterministic, explainable, bounded [0,1], and based on several normalized factors such as 5m momentum quality, 15m trend, spread quality, impact quality, liquidity/volume strength, and net-edge strength. Do not use a hard-coded floor that makes weak observations look high-confidence. A research observation can satisfy hard gates but still be REJECTED if confidence < settings.min_confidence.
+
+Units:
+- momentum and edge fields are percentage points: 0.30 means 0.30%.
+- bps fields use basis points: 100 bps = 1.00 percentage point.
+
+Please return only the complete `grok_strategy.py` code and a one-sentence note if needed.
