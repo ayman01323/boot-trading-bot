@@ -34,6 +34,7 @@ def _clear_rpc_env(monkeypatch):
         "SOLANA_RPC_429_COOLDOWN_SECONDS",
         "SOLANA_RPC_429_MAX_COOLDOWN_SECONDS",
         "SOLANA_RPC_TRANSIENT_COOLDOWN_SECONDS",
+        "SOLANA_RPC_AUTH_COOLDOWN_SECONDS",
         "SOLANA_RPC_MAX_INFLIGHT_PER_ENDPOINT",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -54,6 +55,84 @@ def test_helius_is_preferred_to_public_rpc_when_key_exists(monkeypatch, tmp_path
     assert urls[0].startswith("https://mainnet.helius-rpc.com/")
     assert "secret-test-key" in urls[0]
     assert urls[-1] == sol.DEFAULT_RPC
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_auth_failure_fails_over_to_next_endpoint(monkeypatch, tmp_path, status_code):
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example/?api-key=bad-secret"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(status_code, {"error": "auth failed"})
+        if url == second:
+            return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": {"value": 11}})
+        raise AssertionError(f"unexpected endpoint {url}")
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    result = failover.rpc_failover(_app(tmp_path), "getBalance", ["wallet"])
+    assert result == {"value": 11}
+    assert calls == [first, second]
+    state = failover._ENDPOINT_STATE[first]
+    assert float(state["cooldown_until"]) > 0
+
+
+def test_auth_failed_endpoint_is_skipped_during_cooldown(monkeypatch, tmp_path):
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setenv("SOLANA_RPC_AUTH_COOLDOWN_SECONDS", "120")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+
+    fake_now = [1000.0]
+    monkeypatch.setattr(failover.time, "monotonic", lambda: fake_now[0])
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(401, {"error": "unauthorised"})
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": 99})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == 99
+    assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == 99
+    assert calls == [first, second, second]
+    assert float(failover._ENDPOINT_STATE[first]["cooldown_until"]) == pytest.approx(1120.0)
+
+
+def test_all_auth_failures_fail_closed_without_secret_leak(monkeypatch, tmp_path):
+    _clear_rpc_env(monkeypatch)
+    secret = "revoked-secret-value"
+    first = f"https://rpc-one.example/?api-key={secret}"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(401, {"error": "unauthorised"})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    with pytest.raises(failover.SolanaRpcEndpointError) as caught:
+        failover.rpc_failover(_app(tmp_path), "getSlot", [])
+
+    assert calls == [first, second, sol.DEFAULT_RPC]
+    assert caught.value.status_code == 401
+    assert caught.value.transient is False
+    assert caught.value.endpoint_local_failover is True
+    text = str(caught.value)
+    assert secret not in text
+    assert first not in text
+    assert second not in text
+    assert "HTTP 401" in text
 
 
 def test_transient_429_fails_over_to_next_endpoint(monkeypatch, tmp_path):
@@ -167,6 +246,7 @@ def test_non_transient_http_400_does_not_fail_over(monkeypatch, tmp_path):
         failover.rpc_failover(_app(tmp_path), "badMethod", [])
     assert calls == [first]
     assert caught.value.transient is False
+    assert caught.value.endpoint_local_failover is False
     assert caught.value.status_code == 400
 
 
