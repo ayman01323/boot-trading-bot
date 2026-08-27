@@ -22,25 +22,31 @@ jobs:
           echo "hostname=$(hostname)"
           echo "user=$(id -un)"
           test "$(hostname)" = 'botgoogle'
-          echo '=== sudo capabilities ==='
-          sudo -n -l || true
           echo '=== production cutover wrappers ==='
           for p in \
             /usr/local/sbin/status-google-production-cutover \
             /usr/local/sbin/refresh-google-production-bot \
             /usr/local/sbin/verify-google-production-bot \
             /usr/local/sbin/activate-google-production-bot \
-            /usr/local/sbin/stop-google-production-after-failed-cutover; do
+            /usr/local/sbin/stop-google-production-after-failed-cutover \
+            /usr/local/sbin/deploy-boot-trading-bot \
+            /usr/local/sbin/status-boot-trading-bot; do
             if [[ -x "$p" ]]; then echo "READY $p"; else echo "MISSING $p"; fi
           done
           echo '=== staging/final paths ==='
           for p in \
             /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market \
             /root/multichain-learning-bot-v2.2-fast-direct-market \
-            /home/ayman01323/BOOT/testingbots/learn; do
+            /home/ayman01323/BOOT/testingbots/learn \
+            /home/ayman01323/ClaudeServer/TestBots/boot-trading-bot; do
             if [[ -e "$p" ]]; then ls -ld "$p"; else echo "MISSING $p"; fi
           done
+          echo '=== google service identity ==='
+          sudo -n /usr/bin/systemctl show learnerbot.service \
+            -p ActiveState -p UnitFileState -p FragmentPath -p WorkingDirectory -p ExecStart -p EnvironmentFiles || true
           echo '=== current google production state ==='
-          if [[ -x /usr/local/sbin/status-google-production-cutover ]]; then
-            sudo -n /usr/local/sbin/status-google-production-cutover || true
-          fi
+          sudo -n /usr/local/sbin/status-google-production-cutover || true
+          echo '=== boot deploy status ==='
+          sudo -n /usr/local/sbin/status-boot-trading-bot || true
+          echo '=== deploy wrapper target hints (no secrets) ==='
+          grep -E '^(BOT_DIR|SERVICE|REPO_MATCH)=' /usr/local/sbin/deploy-boot-trading-bot 2>/dev/null || true
