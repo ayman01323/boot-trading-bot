@@ -1,0 +1,89 @@
+name: Google MASTER Telegram Owner Cutover
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/google-master-telegram-owner-cutover.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-master-telegram-owner-cutover
+  cancel-in-progress: false
+
+env:
+  MAIN_SHA: b8cab4977c9eb7561af6bb261ccef78986427809
+
+jobs:
+  stop-old-vps:
+    name: Stop old VPS Telegram owner
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 10
+    steps:
+      - name: Quiesce old production instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Stopping old VPS learnerbot so it can no longer poll the MASTER Telegram token.'
+          sudo -n /usr/local/sbin/quiesce-namecheap-for-google-cutover
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          echo 'old_vps_telegram_owner=STOPPED'
+
+  deploy-google:
+    name: Make Google the only MASTER Telegram owner
+    needs: stop-old-vps
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Verify Google host and deploy exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          echo "target_main_sha=$MAIN_SHA"
+          sudo -n /usr/local/sbin/deploy-boot-trading-bot "$MAIN_SHA"
+          sleep 8
+          sudo -n /usr/bin/systemctl is-active --quiet learnerbot.service
+          sudo -n /usr/local/sbin/status-boot-trading-bot
+          echo 'google_master_telegram_owner=ACTIVE'
+
+      - name: Verify Google service remains stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 12
+          sudo -n /usr/bin/systemctl is-active --quiet learnerbot.service
+          sudo -n /usr/bin/systemctl --no-pager --full status learnerbot.service | tail -n 30
+          echo 'google_service_stable=YES'
+
+  verify-old-stays-stopped:
+    name: Verify old VPS remains stopped
+    needs: deploy-google
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Confirm no old Telegram poller can return
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          echo 'old_vps_remains_stopped=YES'
+
+  final-google-check:
+    name: Final Google ownership check
+    needs: verify-old-stays-stopped
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Confirm final service state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n /usr/bin/systemctl is-active --quiet learnerbot.service
+          sudo -n /usr/local/sbin/status-google-production-cutover
+          echo 'MASTER_TELEGRAM_OWNER=GOOGLE_ONLY'
+          echo 'OLD_VPS_TELEGRAM_OWNER=STOPPED'
