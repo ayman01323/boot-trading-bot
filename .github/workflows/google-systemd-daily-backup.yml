@@ -1,17 +1,10 @@
 name: Google Systemd Daily Backup
 
-# Dedicated protected backup for the active systemd service definitions.
 on:
-  # Run at both possible UTC equivalents of 03:00 Europe/London.
-  # The job itself proceeds only when London local time is 03:00,
-  # so this remains correct through GMT/BST changes.
   schedule:
-    - cron: '0 2 * * *'
     - cron: '0 3 * * *'
+      timezone: 'Europe/London'
   workflow_dispatch:
-  push:
-    paths:
-      - '.github/workflows/google-systemd-daily-backup.yml'
 
 permissions:
   contents: read
@@ -31,21 +24,7 @@ jobs:
       RETENTION_DAYS: '30'
       TZ: Europe/London
     steps:
-      - name: Check 03:00 London schedule gate
-        id: gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${GITHUB_EVENT_NAME}" = "schedule" ] && [ "$(date +%H)" != "03" ]; then
-            echo "run_backup=false" >> "$GITHUB_OUTPUT"
-            echo "No-op: London local hour is $(date +%H), not 03."
-          else
-            echo "run_backup=true" >> "$GITHUB_OUTPUT"
-            echo "Proceeding at $(date '+%Y-%m-%d %H:%M:%S %Z')."
-          fi
-
       - name: Verify Google runner and source
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -60,17 +39,14 @@ jobs:
           df -h "$DEST_ROOT"
 
       - name: Create dated verified systemd backup
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
           umask 077
-
           BACKUP_DATE="$(date +%Y-%m-%d)"
           DAY_DIR="$DEST_ROOT/$BACKUP_DATE"
           WORK="$(mktemp -d /tmp/google-systemd-backup.XXXXXX)"
           trap 'rm -rf "$WORK"' EXIT
-
           mkdir -p "$DAY_DIR"
           chmod 700 "$DAY_DIR"
 
@@ -78,17 +54,10 @@ jobs:
           HASH="$WORK/systemd-system.tar.gz.sha256"
           MANIFEST="$WORK/systemd-system-manifest.txt"
 
-          # /etc/systemd/system service definitions are readable by the runner;
-          # no root privilege is required merely to archive them.
           tar -C /etc/systemd -czf "$ARCHIVE" system
           chmod 600 "$ARCHIVE"
           tar -tzf "$ARCHIVE" >/dev/null
-
-          # Store a portable checksum containing only the archive basename.
-          (
-            cd "$WORK"
-            sha256sum systemd-system.tar.gz > systemd-system.tar.gz.sha256
-          )
+          (cd "$WORK" && sha256sum systemd-system.tar.gz > systemd-system.tar.gz.sha256)
           chmod 600 "$HASH"
 
           cat > "$MANIFEST" <<EOF
@@ -105,15 +74,12 @@ jobs:
           mv -f "$ARCHIVE" "$DAY_DIR/systemd-system.tar.gz"
           mv -f "$HASH" "$DAY_DIR/systemd-system.tar.gz.sha256"
           mv -f "$MANIFEST" "$DAY_DIR/systemd-system-manifest.txt"
-
           cd "$DAY_DIR"
           sha256sum -c systemd-system.tar.gz.sha256
-
           echo "Backup completed: $DAY_DIR"
           ls -lh "$DAY_DIR"
 
       - name: Apply retention policy
-        if: steps.gate.outputs.run_backup == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -128,4 +94,4 @@ jobs:
         run: |
           echo "Source: $SOURCE"
           echo "Destination pattern: $DEST_ROOT/YYYY-MM-DD/systemd-system.tar.gz"
-          echo "Schedule: daily at 03:00 Europe/London (GMT/BST safe)"
+          echo "Schedule: daily at 03:00 Europe/London"
