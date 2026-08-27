@@ -68,6 +68,11 @@ def test_success_message_goes_only_to_active_masters_and_only_once(tmp_path, mon
 
 
 def test_failure_alert_repeats_no_more_than_once_per_hour_until_verified(tmp_path, monkeypatch):
+    # Production currently has backup failure alerts intentionally disabled.
+    # This unit test exercises the alert cadence itself, so enable the feature
+    # only for the duration of this test rather than changing production policy.
+    monkeypatch.setattr(alerts, "FAILURE_ALERTS_ENABLED", True)
+
     app = _app(tmp_path)
     backup_dir = tmp_path / "BotBuc"
     backup_dir.mkdir()
