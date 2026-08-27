@@ -1,0 +1,78 @@
+name: Verify Google MASTER Menu Live
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/verify-google-master-menu-live.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Verify stable learner and menu ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          R1="$(sudo -n /usr/bin/systemctl show learnerbot.service -p NRestarts --value)"
+          test "$(sudo -n /usr/bin/systemctl is-active learnerbot.service)" = active
+          sleep 15
+          R2="$(sudo -n /usr/bin/systemctl show learnerbot.service -p NRestarts --value)"
+          test "$R1" = "$R2"
+          echo "learner_active=YES restarts_stable=$R2"
+
+          WORK="$HOME/.cache/verify-menu-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          OUT="$WORK/result.txt"
+          SCRIPT="$WORK/check.sh"
+          UNIT="$WORK/check-${GITHUB_RUN_ID}.service"
+          cat > "$SCRIPT" <<EOF
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          {
+            echo '=== menu files ==='
+            for p in \
+              /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py \
+              /home/ayman01323/ClaudeServer/TestBots/boot-trading-bot/learnerbot/telegram_google_learner_launcher_patch.py; do
+              if [[ -f "\$p" ]]; then
+                echo "FILE \$p"
+                grep -F 'Learner Bot — Google Test' "\$p" | head -1 || true
+              fi
+            done
+            echo '=== SiRisky polling line ==='
+            grep -F 'Telegram command polling disabled: MASTER learnerbot owns getUpdates' /root/SiRisky/run.py | head -1 || true
+            echo '=== recent learner Telegram ==='
+            journalctl -u learnerbot.service --since '-50 seconds' --no-pager -o cat \
+              | grep -E 'interactive multi-chain menu started|HTTP 409|PermissionError|Main process exited' || true
+          } > '$OUT'
+          chown $(id -u):$(id -g) '$OUT'
+          chmod 600 '$OUT'
+          EOF
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Verify Google MASTER menu ownership
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$NAME"
+          cat "$OUT"
+          grep -q 'Learner Bot — Google Test' "$OUT"
+          grep -q 'Telegram command polling disabled: MASTER learnerbot owns getUpdates' "$OUT"
+          ! grep -q 'HTTP 409' "$OUT"
+          ! grep -q 'Main process exited' "$OUT"
+          sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
+          rm -f "$UNIT" "$SCRIPT" "$OUT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          echo 'master_menu_owner=GOOGLE_LEARNERBOT_VERIFIED'
