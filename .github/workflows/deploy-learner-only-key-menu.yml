@@ -20,14 +20,14 @@ jobs:
         env:
           SOURCE_SHA: e32cee435385bb37f3d34cef983d71b4201edc00
         run: |
-          set -euo pipefail
+          set -Eeuo pipefail
           test "$(hostname)" = 'botgoogle'
           ROOT=/home/ayman01323/BOOT/testingbots/learn
           PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
           test -d "$ROOT/learnerbot"
           test -x "$PROD/.venv/bin/python"
 
-          WORK="$HOME/.cache/learner-live-menu-${GITHUB_RUN_ID}"
+          WORK="$HOME/.cache/learner-only-key-menu-${GITHUB_RUN_ID}"
           mkdir -p "$WORK"
           SRC="$WORK/telegram_google_learner_launcher_patch.py"
           curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${SOURCE_SHA}/learnerbot/telegram_google_learner_launcher_patch.py" -o "$SRC"
@@ -38,62 +38,52 @@ jobs:
 
           SCRIPT="$WORK/install.sh"
           RESULT="$WORK/result.txt"
-          UNIT="$WORK/learner-live-menu-${GITHUB_RUN_ID}.service"
-          cat > "$SCRIPT" <<EOF
+          UNIT="$WORK/learner-only-key-menu-${GITHUB_RUN_ID}.service"
+
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
           #!/usr/bin/env bash
           set -Eeuo pipefail
-          exec > >(tee '$RESULT') 2>&1
-          ROOT='$ROOT'
-          PROD='$PROD'
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          SRC=__SRC__
+          RESULT=__RESULT__
+          exec > >(tee "$RESULT") 2>&1
 
-          # Install the MASTER Telegram learner page/control layer only in the
-          # Google production menu process. It writes learner keys/settings only
-          # under the isolated ROOT above.
           for target in \
             /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py \
             /home/ayman01323/ClaudeServer/TestBots/boot-trading-bot/learnerbot/telegram_google_learner_launcher_patch.py; do
-            if [[ -d "\$(dirname "\$target")" ]]; then
-              install -m 0644 '$SRC' "\$target"
-              grep -q 'START LEARNER TRADING' "\$target"
+            if [[ -d "$(dirname "$target")" ]]; then
+              install -m 0644 "$SRC" "$target"
+              grep -q 'START LEARNER TRADING' "$target"
             fi
           done
           "$PROD/.venv/bin/python" -m py_compile "$PROD/learnerbot/telegram_google_learner_launcher_patch.py"
 
-          # Add an isolated entry-only gate to the historical learner LIVE path.
-          # OFF blocks new BUYs but deliberately does not disable the underlying
-          # LIVE/monitor gate, so existing positions may still be monitored/exited.
           python3 - "$ROOT/learnerbot/solana_live_patch.py" <<'PY'
           from pathlib import Path
-          import sys
+          import re, sys
           p = Path(sys.argv[1])
           s = p.read_text(encoding='utf-8')
           marker = 'learner_new_entries_enabled'
           if marker not in s:
-              candidates = [
-                  '        if event["action"] == "BUY":\n            max_positions',
-                  "        if event['action'] == 'BUY':\n            max_positions",
-              ]
-              replacement = (
-                  '        if event["action"] == "BUY":\n'
-                  '            if not user_bool(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "learner_new_entries_enabled", False):\n'
-                  '                actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LEARNER new entries OFF; exit monitoring remains active"})\n'
-                  '                continue\n'
-                  '            max_positions'
-              )
-              found = False
-              for old in candidates:
-                  if old in s:
-                      s = s.replace(old, replacement, 1)
-                      found = True
-                      break
-              if not found:
+              pat = re.compile(r'(?m)^(\s*)if event\[(?:"action"|\'action\')\] == (?:"BUY"|\'BUY\'):\s*$')
+              m = pat.search(s)
+              if not m:
                   raise SystemExit('REFUSED: expected Solana LIVE BUY branch not found')
-              # Historical snapshots already import user_bool in normal builds.
-              # If this one does not, add it to the simple import form only.
-              if 'user_bool' not in s.split('\n', 40)[0:40].__str__():
+              indent = m.group(1)
+              insertion = (
+                  m.group(0) + '\n'
+                  + indent + '    if not user_bool(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "learner_new_entries_enabled", False):\n'
+                  + indent + '        actions.append({"telegram_id": tid, "action": "SKIP", "reason": "LEARNER new entries OFF; exit monitoring remains active"})\n'
+                  + indent + '        continue'
+              )
+              s = s[:m.start()] + insertion + s[m.end():]
+              if not re.search(r'from \.user_registry import[^\n]*\buser_bool\b', s):
                   simple = 'from .user_registry import all_users, set_user_setting, user_setting'
                   if simple in s:
                       s = s.replace(simple, 'from .user_registry import all_users, set_user_setting, user_bool, user_setting', 1)
+                  else:
+                      raise SystemExit('REFUSED: user_bool import form not recognised')
               p.write_text(s, encoding='utf-8')
               print('learner_entry_gate=APPLIED')
           else:
@@ -102,10 +92,6 @@ jobs:
           grep -q 'learner_new_entries_enabled' "$ROOT/learnerbot/solana_live_patch.py"
           "$PROD/.venv/bin/python" -m py_compile "$ROOT/learnerbot/solana_live_patch.py"
 
-          # Dedicated isolated learner runtime. It intentionally receives no
-          # Telegram token, so the MASTER production learnerbot remains the only
-          # inbound getUpdates owner. The runtime can learn/monitor continuously;
-          # real new entries remain fail-closed behind learner_new_entries_enabled.
           cat > /etc/systemd/system/learnerbot-learn.service <<SERVICE
           [Unit]
           Description=Isolated Google Solana Learner Runtime
@@ -135,22 +121,20 @@ jobs:
           systemctl enable learnerbot-learn.service >/dev/null
           systemctl restart learnerbot-learn.service
           sleep 12
-          echo "isolated_runtime=\$(systemctl is-active learnerbot-learn.service || true)"
-          echo "isolated_restarts_1=\$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          echo "isolated_runtime=$(systemctl is-active learnerbot-learn.service || true)"
+          echo "isolated_restarts_1=$(systemctl show learnerbot-learn.service -p NRestarts --value)"
           sleep 8
-          echo "isolated_restarts_2=\$(systemctl show learnerbot-learn.service -p NRestarts --value)"
-          test "\$(systemctl is-active learnerbot-learn.service)" = active
+          echo "isolated_restarts_2=$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          test "$(systemctl is-active learnerbot-learn.service)" = active
           test -f "$ROOT/data/solana_sibot.sqlite3"
 
-          # Refresh only the Google MASTER Telegram process so the new buttons
-          # are visible. SiRisky remains outbound-only and no second poller starts.
           systemctl restart learnerbot.service
           sleep 15
-          echo "master_menu_runtime=\$(systemctl is-active learnerbot.service || true)"
-          echo "master_menu_restarts_1=\$(systemctl show learnerbot.service -p NRestarts --value)"
+          echo "master_menu_runtime=$(systemctl is-active learnerbot.service || true)"
+          echo "master_menu_restarts_1=$(systemctl show learnerbot.service -p NRestarts --value)"
           sleep 8
-          echo "master_menu_restarts_2=\$(systemctl show learnerbot.service -p NRestarts --value)"
-          test "\$(systemctl is-active learnerbot.service)" = active
+          echo "master_menu_restarts_2=$(systemctl show learnerbot.service -p NRestarts --value)"
+          test "$(systemctl is-active learnerbot.service)" = active
 
           echo '=== recent isolated learner errors ==='
           journalctl -u learnerbot-learn.service --since '-45 seconds' --no-pager -o cat \
@@ -158,12 +142,13 @@ jobs:
           echo '=== recent MASTER menu errors ==='
           journalctl -u learnerbot.service --since '-45 seconds' --no-pager -o cat \
             | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409' || true
-          EOF
-          chmod 755 "$SCRIPT"
+          ROOTSCRIPT
 
+          sed -i "s#__SRC__#$SRC#g; s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 755 "$SCRIPT"
           cat > "$UNIT" <<EOF
           [Unit]
-          Description=Deploy isolated learner LIVE Telegram controls
+          Description=Install learner-only key menu on Google MASTER Telegram
           After=network.target
           [Service]
           Type=oneshot
@@ -171,9 +156,11 @@ jobs:
           EOF
           chmod 644 "$UNIT"
           NAME="$(basename "$UNIT")"
-          sudo -n /usr/bin/systemctl link "$UNIT"
-          sudo -n /usr/bin/systemctl daemon-reload
-          sudo -n /usr/bin/systemctl start "$NAME"
+
+          echo "elevation_unit=$NAME"
+          sudo -n /usr/bin/systemctl link "$UNIT" 2>&1
+          sudo -n /usr/bin/systemctl daemon-reload 2>&1
+          sudo -n /usr/bin/systemctl start "$NAME" 2>&1
           cat "$RESULT"
 
           IR1="$(grep '^isolated_restarts_1=' "$RESULT" | tail -1 | cut -d= -f2)"
