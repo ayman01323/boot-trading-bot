@@ -46,6 +46,8 @@ def opportunity(meta=None):
 
 def test_stage3(root: Path):
     settings = FakeSettings(root)
+    # Ensure the real CSV reader sees an empty, valid open-position table.
+    (root / "open_positions.csv").write_text("status\n", encoding="utf-8")
     riskmod.WalletStore = lambda _settings: SimpleNamespace(address=lambda: "wallet")
     riskmod.wallet_balance_lamports = lambda _settings, _address: 100_000_000
 
