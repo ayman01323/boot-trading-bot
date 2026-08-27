@@ -651,16 +651,50 @@ def _app_with_bridge():
     return app
 
 
+def _entry_blocking_reason(r: dict) -> str:
+    """Return a concise human-readable reason why entry execution is blocked.
+
+    The authoritative owner state is the CSV at sibot1/solana_live_control.csv.
+    This function is used only for display; it does not alter any gate.
+    """
+    ctl = r.get("control", {})
+    armed = _bool(ctl.get("armed"))
+    live = _bool(ctl.get("live_enabled"))
+    auto = _bool(ctl.get("auto_enabled"))
+    signer_ok = bool(r.get("signer_ready"))
+    funded = bool(r.get("funded"))
+    account_ok = bool(r.get("account_ready"))
+
+    if not armed:
+        return "CONTROL_PLANE_BLOCK: owner state NOT ARMED"
+    if not live:
+        return "CONTROL_PLANE_BLOCK: LIVE not enabled"
+    if not auto:
+        return "CONTROL_PLANE_BLOCK: AUTO entries not enabled"
+    if not signer_ok:
+        return f"SIGNER_FUNDING_BLOCK: signer not ready — {str(r.get('signer_detail', ''))[:120]}"
+    if not funded:
+        bal = r.get("balance_sol", Decimal(0))
+        needed = r.get("entry_size_sol", DEFAULT_ENTRY_SOL) + r.get("reserve_sol", MIN_RESERVE_SOL)
+        return f"SIGNER_FUNDING_BLOCK: balance {bal:.6f} SOL < required {needed:.6f} SOL"
+    if not account_ok:
+        return f"SAFETY_GATE: account gate — {str(r.get('account_reason', ''))[:120]}"
+    return ""
+
+
 def status_text(app, tid) -> str:
     r = readiness(app, tid)
     ctl = r["control"]
     icon = lambda v: "🟢" if v else "🔴"
-    return "\n".join([
+    entry_active = bool(r.get("entry_execution_active"))
+    blocking = "" if entry_active else _entry_blocking_reason(r)
+    lines = [
         "<b>🟣 SiBot 1 — Solana LIVE Bridge</b>",
         "",
         "Protected execution bridge: <b>Solana/Jupiter canary</b>",
         "AI private-key access: <b>OFF</b>",
         "Broadcast: <b>DEFAULT OFF — manual confirmation required</b>",
+        "<b>Authoritative owner state: sibot1/solana_live_control.csv</b>",
         "",
         f"{icon(_bool(ctl.get('armed')))} Solana ARMED: <b>{'YES' if _bool(ctl.get('armed')) else 'NO'}</b>",
         f"{icon(_bool(ctl.get('live_enabled')))} Solana LIVE: <b>{'YES' if _bool(ctl.get('live_enabled')) else 'NO'}</b>",
@@ -676,7 +710,11 @@ def status_text(app, tid) -> str:
         "PoolCheck: <b>RugCheck + DexScreener + full reverse + 3x reverse stress</b>",
         "Signed Jupiter transaction simulation: <b>REQUIRED before execute</b>",
         "",
-        f"{icon(r.get('entry_execution_active'))} <b>Real-money Solana entry execution: {'READY/ACTIVE' if r.get('entry_execution_active') else 'OFF/BLOCKED'}</b>",
+        f"{icon(entry_active)} <b>Real-money Solana entry execution: {'READY/ACTIVE' if entry_active else 'OFF/BLOCKED'}</b>",
+    ]
+    if blocking:
+        lines.append(f"⛔ Blocking reason: <code>{html.escape(blocking)}</code>")
+    lines += [
         "",
         "<b>Manual commands</b>",
         "<code>/sibot1solarm on CONFIRM</code>",
@@ -684,7 +722,8 @@ def status_text(app, tid) -> str:
         "<code>/sibot1solauto on CONFIRM</code>",
         "<code>/sibot1solstop</code>",
         "<code>/sibot1solstatus</code>",
-    ])
+    ]
+    return "\n".join(lines)
 
 
 def _send_status(app, tid):

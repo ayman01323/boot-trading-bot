@@ -12,6 +12,8 @@ from . import solana_sibot as _sol
 
 
 _TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
+# Auth/config failures: do not retry same endpoint; quarantine for a longer cooldown
+_AUTH_FAILURE_HTTP = {401, 403}
 _TRANSIENT_RPC_TEXT = (
     "429",
     "rate limit",
@@ -61,6 +63,10 @@ def _transient_cooldown() -> float:
     return _float_env("SOLANA_RPC_TRANSIENT_COOLDOWN_SECONDS", 3.0, low=0.25, high=30.0)
 
 
+def _auth_failure_cooldown() -> float:
+    return _float_env("SOLANA_RPC_AUTH_COOLDOWN_SECONDS", 300.0, low=30.0, high=3600.0)
+
+
 def _max_inflight_per_endpoint() -> int:
     return _int_env("SOLANA_RPC_MAX_INFLIGHT_PER_ENDPOINT", 2, low=1, high=16)
 
@@ -76,11 +82,15 @@ class SolanaRpcEndpointError(RuntimeError):
         transient: bool,
         status_code: int = 0,
         retry_after_seconds: float = 0.0,
+        auth_failure: bool = False,
     ):
         self.method = str(method)
         self.transient = bool(transient)
         self.status_code = int(status_code or 0)
         self.retry_after_seconds = max(0.0, float(retry_after_seconds or 0.0))
+        # auth_failure=True means credential/config error; skip this endpoint for the full
+        # request cycle and quarantine it so it is not retried immediately.
+        self.auth_failure = bool(auth_failure)
         super().__init__(f"Solana RPC {self.method}: {str(detail)[:240]}")
 
 
@@ -160,6 +170,14 @@ def _post_one(url: str, method: str, params: list) -> Any:
 
     status = int(getattr(response, "status_code", 0) or 0)
     if not 200 <= status < 300:
+        if status in _AUTH_FAILURE_HTTP:
+            raise SolanaRpcEndpointError(
+                method,
+                f"HTTP {status} (auth/config failure)",
+                transient=False,
+                status_code=status,
+                auth_failure=True,
+            )
         raise SolanaRpcEndpointError(
             method,
             f"HTTP {status}",
@@ -292,7 +310,20 @@ def _release_endpoint(
             state["rate_limit_strikes"] = 0
             return
 
-        if error is None or not error.transient:
+        if error is None:
+            return
+
+        if error.auth_failure:
+            # 401/403: credential/config error — quarantine this endpoint for a long cooldown.
+            # Do not treat as an ordinary transient retry; just skip it for the request cycle
+            # and apply a cooldown so later cycles also skip it.
+            state["cooldown_until"] = max(
+                float(state["cooldown_until"]),
+                now + _auth_failure_cooldown(),
+            )
+            return
+
+        if not error.transient:
             return
 
         if _is_rate_limited(error):
@@ -321,6 +352,7 @@ def rpc_failover(app, method: str, params: list):
 
     tried: set[str] = set()
     last: SolanaRpcEndpointError | None = None
+    all_auth_failures = True  # assume all auth until proved otherwise
 
     while len(tried) < len(urls):
         url, reason = _acquire_endpoint(urls, tried)
@@ -340,7 +372,12 @@ def rpc_failover(app, method: str, params: list):
         except SolanaRpcEndpointError as exc:
             _release_endpoint(url, success=False, error=exc)
             last = exc
-            if not exc.transient:
+            if not exc.auth_failure:
+                all_auth_failures = False
+            # auth_failure (401/403): skip this endpoint and try the next configured one
+            # instead of re-raising immediately.  All other non-transient errors still
+            # fail closed immediately.
+            if not exc.transient and not exc.auth_failure:
                 raise
             continue
         except Exception:
@@ -353,6 +390,13 @@ def rpc_failover(app, method: str, params: list):
             return result
 
     if last is not None:
+        if all_auth_failures and last.auth_failure:
+            raise SolanaRpcEndpointError(
+                method,
+                "all RPC endpoints rejected the request (auth/config failure)",
+                transient=False,
+                auth_failure=True,
+            )
         raise last
     raise SolanaRpcEndpointError(method, "all RPC endpoints unavailable", transient=True)
 

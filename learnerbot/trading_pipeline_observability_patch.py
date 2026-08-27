@@ -305,6 +305,60 @@ def _store_success_with_observability(app, chain, wallet: str, fetched_at: int, 
     return result
 
 
+def _classify_reason_code(reason: str) -> str:
+    """Map a raw failure-reason string to the standard Solana funnel reason-code taxonomy.
+
+    Taxonomy:
+      NO_CANDIDATE        — pool was empty (no qualified leaders found)
+      RPC_DATA_FAILURE    — RPC or data-fetch error prevented evaluation
+      STALE_SIGNAL        — signal too old to act on
+      POOL_RISK_REJECT    — pool/rug/dex risk gate blocked
+      POOL_LIQUIDITY_REJECT — liquidity check failed
+      ROUTE_QUOTE_FAILURE — Jupiter quote or route unavailable
+      SAFETY_GATE         — simulation, drawdown, circuit-breaker or other safety gate
+      CONTROL_PLANE_BLOCK — ARMED/LIVE/AUTO control plane not enabled
+      SIGNER_FUNDING_BLOCK — signer not ready or insufficient SOL balance
+      CAPITAL_LIMIT       — max-position or capital cap reached
+      OTHER               — unclassified failure
+    """
+    r = str(reason or "").lower()
+    if any(k in r for k in ("rpc", "transport", "json-rpc", "request", "unavailable", "metrics unavailable")):
+        return "RPC_DATA_FAILURE"
+    if any(k in r for k in ("stale", "too old", "signal age", "expired")):
+        return "STALE_SIGNAL"
+    if any(k in r for k in ("rug", "poolcheck", "hard_block", "pool risk", "dexscreener", "external_pool")):
+        return "POOL_RISK_REJECT"
+    if any(k in r for k in ("liquidity", "lp", "illiquid")):
+        return "POOL_LIQUIDITY_REJECT"
+    if any(k in r for k in ("quote", "route", "jupiter", "slippage", "price impact")):
+        return "ROUTE_QUOTE_FAILURE"
+    if any(k in r for k in ("simulation", "drawdown", "circuit", "circuit-breaker", "halt", "safety")):
+        return "SAFETY_GATE"
+    if any(k in r for k in ("armed", "live", "auto", "control", "control_plane", "not enabled", "off")):
+        return "CONTROL_PLANE_BLOCK"
+    if any(k in r for k in ("signer", "signing", "funding", "balance", "reserve", "insufficient sol", "wallet")):
+        return "SIGNER_FUNDING_BLOCK"
+    if any(k in r for k in ("max_open", "position limit", "capital", "capacity", "limit")):
+        return "CAPITAL_LIMIT"
+    if any(k in r for k in (
+        "win rate", "profit factor", "drawdown", "net profit", "median return",
+        "quality gate", "edge floor", "recent",
+    )):
+        return "SAFETY_GATE"
+    return "OTHER"
+
+
+def _build_reason_codes(pool: int, qualified: int, failures: Counter) -> dict[str, int]:
+    """Aggregate raw failure-reason strings into the standard reason-code taxonomy."""
+    codes: Counter = Counter()
+    if int(pool) == 0:
+        codes["NO_CANDIDATE"] += 1
+    for reason, count in failures.items():
+        code = _classify_reason_code(str(reason))
+        codes[code] += int(count)
+    return dict(codes)
+
+
 def _sol_write_bridge_with_streak(pool: int, qualified: int, selected: int, failures: Counter, cfg: dict) -> None:
     global _SOL_ZERO_STREAK
     _PREV_SOL_WRITE_BRIDGE(pool, qualified, selected, failures, cfg)
@@ -312,6 +366,7 @@ def _sol_write_bridge_with_streak(pool: int, qualified: int, selected: int, fail
         _SOL_ZERO_STREAK += 1
     else:
         _SOL_ZERO_STREAK = 0
+    reason_codes = _build_reason_codes(pool, qualified, failures)
     try:
         with _BRIDGE_LOCK:
             payload = _read_json(_SOL_SELECTOR_BRIDGE)
@@ -321,7 +376,20 @@ def _sol_write_bridge_with_streak(pool: int, qualified: int, selected: int, fail
                 "positive candidate pool failed all unchanged quality gates for at least three consecutive selector cycles"
                 if payload["research_needed"] else ""
             )
+            payload["reason_codes"] = reason_codes
+            payload["funnel"] = {
+                "broader_pool": int(pool),
+                "qualified": int(qualified),
+                "selected": int(selected),
+            }
             _atomic_json(_SOL_SELECTOR_BRIDGE, payload)
+        # Concise diagnostic log line for observability
+        code_summary = " ".join(f"{k}={v}" for k, v in sorted(reason_codes.items())) or "none"
+        print(
+            f"[solana-funnel] pool={pool} qualified={qualified} selected={selected} "
+            f"zero_streak={_SOL_ZERO_STREAK} codes={{{code_summary}}}",
+            flush=True,
+        )
     except Exception:
         pass
 
