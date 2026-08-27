@@ -1,0 +1,36 @@
+name: SiRisky HR-CWH Inspect
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-hrcwh-inspect.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Read deployed SiRisky HR-CWH stages
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n true
+          for f in sirisky/stage2_strategy.py sirisky/stage3_risk.py sirisky/stage6_monitor.py sirisky/stage8_review.py sirisky/models.py sirisky/engine.py; do
+            echo "===== ${f} ====="
+            sudo -n sed -n '1,420p' "/root/SiRisky/${f}"
+          done
+          echo '===== STAGE2 CONFIG ====='
+          sudo -n cat /root/SiRisky/CSV/stage2_strategy.csv
+          echo '===== STAGE3 CONFIG ====='
+          sudo -n cat /root/SiRisky/CSV/stage3_risk.csv
+          echo '===== RUNTIME ====='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|armed_manual_approval|manual_approval_enabled|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' /root/SiRisky/CSV/runtime.csv
+          echo 'inspection_only=YES'
+          echo 'broadcast_changed=NO'
