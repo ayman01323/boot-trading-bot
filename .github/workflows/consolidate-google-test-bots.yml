@@ -60,11 +60,13 @@ jobs:
           test "$magic" = 1f8b
           first="$(set +o pipefail; tar -tzf "$latest" 2>/dev/null | head -n1 || true)"
           [[ "$first" == ClaudeServer* ]]
-          gzip -l "$latest" | tee -a /tmp/google-folder-backup.txt
+          trailer="$(tail -c 8 "$latest" | od -An -tx1 | tr -d ' \n')"
+          test "${#trailer}" -eq 16
           bytes="$(stat -c %s "$latest")"
           echo archive_structural_check=PASS | tee -a /tmp/google-folder-backup.txt
           echo "archive=$latest" | tee -a /tmp/google-folder-backup.txt
           echo "archive_bytes=$bytes" | tee -a /tmp/google-folder-backup.txt
+          echo "gzip_trailer=$trailer" | tee -a /tmp/google-folder-backup.txt
 
       - name: Verify final layout and services
         shell: bash
