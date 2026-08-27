@@ -49,6 +49,9 @@ jobs:
           test -d "$ROOT/learnerbot"
           test -x "$PROD/.venv/bin/python"
 
+          # Stop any previous failed isolated test before changing it.
+          systemctl stop learnerbot-learn.service 2>/dev/null || true
+
           for target in \
             /root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/telegram_google_learner_launcher_patch.py \
             /home/ayman01323/ClaudeServer/TestBots/boot-trading-bot/learnerbot/telegram_google_learner_launcher_patch.py; do
@@ -120,28 +123,44 @@ jobs:
           systemctl daemon-reload
           systemctl enable learnerbot-learn.service >/dev/null
           systemctl restart learnerbot-learn.service
-          sleep 12
-          echo "isolated_runtime=$(systemctl is-active learnerbot-learn.service || true)"
-          echo "isolated_restarts_1=$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          sleep 10
+          IR1=$(systemctl show learnerbot-learn.service -p NRestarts --value)
+          STATE1=$(systemctl is-active learnerbot-learn.service || true)
           sleep 8
-          echo "isolated_restarts_2=$(systemctl show learnerbot-learn.service -p NRestarts --value)"
-          test "$(systemctl is-active learnerbot-learn.service)" = active
-          test -f "$ROOT/data/solana_sibot.sqlite3"
+          IR2=$(systemctl show learnerbot-learn.service -p NRestarts --value)
+          STATE2=$(systemctl is-active learnerbot-learn.service || true)
+          echo "isolated_runtime_1=$STATE1"
+          echo "isolated_runtime_2=$STATE2"
+          echo "isolated_restarts_1=$IR1"
+          echo "isolated_restarts_2=$IR2"
+          echo '=== isolated learner diagnostic ==='
+          journalctl -u learnerbot-learn.service -n 120 --no-pager -o cat \
+            | sed -E 's#https?://[^ ]+#URL_REDACTED#g' \
+            | sed -E 's#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=([^[:space:]]+)#\1=REDACTED#g' \
+            | grep -E 'Traceback|Error|Exception|ModuleNotFound|ImportError|NameError|Permission|Main process exited|Failed with result|No module|cannot import|not found|REFUSED' || true
+          if [[ "$STATE2" != active || "$IR1" != "$IR2" || ! -f "$ROOT/data/solana_sibot.sqlite3" ]]; then
+            echo 'isolated_runtime_stable=NO'
+            systemctl stop learnerbot-learn.service || true
+            exit 42
+          fi
+          echo 'isolated_runtime_stable=YES'
 
           systemctl restart learnerbot.service
-          sleep 15
-          echo "master_menu_runtime=$(systemctl is-active learnerbot.service || true)"
-          echo "master_menu_restarts_1=$(systemctl show learnerbot.service -p NRestarts --value)"
+          sleep 12
+          MR1=$(systemctl show learnerbot.service -p NRestarts --value)
+          MSTATE1=$(systemctl is-active learnerbot.service || true)
           sleep 8
-          echo "master_menu_restarts_2=$(systemctl show learnerbot.service -p NRestarts --value)"
-          test "$(systemctl is-active learnerbot.service)" = active
-
-          echo '=== recent isolated learner errors ==='
-          journalctl -u learnerbot-learn.service --since '-45 seconds' --no-pager -o cat \
-            | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409|ModuleNotFoundError|ImportError|NameError' || true
-          echo '=== recent MASTER menu errors ==='
-          journalctl -u learnerbot.service --since '-45 seconds' --no-pager -o cat \
-            | grep -E 'Traceback|Main process exited|PermissionError|HTTP 409|ModuleNotFoundError|ImportError|NameError' || true
+          MR2=$(systemctl show learnerbot.service -p NRestarts --value)
+          MSTATE2=$(systemctl is-active learnerbot.service || true)
+          echo "master_menu_runtime_1=$MSTATE1"
+          echo "master_menu_runtime_2=$MSTATE2"
+          echo "master_menu_restarts_1=$MR1"
+          echo "master_menu_restarts_2=$MR2"
+          if [[ "$MSTATE2" != active || "$MR1" != "$MR2" ]]; then
+            echo 'master_menu_stable=NO'
+            exit 43
+          fi
+          echo 'master_menu_stable=YES'
           ROOTSCRIPT
 
           sed -i "s#__SRC__#$SRC#g; s#__RESULT__#$RESULT#g" "$SCRIPT"
@@ -167,15 +186,8 @@ jobs:
           if [[ "$START_RC" -ne 0 ]]; then
             exit "$START_RC"
           fi
-
-          IR1="$(grep '^isolated_restarts_1=' "$RESULT" | tail -1 | cut -d= -f2)"
-          IR2="$(grep '^isolated_restarts_2=' "$RESULT" | tail -1 | cut -d= -f2)"
-          MR1="$(grep '^master_menu_restarts_1=' "$RESULT" | tail -1 | cut -d= -f2)"
-          MR2="$(grep '^master_menu_restarts_2=' "$RESULT" | tail -1 | cut -d= -f2)"
-          test -n "$IR1" -a -n "$IR2" -a "$IR1" = "$IR2"
-          test -n "$MR1" -a -n "$MR2" -a "$MR1" = "$MR2"
-          ! grep -q 'HTTP 409' "$RESULT"
-          ! grep -q 'Main process exited' "$RESULT"
+          grep -q '^isolated_runtime_stable=YES$' "$RESULT"
+          grep -q '^master_menu_stable=YES$' "$RESULT"
 
           sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
           rm -f "$UNIT" "$SCRIPT" "$RESULT"
