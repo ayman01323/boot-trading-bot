@@ -264,3 +264,187 @@ def test_non_object_json_rpc_envelope_fails_over(monkeypatch, tmp_path):
     monkeypatch.setattr(failover.requests, "post", post)
     assert failover.rpc_failover(_app(tmp_path), "getHealth", []) == "ok"
     assert calls == [first, second]
+
+
+# ---------------------------------------------------------------------------
+# New tests: 401/403 auth-failure endpoint-local failover (issue #671 part A)
+# ---------------------------------------------------------------------------
+
+def test_primary_401_fails_over_to_secondary(monkeypatch, tmp_path):
+    """primary 401 + healthy secondary => request succeeds via secondary."""
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(401, b"Unauthorized")
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": {"value": 42}})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    result = failover.rpc_failover(_app(tmp_path), "getBalance", ["wallet"])
+    assert result == {"value": 42}
+    assert calls == [first, second]
+
+
+def test_primary_403_fails_over_to_secondary(monkeypatch, tmp_path):
+    """primary 403 + healthy secondary => request succeeds via secondary."""
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(403, b"Forbidden")
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": 99})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    result = failover.rpc_failover(_app(tmp_path), "getSlot", [])
+    assert result == 99
+    assert calls == [first, second]
+
+
+def test_all_endpoints_401_fail_closed_with_sanitised_error(monkeypatch, tmp_path):
+    """all configured endpoints 401/403 => sanitised fail-closed result."""
+    _clear_rpc_env(monkeypatch)
+    secret = "api-key-must-not-appear"
+    first = f"https://rpc-one.example/?key={secret}"
+    second = f"https://rpc-two.example/?key={secret}"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+
+    def post(url, **kwargs):
+        return FakeResponse(401, b"Unauthorized")
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    with pytest.raises(failover.SolanaRpcEndpointError) as caught:
+        failover.rpc_failover(_app(tmp_path), "getBalance", ["wallet"])
+    err = caught.value
+    assert err.auth_failure is True
+    assert err.transient is False
+    text = str(err)
+    assert secret not in text
+    assert first not in text
+    assert second not in text
+    assert "auth" in text.lower() or "401" in text
+
+
+def test_401_endpoint_is_quarantined_after_auth_failure(monkeypatch, tmp_path):
+    """After a 401, the endpoint is placed in cooldown so subsequent cycles skip it."""
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+
+    fake_now = [0.0]
+    monkeypatch.setattr(failover.time, "monotonic", lambda: fake_now[0])
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(401, b"Unauthorized")
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": "ok"})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == "ok"
+    assert calls == [first, second]
+
+    # Next call: first endpoint still in auth cooldown; only second is tried
+    result2 = failover.rpc_failover(_app(tmp_path), "getSlot", [])
+    assert result2 == "ok"
+    assert calls == [first, second, second]
+
+
+def test_401_not_retried_same_request_cycle(monkeypatch, tmp_path):
+    """A 401 endpoint must not be retried in the same request cycle."""
+    _clear_rpc_env(monkeypatch)
+    endpoint = "https://rpc-only.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", endpoint)
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(401, b"Unauthorized")
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    with pytest.raises(failover.SolanaRpcEndpointError) as caught:
+        failover.rpc_failover(_app(tmp_path), "getBalance", ["addr"])
+    # Each URL must appear at most once — the 401 endpoint is not retried
+    assert calls.count(endpoint) == 1
+    assert caught.value.auth_failure is True
+
+
+def test_429_behaviour_unchanged_by_auth_failure_patch(monkeypatch, tmp_path):
+    """Ensure 429 cooldown/backoff behaviour is unaffected by the auth-failure changes."""
+    _clear_rpc_env(monkeypatch)
+    first = "https://rpc-one.example"
+    second = "https://rpc-two.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", f"{first},{second}")
+    monkeypatch.setenv("SOLANA_RPC_429_COOLDOWN_SECONDS", "30")
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == first:
+            return FakeResponse(429, {"error": "rate limited"})
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": "ok"})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == "ok"
+    assert failover.rpc_failover(_app(tmp_path), "getSlot", []) == "ok"
+    # first called once (429), second called twice (both requests)
+    assert calls == [first, second, second]
+
+
+def test_auth_failure_secret_not_in_error_text(monkeypatch, tmp_path):
+    """No secret leakage in exception/log strings from 401/403."""
+    _clear_rpc_env(monkeypatch)
+    secret = "super-secret-rpc-key"
+    endpoint = f"https://rpc.example/?api-key={secret}"
+    monkeypatch.setenv("SOLANA_RPC_URLS", endpoint)
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    monkeypatch.setattr(
+        failover.requests,
+        "post",
+        lambda url, **kwargs: FakeResponse(403, b"Forbidden"),
+    )
+
+    with pytest.raises(failover.SolanaRpcEndpointError) as caught:
+        failover.rpc_failover(_app(tmp_path), "getBalance", ["wallet"])
+    text = str(caught.value)
+    assert secret not in text
+    assert endpoint not in text
+
+
+def test_endpoint_ordering_and_public_fallback_correct(monkeypatch, tmp_path):
+    """Configured endpoints are tried before the public fallback."""
+    _clear_rpc_env(monkeypatch)
+    configured = "https://rpc-configured.example"
+    monkeypatch.setenv("SOLANA_RPC_URLS", configured)
+    monkeypatch.setattr(sol, "settings", lambda app: {"rpc_url": sol.DEFAULT_RPC})
+    calls = []
+
+    def post(url, **kwargs):
+        calls.append(url)
+        if url == configured:
+            return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": "configured-ok"})
+        return FakeResponse(200, {"jsonrpc": "2.0", "id": 1, "result": "public-ok"})
+
+    monkeypatch.setattr(failover.requests, "post", post)
+    result = failover.rpc_failover(_app(tmp_path), "getSlot", [])
+    assert result == "configured-ok"
+    # Only the configured endpoint was called; public not needed
+    assert calls == [configured]
+    assert sol.DEFAULT_RPC not in calls
