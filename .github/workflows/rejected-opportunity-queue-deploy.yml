@@ -1,0 +1,123 @@
+name: Deploy Rejected Opportunity Queue
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'boot_platform/**'
+      - 'tests/test_rejected_opportunity_queue.py'
+      - '.github/workflows/rejected-opportunity-queue-deploy.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rejected-opportunity-queue-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Run queue lifecycle tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest -v tests.test_rejected_opportunity_queue
+
+      - name: Install queue and bridge under BOOT
+        shell: bash
+        run: |
+          set -euo pipefail
+          BOOT_ROOT=/home/ayman01323/BOOT
+          DATA_ROOT="$BOOT_ROOT/data/candidates/REJECTED OPPORTUNITY"
+          CODE_ROOT="$BOOT_ROOT/datacentre/rejected_router"
+          mkdir -p "$DATA_ROOT" "$CODE_ROOT"
+          rm -rf "$CODE_ROOT/boot_platform"
+          cp -a boot_platform "$CODE_ROOT/boot_platform"
+
+          for bot in learnerbot claude gpt gemini grok future; do
+            mkdir -p "$DATA_ROOT/inbox/$bot" "$DATA_ROOT/processed/$bot" "$DATA_ROOT/failed/$bot"
+          done
+
+          PYTHONPATH="$CODE_ROOT" BOOT_REJECTED_OPPORTUNITY_DIR="$DATA_ROOT" \
+            python3 -m boot_platform.rejected_opportunity_queue --root "$DATA_ROOT" init
+
+          PYTHONPATH="$CODE_ROOT" BOOT_REJECTED_OPPORTUNITY_DIR="$DATA_ROOT" \
+            python3 -m boot_platform.rejected_opportunity_bridge --root "$DATA_ROOT" | tee "$DATA_ROOT/last_bridge_report.json"
+
+          PYTHONPATH="$CODE_ROOT" BOOT_REJECTED_OPPORTUNITY_DIR="$DATA_ROOT" \
+            python3 -m boot_platform.rejected_opportunity_queue --root "$DATA_ROOT" export
+
+          chmod 0755 "$BOOT_ROOT/data/candidates" "$DATA_ROOT" "$CODE_ROOT"
+          chmod 0640 "$DATA_ROOT/high_risk_queue.sqlite3" "$DATA_ROOT/high_risk_opportunities.csv" || true
+
+          echo "BOOT_REJECTED_ROOT=$DATA_ROOT" >> "$GITHUB_ENV"
+          echo "BOOT_REJECTED_CODE=$CODE_ROOT" >> "$GITHUB_ENV"
+
+      - name: Verify schema and indexes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import sqlite3, os
+          from pathlib import Path
+          root=Path(os.environ['BOOT_REJECTED_ROOT'])
+          db=root/'high_risk_queue.sqlite3'
+          assert db.is_file(), db
+          conn=sqlite3.connect(db)
+          tables={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+          required={'candidates','refusal_observations','sirisky_decisions','candidate_events'}
+          assert required <= tables, (required-tables)
+          indexes={r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+          assert 'idx_candidates_work' in indexes
+          conn.close()
+          assert (root/'high_risk_opportunities.csv').is_file()
+          for bot in ('learnerbot','claude','gpt','gemini','grok','future'):
+              assert (root/'inbox'/bot).is_dir()
+          print('[PASS] queue schema, work index, CSV export and bot inboxes verified')
+          print('queue_root='+str(root))
+          PY
+
+      - name: SiRisky claim interface smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          PYTHONPATH="$BOOT_REJECTED_CODE" python3 - <<'PY' "$TMP"
+          import sys
+          from boot_platform.rejected_opportunity_queue import RejectedOpportunityQueue
+          q=RejectedOpportunityQueue(sys.argv[1])
+          r=q.publish(chain='solana',token_address='SmokeMint',source_bot='grok',rejection_class='LP_CONCENTRATION_RISK',rejection_reason='LP unlocked',payload={'liquidity_usd':10000,'lp_status':'UNLOCKED'})
+          c=q.claim('sirisky-smoke',limit=1)
+          assert len(c)==1 and c[0]['candidate_id']==r.candidate_id
+          d=q.decide(candidate_id=r.candidate_id,worker_id='sirisky-smoke',decision='REJECT',strategy_buy_id='HR_CWH_BUY_SMOKE',strategy_sell_id='HR_CWH_SELL_SMOKE')
+          assert d['status']=='SIRISKY_REJECT'
+          assert q.claim('sirisky-smoke-2',limit=1)==[]
+          print('[PASS] SiRisky claim/decision/one-time-read smoke test')
+          PY
+
+      - name: Deployment summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Rejected Opportunity Queue'
+            echo
+            echo "- Queue root: \`${BOOT_REJECTED_ROOT:-not-created}\`"
+            echo '- Durable source: high_risk_queue.sqlite3'
+            echo '- Human view: high_risk_opportunities.csv'
+            echo '- SiRisky reads only NEW/RECHECK through atomic claims'
+            echo '- Structural hard blocks are retained but not claimable by SiRisky'
+            echo '- No wallet/signing/capital/LIVE settings are changed by this workflow'
+          } >> "$GITHUB_STEP_SUMMARY"
