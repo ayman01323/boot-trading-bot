@@ -43,25 +43,63 @@ make_zip() {
     exit 1
   fi
 
-  python3 - "$resolved" "$archive" "$root_name" <<'PY'
+  python3 - "$resolved" "$archive" "$root_name" "$WORK" <<'PY'
 import os
+import sqlite3
 import stat
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
 src = Path(sys.argv[1])
 out = Path(sys.argv[2])
 root_name = sys.argv[3].rstrip('/')
+work = Path(sys.argv[4])
+skipped = []
+sqlite_snapshots = 0
+
+SQLITE_SUFFIXES = {'.db', '.sqlite', '.sqlite3'}
 
 
 def add_symlink(zf, path, arcname):
+    try:
+        target = os.readlink(path)
+    except FileNotFoundError:
+        skipped.append(f"vanished_symlink:{path}")
+        return
     info = zipfile.ZipInfo(arcname)
     info.create_system = 3
     info.external_attr = (stat.S_IFLNK | 0o777) << 16
-    zf.writestr(info, os.readlink(path).encode())
+    zf.writestr(info, target.encode())
 
-with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
+
+def add_sqlite_snapshot(zf, path, arcname):
+    global sqlite_snapshots
+    fd, snap_name = tempfile.mkstemp(prefix='sqlite-snapshot.', suffix=path.suffix, dir=work)
+    os.close(fd)
+    snap = Path(snap_name)
+    try:
+        src_conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
+        dst_conn = sqlite3.connect(str(snap))
+        try:
+            src_conn.backup(dst_conn)
+        finally:
+            dst_conn.close()
+            src_conn.close()
+        zf.write(snap, arcname)
+        sqlite_snapshots += 1
+        return True
+    except (sqlite3.DatabaseError, sqlite3.OperationalError, FileNotFoundError):
+        return False
+    finally:
+        try:
+            snap.unlink()
+        except FileNotFoundError:
+            pass
+
+
+with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as zf:
     for current, dirs, files in os.walk(src, topdown=True, followlinks=False):
         current_path = Path(current)
         rel = current_path.relative_to(src)
@@ -74,17 +112,57 @@ with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6
 
         for dirname in list(dirs):
             p = current_path / dirname
-            if p.is_symlink():
+            try:
+                is_link = p.is_symlink()
+            except OSError:
+                skipped.append(f"unreadable_dir:{p}")
+                dirs.remove(dirname)
+                continue
+            if is_link:
                 add_symlink(zf, p, f"{arcdir}/{dirname}")
                 dirs.remove(dirname)
 
         for filename in files:
             p = current_path / filename
             arcname = f"{arcdir}/{filename}"
-            if p.is_symlink():
+
+            # SQLite WAL/SHM files are transient. The corresponding main database
+            # is captured through sqlite3's online backup API, which includes
+            # committed WAL state in a consistent snapshot.
+            lower_name = filename.lower()
+            if lower_name.endswith('-wal') or lower_name.endswith('-shm'):
+                skipped.append(f"sqlite_sidecar:{p}")
+                continue
+
+            try:
+                st = p.lstat()
+            except FileNotFoundError:
+                skipped.append(f"vanished:{p}")
+                continue
+            except OSError as exc:
+                skipped.append(f"stat_error:{p}:{exc.__class__.__name__}")
+                continue
+
+            mode = st.st_mode
+            if stat.S_ISLNK(mode):
                 add_symlink(zf, p, arcname)
-            else:
+                continue
+            if not stat.S_ISREG(mode):
+                skipped.append(f"special_file:{p}")
+                continue
+
+            if p.suffix.lower() in SQLITE_SUFFIXES and add_sqlite_snapshot(zf, p, arcname):
+                continue
+
+            try:
                 zf.write(p, arcname)
+            except FileNotFoundError:
+                skipped.append(f"vanished:{p}")
+            except OSError as exc:
+                # A live tree may remove/replace transient runtime files between
+                # directory enumeration and read. Record and continue rather than
+                # discarding an otherwise valid folder backup.
+                skipped.append(f"read_error:{p}:{exc.__class__.__name__}")
 
 with zipfile.ZipFile(out, 'r') as zf:
     bad = zf.testzip()
@@ -97,8 +175,17 @@ if entries < 5:
     raise SystemExit(f"ZIP sanity failure: only {entries} entries")
 if size < 4096:
     raise SystemExit(f"ZIP sanity failure: only {size} bytes")
+
+skip_file = work / (out.stem + '.skipped.txt')
+if skipped:
+    skip_file.write_text('\n'.join(skipped) + '\n', encoding='utf-8')
+else:
+    skip_file.write_text('none\n', encoding='utf-8')
+
 print(f"entries={entries}")
 print(f"bytes={size}")
+print(f"sqlite_snapshots={sqlite_snapshots}")
+print(f"skipped_transient={len(skipped)}")
 PY
 
   entries="$(python3 - "$archive" <<'PY'
@@ -108,10 +195,23 @@ with zipfile.ZipFile(sys.argv[1], 'r') as zf:
 PY
 )"
   size_bytes="$(stat -c '%s' "$archive")"
+  sqlite_snapshots="$(grep -c '^sqlite_sidecar:' "$WORK/${filename}.skipped.txt" 2>/dev/null || true)"
+  skipped_count="$(awk 'END{print NR}' "$WORK/${filename}.skipped.txt")"
+  if grep -qx 'none' "$WORK/${filename}.skipped.txt"; then
+    skipped_count=0
+  fi
 
-  printf 'source=%s\nresolved=%s\nentries=%s\nbytes=%s\n' \
-    "$source" "$resolved" "$entries" "$size_bytes" > "$WORK/${filename}.stats"
+  printf 'source=%s\nresolved=%s\nentries=%s\nbytes=%s\nformat=zip\ncompression_level=1\nskipped_transient=%s\n' \
+    "$source" "$resolved" "$entries" "$size_bytes" "$skipped_count" > "$WORK/${filename}.stats"
   (cd "$WORK" && sha256sum "${filename}.zip" > "${filename}.zip.sha256")
+
+  # Install and verify each completed ZIP immediately. A later folder failure
+  # therefore cannot discard already completed valid backups.
+  install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$archive" "$DAY_DIR/${filename}.zip"
+  install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/${filename}.zip.sha256" "$DAY_DIR/${filename}.zip.sha256"
+  install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/${filename}.stats" "$DAY_DIR/${filename}.stats"
+  install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/${filename}.skipped.txt" "$DAY_DIR/${filename}.skipped.txt"
+  (cd "$DAY_DIR" && sha256sum -c "${filename}.zip.sha256")
 }
 
 make_zip ClaudeServer "$CLAUDE" ClaudeServer
@@ -128,16 +228,13 @@ production_source=$PROD
 sirisky_source=$SIRISKY
 destination=$DAY_DIR
 format=zip
-note=each configured folder is stored as a separate ZIP; configured top-level symlinks are resolved; internal symlinks are preserved as symlink entries
+compression_level=1
+note=each configured folder is stored as a separate ZIP; SQLite main databases use online backup snapshots; transient WAL/SHM and disappearing runtime files are recorded in per-ZIP skipped lists; special files such as sockets/FIFOs are not archived
 EOF
 
-for f in \
-  ClaudeServer.zip ClaudeServer.zip.sha256 ClaudeServer.stats \
-  multichain-learning-bot-v2.2-fast-direct-market.zip multichain-learning-bot-v2.2-fast-direct-market.zip.sha256 multichain-learning-bot-v2.2-fast-direct-market.stats \
-  SiRisky.zip SiRisky.zip.sha256 SiRisky.stats \
-  google-protected-folders-manifest.txt; do
-  install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 "$WORK/$f" "$DAY_DIR/$f"
-done
+install -o "$RUN_USER" -g "$RUN_GROUP" -m 600 \
+  "$WORK/google-protected-folders-manifest.txt" \
+  "$DAY_DIR/google-protected-folders-manifest.txt"
 
 cd "$DAY_DIR"
 sha256sum -c ClaudeServer.zip.sha256
