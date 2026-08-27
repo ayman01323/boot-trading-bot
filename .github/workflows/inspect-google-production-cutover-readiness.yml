@@ -1,0 +1,46 @@
+name: Inspect Google Production Cutover Readiness
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/inspect-google-production-cutover-readiness.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-google:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Google production cutover readiness without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          test "$(hostname)" = 'botgoogle'
+          echo '=== sudo capabilities ==='
+          sudo -n -l || true
+          echo '=== production cutover wrappers ==='
+          for p in \
+            /usr/local/sbin/status-google-production-cutover \
+            /usr/local/sbin/refresh-google-production-bot \
+            /usr/local/sbin/verify-google-production-bot \
+            /usr/local/sbin/activate-google-production-bot \
+            /usr/local/sbin/stop-google-production-after-failed-cutover; do
+            if [[ -x "$p" ]]; then echo "READY $p"; else echo "MISSING $p"; fi
+          done
+          echo '=== staging/final paths ==='
+          for p in \
+            /home/ayman01323/NamecheapMigration/multichain-learning-bot-v2.2-fast-direct-market \
+            /root/multichain-learning-bot-v2.2-fast-direct-market \
+            /home/ayman01323/BOOT/testingbots/learn; do
+            if [[ -e "$p" ]]; then ls -ld "$p"; else echo "MISSING $p"; fi
+          done
+          echo '=== current google production state ==='
+          if [[ -x /usr/local/sbin/status-google-production-cutover ]]; then
+            sudo -n /usr/local/sbin/status-google-production-cutover || true
+          fi
