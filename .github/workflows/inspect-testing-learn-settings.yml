@@ -23,31 +23,28 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
           python3 - <<'PY'
-          import requests,time,datetime,json
+          import requests,time,datetime
           from collections import defaultdict
-          RPC='https://api.mainnet-beta.solana.com'
+          RPC='https://solana-rpc.publicnode.com'
           WALLET='6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr'
-          START=1786982400   # 2026-08-17 16:00 UTC, before initial funding
-          END=1787097600     # 2026-08-19 00:00 UTC
+          START=1786982400
+          END=1787097600
           WSOL='So11111111111111111111111111111111111111112'
-          s=requests.Session()
-          seq=0
-          def rpc(method,params,retries=8):
+          s=requests.Session(); seq=0
+          def rpc(method,params,retries=6):
               global seq
               seq+=1
               for i in range(retries):
                   try:
-                      r=s.post(RPC,json={'jsonrpc':'2.0','id':seq,'method':method,'params':params},timeout=35)
+                      r=s.post(RPC,json={'jsonrpc':'2.0','id':seq,'method':method,'params':params},timeout=25)
                       if r.status_code==429:
-                          time.sleep(min(8,1+i)); continue
+                          time.sleep(min(4,.5+i)); continue
                       r.raise_for_status(); j=r.json()
-                      if j.get('error'):
-                          raise RuntimeError(str(j['error']))
-                      time.sleep(.12)
-                      return j.get('result')
+                      if j.get('error'): raise RuntimeError(str(j['error']))
+                      time.sleep(.04); return j.get('result')
                   except Exception:
                       if i==retries-1: raise
-                      time.sleep(min(8,1+i))
+                      time.sleep(min(4,.5+i))
           sigs=[]; before=None
           while True:
               cfg={'limit':1000}
@@ -55,84 +52,53 @@ jobs:
               batch=rpc('getSignaturesForAddress',[WALLET,cfg]) or []
               if not batch: break
               sigs.extend(batch)
-              oldest=min(int(x.get('blockTime') or 0) for x in batch)
-              if oldest < START or len(batch)<1000: break
+              if min(int(x.get('blockTime') or 0) for x in batch)<START or len(batch)<1000: break
               before=batch[-1]['signature']
-          sigs=[x for x in sigs if START <= int(x.get('blockTime') or 0) < END and x.get('err') is None]
+          sigs=[x for x in sigs if START<=int(x.get('blockTime') or 0)<END and x.get('err') is None]
           sigs.sort(key=lambda x:int(x.get('blockTime') or 0))
-          print('AUDIT_WALLET='+WALLET)
-          print('SUCCESSFUL_TX_COUNT='+str(len(sigs)))
+          print('AUDIT_WALLET='+WALLET); print('SUCCESSFUL_TX_COUNT='+str(len(sigs)))
           rows=[]
-          for n,x in enumerate(sigs,1):
+          for x in sigs:
               sig=x['signature']; bt=int(x.get('blockTime') or 0)
               tx=rpc('getTransaction',[sig,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}])
               if not tx: continue
               meta=tx.get('meta') or {}; msg=((tx.get('transaction') or {}).get('message') or {})
-              keys=msg.get('accountKeys') or []
-              pubs=[str(k.get('pubkey') if isinstance(k,dict) else k) for k in keys]
+              keys=msg.get('accountKeys') or []; pubs=[str(k.get('pubkey') if isinstance(k,dict) else k) for k in keys]
               if WALLET not in pubs: continue
-              idx=pubs.index(WALLET)
-              pre=(meta.get('preBalances') or [])[idx]; post=(meta.get('postBalances') or [])[idx]
-              dlam=int(post)-int(pre); fee=int(meta.get('fee') or 0)
+              idx=pubs.index(WALLET); pre=(meta.get('preBalances') or [])[idx]; post=(meta.get('postBalances') or [])[idx]
               pre_tok=defaultdict(int); post_tok=defaultdict(int)
               for name,target in [('preTokenBalances',pre_tok),('postTokenBalances',post_tok)]:
                   for b in meta.get(name) or []:
                       if str(b.get('owner') or '')!=WALLET: continue
-                      mint=str(b.get('mint') or ''); amt=int(((b.get('uiTokenAmount') or {}).get('amount') or 0))
-                      target[mint]+=amt
-              changes={m:post_tok[m]-pre_tok[m] for m in set(pre_tok)|set(post_tok) if post_tok[m]-pre_tok[m]}
-              non={m:v for m,v in changes.items() if m!=WSOL}
-              rows.append({'bt':bt,'sig':sig,'pre':pre/1e9,'post':post/1e9,'dsol':dlam/1e9,'fee':fee/1e9,'tokens':non})
-          if not rows:
-              raise SystemExit('NO_LEDGER_ROWS')
-          # Summary balance facts.
-          print('FIRST_PRE_BALANCE_SOL={:.9f}'.format(rows[0]['pre']))
-          print('FIRST_POST_BALANCE_SOL={:.9f}'.format(rows[0]['post']))
-          peak=max(max(r['pre'],r['post']) for r in rows)
-          endbal=rows[-1]['post']
-          print('PEAK_BALANCE_SOL={:.9f}'.format(peak))
-          print('END_PERIOD_BALANCE_SOL={:.9f}'.format(endbal))
-          print('TOTAL_TX_FEES_SOL={:.9f}'.format(sum(r['fee'] for r in rows)))
-          # Per-token realised round-trip impact: sum exact wallet SOL balance changes on txs where that token changed.
+                      target[str(b.get('mint') or '')]+=int(((b.get('uiTokenAmount') or {}).get('amount') or 0))
+              changes={m:post_tok[m]-pre_tok[m] for m in set(pre_tok)|set(post_tok) if post_tok[m]-pre_tok[m] and m!=WSOL}
+              rows.append({'bt':bt,'sig':sig,'pre':pre/1e9,'post':post/1e9,'dsol':(post-pre)/1e9,'fee':int(meta.get('fee') or 0)/1e9,'tokens':changes})
+          if not rows: raise SystemExit('NO_LEDGER_ROWS')
+          print('FIRST_PRE_BALANCE_SOL={:.9f}'.format(rows[0]['pre'])); print('FIRST_POST_BALANCE_SOL={:.9f}'.format(rows[0]['post']))
+          print('PEAK_BALANCE_SOL={:.9f}'.format(max(max(r['pre'],r['post']) for r in rows)))
+          print('END_PERIOD_BALANCE_SOL={:.9f}'.format(rows[-1]['post'])); print('TOTAL_TX_FEES_SOL={:.9f}'.format(sum(r['fee'] for r in rows)))
           bymint=defaultdict(list)
           for r in rows:
-              for mint,raw in r['tokens'].items():
-                  bymint[mint].append((r,raw))
+              for mint,raw in r['tokens'].items(): bymint[mint].append((r,raw))
           roundtrips=[]
           for mint,evs in bymint.items():
-              pos=0; cycle=[]; cycles=[]
+              pos=0; cycle=[]
               for r,raw in evs:
-                  prev=pos; pos+=raw; cycle.append((r,raw))
-                  if prev==0 and raw<0:
-                      # outgoing asset with no observed acquisition in window: not a cycle
-                      cycle=[]; pos=max(pos,0); continue
+                  if pos==0 and raw<0: continue
+                  pos+=raw; cycle.append((r,raw))
                   if pos==0 and cycle:
-                      cycles.append(cycle); cycle=[]
-              for c in cycles:
-                  buys=sum(1 for _,raw in c if raw>0); sells=sum(1 for _,raw in c if raw<0)
-                  impact=sum(r['dsol'] for r,_ in c)
-                  roundtrips.append((c[0][0]['bt'],mint,impact,buys,sells,c[0][0]['sig'],c[-1][0]['sig']))
-          roundtrips.sort()
-          print('ROUNDTRIP_COUNT='+str(len(roundtrips)))
-          wins=sum(1 for x in roundtrips if x[2]>0); losses=sum(1 for x in roundtrips if x[2]<0); flat=len(roundtrips)-wins-losses
-          print('ROUNDTRIP_WINS='+str(wins)); print('ROUNDTRIP_LOSSES='+str(losses)); print('ROUNDTRIP_FLAT='+str(flat))
-          print('ROUNDTRIP_NET_WALLET_IMPACT_SOL={:.9f}'.format(sum(x[2] for x in roundtrips)))
-          for bt,mint,impact,buys,sells,firstsig,lastsig in roundtrips:
-              ts=datetime.datetime.fromtimestamp(bt,datetime.timezone.utc).isoformat()
-              print('ROUNDTRIP time={} mint={} pnl_sol={:+.9f} buys={} sells={} first_sig={} last_sig={}'.format(ts,mint,impact,buys,sells,firstsig,lastsig))
-          # Non-token-changing transactions with material main-wallet balance change: funding/withdrawals/fees/account operations.
+                      roundtrips.append((cycle[0][0]['bt'],mint,sum(z['dsol'] for z,_ in cycle),sum(raw>0 for _,raw in cycle),sum(raw<0 for _,raw in cycle),cycle[0][0]['sig'],cycle[-1][0]['sig'])); cycle=[]
+          roundtrips.sort(); wins=sum(x[2]>0 for x in roundtrips); losses=sum(x[2]<0 for x in roundtrips)
+          print('ROUNDTRIP_COUNT='+str(len(roundtrips))); print('ROUNDTRIP_WINS='+str(wins)); print('ROUNDTRIP_LOSSES='+str(losses)); print('ROUNDTRIP_NET_WALLET_IMPACT_SOL={:+.9f}'.format(sum(x[2] for x in roundtrips)))
+          for bt,mint,pnl,buys,sells,fs,ls in roundtrips:
+              print('ROUNDTRIP time={} mint={} pnl_sol={:+.9f} buys={} sells={} first_sig={} last_sig={}'.format(datetime.datetime.fromtimestamp(bt,datetime.timezone.utc).isoformat(),mint,pnl,buys,sells,fs,ls))
           other=[r for r in rows if not r['tokens'] and abs(r['dsol'])>=0.00005]
-          print('MATERIAL_NON_TOKEN_TX_COUNT='+str(len(other)))
-          print('MATERIAL_NON_TOKEN_NET_SOL={:+.9f}'.format(sum(r['dsol'] for r in other)))
+          print('MATERIAL_NON_TOKEN_TX_COUNT='+str(len(other))); print('MATERIAL_NON_TOKEN_NET_SOL={:+.9f}'.format(sum(r['dsol'] for r in other)))
           for r in other:
-              ts=datetime.datetime.fromtimestamp(r['bt'],datetime.timezone.utc).isoformat()
-              print('OTHER time={} delta_sol={:+.9f} pre={:.9f} post={:.9f} fee={:.9f} sig={}'.format(ts,r['dsol'],r['pre'],r['post'],r['fee'],r['sig']))
-          # Largest balance drops irrespective of classification.
+              print('OTHER time={} delta_sol={:+.9f} pre={:.9f} post={:.9f} fee={:.9f} sig={}'.format(datetime.datetime.fromtimestamp(r['bt'],datetime.timezone.utc).isoformat(),r['dsol'],r['pre'],r['post'],r['fee'],r['sig']))
           print('LARGEST_DROPS')
-          for r in sorted(rows,key=lambda z:z['dsol'])[:20]:
-              ts=datetime.datetime.fromtimestamp(r['bt'],datetime.timezone.utc).isoformat()
+          for r in sorted(rows,key=lambda z:z['dsol'])[:25]:
               toks=';'.join('{}:{}'.format(k,v) for k,v in r['tokens'].items()) or 'NONE'
-              print('DROP time={} delta_sol={:+.9f} pre={:.9f} post={:.9f} fee={:.9f} tokens={} sig={}'.format(ts,r['dsol'],r['pre'],r['post'],r['fee'],toks,r['sig']))
-          print('PUBLIC_LEDGER_ONLY=true')
-          print('SECRET_VALUES_PRINTED=NO')
+              print('DROP time={} delta_sol={:+.9f} pre={:.9f} post={:.9f} fee={:.9f} tokens={} sig={}'.format(datetime.datetime.fromtimestamp(r['bt'],datetime.timezone.utc).isoformat(),r['dsol'],r['pre'],r['post'],r['fee'],toks,r['sig']))
+          print('PUBLIC_LEDGER_ONLY=true'); print('SECRET_VALUES_PRINTED=NO')
           PY
