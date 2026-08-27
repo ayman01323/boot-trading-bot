@@ -1,0 +1,62 @@
+name: SiRisky Hotfix Deploy Only
+
+on:
+  push:
+    paths:
+      - '.github/workflows/sirisky-hotfix-deploy-only.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify approved hotfix and restricted sudo permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          current="$(git rev-parse HEAD)"
+          echo "current_main=$current"
+          git show -s --format='%H %s' HEAD
+          grep -q 'str(result.get("position_id") or "ENTRY")' SiRisky/overrides/run.py
+          grep -q 'str(exc)\[:240\] or type(exc).__name__' SiRisky/overrides/sirisky/engine.py
+          sudo -n -l /usr/local/sbin/sirisky-shadow-deploy
+          sudo -n -l /root/SiRisky/ops/sirisky-governed-live-arm
+
+      - name: Deploy patched code fail-safe in SHADOW
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          sudo -n /usr/local/sbin/sirisky-shadow-deploy "$sha"
+
+      - name: Re-arm governed LIVE
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$sha"
+
+      - name: Observe patched Jupiter preparation result
+        shell: bash
+        run: |
+          set +e
+          sleep 8
+          echo '=== SERVICE ==='
+          systemctl is-active sirisky.service
+          echo '=== RECENT SIRISKY EVENTS ==='
+          journalctl -u sirisky.service --since '-20 seconds' --no-pager 2>/dev/null \
+            | grep -E 'MANUAL_APPROVAL_PREP_FAILED|WAITING_FOR_MANUAL_APPROVAL|SiRisky:' \
+            | tail -30 \
+            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
+          exit 0
