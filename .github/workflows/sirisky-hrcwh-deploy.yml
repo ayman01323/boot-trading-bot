@@ -136,11 +136,11 @@ jobs:
           sudo -n bash -lc "cd '$ROOT' && PYTHONPATH=. .venv/bin/python '$SRC/tests/test_hrcwh_policy.py'"
 
           # Safety assertions: AUTO SHADOW must never enable real transaction broadcast.
-          test "$(sudo -n awk -F, '$1==\"broadcast_enabled\" {print $2}' "$ROOT/CSV/runtime.csv")" = "0"
-          test "$(sudo -n awk -F, '$1==\"manual_approval_enabled\" {print $2}' "$ROOT/CSV/runtime.csv")" = "0"
-          test "$(sudo -n awk -F, '$1==\"armed_manual_approval\" {print $2}' "$ROOT/CSV/runtime.csv")" = "0"
-          test "$(sudo -n awk -F, '$1==\"auto_discovery_enabled\" {print $2}' "$ROOT/CSV/runtime.csv")" = "1"
-          test "$(sudo -n awk -F, '$1==\"auto_promote_to_selected\" {print $2}' "$ROOT/CSV/runtime.csv")" = "1"
+          sudo -n grep -q '^broadcast_enabled,0,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^manual_approval_enabled,0,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^armed_manual_approval,0,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^auto_discovery_enabled,1,' "$ROOT/CSV/runtime.csv"
+          sudo -n grep -q '^auto_promote_to_selected,1,' "$ROOT/CSV/runtime.csv"
 
           sudo -n systemctl restart sirisky.service
           sleep 3
