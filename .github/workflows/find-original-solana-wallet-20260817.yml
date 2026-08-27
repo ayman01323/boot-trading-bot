@@ -1,128 +1,86 @@
 name: Find Original Solana Wallet 2026-08-17
-
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/find-original-solana-wallet-20260817.yml'
+    paths: ['.github/workflows/find-original-solana-wallet-20260817.yml']
   workflow_dispatch:
-
 permissions:
   contents: read
-
-concurrency:
-  group: find-original-solana-wallet-20260817
-  cancel-in-progress: false
-
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Verify Google runner
+      - name: Verify runner
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = "botgoogle"
-          test "$(id -un)" = "ayman01323"
-
-      - name: Locate historical Solana wallet evidence
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+      - name: Find Aug 17 wallet and trade evidence
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import csv, json, os, sqlite3, time
+          import csv,json,os,sqlite3,time
           from pathlib import Path
-
           TOKEN='HUPMJ4Zsi9tLVoJS5SgHhKGxLosxFDejZAU9evy3pump'
-          roots=[Path('/home/ayman01323/BOOT'), Path('/home/ayman01323/ClaudeServer')]
-          skip_parts={'.git','node_modules','.venv','venv','__pycache__'}
+          roots=[Path('/home/ayman01323/BOOT'),Path('/home/ayman01323/ClaudeServer')]
+          skip={'.git','node_modules','.venv','venv','__pycache__'}
           files=[]
           for root in roots:
-              if not root.exists():
-                  continue
-              for dp, dns, fns in os.walk(root):
-                  dpath=Path(dp)
-                  dns[:] = [d for d in dns if d not in skip_parts]
+              if not root.exists(): continue
+              for dp,dns,fns in os.walk(root):
+                  dns[:]=[d for d in dns if d not in skip]
                   for fn in fns:
                       low=fn.lower()
-                      if ('solana' in low and ('wallet' in low or 'sibot' in low or 'position' in low or 'trade' in low)) or low in {'users.csv','user_trading_settings.csv'}:
-                          files.append(dpath/fn)
-          print(f'candidate_files={len(files)}')
+                      if ('solana' in low and any(x in low for x in ('wallet','sibot','position','trade'))) or low in ('users.csv','user_trading_settings.csv'):
+                          files.append(Path(dp)/fn)
+          print('candidate_files='+str(len(files)))
           for p in sorted(files):
               try:
-                  st=p.stat()
-                  print(f'FILE path={p} mtime={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime))} size={st.st_size}')
-              except Exception:
-                  pass
-
-          # CSV: print only public wallet addresses and non-secret metadata.
+                  s=p.stat(); print(f'FILE {p} mtime={time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime(s.st_mtime))} size={s.st_size}')
+              except Exception: pass
           for p in files:
-              if p.suffix.lower()!='.csv':
-                  continue
-              try:
-                  with p.open('r',encoding='utf-8-sig',newline='') as f:
-                      rows=list(csv.DictReader(f))
-              except Exception:
-                  continue
-              for i,r in enumerate(rows, start=2):
-                  address=str(r.get('address') or r.get('wallet') or r.get('wallet_address') or '').strip()
-                  if 32 <= len(address) <= 64 and all(c.isalnum() for c in address):
-                      print('CSV_WALLET path={} line={} address={} telegram_id={} wallet_id={} label={} signing={} enabled={} active={}'.format(
-                          p,i,address,str(r.get('telegram_id') or ''),str(r.get('wallet_id') or ''),str(r.get('label') or ''),str(r.get('signing') or ''),str(r.get('enabled') or ''),str(r.get('active') or '')))
-
-          # Encrypted wallet JSON: print address and metadata only; never encrypted/private fields.
-          for p in files:
-              if not p.name.endswith('.enc.json'):
-                  continue
-              try:
-                  j=json.loads(p.read_text(encoding='utf-8'))
-              except Exception:
-                  continue
-              a=str(j.get('address') or '').strip()
-              if a:
-                  print(f'ENC_WALLET path={p} address={a} telegram_id={j.get("telegram_id","")} wallet_id={j.get("wallet_id","")} source={j.get("source","")}')
-
-          # Historical SiBot SQLite evidence; only public addresses/signatures and trade metadata.
-          for p in files:
-              if p.suffix.lower() not in {'.sqlite','.sqlite3','.db'}:
-                  continue
-              try:
-                  con=sqlite3.connect(f'file:{p}?mode=ro', uri=True, timeout=3)
-                  con.row_factory=sqlite3.Row
-                  tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-                  if 'positions' in tables:
-                      cols={r[1] for r in con.execute('pragma table_info(positions)')}
-                      if {'mint','leader_wallet'}.issubset(cols):
-                          q="select * from positions where mint=? order by entry_ts desc limit 20"
-                          for r in con.execute(q,(TOKEN,)):
-                              d=dict(r)
-                              print('MATCH_POSITION db={} telegram_id={} leader_wallet={} mint={} mode={} status={} entry_ts={} entry_cost_sol={} leader_buy_signature={} exit_signature={} exit_reason={}'.format(
-                                  p,d.get('telegram_id',''),d.get('leader_wallet',''),d.get('mint',''),d.get('mode',''),d.get('status',''),d.get('entry_ts',''),d.get('entry_cost_sol',''),d.get('leader_buy_signature',''),d.get('exit_signature',''),d.get('exit_reason','')))
-                  if 'leader_events' in tables:
-                      cols={r[1] for r in con.execute('pragma table_info(leader_events)')}
-                      if 'mint' in cols:
-                          for r in con.execute('select * from leader_events where mint=? order by event_ts desc limit 20',(TOKEN,)):
-                              d=dict(r)
-                              print('MATCH_EVENT db={} leader_wallet={} action={} mint={} sol_amount={} sell_pct={} signature={} event_ts={}'.format(
-                                  p,d.get('leader_wallet',''),d.get('action',''),d.get('mint',''),d.get('sol_amount',''),d.get('sell_pct',''),d.get('signature',''),d.get('event_ts','')))
-                  con.close()
-              except Exception as e:
-                  print(f'DB_SKIP path={p} error={type(e).__name__}')
-
+              if p.suffix.lower()=='.csv':
+                  try:
+                      with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+                  except Exception: continue
+                  for i,r in enumerate(rows,2):
+                      a=str(r.get('address') or r.get('wallet') or r.get('wallet_address') or '').strip()
+                      if 32<=len(a)<=64 and a.isalnum():
+                          print(f'CSV_WALLET path={p} line={i} address={a} telegram_id={r.get("telegram_id","")} wallet_id={r.get("wallet_id","")} label={r.get("label","")} signing={r.get("signing","")} active={r.get("active","")}')
+              elif p.name.endswith('.enc.json'):
+                  try: j=json.loads(p.read_text())
+                  except Exception: continue
+                  a=str(j.get('address') or '')
+                  if a: print(f'ENC_WALLET path={p} address={a} telegram_id={j.get("telegram_id","")} wallet_id={j.get("wallet_id","")} source={j.get("source","")}')
+              elif p.suffix.lower() in ('.sqlite','.sqlite3','.db'):
+                  try:
+                      con=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=3); con.row_factory=sqlite3.Row
+                      tabs={x[0] for x in con.execute("select name from sqlite_master where type='table'")}
+                      if 'positions' in tabs:
+                          cols={x[1] for x in con.execute('pragma table_info(positions)')}
+                          if 'mint' in cols:
+                              for rr in con.execute('select * from positions where mint=? order by entry_ts desc limit 20',(TOKEN,)):
+                                  d=dict(rr); print('MATCH_POSITION db={} telegram_id={} leader_wallet={} mint={} mode={} status={} entry_ts={} entry_cost_sol={} leader_buy_signature={} exit_signature={} exit_reason={}'.format(p,d.get('telegram_id',''),d.get('leader_wallet',''),d.get('mint',''),d.get('mode',''),d.get('status',''),d.get('entry_ts',''),d.get('entry_cost_sol',''),d.get('leader_buy_signature',''),d.get('exit_signature',''),d.get('exit_reason','')))
+                      if 'leader_events' in tabs:
+                          for rr in con.execute('select * from leader_events where mint=? order by event_ts desc limit 20',(TOKEN,)):
+                              d=dict(rr); print('MATCH_EVENT db={} leader_wallet={} action={} sol_amount={} sell_pct={} signature={} event_ts={}'.format(p,d.get('leader_wallet',''),d.get('action',''),d.get('sol_amount',''),d.get('sell_pct',''),d.get('signature',''),d.get('event_ts','')))
+                      con.close()
+                  except Exception as e: print(f'DB_SKIP path={p} error={type(e).__name__}')
           print('secret_values_printed=NO')
           PY
-
-      - name: Search archived logs for successful Aug 17 token trade
+      - name: Search text logs for target mint
         shell: bash
         run: |
           set -euo pipefail
           TOKEN='HUPMJ4Zsi9tLVoJS5SgHhKGxLosxFDejZAU9evy3pump'
           for root in /home/ayman01323/BOOT /home/ayman01323/ClaudeServer; do
             [[ -d "$root" ]] || continue
-            grep -RIl --exclude='*.enc.json' --exclude='*backup*' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv "$TOKEN" "$root" 2>/dev/null | head -50 | while read -r f; do
-              echo "TOKEN_FILE path=$f"
-              grep -nF "$TOKEN" "$f" 2>/dev/null | head -10 | sed -E 's/(encrypted_keypair|private_key|secret|keypair)[^,}]*/[REDACTED]/Ig'
+            grep -RIl --exclude='*.enc.json' --exclude='*backup*' --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv "$TOKEN" "$root" 2>/dev/null | head -30 | while read -r f; do
+              echo "TOKEN_FILE $f"
+              grep -nF "$TOKEN" "$f" 2>/dev/null | head -5 | sed -E 's/(encrypted_keypair|private_key|secret|keypair)[^,}]*/[REDACTED]/Ig'
             done
           done
-          echo 'log_secret_values_printed=NO'
+          echo secret_values_printed=NO
