@@ -32,13 +32,14 @@ jobs:
           test "$(id -un)" = 'ayman01323'
           test -d "$SOURCE"
           test -r "$SOURCE"
+          command -v python3 >/dev/null
           mkdir -p "$DEST_ROOT"
           chmod 700 "$DEST_ROOT"
           echo "source=$SOURCE"
           echo "destination=$DEST_ROOT"
           df -h "$DEST_ROOT"
 
-      - name: Create dated verified systemd backup
+      - name: Create dated verified systemd ZIP backup
         shell: bash
         run: |
           set -euo pipefail
@@ -50,34 +51,66 @@ jobs:
           mkdir -p "$DAY_DIR"
           chmod 700 "$DAY_DIR"
 
-          ARCHIVE="$WORK/systemd-system.tar.gz"
-          HASH="$WORK/systemd-system.tar.gz.sha256"
-          MANIFEST="$WORK/systemd-system-manifest.txt"
+          python3 - "$SOURCE" "$WORK/systemd-system.zip" <<'PY'
+          import os, stat, sys, zipfile
+          from pathlib import Path
+          src = Path(sys.argv[1]).resolve()
+          out = Path(sys.argv[2])
+          root_name = 'system'
+          def add_link(zf, path, arcname):
+              info = zipfile.ZipInfo(arcname)
+              info.create_system = 3
+              info.external_attr = (stat.S_IFLNK | 0o777) << 16
+              zf.writestr(info, os.readlink(path).encode())
+          with zipfile.ZipFile(out, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as zf:
+              for current, dirs, files in os.walk(src, topdown=True, followlinks=False):
+                  current_path = Path(current)
+                  rel = current_path.relative_to(src)
+                  arcdir = root_name if str(rel) == '.' else f"{root_name}/{rel.as_posix()}"
+                  info = zipfile.ZipInfo(arcdir.rstrip('/') + '/')
+                  info.create_system = 3
+                  info.external_attr = (stat.S_IFDIR | 0o755) << 16
+                  zf.writestr(info, b'')
+                  for dirname in list(dirs):
+                      p = current_path / dirname
+                      if p.is_symlink():
+                          add_link(zf, p, f"{arcdir}/{dirname}")
+                          dirs.remove(dirname)
+                  for filename in files:
+                      p = current_path / filename
+                      arcname = f"{arcdir}/{filename}"
+                      add_link(zf, p, arcname) if p.is_symlink() else zf.write(p, arcname)
+          with zipfile.ZipFile(out, 'r') as zf:
+              bad = zf.testzip()
+              if bad is not None:
+                  raise SystemExit(f"ZIP integrity failure at {bad}")
+              entries = len(zf.infolist())
+          size = out.stat().st_size
+          if entries < 5 or size < 1024:
+              raise SystemExit(f"ZIP sanity failure entries={entries} bytes={size}")
+          print(f"entries={entries}")
+          print(f"bytes={size}")
+          PY
 
-          tar -C /etc/systemd -czf "$ARCHIVE" system
-          chmod 600 "$ARCHIVE"
-          tar -tzf "$ARCHIVE" >/dev/null
-          (cd "$WORK" && sha256sum systemd-system.tar.gz > systemd-system.tar.gz.sha256)
-          chmod 600 "$HASH"
+          entries="$(python3 - "$WORK/systemd-system.zip" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1], 'r') as zf: print(len(zf.infolist()))
+          PY
+          )"
+          bytes="$(stat -c '%s' "$WORK/systemd-system.zip")"
+          (cd "$WORK" && sha256sum systemd-system.zip > systemd-system.zip.sha256)
+          printf 'source=%s\nentries=%s\nbytes=%s\ncreated_london=%s\nformat=zip\n' \
+            "$SOURCE" "$entries" "$bytes" "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$WORK/systemd-system.stats"
 
-          cat > "$MANIFEST" <<EOF
-          backup_date=$BACKUP_DATE
-          created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
-          created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          hostname=$(hostname)
-          source=$SOURCE
-          destination=$DAY_DIR
-          archive=systemd-system.tar.gz
-          EOF
-          chmod 600 "$MANIFEST"
-
-          mv -f "$ARCHIVE" "$DAY_DIR/systemd-system.tar.gz"
-          mv -f "$HASH" "$DAY_DIR/systemd-system.tar.gz.sha256"
-          mv -f "$MANIFEST" "$DAY_DIR/systemd-system-manifest.txt"
+          install -m 600 "$WORK/systemd-system.zip" "$DAY_DIR/systemd-system.zip"
+          install -m 600 "$WORK/systemd-system.zip.sha256" "$DAY_DIR/systemd-system.zip.sha256"
+          install -m 600 "$WORK/systemd-system.stats" "$DAY_DIR/systemd-system.stats"
           cd "$DAY_DIR"
-          sha256sum -c systemd-system.tar.gz.sha256
-          echo "Backup completed: $DAY_DIR"
-          ls -lh "$DAY_DIR"
+          sha256sum -c systemd-system.zip.sha256
+          rm -f systemd-system.tar.gz systemd-system.tar.gz.sha256 systemd-system-manifest.txt
+          echo "Systemd ZIP backup completed: $DAY_DIR"
+          cat systemd-system.stats
+          ls -lh systemd-system.zip systemd-system.zip.sha256 systemd-system.stats
 
       - name: Apply retention policy
         shell: bash
@@ -93,5 +126,5 @@ jobs:
         shell: bash
         run: |
           echo "Source: $SOURCE"
-          echo "Destination pattern: $DEST_ROOT/YYYY-MM-DD/systemd-system.tar.gz"
+          echo "Destination pattern: $DEST_ROOT/YYYY-MM-DD/systemd-system.zip"
           echo "Schedule: daily at 03:00 Europe/London"
