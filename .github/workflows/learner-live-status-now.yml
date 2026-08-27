@@ -1,0 +1,83 @@
+name: Learner Live Status Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/learner-live-status-now.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect learner runtime and trading activity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          DB="$LEARN/data/solana_sibot.sqlite3"
+          CSV="$LEARN/CSVbot/user_trading_settings.csv"
+          echo "checked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for s in learnerbot.service learnerbot-learn.service google-learner-telegram-relay.service; do
+            echo "$s=$(systemctl is-active "$s" 2>/dev/null || true)"
+            echo "$s.restarts=$(systemctl show "$s" -p NRestarts --value 2>/dev/null || true)"
+          done
+          python3 - "$CSV" "$DB" <<'PY'
+          import csv, sqlite3, sys, time
+          csv_path, db_path = sys.argv[1], sys.argv[2]
+          truth={'solana_live_enabled':0,'learner_new_entries_enabled':0}
+          try:
+              with open(csv_path,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      k=str(r.get('setting') or '')
+                      on=str(r.get('value') or '').strip().lower() in {'1','true','yes','on','y'}
+                      if k in truth and on: truth[k]+=1
+          except FileNotFoundError:
+              pass
+          print(f"live_enabled_users={truth['solana_live_enabled']}")
+          print(f"entry_enabled_users={truth['learner_new_entries_enabled']}")
+          try:
+              con=sqlite3.connect(f'file:{db_path}?mode=ro',uri=True,timeout=2)
+              con.row_factory=sqlite3.Row
+          except Exception as e:
+              print('db=UNAVAILABLE')
+              print('db_error='+type(e).__name__)
+              raise SystemExit
+          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          if 'positions' in tables:
+              total=con.execute("select count(*) from positions where mode='LIVE'").fetchone()[0]
+              open_n=con.execute("select count(*) from positions where mode='LIVE' and status='OPEN'").fetchone()[0]
+              closed=con.execute("select count(*) from positions where mode='LIVE' and status='CLOSED'").fetchone()[0]
+              pnl=con.execute("select coalesce(sum(cast(realised_net_sol as real)),0) from positions where mode='LIVE' and status='CLOSED'").fetchone()[0]
+              print(f'live_positions_total={total}')
+              print(f'live_positions_open={open_n}')
+              print(f'live_positions_closed={closed}')
+              print(f'realised_net_sol_total={pnl:.9f}')
+              rows=con.execute("select position_id,mint,status,entry_cost_sol,unrealised_net_sol,unrealised_pct,realised_net_sol,exit_reason,entry_ts,updated_at from positions where mode='LIVE' order by updated_at desc limit 5").fetchall()
+              now=int(time.time())
+              for i,r in enumerate(rows,1):
+                  mint=str(r['mint'] or '')
+                  short=(mint[:6]+'…'+mint[-6:]) if len(mint)>14 else mint
+                  age=max(0,now-int(r['entry_ts'] or now))
+                  print(f"position_{i}=status:{r['status']} mint:{short} entry:{r['entry_cost_sol']} unrealised_sol:{r['unrealised_net_sol']} unrealised_pct:{r['unrealised_pct']} realised_sol:{r['realised_net_sol']} exit:{r['exit_reason'] or '-'} age_sec:{age}")
+          if 'live_execution_attempts' in tables:
+              rows=con.execute("select status,count(*) n from live_execution_attempts group by status order by n desc").fetchall()
+              print('execution_attempts='+';'.join(f"{r['status']}:{r['n']}" for r in rows))
+              latest=con.execute("select action,status,mint,error,created_at from live_execution_attempts order by created_at desc limit 5").fetchall()
+              for i,r in enumerate(latest,1):
+                  mint=str(r['mint'] or '')
+                  short=(mint[:6]+'…'+mint[-6:]) if len(mint)>14 else mint
+                  err=' '.join(str(r['error'] or '').split())[:180]
+                  print(f"attempt_{i}=action:{r['action']} status:{r['status']} mint:{short} error:{err or '-'}")
+          con.close()
+          PY
+          echo '--- recent learner service warnings/errors (sanitised) ---'
+          journalctl -u learnerbot-learn.service --since '3 hours ago' --no-pager 2>/dev/null \
+            | grep -Ei 'error|warning|reject|blocked|buy|sell|live|trade|jupiter|rpc' \
+            | tail -80 \
+            | sed -E 's#https?://[^ ]+#URL_REDACTED#g; s#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=[^ ]+#\1=REDACTED#g' || true
