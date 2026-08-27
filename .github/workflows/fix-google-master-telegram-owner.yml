@@ -1,0 +1,108 @@
+name: Fix Google MASTER Telegram Owner
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/fix-google-master-telegram-owner.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Repair learner runtime and make SiRisky outbound-only on shared Telegram bot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          WORK="$HOME/.cache/fix-master-telegram-${GITHUB_RUN_ID}"
+          mkdir -p "$WORK"
+          SCRIPT="$WORK/fix.sh"
+          UNIT="$WORK/fix-master-telegram-${GITHUB_RUN_ID}.service"
+          RESULT="$WORK/result.txt"
+          cat > "$SCRIPT" <<'ROOTSCRIPT'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          OUT='__RESULT__'
+          exec > >(tee "$OUT") 2>&1
+          echo "learner_user=$(systemctl show learnerbot.service -p User --value)"
+          echo "sirisky_user=$(systemctl show sirisky.service -p User --value)"
+
+          # The learner was crash-looping because a stale cross-owner atomic temp
+          # file in /var/tmp blocked its redacted diagnostics exporter.
+          systemctl stop learnerbot.service || true
+          rm -f /var/tmp/sibot1-runtime-diag.json.tmp /var/tmp/sibot1-runtime-diag.json
+          echo 'runtime_diag_stale_files=REMOVED'
+
+          # SiRisky may still send its alerts through Telegram, but it must not call
+          # getUpdates on the MASTER bot token. One inbound poller only: learnerbot.
+          SIR=/root/SiRisky/run.py
+          test -f "$SIR"
+          cp -a "$SIR" "$SIR.pre-master-menu-owner-fix"
+          python3 - "$SIR" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          old='engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); tg.run_thread(lambda c,ch:telegram_handler(engine,settings,c,ch),stop)'
+          new='engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); print("SiRisky Telegram command polling disabled: MASTER learnerbot owns getUpdates; outbound alerts remain enabled.", flush=True)'
+          if old in s:
+              s=s.replace(old,new,1)
+              p.write_text(s,encoding='utf-8')
+              print('sirisky_polling_patch=APPLIED')
+          elif 'SiRisky Telegram command polling disabled: MASTER learnerbot owns getUpdates' in s:
+              print('sirisky_polling_patch=ALREADY_APPLIED')
+          else:
+              raise SystemExit('REFUSED: expected SiRisky polling line not found')
+          PY
+          /root/SiRisky/.venv/bin/python -m py_compile "$SIR"
+          systemctl restart sirisky.service
+          systemctl restart learnerbot.service
+          sleep 18
+          echo "learner_active=$(systemctl is-active learnerbot.service || true)"
+          echo "sirisky_active=$(systemctl is-active sirisky.service || true)"
+          echo "learner_restarts_1=$(systemctl show learnerbot.service -p NRestarts --value)"
+          sleep 12
+          echo "learner_restarts_2=$(systemctl show learnerbot.service -p NRestarts --value)"
+          echo '=== learner recent errors ==='
+          journalctl -u learnerbot.service --since '-45 seconds' --no-pager -o cat \
+            | grep -E 'PermissionError|HTTP 409|Traceback|Main process exited|telegram-menu|interactive multi-chain menu started|Google Test|Learner Bot' \
+            | sed -E 's#https://api\.telegram\.org/bot[^ /]+#https://api.telegram.org/botREDACTED#g' || true
+          echo '=== sirisky polling proof ==='
+          journalctl -u sirisky.service --since '-45 seconds' --no-pager -o cat \
+            | grep -E 'Telegram command polling disabled|HTTP 409|getUpdates' \
+            | sed -E 's#https://api\.telegram\.org/bot[^ /]+#https://api.telegram.org/botREDACTED#g' || true
+          test "$(systemctl is-active learnerbot.service)" = active
+          test "$(systemctl is-active sirisky.service)" = active
+          ROOTSCRIPT
+          sed -i "s#__RESULT__#$RESULT#g" "$SCRIPT"
+          chmod 755 "$SCRIPT"
+          cat > "$UNIT" <<EOF
+          [Unit]
+          Description=Fix Google MASTER Telegram ownership
+          After=network.target
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/bash $SCRIPT
+          EOF
+          chmod 644 "$UNIT"
+          NAME="$(basename "$UNIT")"
+          sudo -n /usr/bin/systemctl link "$UNIT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          sudo -n /usr/bin/systemctl start "$NAME"
+          cat "$RESULT"
+          R1="$(grep '^learner_restarts_1=' "$RESULT" | tail -1 | cut -d= -f2)"
+          R2="$(grep '^learner_restarts_2=' "$RESULT" | tail -1 | cut -d= -f2)"
+          test -n "$R1" -a -n "$R2"
+          test "$R1" = "$R2"
+          ! grep -q 'PermissionError' "$RESULT"
+          ! grep -q 'HTTP 409' "$RESULT"
+          sudo -n /usr/bin/systemctl disable "$NAME" >/dev/null 2>&1 || true
+          rm -f "$UNIT" "$SCRIPT" "$RESULT"
+          sudo -n /usr/bin/systemctl daemon-reload
+          echo 'google_master_telegram_owner=LEARNERBOT_ONLY'
