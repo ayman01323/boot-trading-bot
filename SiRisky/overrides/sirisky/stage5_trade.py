@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from .csvio import append_row, as_bool
-from .jupiter import order as jup_order, execute_order, WSOL_MINT
+from .jupiter import order as jup_order, execute_order, quote_only, WSOL_MINT
 from .wallet import WalletStore
 
 EXEC_HEADERS=["timestamp","order_id","action","mint","mode","status","signature","input_raw","output_raw","reason","error"]
@@ -10,6 +10,17 @@ EXEC_HEADERS=["timestamp","order_id","action","mint","mode","status","signature"
 class Stage5Trade:
     """Execution only. It never makes the strategy/risk decision."""
     def __init__(self, settings): self.settings=settings
+
+    @staticmethod
+    def _output_raw(q):
+        for key in ("outAmount","outputAmount","estimatedOutputAmount","out_amount"):
+            try:
+                value=int(q.get(key) or 0)
+            except Exception:
+                value=0
+            if value>0:
+                return value
+        return 0
 
     def execute(self, order):
         rt=self.settings.runtime(); live=as_bool(rt.get("live_enabled"),False); broadcast=as_bool(rt.get("broadcast_enabled"),False)
@@ -23,10 +34,21 @@ class Stage5Trade:
             raise RuntimeError("MANUAL_APPROVAL_EXTERNAL_SIGNATURE_REQUIRED")
 
         wallet=WalletStore(self.settings); taker=wallet.address(); mode="LIVE" if live and broadcast else "SHADOW"
+        input_mint=WSOL_MINT if order.action=="BUY" else order.mint
+        output_mint=order.mint if order.action=="BUY" else WSOL_MINT
         try:
-            if order.action=="BUY": q=jup_order(self.settings,taker,WSOL_MINT,order.mint,order.amount_raw)
-            else: q=jup_order(self.settings,taker,order.mint,WSOL_MINT,order.amount_raw)
-            out=int(q.get("outAmount") or q.get("outputAmount") or q.get("estimatedOutputAmount") or 0)
+            # SHADOW only needs an executable quote. Asking Jupiter to build a
+            # transaction in paper mode adds an unnecessary failure point and
+            # was causing the automatic engine loop to raise RuntimeError.
+            if mode=="SHADOW":
+                q=quote_only(self.settings,taker,input_mint,output_mint,order.amount_raw)
+            else:
+                q=jup_order(self.settings,taker,input_mint,output_mint,order.amount_raw)
+
+            out=self._output_raw(q)
+            if out<=0:
+                raise RuntimeError("JUPITER_NO_EXECUTABLE_OUTPUT")
+
             if mode=="LIVE":
                 if not wallet.has_private_key(): raise RuntimeError("SIGNER_NOT_READY")
                 res=execute_order(self.settings,q,wallet.keypair_bytes()); sig=str(res.get("signature") or ""); status="SUCCESS"

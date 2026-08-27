@@ -3,7 +3,9 @@ name: SiRisky Automatic Shadow Engine
 on:
   push:
     paths:
+      - 'SiRisky/overrides/run.py'
       - 'SiRisky/overrides/sirisky/engine.py'
+      - 'SiRisky/overrides/sirisky/stage5_trade.py'
       - '.github/workflows/sirisky-auto-shadow-engine.yml'
   workflow_dispatch:
 
@@ -25,12 +27,16 @@ jobs:
           sudo -n true
           sudo -n test -d /root/SiRisky
 
-          echo '=== BACKUP ENGINE ==='
+          echo '=== BACKUP RUNTIME ==='
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          sudo -n cp -a /root/SiRisky/sirisky/engine.py "/root/SiRisky/sirisky/engine.py.${stamp}.pre-auto-shadow.bak"
+          sudo -n cp -a /root/SiRisky/run.py "/root/SiRisky/run.py.${stamp}.pre-shadow-fix.bak"
+          sudo -n cp -a /root/SiRisky/sirisky/engine.py "/root/SiRisky/sirisky/engine.py.${stamp}.pre-shadow-fix.bak"
+          sudo -n cp -a /root/SiRisky/sirisky/stage5_trade.py "/root/SiRisky/sirisky/stage5_trade.py.${stamp}.pre-shadow-fix.bak"
 
-          echo '=== INSTALL ENGINE ==='
+          echo '=== INSTALL RUNTIME ==='
+          sudo -n install -m 0644 SiRisky/overrides/run.py /root/SiRisky/run.py
           sudo -n install -m 0644 SiRisky/overrides/sirisky/engine.py /root/SiRisky/sirisky/engine.py
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage5_trade.py /root/SiRisky/sirisky/stage5_trade.py
 
           echo '=== SET AUTOMATIC SHADOW MODE ==='
           sudo -n python3 - /root/SiRisky/CSV/runtime.csv <<'PY'
@@ -77,7 +83,10 @@ jobs:
           test "$(systemctl is-active sirisky.service)" = 'active'
 
           echo '=== ONE AUTOMATIC SHADOW CYCLE ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py once' || true
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py once'
+
+          echo '=== RECENT SANITISED SERVICE ERRORS ==='
+          sudo -n journalctl -u sirisky.service --since '-2 minutes' --no-pager | grep -E 'SiRisky cycle error|Started|Stopped' | tail -40 || true
 
           echo '=== RUNTIME ==='
           sudo -n awk -F, 'NR==1 || $1 ~ /^(trading_mode|paper_auto_trade_enabled|live_enabled|broadcast_enabled|manual_approval_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit)$/' /root/SiRisky/CSV/runtime.csv

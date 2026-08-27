@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 from sirisky.config import Settings
@@ -20,6 +21,15 @@ from sirisky.wallet import WalletStore
 
 def status_line(ok,name,detail=""):
     tag="PASS" if ok else "FAIL"; print(f"[{tag}] {name}"+(f" — {detail}" if detail else "")); return ok
+
+
+def _safe_trace(exc):
+    """Return only file/line/function frames; never include exception text/URLs."""
+    frames=traceback.extract_tb(exc.__traceback__)
+    compact=[]
+    for frame in frames[-6:]:
+        compact.append(f"{Path(frame.filename).name}:{frame.lineno}:{frame.name}")
+    return " > ".join(compact) or "no-trace"
 
 
 def safe_check(settings):
@@ -74,6 +84,7 @@ def start(settings):
     tg.send("SiRisky started. Manual per-trade approval is supported; server-side transaction broadcast remains CSV-gated and external/manual signing is required when the approval gate is enabled.")
     def sig(*_): stop.set()
     signal.signal(signal.SIGTERM,sig); signal.signal(signal.SIGINT,sig)
+    last_error_key=""; last_error_notice=0.0
     while not stop.is_set():
         try:
             result=engine.run_once(); status=str(result.get("status") or "")
@@ -83,7 +94,11 @@ def start(settings):
             elif status in {"OPENED","CLOSED","RISK_REJECT","MANUAL_APPROVAL_PREP_FAILED"}:
                 tg.send("SiRisky: "+json.dumps(result,default=str)[:3500])
         except Exception as exc:
-            tg.send(f"SiRisky cycle error: {type(exc).__name__}")
+            trace=_safe_trace(exc); key=f"{type(exc).__name__}:{trace}"; now=time.time()
+            print(f"SiRisky cycle error: {type(exc).__name__} trace={trace}",file=sys.stderr,flush=True)
+            if key!=last_error_key or (now-last_error_notice)>=300:
+                tg.send(f"SiRisky cycle error: {type(exc).__name__}\nTrace: {trace}\nRepeated identical alerts suppressed for 5 minutes.")
+                last_error_key=key; last_error_notice=now
         delay=float(settings.runtime().get("poll_seconds") or 5); stop.wait(max(1.0,delay))
     return 0
 
@@ -104,7 +119,10 @@ def main():
     if args.cmd=="selftest": return selftest()
     if args.cmd=="start": return start(settings)
     if args.cmd=="once":
-        print(json.dumps(SiRiskyEngine(settings).run_once(),default=str,indent=2)); return 0
+        try:
+            print(json.dumps(SiRiskyEngine(settings).run_once(),default=str,indent=2)); return 0
+        except Exception as exc:
+            print(json.dumps({"status":"CYCLE_ERROR","error":type(exc).__name__,"trace":_safe_trace(exc)},indent=2)); return 2
     if args.cmd=="approvals":
         rows=SiRiskyEngine(settings).pending_approvals()
         print(json.dumps(rows,default=str,indent=2)); return 0
