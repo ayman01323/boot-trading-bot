@@ -1,4 +1,4 @@
-name: Install Known-Good Learner Snapshot 2026-08-17
+name: Inspect Known-Good Learner Runtime
 
 on:
   push:
@@ -11,11 +11,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: install-known-good-learner-2026-08-17
+  group: inspect-known-good-learner-runtime
   cancel-in-progress: false
 
 jobs:
-  install:
+  inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
@@ -26,56 +26,64 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
 
-      - name: Check out exact known-good 17 August snapshot
-        uses: actions/checkout@v4
-        with:
-          ref: a524c530e19a70f8b303dc9a3e65b3ac9596705e
-          path: known-good-learner
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Install snapshot into testingbots learn
-        shell: bash
-        run: |
-          set -euo pipefail
-          src="$GITHUB_WORKSPACE/known-good-learner"
-          target=/home/ayman01323/BOOT/testingbots/learn
-          parent="$(dirname "$target")"
-          mkdir -p "$parent"
-
-          if [[ -e "$target" ]]; then
-            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-            backup="${target}.backup-${stamp}"
-            mv "$target" "$backup"
-            echo "existing_target_backup=$backup"
-          fi
-
-          mkdir -p "$target"
-          cp -a "$src"/. "$target"/
-          rm -rf "$target/.git"
-
-          cat > "$target/KNOWN_GOOD_SNAPSHOT.txt" <<'EOF'
-          Known-good Solana Learner/SiBot source snapshot
-          Date: 2026-08-17
-          Source repository: ayman01323/boot-trading-bot
-          Source commit: a524c530e19a70f8b303dc9a3e65b3ac9596705e
-          Purpose: isolated comparison/testing only
-          Production service restarted: NO
-          EOF
-
-      - name: Verify installed snapshot
+      - name: Inspect runtime settings and wallet readiness
         shell: bash
         run: |
           set -euo pipefail
           target=/home/ayman01323/BOOT/testingbots/learn
-          test -f "$target/learnerbot/solana_sibot.py"
-          test -f "$target/learnerbot/solana_live_executor.py"
-          test -f "$target/learnerbot/solana_live_patch.py"
-          test -f "$target/learnerbot/solana_wallet_store.py"
           test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
-          grep -Fq 'a524c530e19a70f8b303dc9a3e65b3ac9596705e' "$target/KNOWN_GOOD_SNAPSHOT.txt"
           echo "snapshot_target=$target"
-          echo "snapshot_source=a524c530e19a70f8b303dc9a3e65b3ac9596705e"
+          echo "--- paths ---"
+          for p in "$target/CSVbot" "$target/data" "$target/CSVbot/solana_settings.csv" "$target/CSVbot/auto/solana_user_wallets.csv"; do
+            if [[ -e "$p" ]]; then echo "EXISTS $p"; else echo "MISSING $p"; fi
+          done
+          echo "--- settings ---"
+          python3 - <<'PY'
+          import ast,csv,pathlib,re
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          src=(root/'learnerbot/solana_sibot.py').read_text(encoding='utf-8')
+          tree=ast.parse(src); defaults={}
+          for n in tree.body:
+              if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='DEFAULTS' for t in n.targets):
+                  defaults=ast.literal_eval(n.value); break
+          live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
+          m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)',live,re.S)
+          if m: defaults.update(ast.literal_eval('{'+m.group(1)+'}'))
+          runtime={}
+          rp=root/'CSVbot/solana_settings.csv'
+          if rp.exists():
+              with rp.open(encoding='utf-8-sig',newline='') as f:
+                  runtime={str(r.get('setting') or ''):str(r.get('value') or '') for r in csv.DictReader(f)}
+          keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
+          for k in keys:
+              val=runtime.get(k, defaults.get(k,('MISSING',''))[0])
+              source='runtime' if k in runtime else 'source-default'
+              print(f'SETTING {k}={val} source={source}')
+          print('RUNTIME_SETTINGS_FILE='+('YES' if rp.exists() else 'NO'))
+          PY
+          echo "--- users and wallets ---"
+          python3 - <<'PY'
+          import csv,pathlib
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
+          candidates=[root/'users.csv',root/'auto/users.csv',root/'user_registry.csv',root/'auto/user_registry.csv']
+          tids=[]
+          for p in candidates:
+              if not p.exists(): continue
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  rows=list(csv.DictReader(f))
+              print(f'USER_FILE {p} rows={len(rows)}')
+              for r in rows:
+                  tid=str(r.get('telegram_id') or '').strip()
+                  if tid and tid not in tids: tids.append(tid)
+          print('UNIQUE_TELEGRAM_USERS='+str(len(tids)))
+          wp=root/'auto/solana_user_wallets.csv'
+          if not wp.exists():
+              print('SOLANA_WALLETS=0')
+          else:
+              with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+              print('SOLANA_WALLETS='+str(len(rows)))
+              for r in rows:
+                  print('WALLET address='+str(r.get('address') or '')+' signing='+str(r.get('signing') or '')+' enabled='+str(r.get('enabled') or '')+' active='+str(r.get('active') or '')+' label='+str(r.get('label') or ''))
+          PY
           echo "production_service_restart=NO"
           echo "live_execution_started=NO"
-          find "$target/learnerbot" -maxdepth 1 -type f | sort | sed -n '1,20p'
