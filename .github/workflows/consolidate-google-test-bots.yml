@@ -56,10 +56,17 @@ jobs:
           fi
           test -n "$latest"
           test -s "$latest"
-          magic="$(dd if="$latest" bs=2 count=1 status=none | od -An -tx1 | tr -d ' \n')"
-          test "$magic" = 1f8b
-          first="$(set +o pipefail; tar -tzf "$latest" 2>/dev/null | head -n1 || true)"
-          [[ "$first" == ClaudeServer* ]]
+          python3 - "$latest" <<'PY'
+          import gzip, pathlib, sys
+          p=pathlib.Path(sys.argv[1])
+          with p.open('rb') as f:
+              assert f.read(2) == b'\x1f\x8b'
+          with gzip.open(p,'rb') as g:
+              header=g.read(512)
+          name=header[:100].split(b'\0',1)[0].decode('utf-8','replace')
+          assert name.startswith('ClaudeServer'), name
+          print('tar_first_entry='+name)
+          PY
           trailer="$(tail -c 8 "$latest" | od -An -tx1 | tr -d ' \n')"
           test "${#trailer}" -eq 16
           bytes="$(stat -c %s "$latest")"
