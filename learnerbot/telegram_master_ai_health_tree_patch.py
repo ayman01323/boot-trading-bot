@@ -25,3 +25,7 @@ install()
 # deployment-time MASTER refresh message. Presentation only; health/trading truth
 # collectors remain unchanged.
 from . import telegram_ai_health_mobile_layout_patch as _mobile_health_layout  # noqa: E402,F401
+
+# MASTER-only launcher for the isolated Google learner Telegram bot. This adds
+# only navigation; learner private keys are never accepted by the production bot.
+from . import telegram_google_learner_launcher_patch as _google_learner_launcher  # noqa: E402,F401
