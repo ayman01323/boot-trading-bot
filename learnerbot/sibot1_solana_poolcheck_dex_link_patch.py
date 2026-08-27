@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import html
+import inspect
 import threading
 from urllib.parse import quote
 
 from . import sibot1_solana_live_bridge_patch as _bridge
 
-# Reporting-only patch: append a clickable DexScreener view to Solana LIVE
-# PoolCheck block alerts. It changes no PoolCheck decision, trading threshold,
+# Reporting-only patch: append a lightweight direct Solscan token view to Solana
+# LIVE PoolCheck block alerts. It changes no PoolCheck decision, trading threshold,
 # signer rule, quote, simulation, execution or broadcast behaviour.
+#
+# The first version relied only on thread-local candidate context. A production
+# alert proved that some bridge call paths can reach _notify without passing
+# through that wrapper. For PoolCheck alerts only, fall back to the immediate
+# bridge call-frame locals (mint/candidate) so every real block alert gets a link.
 
 _PREV_NOTIFY = _bridge._notify
 _PREV_PROCESS_CANDIDATE = _bridge._process_candidate
@@ -17,29 +23,65 @@ _INSTALLED = False
 _ALERT_MARKER = "SiBot 1 Solana candidate blocked by LIVE PoolCheck"
 
 
-def dex_view_url(mint: str) -> str:
-    """Return a DexScreener search URL for a Solana mint without any API call."""
+def quick_view_url(mint: str) -> str:
+    """Return a direct Solscan token URL for a Solana mint; no API call required."""
     value = str(mint or "").strip()
     if not value:
         return ""
-    return "https://dexscreener.com/search?q=" + quote(value, safe="")
+    return "https://solscan.io/token/" + quote(value, safe="")
 
 
-def _notify_with_dex_view(app, tid, text):
+# Backwards-compatible helper name for any existing tests/importers.
+def dex_view_url(mint: str) -> str:
+    return quick_view_url(mint)
+
+
+def _mint_from_call_context() -> str:
+    """Recover the mint from nearby bridge frames only when an alert needs it."""
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame is not None else None
+        for _ in range(8):
+            if frame is None:
+                break
+            local_mint = str(frame.f_locals.get("mint") or "").strip()
+            if local_mint:
+                return local_mint
+            candidate = frame.f_locals.get("candidate")
+            if isinstance(candidate, dict):
+                value = str(
+                    candidate.get("asset_out")
+                    or candidate.get("asset")
+                    or candidate.get("token")
+                    or ""
+                ).strip()
+                if value:
+                    return value
+            frame = frame.f_back
+    finally:
+        del frame
+    return ""
+
+
+def _notify_with_quick_view(app, tid, text):
     rendered = str(text or "")
+    if _ALERT_MARKER not in rendered or "solscan.io/token/" in rendered:
+        return _PREV_NOTIFY(app, tid, rendered)
+
     mint = str(getattr(_TLS, "mint", "") or "").strip()
-    if mint and _ALERT_MARKER in rendered and "dexscreener.com/" not in rendered:
-        url = dex_view_url(mint)
-        if url:
-            rendered += (
-                "\n📊 <a href=\""
-                + html.escape(url, quote=True)
-                + "\">DEX View</a>"
-            )
+    if not mint:
+        mint = _mint_from_call_context()
+    url = quick_view_url(mint)
+    if url:
+        rendered += (
+            "\n🔎 <a href=\""
+            + html.escape(url, quote=True)
+            + "\">Quick View</a>"
+        )
     return _PREV_NOTIFY(app, tid, rendered)
 
 
-def _process_candidate_with_dex_context(app, tid, candidate):
+def _process_candidate_with_quick_view_context(app, tid, candidate):
     previous = getattr(_TLS, "mint", None)
     _TLS.mint = str(
         candidate.get("asset_out")
@@ -63,12 +105,12 @@ def install() -> None:
     global _INSTALLED
     if _INSTALLED:
         return
-    _bridge._notify = _notify_with_dex_view
-    _bridge._process_candidate = _process_candidate_with_dex_context
+    _bridge._notify = _notify_with_quick_view
+    _bridge._process_candidate = _process_candidate_with_quick_view_context
     _INSTALLED = True
     print(
-        "[sibot1-solana-poolcheck-dex-link] installed=true "
-        "alert_only=true safety_gates=unchanged"
+        "[sibot1-solana-poolcheck-quick-view] installed=true viewer=solscan "
+        "direct_mint=true alert_only=true safety_gates=unchanged"
     )
 
 
