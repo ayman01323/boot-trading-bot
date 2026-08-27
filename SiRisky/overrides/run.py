@@ -158,6 +158,13 @@ def _result_notice_key(result):
     return (status,)
 
 
+def _runtime_interval(settings,key,default,minimum=60.0):
+    try:
+        return max(float(minimum),float(settings.runtime().get(key) or default))
+    except Exception:
+        return max(float(minimum),float(default))
+
+
 def start(settings):
     engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); tg.run_thread(lambda c,ch:telegram_handler(engine,settings,c,ch),stop)
     tg.send("SiRisky started. Manual per-trade approval is supported; server-side transaction broadcast remains CSV-gated and external/manual signing is required when the approval gate is enabled.")
@@ -165,6 +172,8 @@ def start(settings):
     signal.signal(signal.SIGTERM,sig); signal.signal(signal.SIGINT,sig)
     last_error_key=""; last_error_notice=0.0
     last_result_key=None; last_result_notice=0.0
+    last_batch_notice=0.0
+    last_reject_notice=0.0
     while not stop.is_set():
         try:
             result=engine.run_once(); status=str(result.get("status") or "")
@@ -172,11 +181,29 @@ def start(settings):
                 if result.get("new_proposal") and result.get("proposal"):
                     tg.send(ManualApprovalGate(settings).format_for_user(result["proposal"]))
             elif status in {"OPENED","CLOSED"}:
-                # State-changing events are always important enough for Telegram.
+                # Position state changes remain immediate and are never rate-limited.
                 tg.send(_format_result_notice(result,settings))
-            elif status in {"RISK_REJECT","EXECUTION_REJECT","CANDIDATE_BATCH_NO_OPEN","EXIT_EXECUTION_RETRY","MANUAL_APPROVAL_PREP_FAILED"}:
-                # These can repeat every poll. Keep them in stdout every cycle,
-                # but only repeat the same Telegram notice every five minutes.
+            elif status=="CANDIDATE_BATCH_NO_OPEN":
+                # Candidate sets and statuses can change every few seconds, which made
+                # key-based de-duplication ineffective. Send at most one routine batch
+                # notice per configured interval, regardless of candidate churn.
+                print("SiRisky: "+json.dumps(result,default=str),flush=True)
+                now=time.time()
+                batch_interval=_runtime_interval(settings,"telegram_batch_notice_seconds",1800,300)
+                if (now-last_batch_notice)>=batch_interval:
+                    tg.send(_format_result_notice(result,settings))
+                    last_batch_notice=now
+            elif status in {"RISK_REJECT","EXECUTION_REJECT"}:
+                # Keep detailed rejects in logs, but cap Telegram reject traffic across
+                # changing pools/mints so a fast discovery loop cannot flood the chat.
+                print("SiRisky: "+json.dumps(result,default=str),flush=True)
+                now=time.time()
+                reject_interval=_runtime_interval(settings,"telegram_reject_notice_seconds",900,300)
+                if (now-last_reject_notice)>=reject_interval:
+                    tg.send(_format_result_notice(result,settings))
+                    last_reject_notice=now
+            elif status in {"EXIT_EXECUTION_RETRY","MANUAL_APPROVAL_PREP_FAILED"}:
+                # Operational failures remain more responsive, with duplicate suppression.
                 print("SiRisky: "+json.dumps(result,default=str),flush=True)
                 now=time.time(); key=_result_notice_key(result)
                 if key!=last_result_key or (now-last_result_notice)>=300:
@@ -185,8 +212,9 @@ def start(settings):
         except Exception as exc:
             trace=_safe_trace(exc); key=f"{type(exc).__name__}:{trace}"; now=time.time()
             print(f"SiRisky cycle error: {type(exc).__name__} trace={trace}",file=sys.stderr,flush=True)
-            if key!=last_error_key or (now-last_error_notice)>=300:
-                tg.send(f"SiRisky cycle error: {type(exc).__name__}\nTrace: {trace}\nRepeated identical alerts suppressed for 5 minutes.")
+            error_interval=_runtime_interval(settings,"telegram_error_notice_seconds",900,300)
+            if key!=last_error_key or (now-last_error_notice)>=error_interval:
+                tg.send(f"SiRisky cycle error: {type(exc).__name__}\nTrace: {trace}\nRepeated identical alerts suppressed.")
                 last_error_key=key; last_error_notice=now
         delay=float(settings.runtime().get("poll_seconds") or 5); stop.wait(max(1.0,delay))
     return 0
