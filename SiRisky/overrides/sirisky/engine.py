@@ -151,8 +151,15 @@ class SiRiskyEngine:
             except Exception as exc:
                 return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,"error":type(exc).__name__,"discovery":discovery}
 
-        # Stage 5: execution only. With broadcast_enabled=0 Stage 5 is SHADOW.
-        result=self.s5.execute(order)
+        # Stage 5: execution only. A failed/no-route candidate is a normal
+        # automatic-engine outcome, not a process-wide RuntimeError. In SHADOW
+        # the caller can continue to the next ranked candidate immediately.
+        try:
+            result=self.s5.execute(order)
+        except Exception as exc:
+            return {"status":"EXECUTION_REJECT","pool_id":opp.pool_id,"order_id":order.order_id,
+                    "error":type(exc).__name__,"discovery":discovery}
+
         token_raw=int(result.get("output_raw") or 0)
         mode=str(result.get("mode") or "SHADOW")
         pos={
@@ -204,6 +211,8 @@ class SiRiskyEngine:
                 result=self._evaluate_pool_for_entry(pool,discovery)
                 # Exactly one position/order lifecycle at a time. Stop as soon
                 # as Stage 3 passes into either SHADOW execution or live review.
+                # Candidate-specific rejects deliberately continue to the next
+                # ranked candidate rather than crashing the whole cycle.
                 if result.get("status") in {"OPENED","WAITING_FOR_MANUAL_APPROVAL","MANUAL_APPROVAL_PREP_FAILED"}:
                     result["auto_candidate_evaluation"]=True
                     result["attempted_candidates"]=attempted
@@ -250,7 +259,15 @@ class SiRiskyEngine:
                 return {"status":"MANUAL_APPROVAL_PREP_FAILED","order_id":order.order_id,
                         "position_id":pos.get("position_id"),"error":type(exc).__name__}
 
-        sell=self.s5.execute(order)
+        # Failed exits must leave the position OPEN so Stage 6 can retry on the
+        # next cycle. Only a successful Stage-5 SELL may flow to Closed/7/8.
+        try:
+            sell=self.s5.execute(order)
+        except Exception as exc:
+            return {"status":"EXIT_EXECUTION_RETRY","position_id":pos.get("position_id"),
+                    "order_id":order.order_id,"error":type(exc).__name__,
+                    "exit_reason":ev.get("reason")}
+
         remaining=[r for r in rows if r.get("position_id")!=pos.get("position_id")]
         self._save_open(remaining)
 
@@ -266,3 +283,4 @@ class SiRiskyEngine:
         if self.open_positions():
             return self.monitor_cycle()
         return self.entry_cycle()
+
