@@ -23,6 +23,7 @@ import evm_execution_guard_patch
 import solana_execution_risk_patch
 import claude_state
 import telegram_control_patch
+import grok_telegram_control_patch
 import claude_runtime_health_patch
 
 
@@ -32,6 +33,10 @@ def install_all() -> None:
     evm_execution_guard_patch.install()
     claude_state.install()
     telegram_control_patch.install()
+    # Grok commands share only the already-authorised Telegram poller. Their
+    # state is isolated in Grok's own PAPER control file and never mutates the
+    # Claude/SiBot ARM/LIVE state machine.
+    grok_telegram_control_patch.install()
     # Must run after every Claude-owned guard/router above is installed but
     # before learnerbot adds its audited outer wrappers. This records an exact
     # pre-chain attestation and replaces the brittle outermost-identity ARM
