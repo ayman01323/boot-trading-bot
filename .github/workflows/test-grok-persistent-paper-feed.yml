@@ -47,3 +47,21 @@ jobs:
             echo 'ERROR: persistent real-feed runner accepted live.enabled=true'
             exit 1
           fi
+      - name: Public feed connectivity smoke - no wallet, no trade
+        working-directory: testingbots/grok_known_assets_bot
+        run: |
+          python - <<'PY'
+          from grok_known_assets_bot.live_feed import SOL_MINT, USDC_MINT, _get_json, _quote, _select_solana_pair
+
+          pairs = _get_json(f'https://api.dexscreener.com/token-pairs/v1/solana/{SOL_MINT}', 15)
+          pair = _select_solana_pair(pairs)
+          assert float(pair['priceUsd']) > 0
+          assert float((pair.get('liquidity') or {}).get('usd') or 0) > 0
+
+          sell = _quote(SOL_MINT, USDC_MINT, 10_000_000, slippage_bps=50, timeout=15)
+          assert int(sell['outAmount']) > 0
+          reverse_amount = max(100_000, min(1_000_000, int(sell['outAmount'])))
+          buy = _quote(USDC_MINT, SOL_MINT, reverse_amount, slippage_bps=50, timeout=15)
+          assert int(buy['outAmount']) > 0
+          print('PUBLIC_FEED_SMOKE_OK')
+          PY
