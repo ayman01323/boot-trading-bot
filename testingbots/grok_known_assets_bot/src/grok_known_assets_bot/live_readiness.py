@@ -11,6 +11,7 @@ from .live_feed import USDC_MINT, SOL_MINT, LiveFeedSettings, _price_impact_bps,
 CANARY_SOL = 0.0005
 HARD_MAX_CANARY_SOL = 0.001
 MAX_SIGNAL_AGE_SECONDS = 20.0
+MAX_ENTRY_IMPACT_BPS = 100.0
 MAX_REVERSE_IMPACT_BPS = 200.0
 MAX_STRESS_IMPACT_BPS = 500.0
 MAX_ROUNDTRIP_LOSS_PCT = 3.0
@@ -163,11 +164,11 @@ def assess_live_readiness(
         route_id=route_id,
         now=now,
     )
-    if entry_impact > float(snap.price_impact_bps if snap.price_impact_bps > 0 else 100.0):
-        return _result(snap, settings, ready=False, reason="ENTRY_IMPACT_WORSE_THAN_SNAPSHOT", **common)
+    if entry_impact > MAX_ENTRY_IMPACT_BPS:
+        return _result(snap, settings, ready=False, reason="ENTRY_IMPACT_TOO_HIGH", **common)
     if reverse_impact > MAX_REVERSE_IMPACT_BPS:
         return _result(snap, settings, ready=False, reason="REVERSE_IMPACT_TOO_HIGH", **common)
-    if stress_impact > MAX_STRESS_IMACT_BPS:
+    if stress_impact > MAX_STRESS_IMPACT_BPS:
         return _result(snap, settings, ready=False, reason="STRESS_IMPACT_TOO_HIGH", **common)
     if loss_pct > MAX_ROUNDTRIP_LOSS_PCT:
         return _result(snap, settings, ready=False, reason="ROUNDTRIP_LOSS_TOO_HIGH", **common)
