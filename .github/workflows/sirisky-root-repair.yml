@@ -14,33 +14,35 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 8
     steps:
-      - name: Prepare exact source and stop learner
+      - name: Validate and stage protections while learner stays stopped
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n systemctl stop learnerbot-learn.service
+          service=learnerbot-learn.service
+          sudo -n systemctl stop "$service"
           sleep 2
-          test "$(systemctl is-active learnerbot-learn.service || true)" != active
-          test "$(systemctl show -p MainPID --value learnerbot-learn.service)" = 0
-          sudo -n rm -rf learnerbot/__pycache__ tests/__pycache__ || true
-          git fetch --no-tags origin "$GITHUB_SHA"
-          git checkout --detach --force "$GITHUB_SHA"
+          test "$(systemctl is-active "$service" || true)" != active
+          test "$(systemctl show -p MainPID --value "$service")" = 0
           echo learner_stop_verified=YES
+
+          work="/tmp/learner-protection-${GITHUB_RUN_ID}"
+          rm -rf "$work"
+          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore "https://github.com/${GITHUB_REPOSITORY}.git" "$work"
+          cd "$work"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           echo source_sha="$(git rev-parse HEAD)"
-      - name: Compile protection source
-        shell: bash
-        run: |
-          set -euo pipefail
+
           PY=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
-          sudo -n env PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/learner-protection-pycache "$PY" -m py_compile learnerbot/solana_loss_containment_patch.py learnerbot/solana_entry_exit_liquidity_preflight_patch.py learnerbot/solana_rpc_exit_priority_patch.py learnerbot/solana_stuck_liquidity_safe_slice_patch.py
+          sudo -n env PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/learner-protection-pycache "$PY" -m py_compile \
+            learnerbot/solana_loss_containment_patch.py \
+            learnerbot/solana_entry_exit_liquidity_preflight_patch.py \
+            learnerbot/solana_rpc_exit_priority_patch.py \
+            learnerbot/solana_stuck_liquidity_safe_slice_patch.py
           sudo -n rm -rf /tmp/learner-protection-pycache
           echo compile=PASS
-      - name: Validate protection invariants
-        shell: bash
-        run: |
-          set -euo pipefail
+
           grep -q 'solana_entry_exit_liquidity_preflight_patch' learnerbot/solana_stuck_liquidity_safe_slice_patch.py
           grep -q 'solana_rpc_exit_priority_patch' learnerbot/solana_stuck_liquidity_safe_slice_patch.py
           grep -q 'solana_loss_containment_patch' learnerbot/solana_stuck_liquidity_safe_slice_patch.py
@@ -55,18 +57,17 @@ jobs:
           grep -q 'position_size_unchanged=true' learnerbot/solana_loss_containment_patch.py
           grep -q '500' learnerbot/solana_entry_exit_liquidity_preflight_patch.py
           echo invariant_validation=PASS
-      - name: Stage source only on Google learner
-        shell: bash
-        run: |
-          set -euo pipefail
+
           target=/home/ayman01323/BOOT/testingbots/learn/learnerbot
           test -d "$target"
           install -m 0644 learnerbot/solana_loss_containment_patch.py "$target/solana_loss_containment_patch.py"
           install -m 0644 learnerbot/solana_entry_exit_liquidity_preflight_patch.py "$target/solana_entry_exit_liquidity_preflight_patch.py"
           install -m 0644 learnerbot/solana_rpc_exit_priority_patch.py "$target/solana_rpc_exit_priority_patch.py"
           install -m 0644 learnerbot/solana_stuck_liquidity_safe_slice_patch.py "$target/solana_stuck_liquidity_safe_slice_patch.py"
-          test "$(systemctl is-active learnerbot-learn.service || true)" != active
-          test "$(systemctl show -p MainPID --value learnerbot-learn.service)" = 0
+          rm -rf "$work"
+
+          test "$(systemctl is-active "$service" || true)" != active
+          test "$(systemctl show -p MainPID --value "$service")" = 0
           echo loss_containment_source=WIRED_VALIDATED_AND_STAGED
           echo learner_service=STOPPED
           echo live_enabled_by_workflow=NO
