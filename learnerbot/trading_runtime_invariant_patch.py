@@ -11,7 +11,6 @@ from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_cursor_reliability_patch as _cursor
 from . import solana_live_executor as _exec
-from . import solana_live_patch as _live
 from . import solana_overhead_gate_correction_patch as _overhead
 from . import solana_position_wallet_binding_patch as _binding
 from . import solana_preflight_cache_patch as _preflight
@@ -35,7 +34,7 @@ from . import solana_positive_edge_entry_gate_patch as _positive_edge
 # Owner-requested strategy rollback is deliberately imported AFTER the later
 # strategy wrappers so it can restore first-day entry/selection policy behaviour
 # while leaving all execution/accounting/simulation/liquidity/circuit safety
-# wrappers intact. The easy-exit overlay below now independently controls exits.
+# wrappers intact. The easy-exit overlay below independently controls exits.
 from . import solana_first_day_strategy_restore_patch as _first_day_strategy
 # Final leader-quality layer: re-tighten Solana leader-quality thresholds and
 # restore the leader-event circuit breaker while keeping first-day opportunity
@@ -47,6 +46,12 @@ from . import solana_position_liquidity_health_patch as _liquidity_health
 # Final EXIT-only overlay. It restores the earlier easier stop/profit thresholds and
 # retries already-requested blocked full leader exits without altering BUY policy.
 from . import solana_easy_exit_policy_patch as _easy_exit
+# Risk-reducing exit priority loaded by the safe-slice startup hook. It must remain
+# outside the audited exit-circuit close while preserving that circuit as its inner.
+from . import solana_rpc_exit_priority_patch as _rpc_exit_priority
+# Final downside-only overlay loaded by the safe-slice startup hook. It wraps the
+# easy-exit monitor/settings without weakening the existing execution guards.
+from . import solana_loss_containment_patch as _loss_containment
 
 
 def _recompose_execution_validation():
@@ -75,7 +80,11 @@ def install():
     _recompose_execution_validation()
 
     checks = {
-        "solana_close": _live._close_live is _exit_circuit.close_live_guarded,
+        # RPC-priority is now the intended outer close wrapper. The previously
+        # audited exit circuit must remain immediately inside it.
+        "solana_close_rpc_priority_outer": _live._close_live is _rpc_exit_priority.close_live_with_rpc_priority,
+        "solana_close_exit_circuit_inner": _rpc_exit_priority._PREV_CLOSE_LIVE is _exit_circuit.close_live_guarded,
+        "solana_rpc_priority_active": _sol._rpc is _rpc_exit_priority.rpc_with_exit_priority,
         "solana_bound_close": _binding._close_bound_live is _exit_circuit.close_live_guarded,
         "solana_exit_inner_efficiency": _exit_circuit._PREV_CLOSE is _efficiency.close_live_with_receipt_pnl,
         "solana_rent_close_efficiency": _rent._close_live_rent_aware is _efficiency.close_live_with_receipt_pnl,
@@ -92,7 +101,11 @@ def install():
         "solana_buy_reserve_inner": _validation._PREV_BUY is _reserve._buy_with_simulated_reserve,
         "solana_simulation": _exec.SolanaLiveExecutor._simulate is _reserve._simulate_with_wallet_snapshot,
         "solana_valuation": _sol.evaluate_position is _rent.evaluate_position_economic,
-        "solana_monitor_easy_exit_outer": _sol.monitor_positions is _easy_exit.monitor_positions_easy_exit,
+
+        # Loss containment is the intended outer monitor. Its inner stack remains
+        # easy-exit -> liquidity-health -> exit-reconciliation -> base monitor.
+        "solana_monitor_loss_containment_outer": _sol.monitor_positions is _loss_containment.monitor_positions_loss_containment,
+        "solana_monitor_easy_exit_outer": _loss_containment._PREV_MONITOR_POSITIONS is _easy_exit.monitor_positions_easy_exit,
         "solana_monitor_easy_exit_inner": _easy_exit._PREV_MONITOR_POSITIONS is _liquidity_health.monitor_positions_with_liquidity_health,
         "solana_monitor_reconciliation_inner": _liquidity_health._PREV_MONITOR_POSITIONS is _exit_circuit._monitor_with_exit_reconciliation,
         "solana_monitor_positions_inner": _exit_circuit._MONITOR_INNER is _live.monitor_positions,
@@ -115,9 +128,10 @@ def install():
         "profit_control_settings_inner": _profit_first_live._PREV_SETTINGS is _profit_control.settings_with_profit_control,
         "first_day_strategy_reference": _first_day_strategy.FIRST_DAY_REFERENCE_COMMIT == "f0ca88450fe96a316dc15e676fab1e36c1137285",
 
-        # Entry/leader policy still comes from the restored first-day + moderate
-        # quality stack. Only the outer settings view is now the exit-only overlay.
-        "easy_exit_settings_active": _sol.settings is _easy_exit.settings_easy_exit,
+        # Settings now compose loss-containment -> easy-exit -> quality-restore ->
+        # first-day. This preserves the 5% downside cap while allowing winners to run.
+        "loss_containment_settings_active": _sol.settings is _loss_containment.settings_loss_containment,
+        "easy_exit_settings_active": _loss_containment._PREV_SETTINGS is _easy_exit.settings_easy_exit,
         "easy_exit_settings_inner": _easy_exit._PREV_SETTINGS is _quality_restore.settings_quality_restored,
         "leader_quality_settings_inner": _quality_restore._PREV_SETTINGS is _first_day_strategy.settings_first_day_strategy,
         "leader_quality_process_restored": _sol.process_leader_event is _positive_edge.process_leader_event_positive_edge,
@@ -130,6 +144,10 @@ def install():
         "easy_exit_break_even": _easy_exit.EASY_EXIT_LIMITS.get("break_even_trigger_pct") == "3",
         "easy_exit_trailing": _easy_exit.EASY_EXIT_LIMITS.get("trailing_trigger_pct") == "5",
         "easy_exit_leader_pending_any_pnl": _easy_exit._PENDING_REASON in _easy_exit._emergency._LOSS_EXIT_REASONS,
+        "loss_containment_stop_max_5": _loss_containment._HARD_EXIT_REASON in _loss_containment._emergency._LOSS_EXIT_REASONS,
+        "loss_containment_winner_tp_min_100": _sol.DEFAULTS.get("loss_containment_winner_take_profit_pct", ("",))[0] == "100",
+        "loss_containment_break_even_min_10": _sol.DEFAULTS.get("loss_containment_break_even_trigger_pct", ("",))[0] == "10",
+        "loss_containment_trailing_min_20": _sol.DEFAULTS.get("loss_containment_trailing_trigger_pct", ("",))[0] == "20",
         "first_day_positive_edge_required": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("live_require_positive_executable_edge") == "true",
         "first_day_positive_edge_floor": _first_day_strategy.FIRST_DAY_STRATEGY_TARGETS.get("live_min_executable_net_edge_pct") == "0.25",
         "profit_control_hourly_loop": _profit_master_summary._PREV_HOURLY_REVIEW is _profit_control.run_hourly_gpt_review_with_control,
