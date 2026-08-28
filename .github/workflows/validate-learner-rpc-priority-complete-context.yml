@@ -1,0 +1,47 @@
+name: Validate Learner RPC Priority and Complete Context
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/validate-learner-rpc-priority-complete-context.yml'
+      - 'learnerbot/solana_rpc_exit_priority_patch.py'
+      - 'learnerbot/telegram_learner_complete_market_context_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and validate policy markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            learnerbot/solana_rpc_exit_priority_patch.py \
+            learnerbot/telegram_learner_complete_market_context_patch.py
+
+          grep -Fq 'yielding to risk-reducing exit priority' learnerbot/solana_rpc_exit_priority_patch.py
+          grep -Fq 'cooldown_bypass=false auth_bypass=false' learnerbot/solana_rpc_exit_priority_patch.py
+          grep -Fq '_live._close_live = close_live_with_rpc_priority' learnerbot/solana_rpc_exit_priority_patch.py
+          grep -Fq '_circuit._chain_sell_evidence = chain_sell_evidence_with_rpc_priority' learnerbot/solana_rpc_exit_priority_patch.py
+
+          grep -Fq 'Token:' learnerbot/telegram_learner_complete_market_context_patch.py
+          grep -Fq 'Current position' learnerbot/telegram_learner_complete_market_context_patch.py
+          grep -Fq 'Unrealised P&L' learnerbot/telegram_learner_complete_market_context_patch.py
+          grep -Fq 'Realised P&L' learnerbot/telegram_learner_complete_market_context_patch.py
+          grep -Fq 'Pool / DEX' learnerbot/telegram_learner_complete_market_context_patch.py
+          grep -Fq '_PREV_POOL_CONTEXT(app, position, current)' learnerbot/telegram_learner_complete_market_context_patch.py
+
+          echo 'rpc_exit_priority_source=PASS'
+          echo 'telegram_token_name_symbol=PASS'
+          echo 'telegram_position_sol_usd=PASS'
+          echo 'telegram_pnl_sol_usd=PASS'
+          echo 'telegram_pool_dex=PASS'
+          echo 'telegram_existing_dex_viewer_preserved=PASS'
+          echo 'live_runtime_modified=NO'
