@@ -52,7 +52,6 @@ def _safe_rejection_code(stage: str, reason: str) -> str:
     for needle, code in known:
         if needle in r:
             return code
-    # Stage is repository-controlled and useful even when the raw reason is unsafe.
     return f"stage_{s[:40]}"
 
 
@@ -73,7 +72,28 @@ def _fast_market_health(app) -> dict:
     }
     note = str(latest.get("note") or "")
     if note:
-        # Do not export exception/provider text. A normal success note is only a path.
+        result["note_class"] = "output_file" if note.endswith(".csv") else "error_detail_redacted"
+    return result
+
+
+def _base_fast_market_health(app) -> dict:
+    """Expose aggregate health for the dedicated Base hot feed without raw routes."""
+    auto_dir = Path(app.csv_dir) / "auto"
+    rows = _csv_rows(auto_dir / "base_fast_market_status.csv")
+    latest = rows[-1] if rows else {}
+    result = {
+        "available": bool(rows),
+        "redacted": True,
+        "updated_epoch": _safe_int(latest.get("updated_epoch")),
+        "duration_seconds": str(latest.get("duration_seconds") or "")[:24],
+        "routes": _safe_int(latest.get("routes")) or 0,
+        "provider_pressure": _safe_int(latest.get("provider_pressure")) or 0,
+        "checks_budget": _safe_int(latest.get("checks_budget")) or 0,
+        "routes_budget": _safe_int(latest.get("routes_budget")) or 0,
+        "status": str(latest.get("status") or "UNKNOWN")[:32],
+    }
+    note = str(latest.get("note") or "")
+    if note:
         result["note_class"] = "output_file" if note.endswith(".csv") else "error_detail_redacted"
     return result
 
@@ -95,7 +115,11 @@ def _registry_health(app) -> dict:
 def _rejection_health(app) -> dict:
     auto_dir = Path(app.csv_dir) / "auto"
     out = {}
-    for name in ("full_power_rejections.csv", "power_discovery_rejections.csv"):
+    for name in (
+        "full_power_rejections.csv",
+        "base_full_power_rejections.csv",
+        "power_discovery_rejections.csv",
+    ):
         rows = _csv_rows(auto_dir / name)
         stage_counts = Counter()
         code_counts = Counter()
@@ -223,10 +247,11 @@ def _engine_nomination_health(app) -> dict:
 
 def snapshot(app) -> dict:
     out = _PREV_SNAPSHOT(app)
-    out["schema_version"] = max(7, int(out.get("schema_version") or 0))
+    out["schema_version"] = max(8, int(out.get("schema_version") or 0))
     out["market_source_health"] = _market_source_health(app)
     out["engine_nomination_health"] = _engine_nomination_health(app)
     out["evm_fast_market_health"] = _fast_market_health(app)
+    out["base_fast_market_health"] = _base_fast_market_health(app)
     out["evm_pool_registry_health"] = _registry_health(app)
     out["evm_rejection_health"] = _rejection_health(app)
     return out
@@ -237,7 +262,7 @@ def install() -> None:
         return
     _diag.snapshot = snapshot
     _diag._sibot1_market_source_diag_installed = True
-    print("[sibot1-market-source-diag] redacted=true source-health=true nomination-health=true evm-funnel=true")
+    print("[sibot1-market-source-diag] redacted=true source-health=true nomination-health=true evm-funnel=true base-funnel=true")
 
 
 install()
