@@ -1,0 +1,171 @@
+name: Deploy Learner NewPoll45 Hotfix
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/deploy-learner-newpoll45-hotfix.yml'
+      - 'learnerbot/telegram_learner_position_update_patch.py'
+      - 'learnerbot/telegram_order_usd_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-learner-newpoll45-hotfix
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install presentation-only learner files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore \
+            https://github.com/ayman01323/boot-trading-bot.git "$tmp/repo"
+
+          # Copy only the two presentation files required by this change.  Do not
+          # rsync/delete runtime trees and do not touch CSV/data/private/.env.
+          install -m 0644 \
+            "$tmp/repo/learnerbot/telegram_learner_position_update_patch.py" \
+            "$target/learnerbot/telegram_learner_position_update_patch.py"
+          install -m 0644 \
+            "$tmp/repo/learnerbot/telegram_order_usd_patch.py" \
+            "$target/learnerbot/telegram_order_usd_patch.py"
+
+          # The previous broad deploy may have refreshed final_runtime_integrity
+          # before its dynamic learner imports were re-appended. Restore all
+          # isolated-only presentation imports after the integrity gate.
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          target=Path(os.environ['TARGET'])
+          p=target/'learnerbot'/'final_runtime_integrity_patch.py'
+          text=p.read_text(encoding='utf-8').rstrip()
+          markers=[
+              'from . import telegram_learner_only_menu_patch  # noqa: E402,F401',
+              'from . import telegram_learner_identity_patch  # noqa: E402,F401',
+              'from . import telegram_learner_position_update_patch  # noqa: E402,F401',
+          ]
+          for marker in markers:
+              if marker not in text:
+                  text += '\n' + marker
+          p.write_text(text + '\n', encoding='utf-8')
+          PY
+
+          python3 -m py_compile \
+            "$target/learnerbot/telegram_learner_position_update_patch.py" \
+            "$target/learnerbot/telegram_order_usd_patch.py" \
+            "$target/learnerbot/final_runtime_integrity_patch.py"
+
+          grep -Fq 'LEARNER POSITION UPDATE — NewPoll45' \
+            "$target/learnerbot/telegram_learner_position_update_patch.py"
+          grep -Fq 'DEX Viewer' \
+            "$target/learnerbot/telegram_learner_position_update_patch.py"
+          grep -Fq 'from . import telegram_learner_only_menu_patch' \
+            "$target/learnerbot/final_runtime_integrity_patch.py"
+          grep -Fq 'from . import telegram_learner_identity_patch' \
+            "$target/learnerbot/final_runtime_integrity_patch.py"
+          grep -Fq 'from . import telegram_learner_position_update_patch' \
+            "$target/learnerbot/final_runtime_integrity_patch.py"
+
+          echo "newpoll45_source_installed=YES"
+          echo "wallet_runtime_data_touched=NO"
+          echo "production_service_touched=NO"
+
+      - name: Guarded reload of active isolated learner
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+
+          if ! systemctl is-active --quiet "$service"; then
+            echo "learner_service_active=NO"
+            echo "restart=SKIPPED_NOT_STARTING_STOPPED_LEARNER"
+            exit 0
+          fi
+
+          safe=0
+          for _ in $(seq 1 12); do
+            inflight="$(TARGET="$target" python3 - <<'PY'
+          import os, sqlite3, time
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          if not db.exists():
+              print(0)
+              raise SystemExit
+          try:
+              con=sqlite3.connect(db, timeout=2)
+              exists=con.execute(
+                  "SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_execution_attempts'"
+              ).fetchone()
+              if not exists:
+                  print(0)
+              else:
+                  cutoff=int(time.time())-120
+                  n=con.execute(
+                      "SELECT COUNT(*) FROM live_execution_attempts "
+                      "WHERE status='CLAIMED' AND updated_at>=?",
+                      (cutoff,),
+                  ).fetchone()[0]
+                  print(int(n or 0))
+              con.close()
+          except Exception:
+              print(1)
+          PY
+          )"
+            if [[ "$inflight" = "0" ]]; then
+              safe=1
+              break
+            fi
+            echo "fresh_execution_attempt_inflight=$inflight"
+            sleep 5
+          done
+
+          if [[ "$safe" != "1" ]]; then
+            echo "restart=DEFERRED_FRESH_EXECUTION_INFLIGHT"
+            exit 0
+          fi
+
+          systemctl restart "$service"
+          sleep 4
+          systemctl is-active --quiet "$service"
+
+          echo "learner_service_restart=YES_ISOLATED_ONLY"
+          echo "production_service_touched=NO"
+
+          open_positions="$(TARGET="$target" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          if not db.exists():
+              print(0)
+              raise SystemExit
+          try:
+              con=sqlite3.connect(db, timeout=2)
+              n=con.execute(
+                  "SELECT COUNT(*) FROM positions WHERE status='OPEN' AND mode='LIVE'"
+              ).fetchone()[0]
+              con.close()
+              print(int(n or 0))
+          except Exception:
+              print(0)
+          PY
+          )"
+          echo "open_live_positions=$open_positions"
+          echo "newpoll45_report_seconds=45"
+          echo "safety_exit_monitor_changed=NO"
