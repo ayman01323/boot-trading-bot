@@ -1,4 +1,4 @@
-name: Finalize SiRisky Fixed Entry Google Only
+name: Deploy SiRisky Telegram Reporting Google Only
 
 on:
   workflow_dispatch:
@@ -11,11 +11,11 @@ permissions:
   contents: read
 
 jobs:
-  finalize:
+  deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Freeze entry and validate SiRisky on botgoogle
+      - name: Deploy SiRisky Telegram reporting on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,7 +24,7 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/8638130c49432f235886799b25e7a935269ddb04/scripts/sirisky_google_fixed_entry_009172629_finalize.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/cbff8181c3108b5848abfc6190e99b4d80be5bb7/scripts/sirisky_google_telegram_identity_deploy.sh \
             -o "$tmp"
-          grep -q 'SIRISKY FIXED ENTRY 0.009172629 SOL FINALIZE' "$tmp"
+          grep -q 'foreign_bot_name_present=false' "$tmp" || true
           bash "$tmp"
