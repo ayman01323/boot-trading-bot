@@ -15,54 +15,40 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Stabilise restored morning Learner runtime
+      - name: Read SiRisky runtime and recent decisions
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          target=/home/ayman01323/BOOT/testingbots/learn
-          expected=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
-          service=learnerbot-learn.service
-          test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$expected"
           sudo -n bash -lc '
             set -Eeuo pipefail
-            target=/home/ayman01323/BOOT/testingbots/learn
-            service=learnerbot-learn.service
-            main="$target/learnerbot/__main__.py"
-            backup="$target/backups/__main__.py.before-isolated-polygon-skip"
-            [[ -f "$backup" ]] || cp -a "$main" "$backup"
-            systemctl stop "$service" || true
-            if grep -q "^from \. import polygon_live_enable_migration  # noqa: F401$" "$main"; then
-              sed -i "s|^from \. import polygon_live_enable_migration  # noqa: F401$|# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration.|" "$main"
-            fi
-            grep -q "^# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration\.$" "$main"
-            chown ayman01323:ayman01323 "$main"
-            python3 -m py_compile "$main"
-            systemctl start "$service"
+            cd /root/SiRisky
+            echo "=== STATE ==="
+            date -u +"utc=%Y-%m-%dT%H:%M:%SZ"
+            echo "service=$(systemctl is-active sirisky.service || true)"
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+from sirisky.config import Settings
+from sirisky.safety_v2 import entry_sol
+s=Settings.load(); rt=s.runtime()
+for k in ["trading_mode","live_enabled","broadcast_enabled","manual_approval_enabled","auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol","auto_evaluate_candidate_limit","jupiter_min_interval_seconds"]:
+    print(f"{k}={rt.get(k)}")
+print(f"entry_sol={entry_sol(s):.9f}")
+PY
+            echo "=== OPEN LIVE ==="
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+import csv
+from pathlib import Path
+p=Path("CSV/open_positions.csv"); rows=[]
+if p.exists():
+    with p.open(encoding="utf-8-sig",newline="") as f: rows=list(csv.DictReader(f))
+live=[r for r in rows if str(r.get("status") or "").upper()=="OPEN" and str(r.get("mode") or "").upper()=="LIVE"]
+print("open_live="+str(len(live)))
+PY
+            echo "=== RECENT DECISIONS ==="
+            journalctl -u sirisky.service --since "10 minutes ago" --no-pager -o cat 2>/dev/null \
+              | grep -Ei "candidate|NO_TRIGGER|QUOTE_REJECT|HTTPError|stage[0-9]|OPENED|CLOSED|BUY|SELL|JUPITER|fee|risk|reject|discover|opportun" \
+              | tail -n 500 || true
+            echo "=== TAIL ==="
+            journalctl -u sirisky.service -n 100 --no-pager -o cat 2>/dev/null || true
           '
-          sleep 12
-          state1="$(systemctl is-active "$service" 2>/dev/null || true)"
-          n1="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
-          sleep 6
-          state2="$(systemctl is-active "$service" 2>/dev/null || true)"
-          n2="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
-          echo "source_sha=$expected"
-          echo "compatibility_change=skip_production_polygon_migration_only"
-          echo "service_state_1=$state1"
-          echo "service_state_2=$state2"
-          echo "restart_count_1=$n1"
-          echo "restart_count_2=$n2"
-          echo '=== CONTROLS ==='
-          grep -E '^(live_trade_sol|live_min_sol_reserve|live_max_positions|live_require_simulation),' "$target/CSVbot/solana_settings.csv" || true
-          grep -E ',(learner_new_entries_enabled|solana_live_enabled|sibot_enabled|sibot_auto_trade_enabled|solana_live_trade_sol|solana_live_min_reserve_sol),' "$target/CSVbot/user_trading_settings.csv" | sed -E 's/^[^,]+,/[redacted],/' || true
-          echo '=== LIVE POSITION COUNTS ==='
-          sqlite3 "$target/data/solana_sibot.sqlite3" "select status,count(*) from positions where mode='LIVE' group by status order by status;" || true
-          echo '=== RECENT LIVE ATTEMPTS ==='
-          cutoff="$(( $(date +%s) - 300 ))"
-          sqlite3 "$target/data/solana_sibot.sqlite3" "select action,status,substr(error,1,180),created_at from live_execution_attempts where created_at >= $cutoff order by created_at desc limit 20;" || true
-          echo '=== SERVICE TAIL ==='
-          journalctl -u "$service" -n 160 --no-pager -o cat 2>/dev/null | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|Polygon|BUY|SELL|LIVE|entry|ERROR|REJECT' | tail -n 160 || true
-          test "$state1" = active
-          test "$state2" = active
-          test "$n1" = "$n2"
