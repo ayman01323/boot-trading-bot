@@ -1,4 +1,4 @@
-name: Diagnose SiRisky Live Trading Google Only
+name: Fix SiRisky Candidate Coverage Google Only
 
 on:
   workflow_dispatch:
@@ -11,11 +11,11 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  fix:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Diagnose current SiRisky trading blockers on botgoogle
+      - name: Increase SiRisky candidate coverage safely on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,6 +24,6 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/2b11c92213048019c1bcfe5345ce0eff7319c69b/scripts/sirisky_google_live_trade_diagnostic_20260828.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/0b7daf5970d8f7c5cd11aeedf7f68317c530e386/scripts/sirisky_google_candidate_coverage_fix_20260828.sh \
             -o "$tmp"
           bash "$tmp"
