@@ -6,10 +6,13 @@ on:
       - 'learnerbot/evm_pool_rug_gate.py'
       - 'learnerbot/evm_transfer_native_hotfix_patch.py'
       - 'learnerbot/poolcheck_rug_hardening_patch.py'
+      - 'learnerbot/solana_entry_exit_liquidity_preflight_patch.py'
+      - 'learnerbot/solana_preflight_cache_patch.py'
       - 'learnerbot/final_runtime_integrity_patch.py'
       - 'tests/test_evm_pool_rug_gate.py'
       - 'tests/test_poolcheck_rug_hardening_patch.py'
       - 'tests/test_solana_entry_exit_liquidity_preflight.py'
+      - 'tests/test_solana_entry_buy_impact_preflight.py'
       - '.github/workflows/evm-pool-rug-ci.yml'
   push:
     branches:
@@ -18,10 +21,14 @@ on:
       - 'learnerbot/evm_pool_rug_gate.py'
       - 'learnerbot/evm_transfer_native_hotfix_patch.py'
       - 'learnerbot/poolcheck_rug_hardening_patch.py'
+      - 'learnerbot/solana_entry_exit_liquidity_preflight_patch.py'
+      - 'learnerbot/solana_preflight_cache_patch.py'
       - 'learnerbot/final_runtime_integrity_patch.py'
       - 'tests/test_evm_pool_rug_gate.py'
       - 'tests/test_poolcheck_rug_hardening_patch.py'
       - 'tests/test_solana_entry_exit_liquidity_preflight.py'
+      - 'tests/test_solana_entry_buy_impact_preflight.py'
+      - '.github/workflows/evm-pool-rug-ci.yml'
 
 permissions:
   contents: read
@@ -60,14 +67,18 @@ jobs:
           python -m py_compile \
             learnerbot/evm_pool_rug_gate.py \
             learnerbot/poolcheck_rug_hardening_patch.py \
+            learnerbot/solana_entry_exit_liquidity_preflight_patch.py \
+            learnerbot/solana_preflight_cache_patch.py \
             learnerbot/final_runtime_integrity_patch.py \
             tests/test_evm_pool_rug_gate.py \
             tests/test_poolcheck_rug_hardening_patch.py \
-            tests/test_solana_entry_exit_liquidity_preflight.py
+            tests/test_solana_entry_exit_liquidity_preflight.py \
+            tests/test_solana_entry_buy_impact_preflight.py
 
       - name: Run PoolCheck rug regression tests
         run: |
           python -m pytest -x -vv \
             tests/test_evm_pool_rug_gate.py \
             tests/test_poolcheck_rug_hardening_patch.py \
-            tests/test_solana_entry_exit_liquidity_preflight.py
+            tests/test_solana_entry_exit_liquidity_preflight.py \
+            tests/test_solana_entry_buy_impact_preflight.py
