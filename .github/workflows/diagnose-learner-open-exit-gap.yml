@@ -1,0 +1,87 @@
+name: Diagnose Learner Open Exit Gap
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/diagnose-learner-open-exit-gap.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only exit-gap diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          test "$(systemctl is-active "$service")" = active
+
+          TARGET="$target" python3 - <<'PY'
+          import json,os,sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2)
+          con.row_factory=sqlite3.Row
+          ids=('e30ca86e1878bd4e5f1648d3fbb7cbf2','714f26073ebc1928896ac985c96371f7')
+          cols=[r['name'] for r in con.execute('PRAGMA table_info(positions)').fetchall()]
+          print('position_columns='+','.join(cols))
+          for pid in ids:
+              row=con.execute('SELECT * FROM positions WHERE position_id=?',(pid,)).fetchone()
+              if not row:
+                  print('position_missing='+pid); continue
+              d=dict(row)
+              safe_keys=[
+                  'position_id','telegram_id','leader_wallet','leader_rank','mint','mode','status',
+                  'token_amount_raw','entry_cost_sol','entry_ts','current_exit_sol','unrealised_net_sol',
+                  'unrealised_pct','peak_unrealised_pct','leader_exit_pending','realised_net_sol',
+                  'exit_signature','exit_reason','closed_at','updated_at'
+              ]
+              safe={k:d.get(k) for k in safe_keys if k in d}
+              print('position='+json.dumps(safe,separators=(',',':'),default=str))
+
+          tables=[r['name'] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+          print('tables='+','.join(tables))
+          if 'state' in tables:
+              keys=[]
+              for row in con.execute('SELECT key,value FROM state ORDER BY key').fetchall():
+                  key=str(row['key'] or '')
+                  low=key.lower()
+                  if any(x in low for x in ('e30ca86','6mfj9t4','714f2607','bvkgvjs','liquidity','exit_circuit','emergency')):
+                      value=str(row['value'] or '')
+                      # Values are runtime state only; cap length and redact URLs.
+                      if 'http://' in value or 'https://' in value:
+                          value='<URL_REDACTED_STATE>'
+                      keys.append((key,value[:500]))
+              for key,value in keys[-120:]:
+                  print('state_key='+key+' value='+value)
+          if 'live_execution_attempts' in tables:
+              rows=con.execute(
+                  "SELECT attempt_key,telegram_id,mint,action,status,updated_at,error FROM live_execution_attempts "
+                  "WHERE mint IN (?,?) ORDER BY updated_at DESC LIMIT 30",
+                  ('6Mfj9t4WMN1c6CMpYZm8GvJsW3TiE7SrbrBqpBRnmUgd','BvKgVjsUQ8KV22RNKhk3btZHKSDdrRfziGad4ugTCcJS')
+              ).fetchall()
+              for row in rows:
+                  d=dict(row)
+                  if d.get('error'):
+                      d['error']=str(d['error'])[:400]
+                  print('attempt='+json.dumps(d,separators=(',',':'),default=str))
+          con.close()
+          PY
+
+          echo '--- relevant journal ---'
+          sudo -n journalctl -u "$service" --since '-90 min' --no-pager -o cat \
+            | grep -Ei 'e30ca86|6Mfj9t4|714f2607|BvKgVjs|STOP_LOSS|TAKE_PROFIT|LEADER_EXIT|EMERGENCY|LIQUIDITY|evaluate|valuation|quote|Jupiter|exit circuit' \
+            | tail -220 \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' || true
+
+          echo 'diagnostic_mutation=NO'
+          echo 'production_service_touched=NO'
