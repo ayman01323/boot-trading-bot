@@ -1,4 +1,4 @@
-name: SiRisky Capital Gate Inspect
+name: SiRisky Wallet Trade Trace
 
 on:
   push:
@@ -14,34 +14,65 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Measure current wallet versus protected reserve
+      - name: Trace wallet ownership and SiRisky executions
         shell: bash
+        env:
+          TARGET: 6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n bash -lc '
+          sudo -n env TARGET="$TARGET" bash -lc '
             set -Eeuo pipefail
             cd /root/SiRisky
-            echo "=== CAPITAL ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
+            echo "=== WALLET ATTRIBUTION ==="
+            PYTHONPATH=. TARGET="$TARGET" .venv/bin/python - <<"PY"
+import os
 from sirisky.config import Settings
 from sirisky.wallet import WalletStore
-from sirisky.jupiter import wallet_balance_lamports
-s=Settings.load(); a=WalletStore(s).address(); b=wallet_balance_lamports(s,a)
-r=s.risk(); reserve=float(r.get("untouched_sol_reserve") or 0.005)
-probe=float(s.runtime().get("auto_probe_sol") or 0.0005)
-sol=b/1_000_000_000
-print(f"wallet_balance_sol={sol:.9f}")
-print(f"untouched_sol_reserve={reserve:.9f}")
-print(f"auto_probe_sol={probe:.9f}")
-print(f"required_for_next_canary={reserve+probe:.9f}")
-print(f"available_above_reserve={max(0,sol-reserve):.9f}")
-print(f"capital_gate_pass={str(sol >= reserve+probe).lower()}")
+s=Settings.load(); target=os.environ["TARGET"]; wallet=WalletStore(s).address()
+print("target="+target)
+print("sirisky_wallet="+wallet)
+print("sirisky_wallet_match="+str(wallet==target).lower())
+print("service=sirisky.service")
 PY
-            echo "=== RUNTIME ==="
-            awk -F, '\''$1 ~ /^(trading_mode|live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|auto_evaluate_candidate_limit|jupiter_min_interval_seconds|jupiter_max_retries)$/ {gsub(/\r/,"",$2); print $1"="$2}'\'' CSV/runtime.csv
-            echo "=== LATEST RISK ==="
-            tail -n 8 CSV/risk_checks.csv 2>/dev/null || true
-            echo "service=$(systemctl is-active sirisky.service)"
+            echo "=== CSV REFERENCES TO TARGET ==="
+            grep -R -n -F "$TARGET" CSV 2>/dev/null | tail -n 80 || true
+            echo "=== EXECUTIONS HEADER ==="
+            head -n 1 CSV/executions.csv 2>/dev/null || true
+            echo "=== RECENT SUCCESSFUL LIVE EXECUTIONS ==="
+            awk -F, '\''NR==1 || ($5=="LIVE" && $6=="SUCCESS")'\'' CSV/executions.csv 2>/dev/null | tail -n 25 || true
+            echo "=== OPEN POSITIONS HEADER/RECENT ==="
+            head -n 1 CSV/open_positions.csv 2>/dev/null || true
+            tail -n 15 CSV/open_positions.csv 2>/dev/null || true
+            echo "=== STRATEGY/OPPORTUNITY RECORDS FOR RECENT EXECUTION MINTS ==="
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+import csv
+from pathlib import Path
+csvdir=Path("CSV")
+execp=csvdir/"executions.csv"
+if not execp.exists():
+    raise SystemExit
+rows=list(csv.DictReader(execp.open(encoding="utf-8-sig",newline="")))
+recent=[r for r in rows if (r.get("mode") or "").upper()=="LIVE" and (r.get("status") or "").upper()=="SUCCESS"][-12:]
+mints={r.get("mint") for r in recent if r.get("mint")}
+print("recent_mints="+",".join(sorted(mints)))
+for p in sorted(csvdir.glob("*.csv")):
+    if p.name in {"executions.csv"}:
+        continue
+    try:
+        rr=list(csv.DictReader(p.open(encoding="utf-8-sig",newline="")))
+    except Exception:
+        continue
+    hits=[]
+    for r in rr:
+        text="|".join(str(v) for v in r.values())
+        if any(m in text for m in mints):
+            hits.append(r)
+    if hits:
+        print("FILE="+p.name)
+        for r in hits[-8:]:
+            keep={k:v for k,v in r.items() if v and k in {"timestamp","opportunity_id","pool_id","mint","strategy_id","action","status","reason","mode","position_id","order_id","source","leader_wallet","wallet","temperature","risk_reasons","forecast_net_pct"}}
+            print(keep)
+PY
           '
