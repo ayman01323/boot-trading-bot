@@ -39,7 +39,6 @@ trap fail_safe ERR
 echo "=== SIRISKY ONE USD SAFETY DEPLOY ==="
 systemctl stop sirisky.service
 
-# Disarm before any mutation or capital cleanup.
 PYTHONPATH=. .venv/bin/python - <<"PY"
 import csv
 from pathlib import Path
@@ -59,7 +58,7 @@ def upsert(path, values):
     for key,val in values.items():
         if key not in seen:
             r={f:"" for f in fields}; r[k]=key; r[v]=str(val)
-            if "description" in fields: r["description"]="SiRisky $1 fee-aware safety v2"
+            if "description" in fields: r["description"]="SiRisky USD1 fee-aware safety v2"
             rows.append(r)
     with p.open("w",encoding="utf-8",newline="") as f:
         wr=csv.DictWriter(f,fieldnames=fields); wr.writeheader(); wr.writerows(rows)
@@ -84,7 +83,6 @@ upsert("CSV/stage3_risk.csv",{
 print("runtime_and_risk_disarmed_configured=true")
 PY
 
-# Install persisted safety module from main and activate it in the live entry point.
 curl -fsSL --retry 3 --connect-timeout 10 \
   https://raw.githubusercontent.com/ayman01323/boot-trading-bot/a7edf1905791df482c9e27ce37982c1c0bdb7e23/SiRisky/overrides/sirisky/safety_v2.py \
   -o sirisky/safety_v2.py
@@ -107,7 +105,7 @@ PY
 
 PYTHONPATH=. .venv/bin/python -m py_compile run.py sirisky/safety_v2.py sirisky/stage3_risk.py sirisky/stage5_trade.py sirisky/stage6_monitor.py
 
-echo "--- TEST 1: dynamic $1 sizing ---"
+echo "--- TEST 1: dynamic USD1 sizing ---"
 PYTHONPATH=. .venv/bin/python - <<"PY"
 from sirisky.config import Settings
 from sirisky.safety_v2 import entry_sol, sol_usd
@@ -139,7 +137,6 @@ PYTHONPATH=. .venv/bin/python run.py selftest
 echo "--- TEST 4: safe preflight while DISARMED ---"
 PYTHONPATH=. .venv/bin/python run.py check || true
 
-# Token-account cleanup is simulated first; only zero-balance wallet-owned classic SPL accounts are eligible.
 echo "--- TEST 5: zero-account cleanup simulation ---"
 PYTHONPATH=. .venv/bin/python - <<"PY"
 from sirisky.config import Settings
@@ -154,7 +151,6 @@ from sirisky.safety_v2 import close_zero_token_accounts
 s=Settings.load(); print(close_zero_token_accounts(s,None,broadcast=True))
 PY
 
-# Final capital + safety validation. No arming if any requirement fails.
 echo "--- TEST 6: arm prerequisites ---"
 PYTHONPATH=. .venv/bin/python - <<"PY"
 from sirisky.config import Settings
@@ -179,7 +175,6 @@ assert int(float(s.runtime().get("max_priority_fee_lamports") or 999999)) <= 300
 print("arm_prerequisites=PASS")
 PY
 
-# Arm only after all tests and capital prerequisites pass.
 PYTHONPATH=. .venv/bin/python - <<"PY"
 import csv
 from pathlib import Path
@@ -212,7 +207,7 @@ assert str(rt.get("trading_mode") or "").upper()=="LIVE"
 assert str(rt.get("live_enabled") or "0")=="1"
 assert str(rt.get("broadcast_enabled") or "0")=="1"
 assert str(rt.get("manual_approval_enabled") or "0")=="0"
-msg=("SiRisky $1 safety v2 ARMED on botgoogle. "
+msg=("SiRisky USD1 safety v2 ARMED on botgoogle. "
      f"Entry={entry_sol(s):.9f} SOL (~${entry_sol(s)*sol_usd(s):.2f}); "
      "forecast>=2%, round-trip<=2%, exit-health>=98%, priority-fee<=30000 lamports, "
      "fee-aware net TP, 30s momentum-failure exit, zero-account cleanup active.")
