@@ -56,22 +56,21 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Check out trusted current main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-
       - name: Install and arm SiRisky automatic LIVE
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          test -f scripts/install_sirisky_governed_live_ops.sh
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/install_sirisky_governed_live_ops.sh \
+            -o "$tmp"
+          grep -q 'manual_approval_enabled,0' "$tmp"
+          grep -q 'manual_approval_require_external_signature,0' "$tmp"
           sudo -n true
-          sudo -n env ARM_NOW=1 bash "$GITHUB_WORKSPACE/scripts/install_sirisky_governed_live_ops.sh"
+          sudo -n env ARM_NOW=1 bash "$tmp"
 
       - name: Verify manual approval is removed
         shell: bash
