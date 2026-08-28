@@ -39,13 +39,8 @@ jobs:
               print(key+'='+(str(matches[-1].get('value') or '') if matches else 'MISSING'))
           PY
           echo '=== TELEGRAM + RENDER METRICS ==='
-          cd "$target"
-          set -a
-          [ -f .env ] && . ./.env || true
-          set +a
-          sudo -n -u ayman01323 env PYTHONPATH="$target" /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python - <<'PY'
+          sudo -n env PYTHONPATH="$target" bash -lc "cd '$target' && /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -" <<'PY'
           import json, sqlite3, urllib.request, urllib.error
-          from decimal import Decimal
           from learnerbot.config import AppSettings
           from learnerbot import telegram_learner_position_update_patch as p
           from learnerbot import telegram_learner_newpoll_full_format_patch as f
@@ -56,10 +51,20 @@ jobs:
               url='https://api.telegram.org/bot'+app.telegram_bot_token+'/getChat'
               req=urllib.request.Request(url,data=json.dumps({'chat_id':'5923828381'}).encode(),headers={'Content-Type':'application/json'})
               try:
-                  with urllib.request.urlopen(req,timeout=10) as r: data=json.loads(r.read(65536).decode())
+                  with urllib.request.urlopen(req,timeout=10) as r:
+                      data=json.loads(r.read(65536).decode())
                   print('getChat=' + ('PASS' if data.get('ok') else 'FAIL'))
-                  if not data.get('ok'): print('getChat_error='+str(data.get('description') or '')[:200])
-              except Exception as e: print('getChat=ERROR:'+type(e).__name__)
+                  if not data.get('ok'):
+                      print('getChat_error='+str(data.get('description') or '')[:200])
+              except urllib.error.HTTPError as e:
+                  try:
+                      data=json.loads(e.read(65536).decode())
+                      print('getChat=FAIL')
+                      print('getChat_error='+str(data.get('description') or '')[:200])
+                  except Exception:
+                      print('getChat=HTTPERROR:'+str(e.code))
+              except Exception as e:
+                  print('getChat=ERROR:'+type(e).__name__)
           db='/home/ayman01323/BOOT/testingbots/learn/data/solana_sibot.sqlite3'
           c=sqlite3.connect(db); c.row_factory=sqlite3.Row
           row=c.execute('select * from positions where position_id=?',('e30ca86e1878bd4e5f1648d3fbb7cbf2',)).fetchone(); c.close()
@@ -76,6 +81,7 @@ jobs:
                   print(label+'_max_chunk_chars='+str(max([len(x) for x in chunks] or [0])))
                   print(label+'_max_chunk_utf16='+str(max([len(x.encode('utf-16-le'))//2 for x in chunks] or [0])))
           print('telegram_message_sent=NO')
+          print('bot_token_printed=NO')
           PY
           echo '=== RECENT NEWPOLL ERRORS ==='
           sudo -n journalctl -u "$service" --since '20 minutes ago' --no-pager -o cat | grep -Ei 'learner-newpoll45|reconcile|required' | tail -180 || true
