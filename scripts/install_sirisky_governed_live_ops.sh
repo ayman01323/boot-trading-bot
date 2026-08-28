@@ -95,18 +95,18 @@ p=Path(sys.argv[1])
 rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
 by={str(r.get('setting') or ''):r for r in rows}
 updates={
-    'trading_mode':('LIVE','Governed LIVE runtime; manual/external signature gate retained'),
+    'trading_mode':('LIVE','Governed LIVE runtime; Stage-3-approved orders flow directly to Stage 5'),
     'paper_auto_trade_enabled':('0','Paper auto execution disabled in governed LIVE'),
-    'live_enabled':('1','Live market data and governed execution path enabled'),
-    'broadcast_enabled':('1','Broadcast path armed; external/manual signature policy remains mandatory'),
+    'live_enabled':('1','Live market data and execution path enabled'),
+    'broadcast_enabled':('1','Broadcast path enabled after existing strategy and risk gates pass'),
     'auto_discovery_enabled':('1','Continuously discover fresh Solana pools'),
     'auto_promote_to_selected':('1','Automatically feed ranked candidates into Stage 2/3 evaluation'),
     'auto_evaluate_candidate_limit':('5','Evaluate up to five ranked candidates per cycle'),
-    'manual_approval_enabled':('1','Every Stage-3-approved BUY/SELL stops at manual approval'),
-    'armed_manual_approval':('1','Governed LIVE is armed behind manual approval'),
-    'manual_approval_ttl_seconds':('60','Each immutable trade proposal expires after 60 seconds'),
-    'manual_approval_require_external_signature':('1','Final signing remains external/manual; server wallet may not bypass this gate'),
-    'telegram_manual_run_enabled':('0','Telegram cannot directly execute a real transaction'),
+    'manual_approval_enabled':('0','Manual per-trade approval disabled by owner instruction'),
+    'armed_manual_approval':('0','Manual approval is not armed'),
+    'manual_approval_ttl_seconds':('60','Inactive while manual approval is disabled'),
+    'manual_approval_require_external_signature':('0','Server signer may execute Stage-3-approved orders automatically'),
+    'telegram_manual_run_enabled':('0','Telegram direct execution remains disabled; engine execution only'),
     'poll_seconds':('5','Engine polling interval'),
 }
 for key,(value,note) in updates.items():
@@ -132,9 +132,9 @@ runtime_value() {
 [[ "$(runtime_value trading_mode)" == "LIVE" ]]
 [[ "$(runtime_value live_enabled)" == "1" ]]
 [[ "$(runtime_value broadcast_enabled)" == "1" ]]
-[[ "$(runtime_value manual_approval_enabled)" == "1" ]]
-[[ "$(runtime_value armed_manual_approval)" == "1" ]]
-[[ "$(runtime_value manual_approval_require_external_signature)" == "1" ]]
+[[ "$(runtime_value manual_approval_enabled)" == "0" ]]
+[[ "$(runtime_value armed_manual_approval)" == "0" ]]
+[[ "$(runtime_value manual_approval_require_external_signature)" == "0" ]]
 [[ "$(runtime_value telegram_manual_run_enabled)" == "0" ]]
 
 cd "$DST"
@@ -147,7 +147,7 @@ systemctl is-active --quiet "$SERVICE"
 
 trap - EXIT
 
-echo "=== SIRISKY GOVERNED LIVE ARMED ==="
+echo "=== SIRISKY GOVERNED LIVE AUTO EXECUTION ARMED ==="
 echo "sha=$TARGET_SHA"
 echo "service=$(systemctl is-active "$SERVICE")"
 echo "trading_mode=$(runtime_value trading_mode)"
@@ -157,7 +157,7 @@ echo "manual_approval_enabled=$(runtime_value manual_approval_enabled)"
 echo "manual_approval_require_external_signature=$(runtime_value manual_approval_require_external_signature)"
 echo "telegram_manual_run_enabled=$(runtime_value telegram_manual_run_enabled)"
 echo "rollback_snapshot=$BACKUP"
-echo "NOTE: this state is LIVE-ready but still stops at WAITING_FOR_MANUAL_APPROVAL; it does not create an autonomous server-signing bypass."
+echo "NOTE: Stage-3-approved BUY/SELL orders now flow directly to Stage 5; existing risk gates remain in force."
 EOF
 
 chmod 0755 "$WRAPPER"
@@ -178,7 +178,7 @@ echo "SiRisky governed LIVE GitHub operation installed."
 echo "Runner user: $RUNNER_USER"
 echo "Allowed root command: $WRAPPER <40-char-git-sha>"
 echo "Arbitrary passwordless sudo was NOT granted."
-echo "Manual approval and external-signature requirements remain enabled."
+echo "Manual approval is disabled; existing strategy/risk gates remain enabled."
 
 if [[ "${ARM_NOW:-0}" == "1" ]]; then
   TARGET_SHA="$(git -C "$RUNNER_CHECKOUT" rev-parse HEAD)"
