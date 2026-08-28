@@ -1,3 +1,4 @@
+# one-shot inspection trigger 2026-08-27
 name: Inspect Testing Learner Settings
 
 on:
@@ -13,95 +14,81 @@ permissions:
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
-    env:
-      TARGET: /home/ayman01323/BOOT/testingbots/learn
-      SOURCE_SHA: 894c5597c5cf0c695f1f75df39f26ebe64c2dce9
-      SERVICE: learnerbot-learn.service
+    timeout-minutes: 10
     steps:
-      - name: Apply isolated-only compatibility skip and verify Learner
+      - name: Inspect isolated learner safely
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
-          test "$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$SOURCE_SHA"
-          test -f "$TARGET/learnerbot/__main__.py"
-
-          sudo -n /usr/bin/env TARGET="$TARGET" SERVICE="$SERVICE" /usr/bin/bash -lc '
-            set -euo pipefail
-            main="$TARGET/learnerbot/__main__.py"
-            cp -a "$main" "$TARGET/backups/__main__.py.before-isolated-polygon-skip"
-            python3 - "$main" <<"PY"
-          import pathlib, sys
-          p=pathlib.Path(sys.argv[1])
-          text=p.read_text(encoding="utf-8")
-          old="from . import polygon_live_enable_migration  # noqa: F401"
-          new="# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration."
-          if old in text:
-              text=text.replace(old,new,1)
-              p.write_text(text,encoding="utf-8")
-          elif new not in text:
-              raise SystemExit("expected Polygon migration import not found")
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          echo "TARGET=$target"
+          echo "--- snapshot ---"
+          cat "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          echo "--- runtime paths ---"
+          for p in "$target/CSVbot" "$target/data" "$target/CSVbot/solana_settings.csv" "$target/CSVbot/auto/solana_user_wallets.csv"; do
+            if [[ -e "$p" ]]; then echo "EXISTS $p"; else echo "MISSING $p"; fi
+          done
+          echo "--- source defaults ---"
+          python3 - <<'PY'
+          import ast, pathlib, re
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          src=(root/'learnerbot/solana_sibot.py').read_text(encoding='utf-8')
+          tree=ast.parse(src)
+          defaults={}
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id=='DEFAULTS' for t in node.targets):
+                  defaults=ast.literal_eval(node.value)
+                  break
+          live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
+          m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)', live, re.S)
+          if m:
+              defaults.update(ast.literal_eval('{'+m.group(1)+'}'))
+          keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
+          for k in keys:
+              if k in defaults: print(f'{k}={defaults[k][0]}')
           PY
-            chown ayman01323:ayman01323 "$main"
-            python3 -m py_compile "$main"
-            systemctl restart "$SERVICE"
-          '
-
-          sleep 12
-          state1="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-          restarts1="$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)"
-          sleep 6
-          state2="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-          restarts2="$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)"
-          echo "source_sha=$(cat "$TARGET/RESTORED_SOURCE_SHA.txt")"
-          echo "local_compat_patch=skip_production_polygon_migration_only"
-          echo "service_state_1=$state1"
-          echo "service_state_2=$state2"
-          echo "restart_count_1=$restarts1"
-          echo "restart_count_2=$restarts2"
-          echo "stable=$([[ "$state1" = active && "$state2" = active && "$restarts1" = "$restarts2" ]] && echo true || echo false)"
-
-          echo '--- saved controls ---'
-          ROOT="$TARGET" python3 - <<'PY'
-          import csv, os
-          from pathlib import Path
-          root=Path(os.environ['ROOT'])/'CSVbot'
-          for name in ('solana_settings.csv','user_trading_settings.csv'):
-              p=root/name
-              if not p.exists(): continue
-              with p.open(encoding='utf-8-sig',newline='') as f:
-                  for r in csv.DictReader(f):
-                      key=str(r.get('setting') or '')
-                      if key in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}:
-                          prefix='user=[redacted] ' if name.startswith('user_') else 'platform '
-                          print(prefix+f"chain={r.get('chain_id','')} {key}={r.get('value','')}")
+          echo "--- runtime solana settings if present ---"
+          if [[ -f "$target/CSVbot/solana_settings.csv" ]]; then
+            python3 - <<'PY'
+          import csv, pathlib
+          p=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          allowed={'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds'}
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  if r.get('setting') in allowed: print(f"{r['setting']}={r.get('value','')}")
           PY
-
-          echo '--- recent LIVE attempts ---'
-          ROOT="$TARGET" python3 - <<'PY'
-          import os, sqlite3, time
-          from pathlib import Path
-          db=Path(os.environ['ROOT'])/'data/solana_sibot.sqlite3'
-          c=sqlite3.connect(f'file:{db}?mode=ro',uri=True); c.row_factory=sqlite3.Row
-          cutoff=int(time.time())-300
-          rows=c.execute("select action,status,error,created_at,updated_at from live_execution_attempts where created_at>=? order by created_at desc limit 30",(cutoff,)).fetchall()
-          print('attempts_last_5m='+str(len(rows)))
-          for r in rows:
-              d=dict(r); d['error']=str(d.get('error') or '')[:180]
-              print(d)
-          print('positions_by_status=')
-          for r in c.execute("select status,count(*) n from positions where mode='LIVE' group by status order by status"):
-              print(dict(r))
-          c.close()
+          else
+            echo "NO_RUNTIME_SETTINGS_FILE"
+          fi
+          echo "--- user/wallet readiness ---"
+          python3 - <<'PY'
+          import csv, pathlib
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
+          user_files=[root/'users.csv',root/'auto/users.csv',root/'user_registry.csv',root/'auto/user_registry.csv']
+          users=[]
+          for p in user_files:
+              if p.exists():
+                  try:
+                      with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+                      print(f'USER_FILE={p} ROWS={len(rows)}')
+                      users.extend(rows)
+                  except Exception as e: print(f'USER_FILE_ERROR={p}:{type(e).__name__}')
+          tids=[]
+          for r in users:
+              tid=str(r.get('telegram_id') or '').strip()
+              if tid and tid not in tids: tids.append(tid)
+          print('UNIQUE_TELEGRAM_USERS='+str(len(tids)))
+          wp=root/'auto/solana_user_wallets.csv'
+          if wp.exists():
+              with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+              print('SOLANA_WALLETS='+str(len(rows)))
+              for r in rows:
+                  print('WALLET address='+str(r.get('address') or '')+' signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
+          else:
+              print('SOLANA_WALLETS=0')
           PY
-
-          echo '--- service tail ---'
-          journalctl -u "$SERVICE" -n 180 --no-pager 2>/dev/null \
-            | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|BUY|SELL|LIVE|entry|position|route|ERROR|REJECT|learner|Polygon' \
-            | tail -n 180 || true
-
-          test "$state1" = active
-          test "$state2" = active
-          test "$restarts1" = "$restarts2"
+          echo "live_execution_started=NO"
+          echo "production_service_restart=NO"
