@@ -15,61 +15,21 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Read-only learner Telegram post-start check
+      - name: Stop crash-looping learner only
         shell: bash
         run: |
-          set -u
-          LEARN=/home/ayman01323/BOOT/testingbots/learn
-
-          echo '=== LEARNER SERVICE ==='
-          systemctl show learnerbot-learn.service \
-            -p ActiveState -p SubState -p MainPID -p NRestarts \
-            -p ExecMainCode -p ExecMainStatus -p Result \
-            -p ActiveEnterTimestamp --no-pager 2>/dev/null || true
-
-          echo '=== PROCESS ==='
-          pgrep -af 'python.*learnerbot|learnerbot.*run' || true
-
-          echo '=== TELEGRAM API READ ONLY ==='
-          sudo -n python3 - <<'PY'
-          import json, urllib.request
-          from pathlib import Path
-          p=Path('/home/ayman01323/BOOT/testingbots/learn/.env')
-          d={}
-          if p.exists():
-              for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
-                  s=line.strip()
-                  if not s or s.startswith('#') or '=' not in s: continue
-                  k,v=s.split('=',1); d[k.strip()]=v.strip().strip('"').strip("'")
-          t=d.get('TELEGRAM_BOT_TOKEN') or d.get('BOT_TOKEN') or d.get('TELEGRAM_TOKEN') or ''
-          print('token_present='+str(bool(t)))
-          if t:
-              for method in ('getMe','getWebhookInfo'):
-                  try:
-                      with urllib.request.urlopen(f'https://api.telegram.org/bot{t}/{method}',timeout=12) as r: x=json.load(r)
-                      print(method+'_ok='+str(bool(x.get('ok'))))
-                      if method=='getMe' and x.get('ok'):
-                          print('bot_username=@'+str((x.get('result') or {}).get('username') or ''))
-                      if method=='getWebhookInfo' and x.get('ok'):
-                          z=x.get('result') or {}
-                          print('webhook_url_set='+str(bool(z.get('url'))))
-                          print('pending_update_count='+str(z.get('pending_update_count')))
-                  except Exception as e:
-                      print(method+'_error='+type(e).__name__+':'+str(e)[:160])
-          PY
-
-          echo '=== RECENT LEARNER JOURNAL ==='
-          sudo -n journalctl -u learnerbot-learn.service --since '10 minutes ago' --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'trading-runtime-invariant|learnerarm|telegram|getUpdates|409|conflict|Traceback|RuntimeError|NameError|failed|error|started|stopped|poll' \
-            | tail -320 || true
-
-          echo '=== SIRISKY READ ONLY ==='
-          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
-          echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
-
-          echo '=== NO CHANGES ==='
-          echo 'service_change=NO'
+          set -euo pipefail
+          BEFORE=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
+          echo "sirisky_before=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$BEFORE"
+          sudo -n systemctl stop learnerbot-learn.service
+          sleep 1
+          echo "learner_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "learner_pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
+          AFTER=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
+          echo "sirisky_after=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$AFTER"
+          test "$BEFORE" = "$AFTER"
+          echo 'learner_stopped=YES'
+          echo 'sirisky_untouched=YES'
           echo 'telegram_send=NO'
-          echo 'telegram_getupdates_call=NO'
           echo 'trading_action=NONE'
-          echo 'sirisky_change=NO'
