@@ -23,6 +23,8 @@ jobs:
           export TARGET=/home/ayman01323/BOOT/testingbots/learn
           export EXPECTED_SHA=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
           service=learnerbot-learn.service
+          vpy="$TARGET/.venv/bin/python"
+          test -x "$vpy"
           test "$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$EXPECTED_SHA"
           python3 - <<'PY'
           import csv, json, os, sqlite3, urllib.request
@@ -57,8 +59,7 @@ jobs:
                       if 'error' not in data:return data.get('result')
                   except Exception:pass
               raise RuntimeError('all configured Solana RPC endpoints failed')
-          tids=set()
-          wallet_addresses=set()
+          tids=set(); wallet_addresses=set()
           for p in positions:
               w=wallets.get(str(p['position_id'])) or {}; owner=str(w.get('wallet_address') or '')
               if not owner: raise SystemExit('REFUSE_REARM: missing bound wallet')
@@ -73,19 +74,17 @@ jobs:
           if len(wallet_addresses) != 1: raise SystemExit('REFUSE_REARM: expected one bound morning wallet')
           owner=next(iter(wallet_addresses)); bal=rpc('getBalance',[owner,{'commitment':'confirmed'}]); lamports=int((bal or {}).get('value') or 0)
           print('wallet_balance_sol='+format(lamports/1_000_000_000,'.9f'))
-          # Morning effective canary requires 0.0005 SOL plus at least 0.005 SOL untouched reserve.
           if lamports < 5_500_000: raise SystemExit('REFUSE_REARM: wallet below morning canary + reserve minimum')
           (root/'private').mkdir(exist_ok=True)
           marker=root/'private'/'.verified_morning_rearm_tid'
           marker.write_text(next(iter(tids)),encoding='utf-8'); os.chmod(marker,0o600)
           PY
 
-          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" python3 - <<'PY'
+          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" "$vpy" - <<'PY'
           import os
           from pathlib import Path
           from learnerbot.user_registry import set_user_setting
           root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
-          # Exact morning canary size observed in the successful BUYs. Do not widen it to the requested 0.009 SOL.
           set_user_setting(root/'CSVbot',tid,'solana_live_trade_sol','0.0005',chain_id='-101',description='Restored morning isolated Learner canary size')
           set_user_setting(root/'CSVbot',tid,'solana_live_min_reserve_sol','0.005',chain_id='-101',description='Restored morning isolated Learner reserve')
           set_user_setting(root/'CSVbot',tid,'learner_new_entries_enabled','true',chain_id='-101',description='Morning Learner new-entry gate restored after verified zero exposure')
@@ -97,12 +96,10 @@ jobs:
           sudo -n systemctl restart "$service"
           sleep 12
           test "$(systemctl is-active "$service")" = active
-          export PYTHONPATH="$TARGET"
-          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" python3 - <<'PY'
+          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" "$vpy" - <<'PY'
           import os, sqlite3
           from pathlib import Path
           from learnerbot import solana_live_patch as live
-          from learnerbot import sibot
           from learnerbot.user_registry import user_bool
           class A: pass
           root=Path(os.environ['TARGET']); a=A(); a.csv_dir=root/'CSVbot'; a.data_dir=root/'data'
@@ -120,6 +117,7 @@ jobs:
           if not live.live_enabled(a,tid): raise SystemExit('LIVE did not rearm')
           if str(trade) != '0.0005': raise SystemExit('unexpected trade size')
           if reserve < 0.005: raise SystemExit('reserve below morning floor')
+          if not user_bool(a.csv_dir,tid,0,'sibot_auto_trade_enabled',False): raise SystemExit('AUTO did not rearm')
           PY
           echo 'morning_rearm=SUCCESS'
           echo 'manual_forced_trade=NO'
