@@ -15,66 +15,77 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Compare pollers and inspect relay safely
+      - name: Diagnose isolated learner Telegram only
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== SERVICES ==='
-          for s in learnerbot-learn.service sirisky.service; do
-            echo "$s active=$(systemctl is-active "$s" 2>/dev/null || true) pid=$(systemctl show -p MainPID --value "$s" 2>/dev/null || true)"
-          done
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          ROOTBOT=/root/multichain-learning-bot-v2.2-fast-direct-market
+          echo '=== LEARNER SERVICE ==='
+          echo "active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
+          systemctl show learnerbot-learn.service -p WorkingDirectory -p ExecStart --no-pager || true
 
-          echo '=== TOKEN FINGERPRINTS ==='
+          echo '=== TOKEN ISOLATION + TELEGRAM API ==='
           sudo -n python3 - <<'PY'
-          import hashlib
+          import hashlib, json, urllib.request
           from pathlib import Path
-          candidates=[('learner',Path('/home/ayman01323/BOOT/testingbots/learn/.env')),('sirisky_root',Path('/root/SiRisky/.env')),('root_bot',Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env'))]
-          found=[]
-          for label,p in candidates:
-              data={}
-              if not p.exists(): print(label,'MISSING'); continue
+          def env(path):
+              out={}
+              p=Path(path)
+              if not p.exists(): return out
               for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
                   s=line.strip()
-                  if s and not s.startswith('#') and '=' in s:
-                      k,v=s.split('=',1); data[k.strip()]=v.strip().strip('"').strip("'")
-              token=data.get('TELEGRAM_BOT_TOKEN') or data.get('BOT_TOKEN') or data.get('TELEGRAM_TOKEN') or ''
-              fp=hashlib.sha256(token.encode()).hexdigest()[:12] if token else 'NONE'
-              print(f'{label}: token_present={"YES" if token else "NO"} fingerprint={fp}')
-              if token: found.append((label,fp))
-          for i,(a,fa) in enumerate(found):
-              for b,fb in found[i+1:]:
-                  if fa==fb: print(f'SAME_TOKEN={a}:{b}:{fa}')
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              return out
+          learner=env('/home/ayman01323/BOOT/testingbots/learn/.env')
+          sirisky=env('/root/SiRisky/.env')
+          rootbot=env('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')
+          def tok(d): return d.get('TELEGRAM_BOT_TOKEN') or d.get('BOT_TOKEN') or d.get('TELEGRAM_TOKEN') or ''
+          lt,st,rt=tok(learner),tok(sirisky),tok(rootbot)
+          fp=lambda t: hashlib.sha256(t.encode()).hexdigest()[:12] if t else 'NONE'
+          print('learner_token_present=',bool(lt),'fingerprint=',fp(lt),sep='')
+          print('sirisky_token_present=',bool(st),'fingerprint=',fp(st),sep='')
+          print('rootbot_token_present=',bool(rt),'fingerprint=',fp(rt),sep='')
+          print('learner_isolated_from_sirisky=', bool(lt and st and lt!=st), sep='')
+          print('learner_isolated_from_rootbot=', bool(lt and rt and lt!=rt), sep='')
+          if lt:
+              for method in ('getMe','getWebhookInfo'):
+                  try:
+                      with urllib.request.urlopen(f'https://api.telegram.org/bot{lt}/{method}',timeout=12) as r:
+                          data=json.load(r)
+                      print(f'{method}_ok={bool(data.get("ok"))}')
+                      if method=='getMe' and data.get('ok'):
+                          x=data.get('result') or {}; print('bot_username_present=',bool(x.get('username')),sep='')
+                      if method=='getWebhookInfo' and data.get('ok'):
+                          x=data.get('result') or {}; print('webhook_url_set=',bool(x.get('url')),sep=''); print('pending_update_count=',x.get('pending_update_count'),sep='')
+                  except Exception as e:
+                      print(f'{method}_error={type(e).__name__}')
           PY
 
-          echo '=== POLLER PROCESSES / CGROUPS ==='
-          for pid in $(pgrep -f 'learnerbot run|SiRisky/run.py start|google_learner_telegram_relay.py' || true); do
-            cmd=$(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null | sed -E 's/[0-9]{8,}:[A-Za-z0-9_-]{20,}/<redacted-token>/g')
-            echo "PID=$pid CMD=$cmd"
-            cat /proc/$pid/cgroup 2>/dev/null | tail -3 || true
-          done
-
-          echo '=== RELAY ROUTING STRUCTURE ==='
-          p=/home/ayman01323/.local/libexec/google_learner_telegram_relay.py
-          if [ -r "$p" ]; then
-            python3 - "$p" <<'PY'
-          import ast,sys
-          p=sys.argv[1]; src=open(p,encoding='utf-8',errors='ignore').read(); tree=ast.parse(src)
-          print('relay_lines',len(src.splitlines()))
-          for n in ast.walk(tree):
-              if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)): print('FUNCTION',n.name,'line',n.lineno)
-          keys=('getupdates','offset','update_id','learner','sirisky','command','subprocess','systemctl','queue','socket','telegram')
-          for i,line in enumerate(src.splitlines(),1):
-              low=line.lower()
-              if any(k in low for k in keys):
-                  out=line
-                  if 'token' in low and '=' in line: out=line.split('=',1)[0]+'=<redacted>'
-                  print(f'LINE {i}: {out[:500]}')
+          echo '=== LEARNER APP SETTINGS ==='
+          cd "$LEARN"
+          sudo -n "$ROOTBOT/.venv/bin/python" - <<'PY'
+          import hashlib
+          from learnerbot.config import AppSettings
+          app=AppSettings()
+          t=str(getattr(app,'telegram_bot_token','') or '')
+          print('app_token_present=',bool(t),sep='')
+          print('app_token_fingerprint=',hashlib.sha256(t.encode()).hexdigest()[:12] if t else 'NONE',sep='')
+          print('telegram_chat_ids=',getattr(app,'telegram_chat_ids',None),sep='')
           PY
-          else
-            echo 'relay_source=UNREADABLE'
-          fi
+
+          echo '=== COMMAND SOURCE ON DEPLOYED LEARNER ==='
+          grep -nF '/learnerarm' "$LEARN/learnerbot/telegram_solana_live_patch.py" | head -20 || true
+
+          echo '=== RECENT LEARNER TELEGRAM LOGS ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '20 minutes ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram|getUpdates|409|conflict|learnerarm|poll|webhook|Traceback|RuntimeError|ValueError' \
+            | tail -160 || true
 
           echo '=== NO CHANGES MADE ==='
-          echo 'service_change=NO'
+          echo 'sirisky_change=NO'
+          echo 'learner_change=NO'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
