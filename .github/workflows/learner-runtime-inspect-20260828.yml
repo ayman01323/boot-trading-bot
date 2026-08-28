@@ -1,0 +1,53 @@
+name: Learner Runtime Inspect 2026-08-28
+
+on:
+  push:
+    branches:
+      - fix/learner-original-poolcheck-009-sol-20260828
+    paths:
+      - '.github/workflows/learner-runtime-inspect-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect isolated learner runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          root=/home/ayman01323/BOOT/testingbots/learn
+          echo "root_exists=$(test -d "$root" && echo yes || echo no)"
+          echo "service_load=$(systemctl show learnerbot-learn.service -p LoadState --value 2>/dev/null || true)"
+          echo "service_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "snapshot=$(head -n 1 "$root/KNOWN_GOOD_SNAPSHOT.txt" 2>/dev/null || true)"
+          echo '--- poolcheck composition ---'
+          if [[ -f "$root/learnerbot/final_runtime_integrity_patch.py" ]]; then
+            grep -nE 'poolcheck_rug_hardening_patch|poolcheck_solana_stress|poolcheck_evm_(holder|lp|stress)' "$root/learnerbot/final_runtime_integrity_patch.py" || true
+          fi
+          echo '--- restore patch presence ---'
+          test -f "$root/learnerbot/learner_original_poolcheck_restore_patch.py" && echo restore_patch=yes || echo restore_patch=no
+          echo '--- live trade setting ---'
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          if not p.exists():
+              print('solana_settings=missing'); raise SystemExit
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          wanted={'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct'}
+          for r in rows:
+              k=str(r.get('setting') or '')
+              if k in wanted: print(f'{k}={r.get("value","")}')
+          PY
+          echo '--- recent learner journal markers ---'
+          journalctl -u learnerbot-learn.service -n 120 --no-pager 2>/dev/null \
+            | grep -E 'poolcheck-rug-hardening|final-runtime-integrity|solana|min-settings|LIVE|leader|entry' \
+            | tail -n 80 || true
