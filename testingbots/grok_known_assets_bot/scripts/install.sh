@@ -5,7 +5,14 @@ TARGET="/home/ayman01323/BOOT/testingbots/grok_known_assets_bot"
 SOURCE="${1:-$(pwd)}"
 
 mkdir -p "$TARGET"
-rsync -a --delete --exclude '.venv/' --exclude '.env' --exclude 'state.sqlite3' "$SOURCE/" "$TARGET/"
+# Runtime state must survive code rsync.  state.sqlite3 contains the PAPER audit
+# journal/position snapshots and grok_control.json contains the user's PAPER arm.
+rsync -a --delete \
+  --exclude '.venv/' \
+  --exclude '.env' \
+  --exclude 'state.sqlite3' \
+  --exclude 'grok_control.json' \
+  "$SOURCE/" "$TARGET/"
 cd "$TARGET"
 cp -n config.example.json config.json
 python3 -m venv .venv

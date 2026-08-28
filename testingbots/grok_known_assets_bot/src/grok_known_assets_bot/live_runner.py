@@ -10,6 +10,7 @@ from .control import is_armed, load_state
 from .core import Journal, StrategyEngine, load_config
 from .feed_safety import FeedSafetyError
 from .live_feed import FeedWarmupError, SolanaNativeLiveFeed
+from .position_state import restore_positions, sync_positions
 from .research_adapter import assess_snapshot
 
 
@@ -40,9 +41,12 @@ def _process_snapshot(
         decision = engine.evaluate_exit(position, snap, now=snap.ts)
         if decision.action in {"EXIT", "EMERGENCY"}:
             pnl = engine.close_paper(position, snap, decision)
+            sync_positions(journal, engine.positions)
             equity += pnl
             print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": decision.action, "reason": decision.reason, "pnl_usd": pnl, "equity": equity, "armed": armed, "paper": True, "feed": "real"}), flush=True)
         else:
+            # evaluate_exit updates peak/trailing state; persist it even on HOLD.
+            sync_positions(journal, engine.positions)
             print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": "HOLD", "reason": decision.reason, "armed": armed, "paper": True, "feed": "real"}), flush=True)
         return equity
 
@@ -75,6 +79,7 @@ def _process_snapshot(
     journal.event("DECISION", snap.asset_key, decision_payload)
     if decision.action == "ENTER":
         engine.open_paper(snap, decision)
+        sync_positions(journal, engine.positions)
     print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, **decision_payload}), flush=True)
     return equity
 
@@ -96,14 +101,16 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("Refusing to start: real-feed runner is PAPER-only and config.live.enabled must remain false")
     journal = Journal(args.db)
     engine = StrategyEngine(assets, risk, journal)
+    recovered = restore_positions(journal, assets)
+    engine.positions.update(recovered)
     feed = SolanaNativeLiveFeed(assets, risk, journal, raw)
     supported = [asset for asset in assets.values() if feed.supported(asset)]
     unsupported = [asset.key for asset in assets.values() if asset.enabled and not feed.supported(asset)]
     if not supported:
         raise SystemExit("No supported enabled real-feed assets; enable native Solana SOL")
     state = load_state()
-    journal.event("PAPER_RUNNER_START", None, {"supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds, "armed": bool(state.get("armed")), "paper": True, "feed": "real"})
-    print(json.dumps({"status": "STARTED", "mode": "PAPER", "feed": "REAL_PUBLIC", "armed": bool(state.get("armed")), "live_money_enabled": False, "supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds}), flush=True)
+    journal.event("PAPER_RUNNER_START", None, {"supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds, "armed": bool(state.get("armed")), "recovered_positions": len(recovered), "paper": True, "feed": "real"})
+    print(json.dumps({"status": "STARTED", "mode": "PAPER", "feed": "REAL_PUBLIC", "armed": bool(state.get("armed")), "live_money_enabled": False, "recovered_positions": len(recovered), "supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds}), flush=True)
     running = True
 
     def stop(_signum, _frame) -> None:
@@ -138,8 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         sleep_for = max(0.0, feed.settings.poll_seconds - (time.time() - cycle_started))
         if sleep_for > 0:
             time.sleep(sleep_for)
-    journal.event("PAPER_RUNNER_STOP", None, {"equity": equity, "armed": is_armed(), "paper": True, "feed": "real"})
-    print(json.dumps({"status": "STOPPED", "equity": equity, "armed": is_armed(), "paper": True, "feed": "real"}), flush=True)
+    sync_positions(journal, engine.positions)
+    journal.event("PAPER_RUNNER_STOP", None, {"equity": equity, "armed": is_armed(), "persisted_positions": len(engine.positions), "paper": True, "feed": "real"})
+    print(json.dumps({"status": "STOPPED", "equity": equity, "armed": is_armed(), "persisted_positions": len(engine.positions), "paper": True, "feed": "real"}), flush=True)
     return 0
 
 
