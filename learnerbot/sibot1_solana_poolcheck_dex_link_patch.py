@@ -121,3 +121,9 @@ def install() -> None:
 
 
 install()
+
+# Confirmed-trade reporting loads after the final Solana PoolCheck/DexView wrapper
+# so BUY/SELL alerts can replace the bridge's basic confirmation with a single
+# accounting-aware alert. This is reporting/accounting only and changes no
+# execution gate, signer authority, quote, simulation or broadcast path.
+from . import sibot1_trade_pnl_alert_patch as _sibot1_trade_pnl_alert  # noqa: E402,F401
