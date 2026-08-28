@@ -1,0 +1,37 @@
+name: Stop Google Learner Trading Now 20260828
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/stop-google-learner-trading-now-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  stop:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Stop learner trading service and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          service=learnerbot-learn.service
+          echo "before_active=$(systemctl is-active "$service" || true)"
+          echo "before_pid=$(systemctl show -p MainPID --value "$service")"
+          sudo -n systemctl stop "$service"
+          sleep 2
+          after="$(systemctl is-active "$service" || true)"
+          pid="$(systemctl show -p MainPID --value "$service")"
+          echo "after_active=$after"
+          echo "after_pid=$pid"
+          if [ "$after" = active ] || [ "$pid" != 0 ]; then
+            echo "ERROR: learner service still running"
+            exit 1
+          fi
+          echo "trading_status=STOPPED"
+          echo "trade_submitted=NO"
