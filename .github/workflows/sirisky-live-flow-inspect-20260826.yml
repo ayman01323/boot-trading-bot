@@ -15,21 +15,330 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect exact Learner Telegram REJECT sender
+      - name: Install SiLearn cold-zone refusal Telegram alerts
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           root=/home/ayman01323/BOOT/testingbots/learn
-          echo '=== telegram_solana_send_patch ==='
-          sudo -n sed -n '1,260p' "$root/learnerbot/telegram_solana_send_patch.py"
-          echo '=== cli action loop ==='
-          sudo -n sed -n '175,220p' "$root/learnerbot/cli.py"
-          echo '=== solana_live notification region ==='
-          sudo -n sed -n '1,115p' "$root/learnerbot/solana_live_patch.py"
-          echo '=== positive edge reject region ==='
-          sudo -n sed -n '360,450p' "$root/learnerbot/solana_positive_edge_entry_gate_patch.py"
-          echo '=== main composition ==='
-          sudo -n sed -n '1,100p' "$root/learnerbot/__main__.py"
-          echo '=== service ==='
-          systemctl is-active learnerbot-learn.service || true
+          service=learnerbot-learn.service
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          sudo -n cp -a "$root/learnerbot/__main__.py" "$root/learnerbot/__main__.py.before_cold_alert_$stamp"
+
+          sudo -n tee "$root/learnerbot/telegram_cold_zone_refusal_patch.py" >/dev/null <<'PY'
+          from __future__ import annotations
+
+          import html
+          import os
+          import re
+          import threading
+          import time
+          from decimal import Decimal
+          from urllib.parse import quote as urlquote
+
+          import requests
+
+          from . import solana_pool_risk_gate as _pool
+          from . import solana_sibot as _sol
+          from .telegram import send_message
+
+          _PREV_PROCESS = _sol.process_leader_event
+          _SEND_LOCK = threading.Lock()
+          _LAST_SENT: dict[tuple[str, str, str], float] = {}
+          _COOLDOWN_SECONDS = 90
+
+
+          def _d(value, default="0") -> Decimal:
+              try:
+                  return Decimal(str(value if value is not None else default))
+              except Exception:
+                  return Decimal(str(default))
+
+
+          def _format_age(seconds) -> str:
+              if seconds is None:
+                  return "unknown"
+              seconds = max(0, int(float(seconds)))
+              if seconds < 60:
+                  return f"{seconds}s"
+              minutes, sec = divmod(seconds, 60)
+              if minutes < 60:
+                  return f"{minutes}m {sec}s"
+              hours, minute = divmod(minutes, 60)
+              return f"{hours}h {minute}m"
+
+
+          def _display_reason(reason: str, cfg: dict) -> str:
+              reason = str(reason or "unknown refusal reason").strip()
+              if "entry deterioration" in reason.lower() and ">" not in reason:
+                  match = re.search(r"entry deterioration\s+([0-9]+(?:\.[0-9]+)?)%", reason, re.I)
+                  if match:
+                      actual = _d(match.group(1))
+                      limit = _sol._dec(cfg.get("max_entry_deterioration_pct"), 2)
+                      return f"entry deterioration {actual:.3f}% > {limit:.3f}%"
+              return reason
+
+
+          def _cached_or_get(provider: str, mint: str, url: str, ttl: float, timeout: float):
+              try:
+                  cached = _pool._cache_get(provider, mint, ttl)
+              except Exception:
+                  cached = None
+              if cached is not None:
+                  return cached
+              response = requests.get(
+                  url,
+                  timeout=timeout,
+                  headers={"Accept": "application/json", "User-Agent": "SiLearn/refusal-alert/1.0"},
+              )
+              response.raise_for_status()
+              return response.json()
+
+
+          def _dex_context(mint: str, cfg: dict) -> dict:
+              timeout = float(max(Decimal("0.5"), min(Decimal("3"), _d(cfg.get("live_pool_external_timeout_seconds"), "2.5"))))
+              ttl = float(max(15, _sol._int(cfg.get("live_pool_dex_cache_seconds"), 60)))
+              data = _cached_or_get(
+                  "dexscreener",
+                  mint,
+                  f"https://api.dexscreener.com/token-pairs/v1/solana/{urlquote(mint, safe='')}",
+                  ttl,
+                  timeout,
+              )
+              pairs = [
+                  p for p in (data if isinstance(data, list) else [])
+                  if isinstance(p, dict) and str(p.get("chainId") or "solana").lower() == "solana"
+              ]
+              if not pairs:
+                  return {"age_seconds": None, "direct_sol": None, "total_usd": None, "warnings": []}
+
+              def liq_usd(pair):
+                  return max(Decimal(0), _d((pair.get("liquidity") or {}).get("usd"), 0))
+
+              total_usd = sum((liq_usd(p) for p in pairs), Decimal(0))
+              max_liq = max((liq_usd(p) for p in pairs), default=Decimal(0))
+              absolute_floor = max(Decimal(1), _d(cfg.get("live_pool_material_pair_min_usd"), "100"))
+              material_floor = max(absolute_floor, max_liq * Decimal("0.10")) if max_liq > 0 else absolute_floor
+              material = [p for p in pairs if liq_usd(p) >= material_floor]
+              if not material:
+                  material = [max(pairs, key=liq_usd)]
+
+              now = time.time()
+              ages = []
+              for pair in material:
+                  try:
+                      raw = float(pair.get("pairCreatedAt") or 0)
+                      if raw > 0:
+                          created = raw / 1000 if raw > 10_000_000_000 else raw
+                          ages.append(max(0.0, now - created))
+                  except Exception:
+                      pass
+              youngest = min(ages) if ages else None
+
+              direct_sol = sum(
+                  (
+                      max(Decimal(0), _d((p.get("liquidity") or {}).get("quote"), 0))
+                      for p in pairs
+                      if str((p.get("quoteToken") or {}).get("address") or "") == _sol.WSOL_MINT
+                  ),
+                  Decimal(0),
+              )
+
+              warnings = []
+              cooling = max(900, _sol._int(cfg.get("live_pool_new_pair_cooling_seconds"), 900))
+              if youngest is not None and youngest < cooling:
+                  warnings.append("POOL_NEW_COOLING")
+              return {
+                  "age_seconds": youngest,
+                  "direct_sol": direct_sol,
+                  "total_usd": total_usd,
+                  "warnings": warnings,
+              }
+
+
+          def _rug_warnings(mint: str, cfg: dict) -> list[str]:
+              timeout = float(max(Decimal("0.5"), min(Decimal("3"), _d(cfg.get("live_pool_external_timeout_seconds"), "2.5"))))
+              ttl = float(max(60, _sol._int(cfg.get("live_pool_rugcheck_cache_seconds"), 900)))
+              summary = _cached_or_get(
+                  "rugcheck",
+                  mint,
+                  f"https://api.rugcheck.xyz/v1/tokens/{urlquote(mint, safe='')}/report/summary",
+                  ttl,
+                  timeout,
+              )
+              result = _pool.evaluate_rugcheck(summary, cfg)
+              if str(result.get("decision") or "").upper() in {"COOLING", "SHADOW_ONLY"}:
+                  code = str(result.get("reason_code") or "").strip()
+                  return [code] if code else []
+              return []
+
+
+          def format_cold_zone_refusal(mint: str, reason: str, context: dict, *, test_note: str = "") -> str:
+              age = _format_age(context.get("age_seconds"))
+              warnings = [str(x) for x in (context.get("warnings") or []) if str(x).strip()]
+              warning_text = ", ".join(dict.fromkeys(warnings)) if warnings else "none"
+              direct_sol = context.get("direct_sol")
+              total_usd = context.get("total_usd")
+              direct_text = "unavailable" if direct_sol is None else f"{_d(direct_sol):,.6f} SOL"
+              usd_text = "unavailable" if total_usd is None else f"${_d(total_usd):,.2f}"
+              lines = [
+                  "❌ <b>COLD ZONE BUY REFUSED</b>",
+                  f"Pool age: <b>{html.escape(age)}</b>",
+                  f"Reason: <code>{html.escape(str(reason))}</code>",
+                  f"Warnings (not blockers): <code>{html.escape(warning_text)}</code>",
+                  f"Pool direct SOL liquidity: <b>{html.escape(direct_text)}</b>",
+                  f"Pool liquidity (all DexScreener pairs): <b>{html.escape(usd_text)}</b>",
+                  "",
+                  f"🔎 <a href=\"https://www.dexview.com/solana/{html.escape(str(mint), quote=True)}\">Open token on DexView</a>",
+              ]
+              if test_note:
+                  lines.extend(["", f"<i>{html.escape(test_note)}</i>"])
+              return "\n".join(lines)
+
+
+          def _recipient(app, event: dict, action: dict) -> str:
+              return str(
+                  action.get("telegram_id")
+                  or event.get("telegram_id")
+                  or getattr(app, "telegram_chat_id", "")
+                  or os.getenv("TELEGRAM_CHAT_ID", "")
+                  or ""
+              ).strip()
+
+
+          def _send_refusal(app, event: dict, action: dict) -> None:
+              try:
+                  mint = str(event.get("mint") or action.get("mint") or "").strip()
+                  tid = _recipient(app, event, action)
+                  token = str(getattr(app, "telegram_bot_token", "") or os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
+                  if not mint or not tid or not token:
+                      return
+                  cfg = _sol.settings(app)
+                  reason = _display_reason(str(action.get("reason") or ""), cfg)
+                  context = {"age_seconds": None, "direct_sol": None, "total_usd": None, "warnings": []}
+                  try:
+                      context.update(_dex_context(mint, cfg))
+                  except Exception as exc:
+                      print(f"[silearn-refusal-alert] dexscreener={type(exc).__name__}")
+                  try:
+                      context["warnings"] = list(context.get("warnings") or []) + _rug_warnings(mint, cfg)
+                  except Exception as exc:
+                      print(f"[silearn-refusal-alert] rugcheck={type(exc).__name__}")
+                  main_code = str(action.get("pool_risk_code") or "").strip()
+                  if main_code and main_code in context["warnings"] and main_code in str(action.get("reason") or ""):
+                      context["warnings"] = [w for w in context["warnings"] if w != main_code]
+                  text = format_cold_zone_refusal(mint, reason, context)
+                  send_message(token, tid, text, parse_mode="HTML", protect_content=True)
+                  print(f"[silearn-refusal-alert] sent=true mint={mint[:12]} reason={reason[:80]}")
+              except Exception as exc:
+                  print(f"[silearn-refusal-alert] send_failed={type(exc).__name__}: {str(exc)[:160]}")
+
+
+          def _schedule_refusal(app, event: dict, action: dict) -> None:
+              if str(event.get("action") or "").upper() != "BUY":
+                  return
+              if str(action.get("action") or "").upper() != "REJECT":
+                  return
+              mint = str(event.get("mint") or action.get("mint") or "").strip()
+              tid = _recipient(app, event, action)
+              reason = str(action.get("reason") or "").strip()
+              if not mint or not tid:
+                  return
+              category = reason.split(":", 1)[0][:80]
+              key = (tid, mint, category)
+              now = time.monotonic()
+              with _SEND_LOCK:
+                  last = float(_LAST_SENT.get(key) or 0)
+                  if now - last < _COOLDOWN_SECONDS:
+                      return
+                  _LAST_SENT[key] = now
+                  if len(_LAST_SENT) > 1000:
+                      cutoff = now - 3600
+                      for old_key, ts in list(_LAST_SENT.items()):
+                          if ts < cutoff:
+                              _LAST_SENT.pop(old_key, None)
+              threading.Thread(
+                  target=_send_refusal,
+                  args=(app, dict(event), dict(action)),
+                  name="silearn-refusal-telegram",
+                  daemon=True,
+              ).start()
+
+
+          def process_leader_event(app, event: dict):
+              actions = _PREV_PROCESS(app, event)
+              for action in actions or []:
+                  try:
+                      _schedule_refusal(app, event, action)
+                  except Exception as exc:
+                      print(f"[silearn-refusal-alert] schedule_failed={type(exc).__name__}: {str(exc)[:160]}")
+              return actions
+
+
+          def install() -> None:
+              if getattr(_sol, "_cold_zone_refusal_telegram_installed", False):
+                  return
+              _sol.process_leader_event = process_leader_event
+              _sol._cold_zone_refusal_telegram_installed = True
+              print("[silearn-refusal-alert] installed=true decision_changes=false cooldown_seconds=90")
+
+
+          install()
+          PY
+
+          ROOT="$root" sudo -n python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'learnerbot'/'__main__.py'
+          text=p.read_text(encoding='utf-8')
+          marker='from . import telegram_cold_zone_refusal_patch  # noqa: F401'
+          if marker not in text:
+              anchor='from . import solana_trade_diagnostics_patch  # noqa: F401\n'
+              if anchor not in text:
+                  raise SystemExit('missing diagnostics import anchor')
+              text=text.replace(anchor, anchor+'# Send rich SiLearn Telegram evidence for every Solana BUY refusal without changing the decision.\n'+marker+'\n', 1)
+              p.write_text(text, encoding='utf-8')
+          print('import_installed='+str(marker in p.read_text(encoding='utf-8')).lower())
+          PY
+
+          sudo -n python3 -m py_compile "$root/learnerbot/telegram_cold_zone_refusal_patch.py" "$root/learnerbot/__main__.py"
+          sudo -n systemctl restart "$service"
+          sleep 4
+          echo "service_check_1=$(systemctl is-active "$service" || true)"
+          echo "restart_count_1=$(systemctl show "$service" -p NRestarts --value || true)"
+          sleep 4
+          echo "service_check_2=$(systemctl is-active "$service" || true)"
+          echo "restart_count_2=$(systemctl show "$service" -p NRestarts --value || true)"
+          sudo -n journalctl -u "$service" -n 60 --no-pager | grep -E 'silearn-refusal-alert|Traceback|ERROR|error' | tail -30 || true
+
+          ROOT="$root" sudo -n -E python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          env={}
+          for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              if '=' in line and not line.lstrip().startswith('#'):
+                  k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env.get('TELEGRAM_BOT_TOKEN','').strip()
+          tid=env.get('TELEGRAM_CHAT_ID','').strip()
+          if not token or not tid:
+              raise SystemExit('telegram credentials missing')
+          import sys
+          sys.path.insert(0,str(root))
+          from learnerbot.telegram import send_message
+          from learnerbot.telegram_cold_zone_refusal_patch import format_cold_zone_refusal
+          mint='3K2eCRAZbv8WDhSSepRoz3YvpPyr8t3BN28MnoraoRns'
+          text=format_cold_zone_refusal(
+              mint,
+              'entry deterioration 69.580% > 10.000%',
+              {
+                  'age_seconds': 71,
+                  'warnings': ['LP_CONCENTRATION_RISK','POOL_NEW_COOLING'],
+                  'direct_sol': '147.624445',
+                  'total_usd': '31382.79',
+              },
+              test_note='Historical replay test only — no new trade was attempted.',
+          )
+          result=send_message(token,tid,text,parse_mode='HTML',protect_content=True)
+          print('historical_format_test_sent='+str(bool(result)).lower())
+          PY
