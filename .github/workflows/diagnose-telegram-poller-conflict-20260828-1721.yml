@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Compare learner and SiRisky Telegram routing safely
+      - name: Compare pollers and inspect relay safely
         shell: bash
         run: |
           set -euo pipefail
@@ -24,60 +24,55 @@ jobs:
             echo "$s active=$(systemctl is-active "$s" 2>/dev/null || true) pid=$(systemctl show -p MainPID --value "$s" 2>/dev/null || true)"
           done
 
-          echo '=== TOKEN FINGERPRINTS (never token values) ==='
+          echo '=== TOKEN FINGERPRINTS ==='
           sudo -n python3 - <<'PY'
-          import hashlib, os, re
+          import hashlib
           from pathlib import Path
-          candidates = [
-              ('learner', Path('/home/ayman01323/BOOT/testingbots/learn/.env')),
-              ('sirisky_root', Path('/root/SiRisky/.env')),
-              ('sirisky_home', Path('/home/ayman01323/BOOT/testingbots/SiRisky/.env')),
-              ('root_bot', Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')),
-          ]
-          names = ('TELEGRAM_BOT_TOKEN','BOT_TOKEN','TELEGRAM_TOKEN')
+          candidates=[('learner',Path('/home/ayman01323/BOOT/testingbots/learn/.env')),('sirisky_root',Path('/root/SiRisky/.env')),('root_bot',Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env'))]
           found=[]
           for label,p in candidates:
-              if not p.exists():
-                  print(f'{label}: file=MISSING')
-                  continue
               data={}
-              try:
-                  for line in p.read_text(encoding='utf-8', errors='ignore').splitlines():
-                      s=line.strip()
-                      if not s or s.startswith('#') or '=' not in s: continue
-                      k,v=s.split('=',1)
-                      data[k.strip()]=v.strip().strip('"').strip("'")
-              except Exception as e:
-                  print(f'{label}: read={type(e).__name__}')
-                  continue
-              token=''
-              key=''
-              for n in names:
-                  if data.get(n): token=data[n]; key=n; break
-              if token:
-                  fp=hashlib.sha256(token.encode()).hexdigest()[:12]
-                  found.append((label,fp))
-                  print(f'{label}: token_present=YES key={key} fingerprint={fp}')
-              else:
-                  print(f'{label}: token_present=NO')
-              chat = data.get('TELEGRAM_CHAT_ID') or data.get('CHAT_ID') or data.get('TELEGRAM_ALLOWED_CHAT_IDS') or ''
-              print(f'{label}: chat_config_present={"YES" if chat else "NO"}')
+              if not p.exists(): print(label,'MISSING'); continue
+              for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  s=line.strip()
+                  if s and not s.startswith('#') and '=' in s:
+                      k,v=s.split('=',1); data[k.strip()]=v.strip().strip('"').strip("'")
+              token=data.get('TELEGRAM_BOT_TOKEN') or data.get('BOT_TOKEN') or data.get('TELEGRAM_TOKEN') or ''
+              fp=hashlib.sha256(token.encode()).hexdigest()[:12] if token else 'NONE'
+              print(f'{label}: token_present={"YES" if token else "NO"} fingerprint={fp}')
+              if token: found.append((label,fp))
           for i,(a,fa) in enumerate(found):
               for b,fb in found[i+1:]:
-                  if fa==fb:
-                      print(f'SAME_TOKEN={a}:{b}:{fa}')
+                  if fa==fb: print(f'SAME_TOKEN={a}:{b}:{fa}')
           PY
 
-          echo '=== PROCESS COMMANDS ==='
-          ps -eo pid,user,cmd --no-headers | grep -E 'learnerbot|SiRisky|sirisky|telegram' | grep -v grep | sed -E 's/[0-9]{8,}:[A-Za-z0-9_-]{20,}/<redacted-token>/g' | head -80 || true
-
-          echo '=== RECENT TELEGRAM POLLING SIGNALS ==='
-          for s in learnerbot-learn.service sirisky.service; do
-            echo "--- $s ---"
-            sudo -n journalctl -u "$s" --since '15 minutes ago' --no-pager -o cat 2>/dev/null \
-              | grep -Ei 'telegram|getUpdates|409|conflict|poll|webhook|learnerarm|SiRisky commands' \
-              | tail -120 || true
+          echo '=== POLLER PROCESSES / CGROUPS ==='
+          for pid in $(pgrep -f 'learnerbot run|SiRisky/run.py start|google_learner_telegram_relay.py' || true); do
+            cmd=$(tr '\0' ' ' </proc/$pid/cmdline 2>/dev/null | sed -E 's/[0-9]{8,}:[A-Za-z0-9_-]{20,}/<redacted-token>/g')
+            echo "PID=$pid CMD=$cmd"
+            cat /proc/$pid/cgroup 2>/dev/null | tail -3 || true
           done
+
+          echo '=== RELAY ROUTING STRUCTURE ==='
+          p=/home/ayman01323/.local/libexec/google_learner_telegram_relay.py
+          if [ -r "$p" ]; then
+            python3 - "$p" <<'PY'
+          import ast,sys
+          p=sys.argv[1]; src=open(p,encoding='utf-8',errors='ignore').read(); tree=ast.parse(src)
+          print('relay_lines',len(src.splitlines()))
+          for n in ast.walk(tree):
+              if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)): print('FUNCTION',n.name,'line',n.lineno)
+          keys=('getupdates','offset','update_id','learner','sirisky','command','subprocess','systemctl','queue','socket','telegram')
+          for i,line in enumerate(src.splitlines(),1):
+              low=line.lower()
+              if any(k in low for k in keys):
+                  out=line
+                  if 'token' in low and '=' in line: out=line.split('=',1)[0]+'=<redacted>'
+                  print(f'LINE {i}: {out[:500]}')
+          PY
+          else
+            echo 'relay_source=UNREADABLE'
+          fi
 
           echo '=== NO CHANGES MADE ==='
           echo 'service_change=NO'
