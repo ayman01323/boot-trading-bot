@@ -1,4 +1,4 @@
-name: Inspect Learner 180s Snapshot 20260828
+name: Inspect Learner 0040 Snapshot 20260828
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Broad read-only search for exact 180s Learner settings snapshot
+      - name: Read-only recovery of settings nearest 00:40 BST
         shell: bash
         run: |
           set -euo pipefail
@@ -26,67 +26,54 @@ jobs:
           export TARGET
 
           python3 - <<'PY'
-          import csv, os, re
+          import csv, os, datetime
           from pathlib import Path
-
           root=Path(os.environ['TARGET'])
-          print('target='+str(root))
+          target_epoch=int(datetime.datetime(2026,8,27,23,40,0,tzinfo=datetime.timezone.utc).timestamp())
+          print('target_time_bst=2026-08-28T00:40:00+01:00')
+          print('target_time_utc=2026-08-27T23:40:00Z')
           print('mutation=NO')
-          deny=('wallet','secret','token','private_key','apikey','api_key','.env','telegram','credential')
-          allowed_ext={'.csv','.txt','.bak','.old','.json','.ndjson','.log','.py'}
-          hits=[]
-          pat_csv=re.compile(r'(?im)^\s*["\']?max_signal_age_seconds["\']?\s*[,=:]\s*["\']?180(?:\.0+)?["\']?(?:\s*[,#]|\s*$)')
-          pat_code=re.compile(r'(?i)max_signal_age_seconds.{0,80}(?:["\']180["\']|\b180\b)')
+          names={'solana_settings.csv','user_trading_settings.csv'}
+          files=[]
           for p in root.rglob('*'):
-              if not p.is_file() or p.suffix.lower() not in allowed_ext:
-                  continue
-              rel=str(p.relative_to(root)).lower()
-              if any(x in rel for x in deny):
-                  continue
-              try:
-                  if p.stat().st_size>3_000_000: continue
-                  text=p.read_text(encoding='utf-8-sig',errors='replace')
-              except Exception:
-                  continue
-              if 'max_signal_age_seconds' not in text or '180' not in text:
-                  continue
-              if pat_csv.search(text) or pat_code.search(text):
-                  hits.append((p,text))
-          print('broad_exact_180_hits='+str(len(hits)))
-          for i,(p,text) in enumerate(sorted(hits,key=lambda z:z[0].stat().st_mtime),1):
-              print(f'--- HIT {i} ---')
-              print('path='+str(p))
-              print('mtime_epoch='+str(int(p.stat().st_mtime)))
-              if p.suffix.lower()=='.csv':
-                  try:
-                      rows=list(csv.DictReader(text.splitlines()))
-                      if rows and 'setting' in rows[0] and 'value' in rows[0]:
-                          print('format=settings_csv')
-                          for r in rows:
-                              k=str(r.get('setting') or '').strip()
-                              v=str(r.get('value') or '').strip()
-                              d=str(r.get('description') or '').strip()
-                              if k: print(f'SETTING {k}={v} | {d}')
-                          continue
+              if p.is_file() and p.name in names:
+                  try: files.append((int(p.stat().st_mtime),p))
                   except Exception: pass
-              # For source/log-like matches, print only safe context around the exact setting.
-              lines=text.splitlines()
-              for n,line in enumerate(lines):
-                  if 'max_signal_age_seconds' in line and '180' in line:
-                      a=max(0,n-8); b=min(len(lines),n+9)
-                      print('context_start')
-                      for x in lines[a:b]: print(x[:500])
-                      print('context_end')
+          for name in ('solana_settings.csv','user_trading_settings.csv'):
+              prior=[(m,p) for m,p in files if p.name==name and m<=target_epoch]
+              print(f'--- {name} ---')
+              if not prior:
+                  print('selected=NONE_BEFORE_TARGET')
+                  continue
+              m,p=max(prior,key=lambda x:x[0])
+              print('selected_path='+str(p))
+              print('mtime_epoch='+str(m))
+              print('seconds_before_target='+str(target_epoch-m))
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  rows=list(csv.DictReader(f))
+              if name=='solana_settings.csv':
+                  for r in rows:
+                      k=str(r.get('setting') or '').strip(); v=str(r.get('value') or '').strip(); d=str(r.get('description') or '').strip()
+                      if k: print(f'SETTING {k}={v} | {d}')
+              else:
+                  allowed={'sibot_settings_source','sibot_enabled','sibot_auto_trade_enabled','solana_live_enabled','learner_new_entries_enabled','solana_live_trade_sol','solana_live_min_reserve_sol','solana_live_max_positions','solana_min_trade_sol'}
+                  for r in rows:
+                      k=str(r.get('setting') or '').strip()
+                      if k not in allowed: continue
+                      chain=str(r.get('chain_id') or '').strip(); v=str(r.get('value') or '').strip(); d=str(r.get('description') or '').strip()
+                      print(f'USER_SETTING chain={chain} {k}={v} | {d}')
+          print('--- SNAPSHOT_TIMELINE_PLUS_MINUS_6H ---')
+          for m,p in sorted((m,p) for m,p in files if abs(m-target_epoch)<=21600):
+              print(f'SNAPSHOT path={p} mtime_epoch={m} delta_seconds={m-target_epoch}')
           PY
 
-          echo '--- JOURNAL_EXACT_SIGNAL_HINTS ---'
+          echo '--- JOURNAL_0030_TO_0050_BST ---'
           sudo -n journalctl -u learnerbot-learn.service \
-            --since '2026-08-28 09:00:00' --until '2026-08-28 15:00:00' --no-pager 2>/dev/null \
-            | grep -Ei 'max_signal_age_seconds.{0,40}180|signal_age.{0,20}180|signal age.{0,20}180|cold.zone.{0,80}180' \
-            | grep -Evi 'alchemy|drainer|retry|resume|cooldown' \
+            --since '2026-08-27 23:30:00 UTC' --until '2026-08-27 23:50:00 UTC' --no-pager 2>/dev/null \
+            | grep -Ei 'signal|setting|live|entry|trade|leader|position|armed|enabled|disabled|cold.zone' \
             | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
-            | tail -200 || true
+            | tail -250 || true
 
-          echo 'inspection_complete=true'
-          echo 'settings_mutated=NO'
-          echo 'service_restarted=NO'
+          echo inspection_complete=true
+          echo settings_mutated=NO
+          echo service_restarted=NO
