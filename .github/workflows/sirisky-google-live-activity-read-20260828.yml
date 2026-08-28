@@ -23,8 +23,8 @@ jobs:
           test "$(id -un)" = ayman01323
           target=/home/ayman01323/BOOT/testingbots/learn
           expected=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+          service=learnerbot-learn.service
           test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$expected"
-
           sudo -n bash -lc '
             set -Eeuo pipefail
             target=/home/ayman01323/BOOT/testingbots/learn
@@ -41,54 +41,28 @@ jobs:
             python3 -m py_compile "$main"
             systemctl start "$service"
           '
-
           sleep 12
-          state1="$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          n1="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo unknown)"
+          state1="$(systemctl is-active "$service" 2>/dev/null || true)"
+          n1="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
           sleep 6
-          state2="$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          n2="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo unknown)"
-
+          state2="$(systemctl is-active "$service" 2>/dev/null || true)"
+          n2="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
           echo "source_sha=$expected"
           echo "compatibility_change=skip_production_polygon_migration_only"
           echo "service_state_1=$state1"
           echo "service_state_2=$state2"
           echo "restart_count_1=$n1"
           echo "restart_count_2=$n2"
-
-          TARGET="$target" python3 - <<'PY'
-import csv, os, sqlite3, time
-from pathlib import Path
-root=Path(os.environ['TARGET'])
-print('=== CONTROLS ===')
-for filename in ('solana_settings.csv','user_trading_settings.csv'):
-    p=root/'CSVbot'/filename
-    if not p.exists(): continue
-    with p.open(encoding='utf-8-sig',newline='') as f:
-        for row in csv.DictReader(f):
-            key=str(row.get('setting') or '')
-            if key in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}:
-                prefix='user=[redacted] ' if filename.startswith('user_') else 'platform '
-                print(prefix+f"chain={row.get('chain_id','')} {key}={row.get('value','')}")
-print('=== LIVE DB ===')
-db=root/'data/solana_sibot.sqlite3'
-conn=sqlite3.connect(f'file:{db}?mode=ro',uri=True); conn.row_factory=sqlite3.Row
-for row in conn.execute("select status,count(*) n from positions where mode='LIVE' group by status order by status"):
-    print(dict(row))
-cutoff=int(time.time())-300
-rows=conn.execute("select action,status,error,created_at from live_execution_attempts where created_at>=? order by created_at desc limit 20",(cutoff,)).fetchall()
-print('attempts_last_5m='+str(len(rows)))
-for row in rows:
-    d=dict(row); d['error']=str(d.get('error') or '')[:180]
-    print(d)
-conn.close()
-PY
-
+          echo '=== CONTROLS ==='
+          grep -E '^(live_trade_sol|live_min_sol_reserve|live_max_positions|live_require_simulation),' "$target/CSVbot/solana_settings.csv" || true
+          grep -E ',(learner_new_entries_enabled|solana_live_enabled|sibot_enabled|sibot_auto_trade_enabled|solana_live_trade_sol|solana_live_min_reserve_sol),' "$target/CSVbot/user_trading_settings.csv" | sed -E 's/^[^,]+,/[redacted],/' || true
+          echo '=== LIVE POSITION COUNTS ==='
+          sqlite3 "$target/data/solana_sibot.sqlite3" "select status,count(*) from positions where mode='LIVE' group by status order by status;" || true
+          echo '=== RECENT LIVE ATTEMPTS ==='
+          cutoff="$(( $(date +%s) - 300 ))"
+          sqlite3 "$target/data/solana_sibot.sqlite3" "select action,status,substr(error,1,180),created_at from live_execution_attempts where created_at >= $cutoff order by created_at desc limit 20;" || true
           echo '=== SERVICE TAIL ==='
-          journalctl -u learnerbot-learn.service -n 140 --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|Polygon|BUY|SELL|LIVE|entry|ERROR|REJECT' \
-            | tail -n 140 || true
-
+          journalctl -u "$service" -n 160 --no-pager -o cat 2>/dev/null | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|Polygon|BUY|SELL|LIVE|entry|ERROR|REJECT' | tail -n 160 || true
           test "$state1" = active
           test "$state2" = active
           test "$n1" = "$n2"
