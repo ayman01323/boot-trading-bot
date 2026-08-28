@@ -1,0 +1,112 @@
+name: GPT Solana LIVE Attempt Diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/gpt-solana-live-attempt-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpt-solana-live-attempt-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Read redacted Solana LIVE attempt aggregates
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB=/root/multichain-learning-bot-v2.2-fast-direct-market/data/sibot1_solana_live_bridge.sqlite3
+          test -r "$DB"
+          DB="$DB" python3 - <<'PY' > /tmp/gpt-solana-live-attempts.json
+          import json, os, sqlite3, time
+          from collections import Counter, defaultdict
+
+          db=os.environ['DB']
+          conn=sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=5)
+          conn.row_factory=sqlite3.Row
+          attempts=conn.execute(
+              "SELECT engine_id,kind,status,created_at,updated_at,error FROM attempts ORDER BY updated_at DESC LIMIT 300"
+          ).fetchall()
+          positions=conn.execute(
+              "SELECT engine_id,status,COUNT(*) n FROM positions GROUP BY engine_id,status ORDER BY engine_id,status"
+          ).fetchall()
+          conn.close()
+
+          by_engine=defaultdict(Counter)
+          kind_by_engine=defaultdict(Counter)
+          latest_by_engine={}
+          block_class=defaultdict(Counter)
+
+          def classify(status, error):
+              s=str(status or '').upper()
+              e=str(error or '').lower()
+              if s == 'EXECUTED': return 'executed'
+              if 'pool' in e or 'rugcheck' in e or 'liquid' in e or 'reverse' in e or 'impact' in e: return 'live_market_safety'
+              if 'quote' in e or 'jupiter' in e: return 'quote_or_route'
+              if 'simulation' in e: return 'simulation'
+              if 'signer' in e or 'permission' in e or 'fund' in e or 'armed' in e or 'live' in e or 'auto' in e: return 'readiness'
+              if s.startswith('BLOCKED_'): return 'blocked_other'
+              if 'FAILED' in s or 'REJECTED' in s or 'INVALID' in s: return 'execution_failure'
+              return 'other'
+
+          for r in attempts:
+              engine=str(r['engine_id'] or 'unknown').lower()
+              status=str(r['status'] or 'UNKNOWN').upper()
+              kind=str(r['kind'] or 'UNKNOWN').upper()
+              by_engine[engine][status]+=1
+              kind_by_engine[engine][kind]+=1
+              block_class[engine][classify(status, r['error'])]+=1
+              if engine not in latest_by_engine:
+                  latest_by_engine[engine]={
+                      'kind': kind,
+                      'status': status,
+                      'updated_at': int(r['updated_at'] or 0),
+                      'age_seconds': max(0, int(time.time())-int(r['updated_at'] or 0)),
+                      'error_class': classify(status, r['error']),
+                  }
+
+          pos={}
+          for r in positions:
+              engine=str(r['engine_id'] or 'unknown').lower()
+              pos.setdefault(engine,{})[str(r['status'] or 'UNKNOWN').upper()]=int(r['n'] or 0)
+
+          out={
+              'redacted': True,
+              'identifiers_exported': False,
+              'transactions_exported': False,
+              'updated_epoch': int(time.time()),
+              'attempt_rows_tail': len(attempts),
+              'status_by_engine': {k:dict(v) for k,v in sorted(by_engine.items())},
+              'kind_by_engine': {k:dict(v) for k,v in sorted(kind_by_engine.items())},
+              'failure_class_by_engine': {k:dict(v) for k,v in sorted(block_class.items())},
+              'latest_by_engine': latest_by_engine,
+              'positions_by_engine': pos,
+          }
+          print(json.dumps(out, indent=2, sort_keys=True))
+          PY
+          cat /tmp/gpt-solana-live-attempts.json
+
+      - name: Publish redacted snapshot
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-gpt-solana-live-attempts.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/gpt-solana-live-attempts.json)"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/gpt-solana-live-attempts-put.json
+          import json,sys
+          out={'message':'Update redacted GPT Solana LIVE attempt diagnostics','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: out['sha']=sys.argv[2]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/gpt-solana-live-attempts-put.json >/dev/null
