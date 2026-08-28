@@ -70,6 +70,13 @@ def _range_quality(value: float, lower: float, upper: float) -> float:
     return _clamp01(1.0 - abs(value - midpoint) / half_width)
 
 
+def _minimum_to_target_quality(value: float, lower: float, target: float) -> float:
+    """Score from zero at a hard lower bound to one at/above a target."""
+    if target <= lower:
+        return 1.0 if value >= target else 0.0
+    return _clamp01((value - lower) / (target - lower))
+
+
 class GrokStrategy:
     """PAPER/SHADOW research scorer; it does not authorise or execute trades."""
 
@@ -135,12 +142,14 @@ class GrokStrategy:
         if not momentum_5m_ok:
             reasons.append(f"momentum_5m_out_of_range:{obs.momentum_5m_pct:.3f}")
 
-        momentum_15m_ok = (
-            not self.settings.require_positive_momentum_15m
-            or obs.momentum_15m_pct > 0.0
-        )
-        if not momentum_15m_ok:
-            reasons.append(f"non_positive_15m_momentum:{obs.momentum_15m_pct:.3f}")
+        if self.settings.require_positive_momentum_15m:
+            momentum_15m_ok = obs.momentum_15m_pct > 0.0
+            if not momentum_15m_ok:
+                reasons.append(f"non_positive_15m_momentum:{obs.momentum_15m_pct:.3f}")
+        else:
+            momentum_15m_ok = obs.momentum_15m_pct >= self.settings.momentum_15m_min_pct
+            if not momentum_15m_ok:
+                reasons.append(f"adverse_15m_momentum:{obs.momentum_15m_pct:.3f}")
 
         costs_non_negative = (
             obs.estimated_fee_bps >= 0.0
@@ -166,7 +175,11 @@ class GrokStrategy:
         if self.settings.require_positive_momentum_15m:
             momentum_15m_score = _clamp01(obs.momentum_15m_pct / 1.0)
         else:
-            momentum_15m_score = 1.0
+            momentum_15m_score = _minimum_to_target_quality(
+                obs.momentum_15m_pct,
+                self.settings.momentum_15m_min_pct,
+                1.0,
+            )
 
         mutable_features = {
             "freshness_score": _maximum_quality(
