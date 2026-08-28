@@ -1,0 +1,26 @@
+name: SiRisky Shadow Restore V2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/temp-sirisky-shadow-restore-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - boot-google
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore shadow settings
+        shell: bash
+        run: sudo -n bash scripts/restore_sirisky_1240_shadow_15pct_0090.sh
