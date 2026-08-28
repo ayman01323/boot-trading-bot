@@ -15,9 +15,10 @@ def test_solana_buy_and_sell_notifications_show_usd(monkeypatch):
         ),
     )
 
+    mint = "6Mfj9t4WMN1c6CMpYZm8GvJsW3TiE7SrbrBqpBRnmUgd"
     buy = order_usd.annotate_order_text(
         object(),
-        "🚀 <b>Solana LIVE BUY confirmed</b>\nSpent: <b>0.005 SOL</b>\nToken: <code>mint</code>",
+        f"🚀 <b>Solana LIVE BUY confirmed</b>\nSpent: <b>0.005 SOL</b>\nToken: <code>{mint}</code>",
     )
     sell = order_usd.annotate_order_text(
         object(),
@@ -25,8 +26,25 @@ def test_solana_buy_and_sell_notifications_show_usd(monkeypatch):
     )
 
     assert "0.005 SOL (≈ $1.00)" in buy
+    assert f'https://www.dexview.com/solana/{mint}' in buy
+    assert '>DEX View</a>' in buy
     assert "0.006 SOL (≈ $1.20)" in sell
     assert "+0.001 SOL (≈ $0.20)" in sell
+    assert "dexview.com/solana/" not in sell
+
+
+def test_learner_buy_notification_gets_dynamic_dexview_link(monkeypatch):
+    monkeypatch.setattr(order_usd._usd, "annotate_text", lambda app, text: text)
+    mint = "6Mfj9t4WMN1c6CMpYZm8GvJsW3TiE7SrbrBqpBRnmUgd"
+    text = order_usd.annotate_order_text(
+        object(),
+        f"🚀 <b>LEARNER LIVE BUY CONFIRMED</b>\nToken: <code>{mint}</code>",
+    )
+    assert text.count("dexview.com/solana/") == 1
+    assert f'https://www.dexview.com/solana/{mint}' in text
+
+    already_linked = order_usd.annotate_order_text(object(), text)
+    assert already_linked.count("dexview.com/solana/") == 1
 
 
 def test_solana_sell_pnl_emojis_follow_realised_result():
@@ -74,6 +92,7 @@ def test_evm_buy_and_exit_notifications_show_usd(monkeypatch):
 
     assert "0.002 ETH (≈ $8.00)" in buy
     assert "+0.0005 ETH (≈ $2.00)" in exit_text
+    assert "dexview.com/solana/" not in buy
 
 
 def test_non_order_message_is_not_changed(monkeypatch):
