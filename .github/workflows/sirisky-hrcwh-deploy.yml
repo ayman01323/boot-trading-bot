@@ -1,4 +1,4 @@
-name: SiRisky HR-CWH Governed LIVE Armed
+name: SiRisky Governed LIVE Auto Execution
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sirisky-hrcwh-governed-live-armed
+  group: sirisky-governed-live-auto
   cancel-in-progress: false
 
 jobs:
@@ -33,14 +33,11 @@ jobs:
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           WRAPPER=/root/SiRisky/ops/sirisky-governed-live-arm
-          if [[ ! -x "$WRAPPER" ]]; then
-            echo 'ERROR: restricted SiRisky governed-LIVE wrapper is not installed under the bot folder.' >&2
-            echo 'Install it once as root with scripts/install_sirisky_governed_live_ops.sh.' >&2
-            exit 2
-          fi
+          # The runner cannot stat paths below /root directly. Verify the exact
+          # sudo grant instead of using a non-root test -x visibility check.
           sudo -n -l "$WRAPPER" >/dev/null
 
-      - name: Arm governed LIVE through bot-local restricted root wrapper
+      - name: Arm governed LIVE automatic execution
         shell: bash
         run: |
           set -euo pipefail
@@ -51,19 +48,19 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## SiRisky governed LIVE state applied'
+            echo '## SiRisky governed LIVE automatic state applied'
             echo
             echo '- Bot-local wrapper: /root/SiRisky/ops/sirisky-governed-live-arm'
             echo '- trading_mode: LIVE'
             echo '- live_enabled: 1'
             echo '- broadcast_enabled: 1'
             echo '- Automatic discovery/evaluation: ON'
-            echo '- Manual approval gate: ON'
-            echo '- External signature: REQUIRED'
+            echo '- Manual approval gate: OFF'
+            echo '- External signature requirement: OFF'
+            echo '- Stage-3-approved orders: flow directly to Stage 5'
             echo '- Telegram direct real-money execution: OFF'
+            echo '- Existing strategy/risk gates: RETAINED'
             echo '- Service restart and active-state assertion: PASSED'
-            echo
-            echo '> This is approval-gated LIVE readiness. It does not bypass the external-signature requirement.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Failed deployment summary
@@ -71,7 +68,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## SiRisky governed LIVE state NOT applied'
+            echo '## SiRisky governed LIVE automatic state NOT applied'
             echo
             echo '- Do not treat this workflow run as proof that LIVE/broadcast is enabled.'
             echo '- Inspect the failed step before changing trading state.'
