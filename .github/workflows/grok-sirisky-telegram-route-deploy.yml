@@ -1,0 +1,138 @@
+name: Grok Telegram Route Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'SiRisky/overrides/run.py'
+      - '.github/workflows/grok-sirisky-telegram-route-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grok-sirisky-telegram-route-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout trusted main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify receiver and patch boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n true
+          sudo test -f /root/SiRisky/run.py
+          sudo test -f /root/SiRisky/CSV/runtime.csv
+          grep -q 'GROK_CONTROL_DEFAULT' SiRisky/overrides/run.py
+          grep -q 'live_money_enabled.*False' SiRisky/overrides/run.py
+          grep -q 'command=="/grokstatus"' SiRisky/overrides/run.py
+          grep -q 'command=="/grokarm"' SiRisky/overrides/run.py
+          echo "receiver_boundary=PASS"
+
+      - name: Snapshot SiRisky runtime state
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo python3 - /root/SiRisky/CSV/runtime.csv /tmp/grok-route-runtime-before <<'PY'
+          import csv,sys
+          from pathlib import Path
+          src=Path(sys.argv[1]); out=Path(sys.argv[2])
+          wanted=['trading_mode','live_enabled','broadcast_enabled','manual_approval_enabled','armed_manual_approval','manual_approval_require_external_signature','telegram_manual_run_enabled']
+          rows=list(csv.DictReader(src.open(encoding='utf-8-sig',newline='')))
+          by={str(r.get('setting') or ''):str(r.get('value') or '') for r in rows}
+          out.write_text('\n'.join(f'{k}={by.get(k,"")}' for k in wanted)+'\n',encoding='utf-8')
+          PY
+          sudo cat /tmp/grok-route-runtime-before
+          echo "service_before=$(sudo systemctl is-active sirisky.service 2>/dev/null || true)" | tee /tmp/grok-route-service-before
+
+      - name: Install receiver-only code patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo mkdir -p /root/SiRisky/data/grok-route-backups
+          sudo cp -a /root/SiRisky/run.py "/root/SiRisky/data/grok-route-backups/run.py.$stamp"
+          sudo install -o root -g root -m 0644 SiRisky/overrides/run.py /root/SiRisky/run.py
+          sudo env PYTHONPATH=/root/SiRisky /root/SiRisky/.venv/bin/python -m py_compile /root/SiRisky/run.py
+          echo "code_install=PASS"
+
+      - name: Test Grok route against isolated control file
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -f /tmp/grok-route-control-test.json
+          sudo env PYTHONPATH=/root/SiRisky GROK_CONTROL_FILE=/tmp/grok-route-control-test.json /root/SiRisky/.venv/bin/python - <<'PY'
+          import json,os
+          import run
+          assert 'OFF' in run._grok_command('/grokstatus','workflow-test')
+          assert 'ARMED' in run._grok_command('/grokarm on CONFIRM','workflow-test')
+          state=json.load(open('/tmp/grok-route-control-test.json',encoding='utf-8'))
+          assert state['armed'] is True
+          assert state['mode']=='PAPER_ONLY'
+          assert state['live_money_enabled'] is False
+          assert 'ARMED' in run._grok_command('/grokstatus@AnyBot','workflow-test')
+          assert 'Use exactly' in run._grok_command('/grokarm on WRONG','workflow-test')
+          assert 'OFF' in run._grok_command('/grokarm off','workflow-test')
+          state=json.load(open('/tmp/grok-route-control-test.json',encoding='utf-8'))
+          assert state['armed'] is False
+          assert (os.stat('/tmp/grok-route-control-test.json').st_mode & 0o777)==0o644
+          print('isolated_grok_route_test=PASS')
+          PY
+          sudo rm -f /tmp/grok-route-control-test.json
+
+      - name: Prove SiRisky runtime settings were not changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo python3 - /root/SiRisky/CSV/runtime.csv /tmp/grok-route-runtime-after <<'PY'
+          import csv,sys
+          from pathlib import Path
+          src=Path(sys.argv[1]); out=Path(sys.argv[2])
+          wanted=['trading_mode','live_enabled','broadcast_enabled','manual_approval_enabled','armed_manual_approval','manual_approval_require_external_signature','telegram_manual_run_enabled']
+          rows=list(csv.DictReader(src.open(encoding='utf-8-sig',newline='')))
+          by={str(r.get('setting') or ''):str(r.get('value') or '') for r in rows}
+          out.write_text('\n'.join(f'{k}={by.get(k,"")}' for k in wanted)+'\n',encoding='utf-8')
+          PY
+          sudo diff -u /tmp/grok-route-runtime-before /tmp/grok-route-runtime-after
+          echo "runtime_unchanged=PASS"
+
+      - name: Activate only when SiRisky broadcast is already OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(cut -d= -f2- /tmp/grok-route-service-before)"
+          broadcast="$(sudo awk -F, '$1=="broadcast_enabled" {gsub(/\r/,"",$2); print $2}' /root/SiRisky/CSV/runtime.csv | tail -1)"
+          echo "sirisky_service_before=$before"
+          echo "sirisky_broadcast_enabled=$broadcast"
+          if [[ "$before" == "active" && "$broadcast" =~ ^(0|false|False|FALSE)$ ]]; then
+            sudo systemctl restart sirisky.service
+            sleep 3
+            sudo systemctl is-active --quiet sirisky.service
+            echo "receiver_activation=ACTIVE_SAFE_BROADCAST_OFF"
+          elif [[ "$broadcast" =~ ^(1|true|True|TRUE)$ ]]; then
+            echo "receiver_activation=DEFERRED_SIRISKY_BROADCAST_ON"
+            echo "The code is installed, but this workflow will not restart a real-money SiRisky process."
+          else
+            echo "receiver_activation=DEFERRED_SERVICE_NOT_ACTIVE_OR_UNKNOWN_STATE"
+          fi
+
+      - name: Report Grok service state
+        if: always()
+        shell: bash
+        run: |
+          echo "grok_service=$(sudo systemctl is-active grok-known-assets-bot.service 2>/dev/null || true)"
+          echo "sirisky_service=$(sudo systemctl is-active sirisky.service 2>/dev/null || true)"
+          sudo rm -f /tmp/grok-route-runtime-before /tmp/grok-route-runtime-after /tmp/grok-route-service-before /tmp/grok-route-control-test.json || true
