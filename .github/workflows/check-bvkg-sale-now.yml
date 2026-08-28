@@ -1,0 +1,51 @@
+name: Check BvKg Learner Sale Now
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-bvkg-sale-now.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Read current BvKg sale state
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          test "$(systemctl is-active "$service")" = active
+          TARGET="$target" python3 - <<'PY'
+          import json, os, sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2)
+          con.row_factory=sqlite3.Row
+          pid='714f26073ebc1928896ac985c96371f7'
+          row=con.execute('SELECT * FROM positions WHERE position_id=?',(pid,)).fetchone()
+          if row:
+              d=dict(row)
+              keys=['position_id','mint','status','token_amount_raw','entry_cost_sol','current_exit_sol','unrealised_net_sol','unrealised_pct','leader_exit_pending','realised_net_sol','exit_signature','exit_reason','closed_at','updated_at']
+              print('POSITION='+json.dumps({k:d.get(k) for k in keys},separators=(',',':'),default=str))
+          else:
+              print('POSITION=MISSING')
+          if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_exit_circuit'").fetchone():
+              c=con.execute('SELECT * FROM live_exit_circuit WHERE position_id=?',(pid,)).fetchone()
+              if c:
+                  d=dict(c)
+                  keys=['position_id','status','tx_signature','error','fraction','close_reason','sell_raw','opened_at','updated_at']
+                  print('CIRCUIT='+json.dumps({k:d.get(k) for k in keys},separators=(',',':'),default=str))
+              else:
+                  print('CIRCUIT=NONE')
+          con.close()
+          PY
+          echo '--- recent relevant journal ---'
+          sudo -n journalctl -u "$service" --since '-15 min' --no-pager -o cat \
+            | grep -Ei '714f2607|BvKgVjs|exit circuit reconciled|reconciliation|LIVE SELL confirmed' \
+            | tail -80 || true
