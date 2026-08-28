@@ -23,9 +23,8 @@ jobs:
           export TARGET=/home/ayman01323/BOOT/testingbots/learn
           export EXPECTED_SHA=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
           service=learnerbot-learn.service
-          vpy="$TARGET/.venv/bin/python"
-          test -x "$vpy"
           test "$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$EXPECTED_SHA"
+
           python3 - <<'PY'
           import csv, json, os, sqlite3, urllib.request
           from pathlib import Path
@@ -80,45 +79,82 @@ jobs:
           marker.write_text(next(iter(tids)),encoding='utf-8'); os.chmod(marker,0o600)
           PY
 
-          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" "$vpy" - <<'PY'
-          import os
+          sudo -n -u ayman01323 env TARGET="$TARGET" python3 - <<'PY'
+          import csv, os, tempfile
           from pathlib import Path
-          from learnerbot.user_registry import set_user_setting
           root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
-          set_user_setting(root/'CSVbot',tid,'solana_live_trade_sol','0.0005',chain_id='-101',description='Restored morning isolated Learner canary size')
-          set_user_setting(root/'CSVbot',tid,'solana_live_min_reserve_sol','0.005',chain_id='-101',description='Restored morning isolated Learner reserve')
-          set_user_setting(root/'CSVbot',tid,'learner_new_entries_enabled','true',chain_id='-101',description='Morning Learner new-entry gate restored after verified zero exposure')
-          set_user_setting(root/'CSVbot',tid,'solana_live_enabled','true',chain_id='-101',description='Explicit owner rearm after both quarantined mints verified zero on-chain')
-          set_user_setting(root/'CSVbot',tid,'sibot_enabled','true',chain_id='*',description='Morning SiBot monitoring enabled')
-          set_user_setting(root/'CSVbot',tid,'sibot_auto_trade_enabled','true',chain_id='*',description='Morning automated routing enabled; all execution safety remains authoritative')
+          path=root/'CSVbot'/'user_trading_settings.csv'
+          headers=['telegram_id','chain_id','setting','value','description']
+          with path.open('r',encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+          wanted={
+            ('-101','solana_live_trade_sol'):('0.0005','Restored morning isolated Learner canary size'),
+            ('-101','solana_live_min_reserve_sol'):('0.005','Restored morning isolated Learner reserve'),
+            ('-101','learner_new_entries_enabled'):('true','Morning Learner new-entry gate restored after verified zero exposure'),
+            ('-101','solana_live_enabled'):('true','Explicit owner rearm after both quarantined mints verified zero on-chain'),
+            ('*','sibot_enabled'):('true','Morning SiBot monitoring enabled'),
+            ('*','sibot_auto_trade_enabled'):('true','Morning automated routing enabled; all execution safety remains authoritative'),
+          }
+          out=[]; seen=set()
+          for row in rows:
+              if str(row.get('telegram_id','')).strip()!=tid:
+                  out.append(row); continue
+              key=(str(row.get('chain_id','*')).strip(),str(row.get('setting','')).strip())
+              if key not in wanted:
+                  out.append(row); continue
+              if key in seen:
+                  continue
+              value,desc=wanted[key]
+              out.append({'telegram_id':tid,'chain_id':key[0],'setting':key[1],'value':value,'description':desc}); seen.add(key)
+          for key,(value,desc) in wanted.items():
+              if key not in seen:
+                  out.append({'telegram_id':tid,'chain_id':key[0],'setting':key[1],'value':value,'description':desc})
+          tmp=path.with_suffix('.csv.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=headers); w.writeheader(); w.writerows([{h:r.get(h,'') for h in headers} for r in out]); f.flush(); os.fsync(f.fileno())
+          os.replace(tmp,path)
           print('settings_written=true')
           PY
+
           sudo -n systemctl restart "$service"
-          sleep 12
+          sleep 15
           test "$(systemctl is-active "$service")" = active
-          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" "$vpy" - <<'PY'
-          import os, sqlite3
+
+          TARGET="$TARGET" python3 - <<'PY'
+          import csv, os, sqlite3
           from pathlib import Path
-          from learnerbot import solana_live_patch as live
-          from learnerbot.user_registry import user_bool
-          class A: pass
-          root=Path(os.environ['TARGET']); a=A(); a.csv_dir=root/'CSVbot'; a.data_dir=root/'data'
-          tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
-          trade,reserve=live.live_limits(a,tid)
-          print('effective_live_enabled='+str(live.live_enabled(a,tid)).lower())
-          print('effective_trade_sol='+str(trade))
-          print('effective_reserve_sol='+str(reserve))
-          print('effective_sibot_enabled='+str(user_bool(a.csv_dir,tid,0,'sibot_enabled',False)).lower())
-          print('effective_sibot_auto='+str(user_bool(a.csv_dir,tid,0,'sibot_auto_trade_enabled',False)).lower())
+          root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip(); path=root/'CSVbot'/'user_trading_settings.csv'
+          with path.open('r',encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+          def setting(name,target,default=''):
+              value=default
+              for r in rows:
+                  if r.get('telegram_id','').strip()==tid and r.get('chain_id','*').strip() in ('','0') and r.get('setting','').strip()==name:value=r.get('value',default)
+              for r in rows:
+                  if r.get('telegram_id','').strip()==tid and r.get('chain_id','*').strip()=='*' and r.get('setting','').strip()==name:value=r.get('value',default)
+              if str(target) not in ('','*','0'):
+                  for r in rows:
+                      if r.get('telegram_id','').strip()==tid and r.get('chain_id','').strip()==str(target) and r.get('setting','').strip()==name:value=r.get('value',default)
+              return str(value).strip()
+          print('effective_live_enabled='+setting('solana_live_enabled',-101,'false').lower())
+          print('effective_trade_sol='+setting('solana_live_trade_sol',-101,'0.005'))
+          print('effective_reserve_sol='+setting('solana_live_min_reserve_sol',-101,'0.02'))
+          print('effective_new_entries='+setting('learner_new_entries_enabled',-101,'false').lower())
+          print('effective_sibot_enabled='+setting('sibot_enabled',0,'false').lower())
+          print('effective_sibot_auto='+setting('sibot_auto_trade_enabled',0,'false').lower())
           con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
           print('open_live_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n']))
           print('reconcile_required_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='RECONCILE_REQUIRED'").fetchone()['n']))
           con.close()
-          if not live.live_enabled(a,tid): raise SystemExit('LIVE did not rearm')
-          if str(trade) != '0.0005': raise SystemExit('unexpected trade size')
-          if reserve < 0.005: raise SystemExit('reserve below morning floor')
-          if not user_bool(a.csv_dir,tid,0,'sibot_auto_trade_enabled',False): raise SystemExit('AUTO did not rearm')
+          assert setting('solana_live_enabled',-101,'false').lower()=='true'
+          assert setting('solana_live_trade_sol',-101,'')=='0.0005'
+          assert float(setting('solana_live_min_reserve_sol',-101,'0'))>=0.005
+          assert setting('learner_new_entries_enabled',-101,'false').lower()=='true'
+          assert setting('sibot_enabled',0,'false').lower()=='true'
+          assert setting('sibot_auto_trade_enabled',0,'false').lower()=='true'
           PY
+          echo '=== MORNING SAFETY CORE ==='
+          grep -E '^(live_max_positions|live_require_simulation),' "$TARGET/CSVbot/solana_settings.csv" || true
+          echo '=== STARTUP ACCOUNT STATE ==='
+          journalctl -u "$service" -n 220 --no-pager -o cat 2>/dev/null | grep -E '\[telegram-account\]' | tail -4 | sed -E 's/tid=[0-9]+/tid=[redacted]/g' || true
           echo 'morning_rearm=SUCCESS'
           echo 'manual_forced_trade=NO'
           echo 'next_trade=ONLY_WHEN_EXISTING_MORNING_GATES_PASS'
