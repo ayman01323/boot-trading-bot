@@ -170,3 +170,9 @@ from . import sibot1_solana_candidate_state_fix_patch as _sibot1_solana_candidat
 # candidate processor. LIVE PoolCheck block alerts gain a clickable DexScreener
 # search-by-mint link without adding an API/RPC call or changing any safety gate.
 from . import sibot1_solana_poolcheck_dex_link_patch as _sibot1_solana_poolcheck_dex_link  # noqa: E402,F401
+
+# GPT gets an engine-isolated Solana control plane loaded after the final bridge
+# wrappers. The first /gptsol* command creates a GPT-only control row; after that,
+# GPT no longer inherits the shared Solana ARMED/LIVE/AUTO state. ARM checks the
+# encrypted signer/account only, while RPC/funding remain mandatory for LIVE/AUTO.
+from . import sibot1_gpt_solana_control_patch as _sibot1_gpt_solana_control  # noqa: E402,F401
