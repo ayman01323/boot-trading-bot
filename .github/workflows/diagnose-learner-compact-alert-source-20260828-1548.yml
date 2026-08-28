@@ -1,0 +1,46 @@
+name: Diagnose Learner Compact Alert Source 20260828 1548
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/diagnose-learner-compact-alert-source-20260828-1548.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Locate compact learner position alert read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          echo '=== EXACT STRINGS ==='
+          grep -R -n --include='*.py' -F 'LEARNER POSITION UPDATE' "$target/learnerbot" 2>/dev/null || true
+          grep -R -n --include='*.py' -F 'Unrealised P&L' "$target/learnerbot" 2>/dev/null || true
+          echo '=== NOTIFY DEFINITIONS ==='
+          grep -R -n --include='*.py' -E '^def .*notify|LEARNER POSITION|Unrealised P&L' "$target/learnerbot" 2>/dev/null | head -250 || true
+          echo '=== IMPORT ORDER ==='
+          grep -n -E 'telegram_learner|reconcile|position_update|full_format|complete_market' "$target/learnerbot/__main__.py" 2>/dev/null || true
+          echo '=== RECENT RELATED LOGS ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '20 minutes ago' --no-pager -o cat | grep -Ei 'learner-newpoll45|position update|reconcile|required|telegram' | tail -300 || true
+          echo '=== DB POSITION ==='
+          python3 - <<'PY'
+          import sqlite3,json
+          db='/home/ayman01323/BOOT/testingbots/learn/data/solana_sibot.sqlite3'
+          c=sqlite3.connect(db); c.row_factory=sqlite3.Row
+          r=c.execute("select * from positions where position_id=?",('e30ca86e1878bd4e5f1648d3fbb7cbf2',)).fetchone()
+          if r:
+              keep=['position_id','mint','status','mode','token_amount_raw','entry_cost_sol','current_exit_sol','unrealised_net_sol','unrealised_pct','realised_net_sol','exit_signature','exit_reason','closed_at','updated_at']
+              print(json.dumps({k:r[k] for k in keep},sort_keys=True))
+          c.close()
+          PY
+          echo 'trading_action=NONE'
+          echo 'service_restart=NO'
+          echo 'telegram_message_sent=NO'
