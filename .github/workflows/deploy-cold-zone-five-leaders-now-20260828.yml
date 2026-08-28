@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Audit fee construction and recoverable token rent on botgoogle
+      - name: Audit Jupiter builder and token cleanup tooling on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,7 +24,7 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/8388026ed82027ab8e3c577cc0f86f00b2c8d332/scripts/sirisky_google_one_usd_safety_audit.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/d2afa8599dce319d27406ad7732e60d36afe19cf/scripts/sirisky_google_one_usd_safety_audit.sh \
             -o "$tmp"
-          grep -q 'SIRISKY ONE USD SAFETY AUDIT' "$tmp"
+          grep -q 'SIRISKY ONE USD SAFETY AUDIT V2' "$tmp"
           bash "$tmp"
