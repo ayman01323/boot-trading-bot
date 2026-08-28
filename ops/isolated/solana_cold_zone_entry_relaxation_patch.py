@@ -3,8 +3,9 @@ from __future__ import annotations
 """Isolated learner COLD ZONE entry relaxation overlay.
 
 Owner-approved entry profile:
-- signal age <= 50s (hard)
+- signal age <= 60s (hard)
 - entry deterioration <= 10% (hard)
+- LIVE trade size = 0.001 SOL
 - actual-size BUY->SELL round-trip <= 3% remains hard in base Cold Zone
 - leader historical gross return is telemetry/score only, not a profit hard block
 - estimated total costs <= 5% (hard)
@@ -20,9 +21,10 @@ from decimal import Decimal
 
 from . import solana_cold_zone_strategy_patch as _cz
 
-PROFILE = "COLD_ZONE_17AUG_V4_ENTRY_50S_10PCT"
-MAX_SIGNAL_AGE_SECONDS = 50
+PROFILE = "COLD_ZONE_17AUG_V5_ENTRY_60S_10PCT_001SOL"
+MAX_SIGNAL_AGE_SECONDS = 60
 MAX_ENTRY_DETERIORATION_PCT = Decimal("10")
+LIVE_TRADE_SOL = Decimal("0.001")
 MAX_ESTIMATED_COST_PCT = Decimal("5")
 MAX_REQUIRED_GROSS_PCT = Decimal("10")
 
@@ -36,6 +38,7 @@ def settings_relaxed(app) -> dict:
             "solana_strategy_profile": PROFILE,
             "max_signal_age_seconds": str(MAX_SIGNAL_AGE_SECONDS),
             "max_entry_deterioration_pct": str(MAX_ENTRY_DETERIORATION_PCT),
+            "live_trade_sol": str(LIVE_TRADE_SOL),
             "cold_zone_max_estimated_cost_pct": str(MAX_ESTIMATED_COST_PCT),
             "cold_zone_max_required_gross_pct": str(MAX_REQUIRED_GROSS_PCT),
         }
@@ -137,7 +140,7 @@ def install() -> None:
     print(
         "[solana-cold-zone-entry] installed=true "
         f"profile={PROFILE} signal_age<={MAX_SIGNAL_AGE_SECONDS}s "
-        f"entry_deterioration<={MAX_ENTRY_DETERIORATION_PCT}% roundtrip<=3% "
+        f"entry_deterioration<={MAX_ENTRY_DETERIORATION_PCT}% live_trade={LIVE_TRADE_SOL}SOL roundtrip<=3% "
         "leader_gross=score_only "
         f"cost_cap<={MAX_ESTIMATED_COST_PCT}% required_gross_cap<={MAX_REQUIRED_GROSS_PCT}%"
     )
