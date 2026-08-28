@@ -1,4 +1,4 @@
-name: Arm SiRisky 0.009 SOL Google Only
+name: Inspect SiRisky Activity Google Only
 
 on:
   workflow_dispatch:
@@ -11,24 +11,30 @@ permissions:
   contents: read
 
 jobs:
-  arm:
+  inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Arm fixed 0.009 SOL on botgoogle
+      - name: Read current SiRisky activity on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/9aca4dafe7c3fbc4ce44e998807d3cb110392d77/scripts/sirisky_google_fixed_entry_009_finalize.sh \
-            -o "$tmp"
-          grep -q 'SIRISKY FIXED ENTRY 0.009 SOL FINALIZE' "$tmp"
-          if grep -q 'FIXED_SOL="0.0005"' "$tmp"; then
-            echo 'Refusing old 0.0005 SOL arming script' >&2
-            exit 1
-          fi
-          bash "$tmp"
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            cd /root/SiRisky
+            echo "=== CURRENT ==="
+            date -u
+            hostname
+            systemctl is-active sirisky.service
+            echo "=== RUNTIME ==="
+            grep -E "^(trading_mode|live_enabled|broadcast_enabled|manual_approval_enabled|auto_probe_sol|auto_entry_min_sol|auto_entry_max_sol|auto_evaluate_candidate_limit|jupiter_min_interval_seconds)," CSV/runtime.csv || true
+            echo "=== OPEN LIVE ==="
+            head -n 1 CSV/open_positions.csv 2>/dev/null || true
+            grep -i ",OPEN," CSV/open_positions.csv 2>/dev/null | tail -n 10 || true
+            echo "=== ACTIVITY 20 MIN ==="
+            journalctl -u sirisky.service --since "20 minutes ago" --no-pager -o cat 2>/dev/null | grep -Ei "candidate|NO_TRIGGER|QUOTE_REJECT|HTTPError|stage|OPENED|CLOSED|BUY|SELL|JUPITER|fee|risk|reject|discover|opportun|LIVE" | tail -n 500 || true
+            echo "=== LAST 120 ==="
+            journalctl -u sirisky.service -n 120 --no-pager -o cat 2>/dev/null || true
+          '
