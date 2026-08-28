@@ -1,4 +1,4 @@
-name: Inspect Learner 1240 Snapshot 20260828
+name: Trace Learner pre-1240 Runtime 20260828
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read-only recovery of settings nearest 12:40 BST
+      - name: Read-only trace of runtime and config before 12:40 BST
         shell: bash
         run: |
           set -euo pipefail
@@ -25,99 +25,64 @@ jobs:
           test -d "$TARGET"
           export TARGET
 
+          echo 'target_time_bst=2026-08-28T12:40:00+01:00'
+          echo 'target_time_utc=2026-08-28T11:40:00Z'
+          echo 'mutation=NO'
+
+          echo '--- SERVICE_EVENTS_1030_1150_UTC ---'
+          sudo -n journalctl -u learnerbot-learn.service \
+            --since '2026-08-28 10:30:00 UTC' --until '2026-08-28 11:50:00 UTC' --no-pager 2>/dev/null \
+            | grep -Ei 'Starting|Started|Stopping|Stopped|Main process exited|Failed|solana-min-settings|solana-profit-first-live|solana-first-day-strategy|solana-leader-quality|sibot-leader-quality-floor|solana-entry-exit-liquidity|solana-preflight-cache|solana-pool-risk|solana-emergency-liquidity|telegram-account|sibot-settings-source|live_trade_sol|signal_age|take_profit|stop=|roundtrip|entry_deterioration' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
+            | tail -500 || true
+
+          echo '--- CONFIG_FILES_NEAR_TARGET ---'
           python3 - <<'PY'
-          import csv, os, re
+          import os, datetime
           from pathlib import Path
-          from datetime import datetime, timezone
-
           root=Path(os.environ['TARGET'])
-          target=datetime(2026,8,28,11,40,0,tzinfo=timezone.utc)
-          print('target_time_bst=2026-08-28T12:40:00+01:00')
-          print('target_time_utc=2026-08-28T11:40:00Z')
-          print('mutation=NO')
-
-          audit=root/'data'/'transaction_audits'
-          candidates=[]
-          if audit.exists():
-              for d in audit.glob('run_20260828_*'):
-                  m=re.fullmatch(r'run_(\d{8})_(\d{6})', d.name)
-                  if not m or not d.is_dir():
-                      continue
-                  try:
-                      ts=datetime.strptime(m.group(1)+m.group(2),'%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
-                  except Exception:
-                      continue
-                  snap=d/'strategy_snapshot'
-                  if ts<=target and snap.is_dir():
-                      candidates.append((ts,d,snap))
-          print('eligible_strategy_snapshots='+str(len(candidates)))
-          if not candidates:
-              print('selected_snapshot=NONE')
-          else:
-              ts,d,snap=max(candidates,key=lambda x:x[0])
-              print('selected_snapshot='+str(snap))
-              print('selected_run_utc='+ts.isoformat())
-              print('seconds_before_target='+str(int((target-ts).total_seconds())))
-              print('--- SNAPSHOT_FILES ---')
-              for p in sorted(snap.iterdir()):
-                  if p.is_file():
-                      print('FILE '+p.name+' size='+str(p.stat().st_size))
-              print('--- SAFE_SETTINGS_CONTENT ---')
-              deny=('wallet','secret','token','private','credential','key','telegram','.env')
-              for p in sorted(snap.iterdir()):
-                  if not p.is_file() or any(x in p.name.lower() for x in deny):
-                      continue
-                  if p.suffix.lower() not in {'.csv','.json','.txt'}:
-                      continue
-                  print('### '+p.name)
-                  try:
-                      text=p.read_text(encoding='utf-8-sig',errors='replace')
-                  except Exception as exc:
-                      print('READ_ERROR '+type(exc).__name__)
-                      continue
-                  if p.suffix.lower()=='.csv':
-                      try:
-                          rows=list(csv.DictReader(text.splitlines()))
-                      except Exception:
-                          rows=[]
-                      if rows:
-                          fields=[f for f in (rows[0].keys() if rows else []) if f]
-                          print('FIELDS '+','.join(fields))
-                          for r in rows:
-                              safe=[]
-                              for k,v in r.items():
-                                  kl=(k or '').lower()
-                                  if any(x in kl for x in deny):
-                                      continue
-                                  safe.append(f'{k}={v}')
-                              print('ROW '+' | '.join(safe))
-                          continue
-                  for line in text.splitlines()[:300]:
-                      low=line.lower()
-                      if any(x in low for x in deny):
-                          continue
-                      print(line[:1000])
-
-          print('--- RUNS_AROUND_TARGET ---')
-          around=[]
-          if audit.exists():
-              for d in audit.glob('run_20260828_*'):
-                  m=re.fullmatch(r'run_(\d{8})_(\d{6})', d.name)
-                  if not m: continue
-                  try: ts=datetime.strptime(m.group(1)+m.group(2),'%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+          target=datetime.datetime(2026,8,28,11,40,0,tzinfo=datetime.timezone.utc).timestamp()
+          deny=('wallet','secret','token','private','credential','key','telegram','.env')
+          exts={'.csv','.json','.txt','.bak','.old'}
+          hits=[]
+          for base in [root/'CSVbot', root/'data', root]:
+              if not base.exists(): continue
+              for p in base.rglob('*'):
+                  if not p.is_file() or p.suffix.lower() not in exts: continue
+                  rel=str(p.relative_to(root)).lower()
+                  if any(x in rel for x in deny): continue
+                  try: m=p.stat().st_mtime
                   except Exception: continue
-                  if abs((ts-target).total_seconds())<=3600:
-                      around.append((ts,d))
-          for ts,d in sorted(around):
-              print('RUN '+d.name+' delta_seconds='+str(int((ts-target).total_seconds())))
+                  if abs(m-target)<=4*3600:
+                      hits.append((m,p))
+          seen=set()
+          for m,p in sorted(hits):
+              s=str(p)
+              if s in seen: continue
+              seen.add(s)
+              dt=datetime.datetime.fromtimestamp(m,datetime.timezone.utc)
+              print(f'FILE mtime_utc={dt.isoformat()} delta_seconds={int(m-target)} path={p}')
           PY
 
-          echo '--- JOURNAL_1230_TO_1250_BST ---'
-          sudo -n journalctl -u learnerbot-learn.service \
-            --since '2026-08-28 11:30:00 UTC' --until '2026-08-28 11:50:00 UTC' --no-pager 2>/dev/null \
-            | grep -Ei 'signal|setting|live|entry|trade|leader|position|armed|enabled|disabled|cold.zone|max_signal|risk|slippage|profit|loss' \
-            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
-            | tail -350 || true
+          echo '--- CURRENT_RELEVANT_SETTINGS_SAFE ---'
+          python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          for p in [root/'CSVbot'/'solana_settings.csv', root/'CSVbot'/'user_trading_settings.csv', root/'data'/'user_trading_settings.csv']:
+              if not p.exists(): continue
+              print('### '+str(p))
+              try:
+                  rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+              except Exception as e:
+                  print('READ_ERROR '+type(e).__name__); continue
+              for r in rows:
+                  k=str(r.get('setting') or '').strip()
+                  if not k: continue
+                  if any(x in k.lower() for x in ('wallet','secret','token','private','credential','key','telegram')): continue
+                  if any(x in k.lower() for x in ('solana','signal','profit','loss','slippage','position','leader','sibot','entry','exit','reserve','trade')):
+                      print('ROW '+' | '.join(f'{a}={b}' for a,b in r.items() if a and not any(x in a.lower() for x in ('wallet','secret','token','private','credential','key','telegram'))))
+          PY
 
           echo inspection_complete=true
           echo settings_mutated=NO
