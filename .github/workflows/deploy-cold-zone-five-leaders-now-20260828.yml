@@ -18,49 +18,26 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
-      - name: Create clean trusted main checkout on botgoogle
+      - name: Install corrected governed LIVE wrapper and apply on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           SRC=/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot
-          PARENT="$(dirname "$SRC")"
-          STALE="$PARENT/boot-trading-bot.stale-${GITHUB_RUN_ID}"
-          cd /home/ayman01323
-          if [[ -e "$SRC" ]]; then
-            mv "$SRC" "$STALE"
-          fi
-          mkdir -p "$PARENT"
-          git clone --depth 1 --branch main \
-            https://github.com/ayman01323/boot-trading-bot.git "$SRC"
           test -d "$SRC/.git"
-          test -f "$SRC/SiRisky/overrides/run.py"
           TARGET_SHA="$(git -C "$SRC" rev-parse HEAD)"
-          echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
-          echo "checkout_sha=$TARGET_SHA"
-          echo "stale_checkout=$STALE"
-
-      - name: Deploy current main SiRisky files safely in SHADOW
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          sudo -n -l /usr/local/sbin/sirisky-shadow-deploy >/dev/null
-          OUT="$(sudo -n /usr/local/sbin/sirisky-shadow-deploy "$TARGET_SHA")"
-          printf '%s\n' "$OUT"
-          grep -q '=== SIRISKY SHADOW DEPLOY OK ===' <<<"$OUT"
-          grep -q "sha=$TARGET_SHA" <<<"$OUT"
-          grep -q 'trading_mode=SHADOW' <<<"$OUT"
-          grep -q 'broadcast_enabled=0' <<<"$OUT"
-
-      - name: Re-arm governed automatic LIVE
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          sudo -n -l /root/SiRisky/ops/sirisky-governed-live-arm >/dev/null
-          OUT="$(sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$TARGET_SHA")"
+          test "$TARGET_SHA" = "$(git -C "$SRC" rev-parse --verify HEAD)"
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/install_sirisky_governed_live_ops.sh \
+            -o "$tmp"
+          grep -q "'manual_approval_enabled':('0'" "$tmp"
+          grep -q "'manual_approval_require_external_signature':('0'" "$tmp"
+          OUT="$(sudo -n env ARM_NOW=1 bash "$tmp")"
           printf '%s\n' "$OUT"
           grep -q '=== SIRISKY GOVERNED LIVE AUTO EXECUTION ARMED ===' <<<"$OUT"
           grep -q "sha=$TARGET_SHA" <<<"$OUT"
