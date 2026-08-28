@@ -1,4 +1,4 @@
-# one-shot inspection trigger 2026-08-28 learner restore
+# one-shot inspection trigger 2026-08-28 learner restore provenance
 name: Inspect Testing Learner Settings
 
 on:
@@ -18,85 +18,72 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect isolated learner safely
+      - name: Inspect isolated learner trade provenance safely
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = "botgoogle"
-          test "$(id -un)" = "ayman01323"
-          target=/home/ayman01323/BOOT/testingbots/learn
-          test -d "$target"
-          echo "TARGET=$target"
-          echo "--- snapshot ---"
-          cat "$target/KNOWN_GOOD_SNAPSHOT.txt"
-          echo "--- service ---"
-          echo "load=$(systemctl show learnerbot-learn.service -p LoadState --value 2>/dev/null || true)"
-          echo "active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          echo "--- runtime paths ---"
-          for p in "$target/CSVbot" "$target/data" "$target/CSVbot/solana_settings.csv" "$target/CSVbot/auto/solana_user_wallets.csv"; do
-            if [[ -e "$p" ]]; then echo "EXISTS $p"; else echo "MISSING $p"; fi
-          done
-          echo "--- poolcheck composition ---"
-          grep -nE 'poolcheck_rug_hardening_patch|poolcheck_solana_stress|poolcheck_evm_(holder|lp|stress)' "$target/learnerbot/final_runtime_integrity_patch.py" 2>/dev/null || true
-          test -f "$target/learnerbot/learner_original_poolcheck_restore_patch.py" && echo "restore_patch=yes" || echo "restore_patch=no"
-          echo "--- source defaults ---"
-          python3 - <<'PY'
-          import ast, pathlib, re
-          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
-          src=(root/'learnerbot/solana_sibot.py').read_text(encoding='utf-8')
-          tree=ast.parse(src)
-          defaults={}
-          for node in tree.body:
-              if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id=='DEFAULTS' for t in node.targets):
-                  defaults=ast.literal_eval(node.value)
-                  break
-          live=(root/'learnerbot/solana_live_patch.py').read_text(encoding='utf-8')
-          m=re.search(r'_sol\.DEFAULTS\.update\(\{(.*?)\}\)', live, re.S)
-          if m:
-              defaults.update(ast.literal_eval('{'+m.group(1)+'}'))
-          keys=['live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds']
-          for k in keys:
-              if k in defaults: print(f'{k}={defaults[k][0]}')
-          PY
-          echo "--- runtime solana settings if present ---"
-          if [[ -f "$target/CSVbot/solana_settings.csv" ]]; then
-            python3 - <<'PY'
-          import csv, pathlib
-          p=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
-          allowed={'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct','estimated_entry_fee_sol','estimated_exit_fee_sol','stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct','trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','leaders_per_user','min_closed_trades','min_win_rate_pct','leader_poll_seconds','position_poll_seconds'}
-          with p.open(encoding='utf-8-sig',newline='') as f:
-              for r in csv.DictReader(f):
-                  if r.get('setting') in allowed: print(f"{r['setting']}={r.get('value','')}")
-          PY
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          root=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$root"
+          echo "service_load=$(systemctl show learnerbot-learn.service -p LoadState --value 2>/dev/null || true)"
+          echo "service_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo '--- git/source identity ---'
+          if [[ -d "$root/.git" ]]; then
+            echo "head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+            git -C "$root" log -n 8 --date=iso --pretty='commit=%H time=%ad subject=%s' 2>/dev/null || true
           else
-            echo "NO_RUNTIME_SETTINGS_FILE"
+            echo "isolated_git_repo=no"
           fi
-          echo "--- user/wallet readiness ---"
+          head -n 8 "$root/KNOWN_GOOD_SNAPSHOT.txt" 2>/dev/null || true
+          echo '--- active settings ---'
           python3 - <<'PY'
-          import csv, pathlib
-          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
-          user_files=[root/'users.csv',root/'auto/users.csv',root/'user_registry.csv',root/'auto/user_registry.csv']
-          users=[]
-          for p in user_files:
-              if p.exists():
-                  try:
-                      with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-                      print(f'USER_FILE={p} ROWS={len(rows)}')
-                      users.extend(rows)
-                  except Exception as e: print(f'USER_FILE_ERROR={p}:{type(e).__name__}')
-          tids=[]
-          for r in users:
-              tid=str(r.get('telegram_id') or '').strip()
-              if tid and tid not in tids: tids.append(tid)
-          print('UNIQUE_TELEGRAM_USERS='+str(len(tids)))
-          wp=root/'auto/solana_user_wallets.csv'
-          if wp.exists():
-              with wp.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-              print('SOLANA_WALLETS='+str(len(rows)))
-              for r in rows:
-                  print('WALLET signing='+str(r.get('signing'))+' enabled='+str(r.get('enabled'))+' active='+str(r.get('active'))+' label='+str(r.get('label')))
-          else:
-              print('SOLANA_WALLETS=0')
+          import csv
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      if r.get('setting') in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct'}:
+                          print(f"{r.get('setting')}={r.get('value','')}")
           PY
-          echo "live_execution_started=NO"
-          echo "production_service_restart=NO"
+          echo '--- current poolcheck composition ---'
+          grep -nE 'poolcheck_rug_hardening_patch|poolcheck_solana_stress|poolcheck_evm_(holder|lp|stress)' "$root/learnerbot/final_runtime_integrity_patch.py" 2>/dev/null || true
+          echo '--- today LIVE DB provenance ---'
+          ROOT="$root" python3 - <<'PY'
+          import os, sqlite3, datetime
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          dbs=[root/'data/solana_sibot.sqlite3', root/'data/sibot1_solana_live_bridge.sqlite3']
+          start=int(datetime.datetime(2026,8,28,0,0,tzinfo=datetime.timezone.utc).timestamp())
+          for db in dbs:
+              print('DB='+str(db)+' exists='+str(db.exists()))
+              if not db.exists(): continue
+              conn=sqlite3.connect(f'file:{db}?mode=ro',uri=True); conn.row_factory=sqlite3.Row
+              tables=[r['name'] for r in conn.execute("select name from sqlite_master where type='table' order by name")]
+              print('tables='+','.join(tables))
+              for table in ('positions','live_execution_attempts','attempts'):
+                  if table not in tables: continue
+                  cols=[r['name'] for r in conn.execute(f'pragma table_info({table})')]
+                  print(f'{table}_cols='+','.join(cols))
+                  timecol=next((c for c in ('created_at','entry_epoch','opened_at','updated_at','epoch') if c in cols),None)
+                  order=timecol or 'rowid'
+                  rows=conn.execute(f'select * from {table} order by {order} desc limit 40').fetchall()
+                  for r in rows:
+                      d=dict(r)
+                      # redact wallet/mint/signature identifiers; retain strategy/version/status/provenance and economics
+                      for k in list(d):
+                          kl=k.lower()
+                          if any(x in kl for x in ('wallet','mint','signature','address','private','secret')):
+                              d[k]='[redacted]' if d[k] not in (None,'') else d[k]
+                      keep={k:d[k] for k in d if k in {
+                          'id','position_id','status','mode','action','side','created_at','updated_at','entry_epoch','exit_epoch','opened_at','closed_at',
+                          'strategy_id','strategy_version','strategy_git_sha','opening_git_sha','git_sha','source_git_sha','entry_sol','input_sol','trade_sol',
+                          'realized_pnl_sol','realised_pnl_sol','net_pnl_sol','pnl_sol','entry_amount_sol','input_amount_sol','reason','error'
+                      }}
+                      if keep: print(table+' '+repr(keep))
+              conn.close()
+          PY
+          echo '--- morning service journal ---'
+          journalctl -u learnerbot-learn.service --since '2026-08-28 06:00:00' --until '2026-08-28 14:00:00' --no-pager 2>/dev/null \
+            | grep -Ei 'BUY|SELL|LIVE|execut|trade|position|git|sha|poolcheck' | tail -n 160 || true
