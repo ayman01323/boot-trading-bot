@@ -1,10 +1,6 @@
 name: SiRisky Live Flow Inspect 20260826
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/sirisky-live-flow-inspect-20260826.yml'
   workflow_dispatch:
 
 permissions:
@@ -15,72 +11,16 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Verify SiLearn refusal alert and send historical format test
+      - name: Verify SiLearn refusal alert status
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          root=/home/ayman01323/BOOT/testingbots/learn
+          target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
-
-          echo "service_before=$(systemctl is-active "$service" || true)"
-          echo "restart_count_before=$(systemctl show "$service" -p NRestarts --value || true)"
-          test -s "$root/learnerbot/telegram_cold_zone_refusal_patch.py"
-          grep -q 'from . import telegram_cold_zone_refusal_patch' "$root/learnerbot/__main__.py"
-          echo 'alert_import_present=true'
-
-          pid=$(systemctl show "$service" -p MainPID --value)
-          test "$pid" -gt 1
-          pyexe=$(readlink -f "/proc/$pid/exe")
-          echo "service_python=$(basename "$pyexe")"
-
-          sudo -n "$pyexe" - "$root" <<'PY'
-          import html, json, sys
-          from pathlib import Path
-          from urllib import parse, request
-
-          root=Path(sys.argv[1])
-          env={}
-          for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
-              if '=' in line and not line.lstrip().startswith('#'):
-                  k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
-          token=env.get('TELEGRAM_BOT_TOKEN','').strip()
-          tid=env.get('TELEGRAM_CHAT_ID','').strip()
-          if not token or not tid:
-              raise SystemExit('telegram credentials missing')
-
-          mint='3K2eCRAZbv8WDhSSepRoz3YvpPyr8t3BN28MnoraoRns'
-          text=(
-              '❌ <b>COLD ZONE BUY REFUSED</b>\n'
-              'Pool age: <b>1m 11s</b>\n'
-              'Reason: <code>entry deterioration 69.580% &gt; 10.000%</code>\n'
-              'Warnings (not blockers): <code>LP_CONCENTRATION_RISK, POOL_NEW_COOLING</code>\n'
-              'Pool direct SOL liquidity: <b>147.624445 SOL</b>\n'
-              'Pool liquidity (all DexScreener pairs): <b>$31,382.79</b>\n\n'
-              f'🔎 <a href="https://www.dexview.com/solana/{html.escape(mint, quote=True)}">Open token on DexView</a>\n\n'
-              '<i>Historical replay test only — no new trade was attempted.</i>'
-          )
-          payload={
-              'chat_id': tid,
-              'text': text,
-              'parse_mode': 'HTML',
-              'protect_content': True,
-              'disable_notification': False,
-              'link_preview_options': {'is_disabled': True},
-          }
-          req=request.Request(
-              f'https://api.telegram.org/bot{token}/sendMessage',
-              data=json.dumps(payload).encode(),
-              headers={'Content-Type':'application/json'},
-              method='POST',
-          )
-          with request.urlopen(req,timeout=20) as r:
-              data=json.loads(r.read().decode())
-          print('historical_format_test_completed='+str(bool(data.get('ok'))).lower())
-          print('telegram_message_id_present='+str(bool((data.get('result') or {}).get('message_id'))).lower())
-          PY
-
-          sleep 2
-          echo "service_after=$(systemctl is-active "$service" || true)"
-          echo "restart_count_after=$(systemctl show "$service" -p NRestarts --value || true)"
-          sudo -n journalctl -u "$service" -n 120 --no-pager | grep -E 'silearn-refusal-alert|Traceback|ModuleNotFoundError' | tail -40 || true
+          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
+          test -s "$target/learnerbot/telegram_cold_zone_refusal_patch.py"
+          grep -q 'from . import telegram_cold_zone_refusal_patch' "$target/learnerbot/__main__.py"
+          echo 'cold_zone_refusal_alert_installed=true'
+          echo "restart_count=$(systemctl show "$service" -p NRestarts --value 2>/dev/null || true)"
