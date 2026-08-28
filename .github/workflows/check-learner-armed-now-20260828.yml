@@ -1,0 +1,129 @@
+name: Check Isolated Learner Armed Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/check-learner-armed-now-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Confirm isolated learner is armed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          CSV="$LEARN/CSVbot"
+          DB="$LEARN/data/solana_sibot.sqlite3"
+          echo "checked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "learner_runtime=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "cold_zone_relay=$(systemctl is-active google-learner-cold-zone-relay.service 2>/dev/null || true)"
+          echo "cold_zone_marker_count=$(journalctl -u learnerbot-learn.service --since '2 hours ago' --no-pager 2>/dev/null | grep -cF '[solana-cold-zone] installed=true' || true)"
+
+          python3 - "$CSV" "$DB" <<'PY'
+          import csv, glob, json, os, sqlite3, sys, urllib.request
+          from decimal import Decimal
+          csv_dir, db_path = sys.argv[1], sys.argv[2]
+          truthy={'1','true','yes','on','y'}
+
+          users=[]
+          up=os.path.join(csv_dir,'users.csv')
+          if os.path.exists(up):
+              with open(up,encoding='utf-8-sig',newline='') as f:
+                  users=[r for r in csv.DictReader(f) if str(r.get('status') or '').upper()=='ACTIVE']
+          active_ids={str(r.get('telegram_id') or '') for r in users if str(r.get('telegram_id') or '')}
+
+          settings={tid:{} for tid in active_ids}
+          sp=os.path.join(csv_dir,'user_trading_settings.csv')
+          if os.path.exists(sp):
+              with open(sp,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '')
+                      key=str(r.get('setting') or '').strip()
+                      if tid in settings and key:
+                          settings[tid][key]=str(r.get('value') or '').strip()
+
+          live_ids={tid for tid,s in settings.items() if str(s.get('solana_live_enabled','')).lower() in truthy}
+          entry_ids={tid for tid,s in settings.items() if str(s.get('learner_new_entries_enabled','')).lower() in truthy}
+          sibot_ids={tid for tid,s in settings.items() if str(s.get('sibot_enabled','')).lower() in truthy}
+          eligible_ids=live_ids & entry_ids & sibot_ids
+          print('active_users='+str(len(active_ids)))
+          print('live_enabled_users='+str(len(live_ids)))
+          print('entry_enabled_users='+str(len(entry_ids)))
+          print('sibot_enabled_users='+str(len(sibot_ids)))
+          print('fully_enabled_users='+str(len(eligible_ids)))
+
+          wallet_csv=os.path.join(csv_dir,'auto','solana_user_wallets.csv')
+          wallet_rows=[]
+          if os.path.exists(wallet_csv):
+              with open(wallet_csv,encoding='utf-8-sig',newline='') as f:
+                  wallet_rows=list(csv.DictReader(f))
+          address_by_tid={}
+          for r in wallet_rows:
+              tid=str(r.get('telegram_id') or '')
+              addr=str(r.get('address') or r.get('wallet_address') or '').strip()
+              if tid and addr:
+                  address_by_tid[tid]=addr
+          signer_ids=set()
+          key_root=os.path.join(os.path.dirname(db_path),'user_solana_wallets')
+          for tid in active_ids:
+              if glob.glob(os.path.join(key_root,tid,'*.enc.json')):
+                  signer_ids.add(tid)
+          print('wallet_address_users='+str(len(set(address_by_tid)&active_ids)))
+          print('signing_ready_users='+str(len(signer_ids & active_ids)))
+
+          cfg={}
+          cfg_path=os.path.join(csv_dir,'solana_settings.csv')
+          if os.path.exists(cfg_path):
+              with open(cfg_path,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      k=str(r.get('setting') or '').strip()
+                      if k: cfg[k]=str(r.get('value') or '').strip()
+          rpc=str(cfg.get('rpc_url') or 'https://api.mainnet-beta.solana.com').strip()
+
+          funded_ids=set(); balances={}
+          for tid in sorted(eligible_ids & signer_ids & set(address_by_tid)):
+              addr=address_by_tid[tid]
+              try:
+                  body=json.dumps({'jsonrpc':'2.0','id':1,'method':'getBalance','params':[addr,{'commitment':'confirmed'}]}).encode()
+                  req=urllib.request.Request(rpc,data=body,headers={'Content-Type':'application/json'})
+                  with urllib.request.urlopen(req,timeout=8) as resp:
+                      payload=json.loads(resp.read().decode())
+                  sol=Decimal(int(((payload.get('result') or {}).get('value')) or 0))/Decimal(1_000_000_000)
+                  balances[tid]=sol
+                  if sol >= Decimal('0.0055'):
+                      funded_ids.add(tid)
+              except Exception:
+                  balances[tid]=None
+          print('funded_for_trade_plus_reserve_users='+str(len(funded_ids)))
+          for i,tid in enumerate(sorted(eligible_ids & signer_ids & set(address_by_tid)),1):
+              b=balances.get(tid)
+              print(f'user_{i}_balance_sol=' + ('unavailable' if b is None else f'{b:.9f}'))
+
+          cold_tables=False
+          open_live=0
+          try:
+              con=sqlite3.connect(f'file:{db_path}?mode=ro',uri=True,timeout=3)
+              tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+              cold_tables=all(n in tables for n in ('cold_zone_positions','cold_zone_notifications','cold_zone_decisions'))
+              if 'positions' in tables:
+                  open_live=int(con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0])
+              con.close()
+          except Exception:
+              pass
+          print('cold_zone_tables=' + ('YES' if cold_tables else 'NO'))
+          print('open_live_positions='+str(open_live))
+
+          armed=bool(eligible_ids & signer_ids & funded_ids & set(address_by_tid)) and cold_tables
+          print('ARMED=' + ('YES' if armed else 'NO'))
+          PY
+
+          echo "strategy_profile=$(journalctl -u learnerbot-learn.service --since '2 hours ago' --no-pager 2>/dev/null | grep -F '[solana-cold-zone] installed=true' | tail -1 | sed -n 's/.*profile=\([^ ]*\).*/\1/p')"
+          echo "recent_runtime_restarts=$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || true)"
