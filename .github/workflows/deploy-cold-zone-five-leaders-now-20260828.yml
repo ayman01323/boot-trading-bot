@@ -1,4 +1,4 @@
-name: Inspect SiRisky Google Only
+name: Trace Solana Wallet Google Only
 
 on:
   workflow_dispatch:
@@ -6,13 +6,12 @@ on:
     branches: [ops/google-master-menu-cutover-20260827]
     paths:
       - '.github/workflows/deploy-cold-zone-five-leaders-now-20260828.yml'
-      - '.github/sirisky-google-only.trigger'
 
 permissions:
   contents: read
 
 concurrency:
-  group: sirisky-google-only-inspect
+  group: sirisky-google-wallet-trace
   cancel-in-progress: false
 
 jobs:
@@ -20,44 +19,61 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect live capital and blockers on botgoogle
+      - name: Trace target wallet in SiRisky live records
         shell: bash
+        env:
+          TARGET: 6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n bash -lc '
+          sudo -n env TARGET="$TARGET" bash -lc '
             set -Eeuo pipefail
             cd /root/SiRisky
-            value() { awk -F, -v key="$1" '\''$1==key {gsub(/\r/,"",$2); print $2}'\'' CSV/runtime.csv; }
-            echo "=== runtime ==="
-            for k in trading_mode live_enabled broadcast_enabled manual_approval_enabled manual_approval_require_external_signature auto_evaluate_candidate_limit jupiter_min_interval_seconds jupiter_max_retries; do
-              echo "$k=$(value "$k")"
-            done
-            echo "=== capital ==="
+            echo "=== WALLET ATTRIBUTION ==="
             PYTHONPATH=. .venv/bin/python - <<"PY"
+import os
 from sirisky.config import Settings
 from sirisky.wallet import WalletStore
-from sirisky.jupiter import wallet_balance_lamports
-s=Settings.load()
-a=WalletStore(s).address()
-b=wallet_balance_lamports(s,a)
-r=s.risk()
-reserve=float(r.get("untouched_sol_reserve") or 0.005)
-probe=float(s.runtime().get("auto_probe_sol") or 0.0005)
-print(f"wallet_balance_lamports={b}")
-print(f"wallet_balance_sol={b/1_000_000_000:.9f}")
-print(f"untouched_sol_reserve={reserve:.9f}")
-print(f"auto_probe_sol={probe:.9f}")
-print(f"required_for_next_canary={reserve+probe:.9f}")
-print(f"available_above_reserve={max(0,b/1_000_000_000-reserve):.9f}")
-print(f"capital_gate_pass={str(b/1_000_000_000 >= reserve+probe).lower()}")
+s=Settings.load(); target=os.environ["TARGET"]; wallet=WalletStore(s).address()
+print("target="+target)
+print("sirisky_wallet="+wallet)
+print("sirisky_wallet_match="+str(wallet==target).lower())
 PY
-            echo "=== open positions ==="
-            tail -n 5 CSV/open_positions.csv 2>/dev/null || true
-            echo "=== latest risk checks ==="
-            tail -n 12 CSV/risk_checks.csv 2>/dev/null || true
-            echo "=== latest executions ==="
-            tail -n 12 CSV/executions.csv 2>/dev/null || true
+            echo "=== REFERENCES TO TARGET IN SIRISKY CSV ==="
+            grep -R -n -F "$TARGET" CSV 2>/dev/null | tail -n 80 || true
+            echo "=== EXECUTIONS ==="
+            cat CSV/executions.csv 2>/dev/null | tail -n 40 || true
+            echo "=== OPEN/CLOSED POSITIONS ==="
+            head -n 1 CSV/open_positions.csv 2>/dev/null || true
+            tail -n 20 CSV/open_positions.csv 2>/dev/null || true
+            [ -f CSV/closed_positions.csv ] && { head -n 1 CSV/closed_positions.csv; tail -n 20 CSV/closed_positions.csv; } || true
+            echo "=== RECENT STRATEGY LINKS ==="
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+import csv
+from pathlib import Path
+D=Path("CSV")
+ep=D/"executions.csv"
+if not ep.exists(): raise SystemExit
+rows=list(csv.DictReader(ep.open(encoding="utf-8-sig",newline="")))
+recent=[r for r in rows if (r.get("mode") or "").upper()=="LIVE"][-20:]
+mints={r.get("mint") for r in recent if r.get("mint")}
+print("live_execution_count="+str(len([r for r in rows if (r.get("mode") or "").upper()=="LIVE"])))
+for r in recent:
+    print("EXEC",{k:r.get(k) for k in r if r.get(k) and k in {"timestamp","order_id","action","mint","mode","status","signature","amount_in_raw","amount_out_raw","reason","error"}})
+for p in sorted(D.glob("*.csv")):
+    if p.name=="executions.csv": continue
+    try: rr=list(csv.DictReader(p.open(encoding="utf-8-sig",newline="")))
+    except Exception: continue
+    hits=[]
+    for r in rr:
+        txt="|".join(str(v) for v in r.values())
+        if any(m and m in txt for m in mints): hits.append(r)
+    if hits:
+        print("FILE",p.name)
+        for r in hits[-12:]:
+            keep={k:v for k,v in r.items() if v and k in {"timestamp","opportunity_id","pool_id","mint","strategy_id","action","status","reason","mode","position_id","order_id","source","leader_wallet","wallet","temperature","risk_reasons","forecast_net_pct"}}
+            if keep: print(keep)
+PY
             echo "service=$(systemctl is-active sirisky.service)"
           '
