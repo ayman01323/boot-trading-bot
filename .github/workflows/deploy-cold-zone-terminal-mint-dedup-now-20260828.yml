@@ -1,0 +1,93 @@
+name: Deploy Cold Zone Terminal Mint Dedup Now
+
+on:
+  push:
+    branches:
+      - ops/google-master-menu-cutover-20260827
+    paths:
+      - .github/workflows/deploy-cold-zone-terminal-mint-dedup-now-20260828.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Install terminal old-pool mint dedup on isolated learner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          TARGET="$LEARN/learnerbot/solana_cold_zone_notification_completeness_patch.py"
+          SRC_COMMIT=7fbd94f99cbb66245c54b682b66206dd3c853c02
+          BACKUP="$HOME/.cache/cold-zone-terminal-dedup-${GITHUB_RUN_ID}"
+          mkdir -p "$BACKUP"
+          cp -a "$TARGET" "$BACKUP/notice.py"
+
+          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+
+          rollback() {
+            rc=$?
+            echo "rollback=YES rc=$rc"
+            cp -a "$BACKUP/notice.py" "$TARGET" || true
+            chown ayman01323:ayman01323 "$TARGET" || true
+            sudo -n systemctl restart learnerbot-learn.service || true
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_cold_zone_notification_completeness_patch.py" \
+            -o "$TARGET"
+          chmod 0644 "$TARGET"
+          chown ayman01323:ayman01323 "$TARGET"
+
+          python3 - "$TARGET" <<'PY'
+          import pathlib,sys
+          p=pathlib.Path(sys.argv[1]); s=p.read_text(encoding='utf-8'); compile(s,str(p),'exec')
+          assert 'terminal_mint_persistent_skip' in s
+          assert 'POOL_TOO_OLD' in s
+          print('syntax_and_marker=OK')
+          PY
+
+          START_EPOCH="$(date +%s)"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 10
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          LOG="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 900)"
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-notices] installed=true' | grep -F 'terminal_mint_persistent_skip'
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-entry] installed=true' | grep -F 'signal_age<=45s'
+
+          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import sqlite3,sys
+          db=sys.argv[1]
+          mint='Bz5FHNsbhuYWzJh28QmUXGJFV1fR8X2SEB7u7z4ni7Bo'
+          con=sqlite3.connect(f'file:{db}?mode=ro',uri=True,timeout=3)
+          n=con.execute("select count(*) from cold_zone_decisions where mint=? and reason_code='POOL_TOO_OLD'",(mint,)).fetchone()[0]
+          alerts=con.execute("select count(*) from cold_zone_notifications where mint=? and kind='BUY_REFUSED'",(mint,)).fetchone()[0]
+          con.close()
+          print('existing_terminal_old_pool_decisions='+str(n))
+          print('existing_refusal_notifications='+str(alerts))
+          print('terminal_mint_will_skip_future_buy_events='+('YES' if n>0 else 'NO'))
+          assert n>0
+          PY
+
+          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER"
+          test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
+
+          trap - ERR
+          echo 'terminal_mint_dedup_deploy=SUCCESS'
+          echo 'same_old_mint_repeat_processing=SKIPPED'
+          echo 'same_old_mint_repeat_telegram=SUPPRESSED'
+          echo 'strategy_thresholds_changed=NO'
+          echo 'production_files_changed=NO'
