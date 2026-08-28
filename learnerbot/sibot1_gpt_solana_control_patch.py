@@ -78,7 +78,7 @@ def _write_rows(path: Path, rows: list[dict[str, str]]) -> None:
     with tmp.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CONTROL_HEADERS)
         writer.writeheader()
-        writer.writerows([{h: row.get(h, "") for h in CONTROL_HEADERS] for row in rows)
+        writer.writerows([{h: row.get(h, "") for h in CONTROL_HEADERS} for row in rows])
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(tmp, path)
@@ -147,8 +147,6 @@ def _balance_status(app, address: str) -> tuple[bool, Decimal, str]:
         balance = Decimal(int(result.get("value") or 0)) / Decimal(1_000_000_000)
         return True, balance, "ready"
     except Exception as exc:
-        # Keep provider URLs/API keys out of Telegram. The exception class plus a
-        # bounded sanitised message is enough to distinguish auth/provider faults.
         detail = str(exc).replace("<", "").replace(">", "")[:180]
         return False, Decimal(0), f"{type(exc).__name__}: {detail}"
 
@@ -156,7 +154,10 @@ def _balance_status(app, address: str) -> tuple[bool, Decimal, str]:
 def readiness(app, tid) -> dict:
     ctl = control(app, tid)
     signer_ok, signer_detail, address = _signer_vault_status(app, tid)
-    rpc_ok, balance, rpc_detail = _balance_status(app, address) if signer_ok else (False, Decimal(0), "signer not ready")
+    if signer_ok:
+        rpc_ok, balance, rpc_detail = _balance_status(app, address)
+    else:
+        rpc_ok, balance, rpc_detail = False, Decimal(0), "signer not ready"
     account_ok, account_reason = _bridge._account_gate(app, tid)
 
     # Sizing remains owned by the existing protected bridge. This patch changes
@@ -231,10 +232,6 @@ def _gpt_worker(app):
     while True:
         try:
             controls = [r for r in _rows(_control_path(app)) if _bool(r.get("live_enabled"))]
-            # When the legacy/shared worker is already polling, it will encounter
-            # GPT candidates and the engine-aware wrapper above applies this GPT
-            # control. Run a dedicated GPT poller only when the shared worker has
-            # no LIVE control, avoiding duplicate claim races.
             if controls and not _shared_live_worker_present(app):
                 candidates = _bridge._candidate_rows(app)
                 for ctl in controls:
@@ -358,8 +355,6 @@ def _command(app, tid, text: str) -> bool:
                     f"<code>{html.escape(str(account_reason)[:220])}</code>",
                 )
                 return True
-            # Deliberately do not call getBalance here. ARM is signer/account state;
-            # RPC and funding remain mandatory at LIVE/AUTO and execution time.
             set_control(app, tid, armed="true")
             _notify(
                 app,
