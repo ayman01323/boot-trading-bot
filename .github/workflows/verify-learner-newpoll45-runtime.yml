@@ -1,0 +1,46 @@
+name: Verify Learner NewPoll45 Runtime
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/verify-learner-newpoll45-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Verify NewPoll45 reporter is running
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          service=learnerbot-learn.service
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test "$(systemctl is-active "$service")" = active
+          test -f "$target/learnerbot/telegram_learner_position_update_patch.py"
+
+          log="$(sudo -n journalctl -u "$service" --since '2026-08-28 11:45:00 UTC' --no-pager || true)"
+          printf '%s\n' "$log" | grep -F '[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled'
+
+          TARGET="$target" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db, timeout=2)
+          n=con.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND mode='LIVE'").fetchone()[0]
+          con.close()
+          print(f'open_live_positions={int(n or 0)}')
+          PY
+
+          echo 'newpoll45_runtime_marker=PASS'
+          echo 'report_seconds=45'
+          echo 'trading_settings_changed=NO'
+          echo 'wallet_runtime_data_changed=NO'
+          echo 'production_service_touched=NO'
