@@ -1,4 +1,4 @@
-name: Deploy Cold Zone 90s 5x Sell Depth Liquidity Now
+name: Deploy Cold Zone No Stale Signal 5x Sell Depth Now
 
 on:
   push:
@@ -12,7 +12,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 8
     steps:
-      - name: Deploy 90s signal age with 5x sell-depth gate
+      - name: Deploy no stale-signal condition with 5x sell-depth gate
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -21,8 +21,8 @@ jobs:
           LEARN=/home/ayman01323/BOOT/testingbots/learn
           PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
           TARGET="$LEARN/learnerbot/solana_cold_zone_entry_relaxation_patch.py"
-          SRC_COMMIT=19e3ef65387f73c697f9e8d145e1eb34127b81fb
-          BACKUP="$HOME/.cache/cold-zone-depth5x-90s-${GITHUB_RUN_ID}"
+          SRC_COMMIT=6a6ac8fefb74cd41d31ffc63dd5c59d8991921e8
+          BACKUP="$HOME/.cache/cold-zone-depth5x-no-signal-age-${GITHUB_RUN_ID}"
           mkdir -p "$BACKUP"
           cp -a "$TARGET" "$BACKUP/entry.py"
 
@@ -48,17 +48,19 @@ jobs:
           python3 - "$TARGET" <<'PY'
           import pathlib,sys
           p=pathlib.Path(sys.argv[1]); s=p.read_text(encoding='utf-8'); compile(s,str(p),'exec')
-          assert 'MAX_SIGNAL_AGE_SECONDS = 90' in s
+          assert 'COLD_ZONE_17AUG_V8_NO_SIGNAL_AGE_10PCT_001SOL_DEPTH5X' in s
+          assert 'cold_zone_signal_age_guard_enabled": "false"' in s
+          assert 'def cold_preflight_without_signal_age' in s
+          assert 'stale leader signal' not in s
           assert 'MAX_ENTRY_DETERIORATION_PCT = Decimal("10")' in s
           assert 'LIVE_TRADE_SOL = Decimal("0.001")' in s
           assert 'SELL_DEPTH_MULTIPLIER = 5' in s
           assert 'MAX_SELL_DEPTH_ROUNDTRIP_LOSS_PCT = Decimal("3")' in s
-          assert 'COLD_ZONE_17AUG_V7_ENTRY_90S_10PCT_001SOL_DEPTH5X' in s
           assert 'Pool direct SOL liquidity:' in s
           assert 'Pool liquidity (all DexScreener pairs):' in s
           assert '_cz._cold_preflight = cold_preflight_with_5x_sell_depth' in s
           assert '_cz._queue_notice = queue_notice_with_pool_liquidity' in s
-          print('depth5x_90s_source=OK')
+          print('depth5x_no_signal_age_source=OK')
           PY
 
           START_EPOCH="$(date +%s)"
@@ -69,7 +71,7 @@ jobs:
 
           LOG="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 1500)"
           printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-entry] installed=true' \
-            | grep -F 'signal_age<=90s' \
+            | grep -F 'signal_age=DISABLED' \
             | grep -F 'entry_deterioration<=10%' \
             | grep -F 'live_trade=0.001SOL' \
             | grep -F 'sell_depth=5x<=3%' \
@@ -93,11 +95,11 @@ jobs:
           test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
 
           trap - ERR
-          echo 'cold_zone_depth5x_90s_deploy=SUCCESS'
+          echo 'cold_zone_depth5x_no_signal_age_deploy=SUCCESS'
+          echo 'signal_age_guard=DISABLED'
           echo 'sell_depth_multiplier=5'
           echo 'sell_depth_hard_loss_cap_pct=3'
           echo 'live_trade_sol=0.001'
-          echo 'signal_age_seconds=90'
           echo 'entry_deterioration_pct=10'
           echo 'telegram_pool_liquidity=SOL+USD'
           echo 'leaders_per_user=5'
