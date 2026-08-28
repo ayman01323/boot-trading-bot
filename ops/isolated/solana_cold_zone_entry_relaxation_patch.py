@@ -3,7 +3,7 @@ from __future__ import annotations
 """Isolated learner COLD ZONE entry relaxation + 5x sell-depth overlay.
 
 Owner-approved entry profile:
-- signal age <= 60s (hard)
+- signal age <= 90s (hard)
 - entry deterioration <= 10% (hard)
 - LIVE trade size = 0.001 SOL
 - actual-size BUY->SELL round-trip <= 3% remains hard
@@ -23,8 +23,8 @@ from decimal import Decimal
 
 from . import solana_cold_zone_strategy_patch as _cz
 
-PROFILE = "COLD_ZONE_17AUG_V6_ENTRY_60S_10PCT_001SOL_DEPTH5X"
-MAX_SIGNAL_AGE_SECONDS = 60
+PROFILE = "COLD_ZONE_17AUG_V7_ENTRY_90S_10PCT_001SOL_DEPTH5X"
+MAX_SIGNAL_AGE_SECONDS = 90
 MAX_ENTRY_DETERIORATION_PCT = Decimal("10")
 LIVE_TRADE_SOL = Decimal("0.001")
 MAX_ESTIMATED_COST_PCT = Decimal("5")
