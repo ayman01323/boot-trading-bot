@@ -2,6 +2,7 @@ name: SiRisky Live Flow Inspect 20260826
 
 on:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/sirisky-live-flow-inspect-20260826.yml'
   workflow_dispatch:
@@ -14,29 +15,76 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect execution path without broadcast
+      - name: Verify Learner Telegram against morning LIVE trade provenance
         shell: bash
         run: |
-          set -euo pipefail
-          test "$(hostname)" = 'botgoogle'
-          sudo -n true
-          for f in sirisky/engine.py sirisky/stage1_data.py sirisky/stage2_strategy.py sirisky/stage3_risk.py sirisky/stage4_dispatch.py sirisky/stage5_trade.py sirisky/stage6_monitor.py sirisky/telegram.py sirisky/models.py sirisky/config.py sirisky/wallet.py run.py; do
-            echo "=== $f ==="
-            sudo -n sed -n '1,380p' "/root/SiRisky/$f"
-          done
-          echo '=== RUNTIME GATES ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' /root/SiRisky/CSV/runtime.csv
-          echo '=== CSV FILES ==='
-          sudo -n find /root/SiRisky/CSV -maxdepth 1 -type f -printf '%f\n' | sort
-          echo '=== BALANCE ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
-from sirisky.config import Settings
-from sirisky.wallet import WalletStore
-from sirisky.jupiter import wallet_balance_lamports
-s=Settings.load(); a=WalletStore(s).address(); b=wallet_balance_lamports(s,a)
-print("wallet_balance_lamports="+str(b))
-print("wallet_balance_sol="+format(b/1_000_000_000,".9f"))
-PY'
-          echo 'real_transaction_broadcast=NO'
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          envp="$target/.env"
+          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
+          grep -q '^TELEGRAM_BOT_TOKEN=.' "$envp"
+          grep -q '^TELEGRAM_CHAT_ID=.' "$envp"
 
-# trigger: HR-CWH pre-deploy source inspection 2026-08-27
+          TARGET="$target" sudo -n -E python3 - <<'PY'
+          import hashlib, os, sqlite3
+          from pathlib import Path
+
+          root=Path(os.environ['TARGET'])
+          env={}
+          for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              if '=' in line and not line.lstrip().startswith('#'):
+                  k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          current=(env.get('TELEGRAM_CHAT_ID') or '').strip()
+          def h(v): return hashlib.sha256(v.encode()).hexdigest()[:12] if v else ''
+          print('current_recipient_present='+str(bool(current)).lower())
+          print('current_recipient_hash='+h(current))
+
+          morning_sha='894c5597c5cf0c695f1f75df39f26ebe64c2dce9'
+          ids=set(); evidence_rows=0; dbs=0; tables_scanned=0
+          for db in sorted(root.rglob('*.sqlite3')):
+              try:
+                  con=sqlite3.connect(f'file:{db}?mode=ro',uri=True)
+                  con.row_factory=sqlite3.Row
+                  dbs+=1
+                  tables=[r[0] for r in con.execute("select name from sqlite_master where type='table'") if not str(r[0]).startswith('sqlite_')]
+                  for table in tables:
+                      try:
+                          cols=[r[1] for r in con.execute(f'pragma table_info("{table}")')]
+                      except Exception:
+                          continue
+                      if 'telegram_id' not in cols: continue
+                      tables_scanned+=1
+                      sha_cols=[c for c in cols if 'sha' in c.lower() or 'commit' in c.lower()]
+                      if not sha_cols: continue
+                      where=' OR '.join([f'CAST("{c}" AS TEXT) LIKE ?' for c in sha_cols])
+                      params=[morning_sha[:12]+'%']*len(sha_cols)
+                      try:
+                          rows=con.execute(f'SELECT telegram_id FROM "{table}" WHERE {where}',params).fetchall()
+                      except Exception:
+                          continue
+                      for r in rows:
+                          tid=str(r[0] or '').strip()
+                          if tid:
+                              ids.add(tid); evidence_rows+=1
+                  con.close()
+              except Exception:
+                  pass
+          print('sqlite_files_scanned='+str(dbs))
+          print('telegram_tables_scanned='+str(tables_scanned))
+          print('morning_trade_evidence_rows='+str(evidence_rows))
+          print('morning_trade_recipient_count='+str(len(ids)))
+          print('current_matches_morning='+str(len(ids)==1 and current in ids).lower())
+          if len(ids)==1:
+              morning=next(iter(ids))
+              print('morning_recipient_hash='+h(morning))
+              marker=root/'private'/'.morning_trade_telegram_id'
+              marker.parent.mkdir(parents=True,exist_ok=True)
+              marker.write_text(morning,encoding='utf-8')
+              os.chmod(marker,0o600)
+              print('morning_recipient_marker_written=true')
+          else:
+              print('morning_recipient_marker_written=false')
+          PY
