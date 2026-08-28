@@ -1,1 +1,1 @@
-2026-08-28T16:40:00Z trigger after isolated regression-suite fix
+2026-08-28T17:22:00Z deploy isolated Grok PAPER Telegram controls; no Claude ARM or transaction broadcast
