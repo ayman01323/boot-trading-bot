@@ -1,0 +1,58 @@
+name: Temporary SiRisky Post-Live Verify 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/temp-sirisky-post-live-verify-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Verify SiRisky live state independently
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            cd /root/SiRisky
+            echo "service=$(systemctl is-active sirisky.service)"
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+from decimal import Decimal
+from sirisky.config import Settings
+from sirisky.safety_v2 import entry_sol
+s=Settings.load(); rt=s.runtime(); rk=s.risk()
+checks={
+  "trading_mode":"LIVE",
+  "live_enabled":"1",
+  "broadcast_enabled":"1",
+  "manual_approval_enabled":"0",
+  "auto_evaluate_candidate_limit":"1",
+}
+for k,v in checks.items():
+    got=str(rt.get(k))
+    if got!=v: raise SystemExit(f"VERIFY_FAIL runtime {k}={got!r} expected {v!r}")
+if Decimal(str(entry_sol(s))) != Decimal("0.009"):
+    raise SystemExit(f"VERIFY_FAIL effective_entry_sol={entry_sol(s)}")
+if Decimal(str(rk.get("max_open_positions"))) != Decimal("1"):
+    raise SystemExit(f"VERIFY_FAIL max_open_positions={rk.get('max_open_positions')}")
+print("effective_entry_sol=0.009000000")
+print("trading_mode=LIVE")
+print("live_enabled=1")
+print("broadcast_enabled=1")
+print("manual_approval_enabled=0")
+print("auto_evaluate_candidate_limit=1")
+print("max_open_positions=1")
+PY
+            echo -n "open_position_rows="
+            if test -f CSV/open_positions.csv; then tail -n +2 CSV/open_positions.csv | sed "/^[[:space:]]*$/d" | wc -l; else echo 0; fi
+            echo "=== recent errors/warnings ==="
+            journalctl -u sirisky.service --since "5 minutes ago" --no-pager -o cat 2>/dev/null | grep -Ei "error|exception|traceback|failed|fatal" | tail -n 30 || true
+          '
