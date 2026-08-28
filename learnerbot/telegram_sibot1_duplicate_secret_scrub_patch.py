@@ -176,3 +176,13 @@ from . import sibot1_solana_poolcheck_dex_link_patch as _sibot1_solana_poolcheck
 # GPT no longer inherits the shared Solana ARMED/LIVE/AUTO state. ARM checks the
 # encrypted signer/account only, while RPC/funding remain mandatory for LIVE/AUTO.
 from . import sibot1_gpt_solana_control_patch as _sibot1_gpt_solana_control  # noqa: E402,F401
+
+# Gemini gets its own engine-isolated Solana control plane after GPT. It uses a
+# separate control CSV and recognises /gemini_* commands without changing GPT,
+# Grok, Claude, PoolCheck, signer, quote, simulation or execution safety gates.
+from . import sibot1_gemini_solana_control_patch as _sibot1_gemini_solana_control  # noqa: E402,F401
+
+# A dedicated Telegram transport is layered on top of the Gemini control plane.
+# It reads only GEMINI_TELEGRAM_BOT_TOKEN from the root-readable runtime secret
+# bridge and never exposes the token to the shared production/SiRisky Telegram bot.
+from . import sibot1_gemini_telegram_dedicated_patch as _sibot1_gemini_telegram_dedicated  # noqa: E402,F401
