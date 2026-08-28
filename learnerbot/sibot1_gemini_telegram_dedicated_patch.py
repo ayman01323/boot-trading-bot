@@ -66,6 +66,36 @@ def _set_commands(token: str) -> None:
         print("[gemini-telegram] set-commands", type(exc).__name__)
 
 
+def _prepare_long_poll(token: str) -> None:
+    """Guarantee that Telegram will permit getUpdates for this dedicated bot.
+
+    A valid token can still be unable to long-poll when a webhook is configured.
+    deleteWebhook is idempotent; keeping pending updates avoids silently losing a
+    user's command while the transport changes modes.
+    """
+    try:
+        before = _tg.get_webhook_info(token) or {}
+        had_webhook = bool(str(before.get("url") or "").strip())
+    except Exception as exc:
+        print("[gemini-telegram] webhook-info", type(exc).__name__)
+        had_webhook = False
+
+    _tg._json(
+        "deleteWebhook",
+        token,
+        payload={"drop_pending_updates": False},
+        timeout=15,
+    )
+
+    after = _tg.get_webhook_info(token) or {}
+    if str(after.get("url") or "").strip():
+        raise RuntimeError("Gemini Telegram webhook remained configured")
+    print(
+        "[gemini-telegram] long-poll-mode=true webhook-cleared=%s pending-preserved=true"
+        % ("true" if had_webhook else "false")
+    )
+
+
 def _help(token: str, chat_id) -> None:
     try:
         _tg.send_message(
@@ -96,8 +126,9 @@ def _poll(app, token: str) -> None:
             "[gemini-telegram] configured=true bot=@%s"
             % str((me or {}).get("username") or "unknown")
         )
+        _prepare_long_poll(token)
     except Exception as exc:
-        print("[gemini-telegram] token-validation", type(exc).__name__)
+        print("[gemini-telegram] startup", type(exc).__name__)
         return
 
     _set_commands(token)
@@ -145,13 +176,16 @@ def _poll(app, token: str) -> None:
 
 def _wait_for_token_and_poll(app) -> None:
     # Deployment and secret-sync workflows can run concurrently. Keep waiting
-    # rather than permanently disabling Gemini if the service starts first.
+    # rather than permanently disabling Gemini if the service starts first. If
+    # Telegram startup itself fails, retry rather than leaving a dead daemon.
     last_notice = 0.0
     while True:
         token = _token()
         if token:
             _poll(app, token)
-            return
+            print("[gemini-telegram] restarting-after-startup-failure=true")
+            time.sleep(3)
+            continue
         now = time.time()
         if now - last_notice >= 30:
             print("[gemini-telegram] waiting-for-secret=GEMINI_TELEGRAM_BOT_TOKEN")
