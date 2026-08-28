@@ -14,6 +14,7 @@ DB = Path("/home/ayman01323/BOOT/testingbots/learn/data/solana_sibot.sqlite3")
 STATE = Path("/home/ayman01323/.local/state/google-learner-cold-zone-relay.json")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip().strip('"').strip("'")
 POLL_SECONDS = 2
+DEXVIEW_SOLANA = "https://www.dexview.com/solana"
 
 
 def load_state() -> dict:
@@ -29,6 +30,21 @@ def save_state(value: dict) -> None:
     tmp = STATE.with_suffix(".tmp")
     tmp.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
     os.replace(tmp, STATE)
+
+
+def _with_dexview(text: str, mint: str) -> str:
+    """Append one clickable DexView link to every Cold Zone Telegram message."""
+    text = str(text or "")
+    if "dexview.com/" in text.lower():
+        return text
+    clean_mint = str(mint or "").strip()
+    if clean_mint:
+        url = f"{DEXVIEW_SOLANA}/{urllib.parse.quote(clean_mint, safe='')}"
+        label = "Open token on DexView"
+    else:
+        url = DEXVIEW_SOLANA
+        label = "Open DexView Solana"
+    return text + f'\n\n🔎 <a href="{html.escape(url, quote=True)}">{label}</a>'
 
 
 def send(tid: str, text: str) -> bool:
@@ -88,7 +104,10 @@ def main() -> None:
         for row in rows:
             nid = int(row.get("notification_id") or 0)
             tid = str(row.get("telegram_id") or "")
-            text = str(row.get("message_html") or "")
+            text = _with_dexview(
+                str(row.get("message_html") or ""),
+                str(row.get("mint") or ""),
+            )
             if not send(tid, text):
                 # Retry the same notification next loop; never skip an unsent result.
                 break
