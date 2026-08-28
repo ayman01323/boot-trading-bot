@@ -9,8 +9,8 @@ from . import solana_sibot as _sol
 # Protective entry-only gate requested after a real LIVE position became
 # liquidity-trapped.  The existing preflight already obtains a BUY quote and a
 # reverse token->SOL quote to measure round-trip deterioration.  This layer uses
-# those same two quotes and adds an explicit exit-side price-impact requirement;
-# it does not add another Jupiter request and it can only reject an entry.
+# those same two quotes and adds explicit entry- and exit-side price-impact
+# requirements. It never adds another Jupiter request and can only reject entry.
 _sol.DEFAULTS.update({
     "live_entry_require_exit_liquidity_max_bps": (
         "500",
@@ -51,7 +51,22 @@ def _route_telemetry(quote: dict) -> dict:
             venues.append(label[:80])
         if amm and amm not in amms:
             amms.append(amm[:64])
-    return {"hops": len(plan), "venues": venues, "amm_keys": amms}
+    # The execution guard treats an absent routePlan as one executable route.
+    return {"hops": max(1, len(plan)), "venues": venues, "amm_keys": amms}
+
+
+def _entry_execution_limit_bps(cfg: dict, hops: int) -> Decimal:
+    """Mirror the LIVE order guard's combined impact+slippage ceiling exactly."""
+    limit = max(
+        Decimal(1),
+        _sol._dec(cfg.get("live_max_combined_impact_slippage_bps"), "150"),
+    )
+    if int(hops) > 1:
+        limit = min(
+            limit,
+            max(Decimal(1), _sol._dec(cfg.get("live_multihop_max_combined_bps"), "100")),
+        )
+    return limit
 
 
 def _entry_exit_liquidity_limit_bps(cfg: dict) -> Decimal:
@@ -71,13 +86,12 @@ def _entry_exit_liquidity_limit_bps(cfg: dict) -> Decimal:
 
 
 def validate_entry_with_exit_liquidity(app, event: dict, allocation_sol: Decimal, cfg: dict):
-    """Run the original two-quote preflight plus explicit reverse-exit liquidity.
+    """Run the existing two-quote preflight with entry + reverse liquidity guards.
 
-    This is deliberately a near-copy of the small base SiBot preflight so the
-    already-fetched reverse Jupiter quote is inspected directly instead of making
-    a third network call. Existing signal-age, round-trip-loss and entry-
-    deterioration rules are preserved unchanged. Route/venue metadata is recorded
-    from those same quote responses for future pool forensics at zero API cost.
+    BUY-side impact is checked immediately on the first quote against the exact
+    LIVE execution ceiling.  A pool that cannot execute the intended allocation
+    safely is rejected before the signal is claimed and before any /order request.
+    The reverse quote is then reused for exit-liquidity and round-trip checks.
     """
     age = max(0, int(time.time()) - int(event["event_ts"]))
     if age > _sol._int(cfg.get("max_signal_age_seconds"), 30):
@@ -90,27 +104,45 @@ def validate_entry_with_exit_liquidity(app, event: dict, allocation_sol: Decimal
     if out_raw <= 0:
         return False, "entry quote returned no token output", {}
 
+    slippage_bps = max(Decimal(0), _sol._dec(cfg.get("live_order_slippage_bps"), "50"))
+    buy_route = _route_telemetry(buy_quote)
+    buy_impact_bps = _quote_price_impact_bps(buy_quote)
+    # The runtime order guard treats an omitted impact field as zero, so use the
+    # same semantics here. A later /order quote remains independently guarded.
+    effective_buy_impact_bps = buy_impact_bps if buy_impact_bps is not None else Decimal(0)
+    entry_limit_bps = _entry_execution_limit_bps(cfg, buy_route["hops"])
+    entry_combined_bps = effective_buy_impact_bps + slippage_bps
+    detail = {
+        "out_raw": out_raw,
+        "entry_price_impact_bps": buy_impact_bps,
+        "entry_reserved_slippage_bps": slippage_bps,
+        "entry_combined_bps": entry_combined_bps,
+        "entry_liquidity_limit_bps": entry_limit_bps,
+        "entry_route_hops": buy_route["hops"],
+        "entry_route_venues": buy_route["venues"],
+        "entry_route_amm_keys": buy_route["amm_keys"],
+    }
+    if entry_combined_bps > entry_limit_bps:
+        return False, (
+            f"entry liquidity rejected: price impact {effective_buy_impact_bps:.2f} bps + "
+            f"slippage reserve {slippage_bps:.0f} bps = {entry_combined_bps:.2f} bps exceeds "
+            f"{entry_limit_bps:.0f} bps"
+        ), detail
+
     reverse_quote = _sol.jupiter_quote(app, event["mint"], _sol.WSOL_MINT, out_raw)
     reverse_out_raw = _sol._int(reverse_quote.get("outAmount") or reverse_quote.get("outputAmount"), 0)
     reverse_impact_bps = _quote_price_impact_bps(reverse_quote)
     limit_bps = _entry_exit_liquidity_limit_bps(cfg)
-    slippage_bps = max(Decimal(0), _sol._dec(cfg.get("live_order_slippage_bps"), "50"))
-
-    buy_route = _route_telemetry(buy_quote)
     reverse_route = _route_telemetry(reverse_quote)
-    detail = {
-        "out_raw": out_raw,
+    detail.update({
         "reverse_exit_out_lamports": reverse_out_raw,
         "reverse_exit_price_impact_bps": reverse_impact_bps,
         "reverse_exit_reserved_slippage_bps": slippage_bps,
         "reverse_exit_liquidity_limit_bps": limit_bps,
-        "entry_route_hops": buy_route["hops"],
-        "entry_route_venues": buy_route["venues"],
-        "entry_route_amm_keys": buy_route["amm_keys"],
         "reverse_route_hops": reverse_route["hops"],
         "reverse_route_venues": reverse_route["venues"],
         "reverse_route_amm_keys": reverse_route["amm_keys"],
-    }
+    })
 
     # Fail closed if Jupiter cannot prove the reverse-side price impact.  An
     # unreported impact must not be treated as zero liquidity risk.
@@ -160,8 +192,8 @@ def install() -> None:
     _sol._validate_shadow_entry = validate_entry_with_exit_liquidity
     _sol._entry_exit_liquidity_preflight_installed = True
     print(
-        "[solana-entry-exit-liquidity] reverse_quote_reused=true fail_closed=true "
-        "combined_impact_slippage_hard_cap_bps=500 route_telemetry=true existing_roundtrip_preserved=true"
+        "[solana-entry-exit-liquidity] buy_and_reverse_quote_reused=true fail_closed=true "
+        "entry_execution_cap_mirrored=true reverse_combined_hard_cap_bps=500 route_telemetry=true"
     )
 
 
