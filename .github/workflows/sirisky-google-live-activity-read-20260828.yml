@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/sirisky-google-live-activity-read-20260828.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,73 +15,40 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read trade ledger with fees and USD
+      - name: Read SiRisky runtime and recent decisions
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          sudo -n /root/SiRisky/.venv/bin/python - <<'PY'
-          import csv,json
-          from pathlib import Path
-          from datetime import datetime,timezone,timedelta
-          from zoneinfo import ZoneInfo
-          import requests
-          ROOT=Path('/root/SiRisky'); london=ZoneInfo('Europe/London'); day=datetime.now(timezone.utc).astimezone(london).date()
-          def envread(p):
-              d={}
-              if p.exists():
-                  for line in p.read_text(errors='ignore').splitlines():
-                      s=line.strip()
-                      if s and not s.startswith('#') and '=' in s:
-                          k,v=s.split('=',1); d[k.strip()]=v.strip().strip('"').strip("'")
-              return d
-          env=envread(ROOT/'.env')
-          rpc=''
-          for k in ('SOLANA_RPC_URL','SOLANA_RPC_HTTP_URL','RPC_URL'):
-              if str(env.get(k) or '').startswith('http'): rpc=env[k]; break
-          if not rpc:
-              for k,v in env.items():
-                  if 'RPC' in k.upper() and str(v).startswith('http'): rpc=v; break
-          with (ROOT/'CSV/executions.csv').open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          ok=[]
-          for r in rows:
-              if str(r.get('mode') or '').upper()!='LIVE' or str(r.get('status') or '').upper()!='SUCCESS': continue
-              try: ts=int(float(r.get('timestamp') or 0))
-              except: continue
-              dt=datetime.fromtimestamp(ts,timezone.utc).astimezone(london)
-              if dt.date()!=day: continue
-              a=str(r.get('action') or '').upper()
-              if a in ('BUY','SELL'): ok.append({**r,'ts':ts,'dt':dt,'a':a})
-          ok.sort(key=lambda x:x['ts'])
-          q={}; pairs=[]
-          for r in ok:
-              m=str(r.get('mint') or '')
-              if r['a']=='BUY': q.setdefault(m,[]).append(r)
-              elif q.get(m): pairs.append((q[m].pop(0),r))
-          def fee(sig):
-              if not rpc or not sig: return None
-              try:
-                  j=requests.post(rpc,json={'jsonrpc':'2.0','id':1,'method':'getTransaction','params':[sig,{'encoding':'json','maxSupportedTransactionVersion':0}]},timeout=10).json()
-                  x=((j.get('result') or {}).get('meta') or {}).get('fee')
-                  return float(x)/1e9 if x is not None else None
-              except: return None
-          pc={}
-          def price(ts):
-              m=ts-ts%60
-              if m in pc:return pc[m]
-              try:
-                  st=datetime.fromtimestamp(m,timezone.utc); en=st+timedelta(minutes=1)
-                  rr=requests.get('https://api.exchange.coinbase.com/products/SOL-USD/candles',params={'start':st.isoformat().replace('+00:00','Z'),'end':en.isoformat().replace('+00:00','Z'),'granularity':60},headers={'User-Agent':'ledger'},timeout=10).json()
-                  if isinstance(rr,list) and rr: pc[m]=float(rr[0][4]); return pc[m]
-              except: pass
-              return None
-          print('date='+str(day)); print('pairs='+str(len(pairs))); print('rpc_present='+str(bool(rpc)).lower())
-          for i,(b,s) in enumerate(pairs,1):
-              bi=float(b.get('input_raw') or 0)/1e9; so=float(s.get('output_raw') or 0)/1e9
-              bf=fee(str(b.get('signature') or '')); sf=fee(str(s.get('signature') or ''))
-              fs=(bf or 0)+(sf or 0) if (bf is not None or sf is not None) else None
-              bp=price(b['ts']); sp=price(s['ts'])
-              net=so-bi-((fs or 0) if fs is not None else 0)
-              rec={'n':i,'mint':str(b.get('mint') or '')[:8]+'…','buy_time':b['dt'].strftime('%H:%M:%S'),'sell_time':s['dt'].strftime('%H:%M:%S'),'buy_sol':round(bi,9),'sell_sol':round(so,9),'buy_usd':round(bi*bp,4) if bp else None,'sell_usd':round(so*sp,4) if sp else None,'buy_px':round(bp,4) if bp else None,'sell_px':round(sp,4) if sp else None,'buy_fee_sol':round(bf,9) if bf is not None else None,'sell_fee_sol':round(sf,9) if sf is not None else None,'fees_sol':round(fs,9) if fs is not None else None,'fees_usd':round(fs*((bp+sp)/2),4) if fs is not None and bp and sp else None,'net_sol':round(net,9),'np_pct':round(net/bi*100,4) if bi else None}
-              print('TRADE '+json.dumps(rec,sort_keys=True))
-          PY
+          test "$(id -un)" = ayman01323
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            cd /root/SiRisky
+            echo "=== STATE ==="
+            date -u +"utc=%Y-%m-%dT%H:%M:%SZ"
+            echo "service=$(systemctl is-active sirisky.service || true)"
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+from sirisky.config import Settings
+from sirisky.safety_v2 import entry_sol
+s=Settings.load(); rt=s.runtime()
+for k in ["trading_mode","live_enabled","broadcast_enabled","manual_approval_enabled","auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol","auto_evaluate_candidate_limit","jupiter_min_interval_seconds"]:
+    print(f"{k}={rt.get(k)}")
+print(f"entry_sol={entry_sol(s):.9f}")
+PY
+            echo "=== OPEN LIVE ==="
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+import csv
+from pathlib import Path
+p=Path("CSV/open_positions.csv"); rows=[]
+if p.exists():
+    with p.open(encoding="utf-8-sig",newline="") as f: rows=list(csv.DictReader(f))
+live=[r for r in rows if str(r.get("status") or "").upper()=="OPEN" and str(r.get("mode") or "").upper()=="LIVE"]
+print("open_live="+str(len(live)))
+PY
+            echo "=== RECENT DECISIONS ==="
+            journalctl -u sirisky.service --since "10 minutes ago" --no-pager -o cat 2>/dev/null \
+              | grep -Ei "candidate|NO_TRIGGER|QUOTE_REJECT|HTTPError|stage[0-9]|OPENED|CLOSED|BUY|SELL|JUPITER|fee|risk|reject|discover|opportun" \
+              | tail -n 500 || true
+            echo "=== TAIL ==="
+            journalctl -u sirisky.service -n 100 --no-pager -o cat 2>/dev/null || true
+          '
