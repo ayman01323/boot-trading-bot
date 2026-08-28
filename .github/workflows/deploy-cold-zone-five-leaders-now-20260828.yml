@@ -1,4 +1,4 @@
-name: Inspect SiRisky Activity Google Only
+name: Restore SiRisky Candidate Coverage Google Only
 
 on:
   workflow_dispatch:
@@ -11,30 +11,20 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  apply:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read current SiRisky activity on botgoogle
+      - name: Apply candidate coverage 5 at fixed 0.009 SOL
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n bash -lc '
-            set -Eeuo pipefail
-            cd /root/SiRisky
-            echo "=== CURRENT ==="
-            date -u
-            hostname
-            systemctl is-active sirisky.service
-            echo "=== RUNTIME ==="
-            grep -E "^(trading_mode|live_enabled|broadcast_enabled|manual_approval_enabled|auto_probe_sol|auto_entry_min_sol|auto_entry_max_sol|auto_evaluate_candidate_limit|jupiter_min_interval_seconds)," CSV/runtime.csv || true
-            echo "=== OPEN LIVE ==="
-            head -n 1 CSV/open_positions.csv 2>/dev/null || true
-            grep -i ",OPEN," CSV/open_positions.csv 2>/dev/null | tail -n 10 || true
-            echo "=== ACTIVITY 20 MIN ==="
-            journalctl -u sirisky.service --since "20 minutes ago" --no-pager -o cat 2>/dev/null | grep -Ei "candidate|NO_TRIGGER|QUOTE_REJECT|HTTPError|stage|OPENED|CLOSED|BUY|SELL|JUPITER|fee|risk|reject|discover|opportun|LIVE" | tail -n 500 || true
-            echo "=== LAST 120 ==="
-            journalctl -u sirisky.service -n 120 --no-pager -o cat 2>/dev/null || true
-          '
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/5e16977ff909f7d003a343cd434cdfaf43ba3913/scripts/sirisky_google_candidate_coverage_5_009.sh \
+            -o "$tmp"
+          grep -q 'SIRISKY 0.009 SOL CANDIDATE COVERAGE 5' "$tmp"
+          bash "$tmp"
