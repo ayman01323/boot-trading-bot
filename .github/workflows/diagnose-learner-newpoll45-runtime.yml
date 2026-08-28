@@ -24,11 +24,16 @@ jobs:
           service=learnerbot-learn.service
           target=/home/ayman01323/BOOT/testingbots/learn
           echo "service_active=$(systemctl is-active "$service" || true)"
-          echo '--- unit ExecStart only ---'
-          systemctl show "$service" -p ExecStart -p MainPID -p ActiveState -p SubState
-          echo '--- safe learner startup markers ---'
-          sudo -n journalctl -u "$service" --since '2026-08-28 11:45:00 UTC' --no-pager \
-            | grep -E '\[learner-newpoll45\]|\[final-runtime-integrity\]|Starting multi-chain learning loop|Traceback|Main process exited|Failed with result' \
+          echo '--- unit execution identity ---'
+          systemctl show "$service" -p ExecStart -p WorkingDirectory -p MainPID -p ActiveState -p SubState -p Restart
+          echo '--- latest traceback context (paths/errors only) ---'
+          sudo -n journalctl -u "$service" -n 180 --no-pager \
+            | grep -A28 -B2 -E 'Traceback \(most recent call last\):' \
+            | tail -70 \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#(api[-_]?key[=:/ ]+)[^[:space:]]+#\1<REDACTED>#Ig' || true
+          echo '--- safe startup markers ---'
+          sudo -n journalctl -u "$service" -n 180 --no-pager \
+            | grep -E '\[learner-newpoll45\]|\[final-runtime-integrity\]|Starting multi-chain learning loop|Main process exited|Failed with result' \
             | tail -80 || true
           echo '--- import presence ---'
           grep -F 'telegram_learner_position_update_patch' "$target/learnerbot/final_runtime_integrity_patch.py" || true
