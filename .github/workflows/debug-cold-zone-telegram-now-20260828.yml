@@ -1,0 +1,133 @@
+name: Debug Cold Zone Telegram Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/debug-cold-zone-telegram-now-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect queue, relay and send one health test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          DB="$LEARN/data/solana_sibot.sqlite3"
+          CSV="$LEARN/CSVbot/user_trading_settings.csv"
+          RELAY_ENV=/home/ayman01323/.config/google-learner-telegram-relay.env
+          STATE=/home/ayman01323/.local/state/google-learner-cold-zone-relay.json
+          echo "checked_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "learner_runtime=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "cold_zone_relay=$(systemctl is-active google-learner-cold-zone-relay.service 2>/dev/null || true)"
+          echo "relay_restarts=$(systemctl show google-learner-cold-zone-relay.service -p NRestarts --value 2>/dev/null || true)"
+          echo "relay_env_present=$([[ -f "$RELAY_ENV" ]] && echo YES || echo NO)"
+          echo "relay_state_present=$([[ -f "$STATE" ]] && echo YES || echo NO)"
+
+          python3 - "$DB" "$CSV" "$STATE" "$RELAY_ENV" <<'PY'
+          import csv, json, os, sqlite3, sys, urllib.parse, urllib.request, urllib.error
+          db,csvp,statep,envp=sys.argv[1:]
+          last_id=0
+          if os.path.exists(statep):
+              try:
+                  st=json.load(open(statep,encoding='utf-8'))
+                  last_id=int(st.get('last_id') or 0)
+                  print('relay_last_id='+str(last_id))
+                  print('relay_last_sent_at='+str(st.get('last_sent_at') or 0))
+              except Exception as e:
+                  print('relay_state_error='+type(e).__name__)
+          con=sqlite3.connect(f'file:{db}?mode=ro',uri=True,timeout=3)
+          con.row_factory=sqlite3.Row
+          tabs={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          if 'cold_zone_notifications' in tabs:
+              max_id=int(con.execute('select coalesce(max(notification_id),0) from cold_zone_notifications').fetchone()[0])
+              total=int(con.execute('select count(*) from cold_zone_notifications').fetchone()[0])
+              pending=int(con.execute('select count(*) from cold_zone_notifications where notification_id>?',(last_id,)).fetchone()[0])
+              print('notification_total='+str(total))
+              print('notification_max_id='+str(max_id))
+              print('notification_pending_after_relay='+str(pending))
+              for i,r in enumerate(con.execute("select notification_id,kind,mint,created_at,length(message_html) mlen from cold_zone_notifications order by notification_id desc limit 8"),1):
+                  mint=str(r['mint'] or '')
+                  short=(mint[:6]+'…'+mint[-6:]) if len(mint)>14 else mint
+                  print(f"notification_{i}=id:{r['notification_id']} kind:{r['kind']} mint:{short} created:{r['created_at']} len:{r['mlen']}")
+          else:
+              print('cold_zone_notifications_table=NO')
+          if 'cold_zone_decisions' in tabs:
+              total=int(con.execute('select count(*) from cold_zone_decisions').fetchone()[0])
+              print('decision_total='+str(total))
+              cols={r[1] for r in con.execute('pragma table_info(cold_zone_decisions)')}
+              fields=['decision_id']
+              for c in ('decision','reason_code','reason','mint','created_at'):
+                  if c in cols: fields.append(c)
+              q='select '+','.join(fields)+' from cold_zone_decisions order by decision_id desc limit 8'
+              for i,r in enumerate(con.execute(q),1):
+                  d=dict(r); mint=str(d.get('mint') or '')
+                  if mint: d['mint']=(mint[:6]+'…'+mint[-6:]) if len(mint)>14 else mint
+                  safe=' '.join(f"{k}:{str(v)[:120]}" for k,v in d.items())
+                  print(f'decision_{i}='+safe)
+          con.close()
+
+          truth={'1','true','yes','on','y'}
+          by={}
+          if os.path.exists(csvp):
+              with open(csvp,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '')
+                      k=str(r.get('setting') or '')
+                      if tid and k: by.setdefault(tid,{})[k]=str(r.get('value') or '').strip().lower()
+          eligible=[tid for tid,s in by.items() if s.get('solana_live_enabled') in truth and s.get('learner_new_entries_enabled') in truth and s.get('sibot_enabled') in truth]
+          print('eligible_telegram_users='+str(len(eligible)))
+
+          env={}
+          if os.path.exists(envp):
+              for line in open(envp,encoding='utf-8'):
+                  line=line.strip()
+                  if not line or line.startswith('#') or '=' not in line: continue
+                  k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env.get('TELEGRAM_BOT_TOKEN','')
+          print('telegram_token_present='+('YES' if token else 'NO'))
+          if token:
+              try:
+                  with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/getMe',timeout=8) as resp:
+                      data=json.loads(resp.read().decode())
+                  print('telegram_getme_ok='+('YES' if data.get('ok') else 'NO'))
+              except Exception as e:
+                  print('telegram_getme_ok=NO')
+                  print('telegram_getme_error='+type(e).__name__)
+          if token and eligible:
+              tid=eligible[0]
+              text='🧪 SiBot Telegram health test\nCold Zone relay is active and the bot is armed.\nThis message was sent only to verify Telegram delivery.'
+              body=urllib.parse.urlencode({'chat_id':tid,'text':text}).encode()
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=body,method='POST')
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as resp:
+                      data=json.loads(resp.read().decode())
+                  print('telegram_test_send_ok='+('YES' if data.get('ok') else 'NO'))
+              except urllib.error.HTTPError as e:
+                  raw=e.read().decode(errors='replace')[:500]
+                  try:
+                      payload=json.loads(raw); desc=str(payload.get('description') or '')[:260]
+                  except Exception:
+                      desc='HTTP '+str(e.code)
+                  print('telegram_test_send_ok=NO')
+                  print('telegram_test_send_error='+desc.replace('\n',' '))
+              except Exception as e:
+                  print('telegram_test_send_ok=NO')
+                  print('telegram_test_send_error='+type(e).__name__)
+          PY
+
+          echo '--- relay journal (last 20m, sanitised) ---'
+          journalctl -u google-learner-cold-zone-relay.service --since '20 minutes ago' --no-pager -n 200 2>/dev/null \
+            | sed -E 's#bot[0-9]+:[A-Za-z0-9_-]+#botREDACTED#g; s#https?://[^ ]+#URL_REDACTED#g' || true
+          echo '--- learner decisions/runtime (last 20m, sanitised) ---'
+          journalctl -u learnerbot-learn.service --since '20 minutes ago' --no-pager -n 500 2>/dev/null \
+            | grep -Ei 'cold-zone|leader|reject|buy|sell|signal|pool|trade|error|warning' \
+            | tail -160 \
+            | sed -E 's#https?://[^ ]+#URL_REDACTED#g; s#(TELEGRAM_BOT_TOKEN|PRIVATE_KEY|SECRET|API_KEY)=[^ ]+#\1=REDACTED#g' || true
