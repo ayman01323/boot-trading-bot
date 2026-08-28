@@ -15,70 +15,44 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Diagnose isolated learner startup and Telegram
+      - name: Stop learner and stage audited invariant fix only
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
           LEARN=/home/ayman01323/BOOT/testingbots/learn
           ROOTBOT=/root/multichain-learning-bot-v2.2-fast-direct-market
-          echo '=== LEARNER SERVICE ==='
-          echo "active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          echo "pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
-          systemctl show learnerbot-learn.service -p WorkingDirectory -p ExecStart -p NRestarts --no-pager || true
+          SRC=/tmp/trading_runtime_invariant_patch.py
 
-          echo '=== TOKEN ISOLATION + TELEGRAM API ==='
-          sudo -n python3 - <<'PY'
-          import hashlib, json, urllib.request
-          from pathlib import Path
-          def env(path):
-              out={}; p=Path(path)
-              if not p.exists(): return out
-              for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
-                  s=line.strip()
-                  if not s or s.startswith('#') or '=' not in s: continue
-                  k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
-              return out
-          learner=env('/home/ayman01323/BOOT/testingbots/learn/.env')
-          sirisky=env('/root/SiRisky/.env')
-          rootbot=env('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')
-          def tok(d): return d.get('TELEGRAM_BOT_TOKEN') or d.get('BOT_TOKEN') or d.get('TELEGRAM_TOKEN') or ''
-          lt,st,rt=tok(learner),tok(sirisky),tok(rootbot)
-          fp=lambda t: hashlib.sha256(t.encode()).hexdigest()[:12] if t else 'NONE'
-          print('learner_token_present=',bool(lt),' fingerprint=',fp(lt),sep='')
-          print('sirisky_token_present=',bool(st),' fingerprint=',fp(st),sep='')
-          print('rootbot_token_present=',bool(rt),' fingerprint=',fp(rt),sep='')
-          print('learner_isolated_from_sirisky=',bool(lt and st and lt!=st),sep='')
-          print('learner_isolated_from_rootbot=',bool(lt and rt and lt!=rt),sep='')
-          if lt:
-              for method in ('getMe','getWebhookInfo'):
-                  try:
-                      with urllib.request.urlopen(f'https://api.telegram.org/bot{lt}/{method}',timeout=12) as r: data=json.load(r)
-                      print(f'{method}_ok={bool(data.get("ok"))}')
-                      if method=='getWebhookInfo' and data.get('ok'):
-                          x=data.get('result') or {}; print('webhook_url_set=',bool(x.get('url')),sep=''); print('pending_update_count=',x.get('pending_update_count'),sep='')
-                  except Exception as e: print(f'{method}_error={type(e).__name__}')
-          PY
+          echo '=== SIRISKY BEFORE (OBSERVE ONLY) ==='
+          SIRISKY_PID_BEFORE=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
+          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=${SIRISKY_PID_BEFORE}"
 
-          echo '=== LEARNER APP SETTINGS ==='
-          cd "$LEARN"
-          sudo -n "$ROOTBOT/.venv/bin/python" - <<'PY'
-          import hashlib
-          from learnerbot.config import AppSettings
-          app=AppSettings.load()
-          t=str(app.telegram_bot_token or '')
-          print('app_token_present=',bool(t),sep='')
-          print('app_token_fingerprint=',hashlib.sha256(t.encode()).hexdigest()[:12] if t else 'NONE',sep='')
-          print('telegram_chat_ids_count=',len(app.telegram_chat_ids),sep='')
-          PY
+          echo '=== STOP LEARNER ONLY ==='
+          sudo -n systemctl stop learnerbot-learn.service
+          echo "learner_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "learner_pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
 
-          echo '=== COMMAND SOURCE ==='
-          grep -nF '/learnerarm' "$LEARN/learnerbot/telegram_solana_live_patch.py" | head -20 || true
+          echo '=== FETCH EXACT AUDITED SOURCE ==='
+          curl -fsSL 'https://raw.githubusercontent.com/ayman01323/boot-trading-bot/f7b27e8f265ac209a4e55075154ab2d8daf3720b/learnerbot/trading_runtime_invariant_patch.py' -o "$SRC"
+          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$SRC"
+          grep -q 'solana_monitor_loss_containment_outer' "$SRC"
+          grep -q 'solana_close_rpc_priority_outer' "$SRC"
+          grep -q 'loss_containment_settings_active' "$SRC"
 
-          echo '=== STARTUP JOURNAL LAST 220 LINES ==='
-          sudo -n journalctl -u learnerbot-learn.service --since '15 minutes ago' --no-pager -o cat 2>/dev/null | tail -220 || true
+          echo '=== DEPLOY LEARNER FILE ONLY ==='
+          sudo -n install -m 0644 "$SRC" "$LEARN/learnerbot/trading_runtime_invariant_patch.py"
+          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$LEARN/learnerbot/trading_runtime_invariant_patch.py"
+          echo 'invariant_source_staged=YES'
 
-          echo '=== NO CHANGES MADE ==='
-          echo 'sirisky_change=NO'
-          echo 'learner_change=NO'
+          echo '=== VERIFY LEARNER REMAINS STOPPED ==='
+          test "$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)" != active
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
+          echo 'learner_stopped=YES'
+
+          echo '=== SIRISKY AFTER (OBSERVE ONLY) ==='
+          SIRISKY_PID_AFTER=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
+          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=${SIRISKY_PID_AFTER}"
+          test "$SIRISKY_PID_AFTER" = "$SIRISKY_PID_BEFORE"
+          echo 'sirisky_untouched=YES'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
