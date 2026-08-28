@@ -1,14 +1,21 @@
 [Unit]
-Description=Grok Known Assets Testing Bot (PAPER example)
+Description=Grok Known Assets Bot (persistent real-feed PAPER)
 After=network-online.target
+Wants=network-online.target
 ConditionPathExists=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/config.json
 
 [Service]
-Type=oneshot
+Type=simple
 User=ayman01323
 WorkingDirectory=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
-ExecStart=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/grok-known-assets-bot --config config.json --db state.sqlite3 check
-# Deliberately not a persistent trading service. Enable only after separate review.
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/grok-known-assets-bot --config config.json --db state.sqlite3 check
+ExecStart=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/python -m grok_known_assets_bot.live_runner --config config.json --db state.sqlite3 --equity 10000
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
