@@ -10,10 +10,11 @@ from .solana_execution_fault_counter_patch import reset_fault_count
 from .solana_live_patch import live_enabled, live_limits
 from .solana_wallet_store import SolanaWalletStore
 from .telegram import answer_callback_query, send_message
-from .user_registry import require_user, set_user_setting
+from .user_registry import require_user, set_user_setting, user_setting
 
 _PREV_HANDLE = _ui.handle_update
 DIV = _intel.DIV
+_MIN_TRADE_PRESETS = ("0.0005", "0.001", "0.0025", "0.005")
 
 
 def _store(app):
@@ -28,9 +29,33 @@ def _balance(app, address):
         return None
 
 
+def _minimum_trade(app, tid, cfg=None):
+    """Restriction-only per-user minimum economic LIVE trade.
+
+    A Telegram override may raise the minimum, but never lower the platform
+    safety floor configured in live_min_economic_trade_sol.
+    """
+    cfg = dict(cfg or _sol.settings(app))
+    platform_minimum = max(
+        Decimal("0.0001"),
+        _sol._dec(cfg.get("live_min_economic_trade_sol"), "0.0005"),
+    )
+    raw = user_setting(
+        app.csv_dir,
+        tid,
+        _sol.SOLANA_CHAIN_ID,
+        "solana_live_min_economic_trade_sol",
+        None,
+    )
+    if raw is None:
+        return platform_minimum, platform_minimum
+    return max(platform_minimum, _sol._dec(raw, platform_minimum)), platform_minimum
+
+
 def solana_page(app, tid):
     cfg = _sol.settings(app)
     trade, reserve = live_limits(app, tid, cfg)
+    minimum_trade, platform_minimum = _minimum_trade(app, tid, cfg)
     s = _sol.status(app)
     rows = _sol.ranking_rows(app, tid)
     leaders = _sol.leader_rows(app, tid)
@@ -47,6 +72,9 @@ def solana_page(app, tid):
     except Exception:
         wallet_line = "🔐 Active wallet  <b>not configured</b>"
         balance_line = "💰 Balance  <b>unavailable</b>"
+    minimum_line = f"📏 Minimum economic trade  <b>{minimum_trade} SOL</b>"
+    if minimum_trade > platform_minimum:
+        minimum_line += f"  <i>(platform floor {platform_minimum})</i>"
     return "\n".join([
         "<b>🟣 SiBot — Solana LIVE</b>", DIV,
         f"{'🟢 <b>LIVE ARMED</b>' if enabled else '🔴 <b>LIVE OFF</b>'}  •  no new SHADOW entries",
@@ -54,6 +82,7 @@ def solana_page(app, tid):
         balance_line,
         "",
         f"🚀 Trade size  <b>{trade} SOL</b>",
+        minimum_line,
         f"🛡 Untouched reserve  <b>{reserve} SOL</b>",
         f"💳 Minimum wallet funding  <b>{trade + reserve} SOL</b>",
         f"1️⃣ Max LIVE positions  <b>{html.escape(str(cfg.get('live_max_positions','1')))}</b>",
@@ -72,10 +101,41 @@ def solana_keyboard(app, tid):
     live_button = {"text": "🛑 Disable LIVE", "callback_data": "sibot:solana:live:off"} if enabled else {"text": "🚀 Enable LIVE", "callback_data": "sibot:solana:live:arm"}
     return {"inline_keyboard": [
         [live_button],
+        [{"text": "📏 Min trade", "callback_data": "sibot:solana:mintrade"}],
         [{"text": "📈 Top 20", "callback_data": "sibot:solana:top20"}, {"text": "🏆 Leaders", "callback_data": "sibot:solana:leaders"}],
         [{"text": "💼 LIVE Positions", "callback_data": "sibot:solana:positions"}, {"text": "🔄 Refresh", "callback_data": "sibot:solana:refresh"}],
         [{"text": "⬅️ SiBot", "callback_data": "menu:sibot"}],
     ]}
+
+
+def minimum_trade_page(app, tid):
+    current, platform_minimum = _minimum_trade(app, tid)
+    return "\n".join([
+        "<b>📏 Solana minimum economic trade</b>", DIV,
+        f"Current effective minimum: <b>{current} SOL</b>",
+        f"Platform safety floor: <b>{platform_minimum} SOL</b>",
+        "",
+        "This setting is restriction-only. It can raise the minimum required allocation, but it cannot reduce the platform safety floor and does not change the configured BUY size.",
+    ])
+
+
+def minimum_trade_keyboard(app, tid):
+    current, platform_minimum = _minimum_trade(app, tid)
+    rows = []
+    buttons = []
+    for raw in _MIN_TRADE_PRESETS:
+        value = Decimal(raw)
+        if value < platform_minimum:
+            continue
+        label = f"✅ {raw} SOL" if value == current else f"{raw} SOL"
+        buttons.append({"text": label, "callback_data": f"sibot:solana:mintrade:set:{raw}"})
+        if len(buttons) == 2:
+            rows.append(buttons)
+            buttons = []
+    if buttons:
+        rows.append(buttons)
+    rows.append([{"text": "⬅️ Solana LIVE", "callback_data": "sibot:solana"}])
+    return {"inline_keyboard": rows}
 
 
 def solana_positions_page(app, tid):
@@ -112,6 +172,69 @@ def handle_update(app, update):
                 pass
         text = solana_positions_page(app, tid) if data.endswith("positions") else solana_page(app, tid)
         send_message(app.telegram_bot_token, tid, text, parse_mode="HTML", reply_markup=solana_keyboard(app, tid))
+        return True
+
+    if data == "sibot:solana:mintrade" and tid:
+        if not private:
+            if qid:
+                answer_callback_query(app.telegram_bot_token, qid, "Solana settings can only be changed in a private chat.")
+            return True
+        try:
+            require_user(app.csv_dir, tid, active=True, chain_slug="solana")
+            if qid:
+                answer_callback_query(app.telegram_bot_token, qid, "Minimum trade settings")
+            send_message(
+                app.telegram_bot_token,
+                tid,
+                minimum_trade_page(app, tid),
+                parse_mode="HTML",
+                reply_markup=minimum_trade_keyboard(app, tid),
+                protect_content=True,
+            )
+        except Exception as exc:
+            if qid:
+                answer_callback_query(app.telegram_bot_token, qid, str(exc)[:170])
+        return True
+
+    if data.startswith("sibot:solana:mintrade:set:") and tid:
+        if not private:
+            if qid:
+                answer_callback_query(app.telegram_bot_token, qid, "Solana settings can only be changed in a private chat.")
+            return True
+        try:
+            require_user(app.csv_dir, tid, active=True, chain_slug="solana")
+            raw = data.rsplit(":", 1)[-1]
+            if raw not in _MIN_TRADE_PRESETS:
+                raise ValueError("Unsupported minimum trade preset")
+            requested = Decimal(raw)
+            _, platform_minimum = _minimum_trade(app, tid)
+            if requested < platform_minimum:
+                raise ValueError(f"Cannot reduce below platform safety floor {platform_minimum} SOL")
+            set_user_setting(
+                app.csv_dir,
+                tid,
+                "solana_live_min_economic_trade_sol",
+                raw,
+                chain_id=str(_sol.SOLANA_CHAIN_ID),
+                description="Per-user minimum economic Solana LIVE trade; restriction-only",
+            )
+            effective, _ = _minimum_trade(app, tid)
+            if qid:
+                answer_callback_query(app.telegram_bot_token, qid, f"Minimum trade {effective} SOL")
+            send_message(
+                app.telegram_bot_token,
+                tid,
+                minimum_trade_page(app, tid),
+                parse_mode="HTML",
+                reply_markup=minimum_trade_keyboard(app, tid),
+                protect_content=True,
+            )
+        except Exception as exc:
+            if qid:
+                try:
+                    answer_callback_query(app.telegram_bot_token, qid, str(exc)[:170])
+                except Exception:
+                    pass
         return True
 
     if data not in {"sibot:solana:live:arm", "sibot:solana:live:confirm", "sibot:solana:live:off"}:
@@ -178,7 +301,7 @@ def handle_update(app, update):
 
 def install():
     _intel.solana_page = solana_page
-    _intel.solana_positions_page = solana_positions_page
+    _intel.solana_keyboard = solana_keyboard
     _ui.handle_update = handle_update
 
 
