@@ -19,158 +19,92 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Verify isolated Google runner
+      - name: Stabilise exact morning Solana Learner source
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = "botgoogle"
-          test "$(id -un)" = "ayman01323"
-
-      - name: Prepare isolated runtime and encrypted wallet
-        shell: bash
-        run: |
-          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
           target=/home/ayman01323/BOOT/testingbots/learn
-          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
-          mkdir -p "$target/CSVbot/auto" "$target/data/user_solana_wallets/900001" "$target/private"
-          chmod 700 "$target/data" "$target/data/user_solana_wallets" "$target/data/user_solana_wallets/900001" "$target/private"
+          service=learnerbot-learn.service
+          expected=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+          test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$expected"
+          test -f "$target/learnerbot/__main__.py"
 
-          py=python3
-          if ! "$py" -c 'import cryptography' >/dev/null 2>&1; then
-            if [[ ! -x "$target/.wallet-venv/bin/python" ]]; then
-              python3 -m venv "$target/.wallet-venv"
-              "$target/.wallet-venv/bin/pip" install --quiet cryptography
+          sudo -n /usr/bin/bash -lc '
+            set -euo pipefail
+            target=/home/ayman01323/BOOT/testingbots/learn
+            service=learnerbot-learn.service
+            main="$target/learnerbot/__main__.py"
+            backup="$target/backups/__main__.py.before-isolated-polygon-skip"
+            [[ -f "$backup" ]] || cp -a "$main" "$backup"
+            systemctl stop "$service" || true
+            if grep -q "^from \. import polygon_live_enable_migration  # noqa: F401$" "$main"; then
+              sed -i "s|^from \. import polygon_live_enable_migration  # noqa: F401$|# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration.|" "$main"
             fi
-            py="$target/.wallet-venv/bin/python"
-          fi
+            grep -q "^# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration\.$" "$main"
+            chown ayman01323:ayman01323 "$main"
+            python3 -m py_compile "$main"
+            systemctl start "$service"
+          '
 
-          TARGET="$target" "$py" - <<'PY'
-          import base64,csv,json,os,secrets,time
+          sleep 12
+          state1="$(systemctl is-active "$service" 2>/dev/null || true)"
+          n1="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
+          sleep 6
+          state2="$(systemctl is-active "$service" 2>/dev/null || true)"
+          n2="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
+
+          echo "source_sha=$expected"
+          echo "compatibility_change=skip_production_polygon_migration_only"
+          echo "service_state_1=$state1"
+          echo "service_state_2=$state2"
+          echo "restart_count_1=$n1"
+          echo "restart_count_2=$n2"
+          echo "wallet_data_modified=NO"
+          echo "csv_settings_modified=NO"
+          echo "database_replaced=NO"
+
+          echo '--- active Learner controls ---'
+          TARGET="$target" python3 - <<'PY'
+          import csv, os
           from pathlib import Path
-          from cryptography.fernet import Fernet
-          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-          from cryptography.hazmat.primitives.serialization import Encoding,PrivateFormat,PublicFormat,NoEncryption
-
-          root=Path(os.environ['TARGET'])
-          csvdir=root/'CSVbot'; datadir=root/'data'; privdir=root/'private'
-          tid='900001'
-
-          alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-          def b58(raw:bytes):
-              pad=len(raw)-len(raw.lstrip(b'\x00')); n=int.from_bytes(raw,'big'); chars=[]
-              while n:
-                  n,rem=divmod(n,58); chars.append(alphabet[rem])
-              return '1'*pad + ''.join(reversed(chars))
-
-          def write_csv(path,headers,rows):
-              path.parent.mkdir(parents=True,exist_ok=True)
-              tmp=path.with_suffix(path.suffix+'.tmp')
-              with tmp.open('w',encoding='utf-8',newline='') as f:
-                  w=csv.DictWriter(f,fieldnames=headers); w.writeheader(); w.writerows(rows); f.flush(); os.fsync(f.fileno())
-              os.replace(tmp,path)
-
-          users=csvdir/'users.csv'
-          if not users.exists():
-              now=int(time.time())
-              write_csv(users,['telegram_id','role','status','fee_plan_id','label','allowed_chains','max_wallets','can_transfer','can_manual_trade','can_auto_trade','created_epoch','activated_epoch','notes'],[{
-                  'telegram_id':tid,'role':'MASTER','status':'ACTIVE','fee_plan_id':'MASTER','label':'Isolated Learn Test User','allowed_chains':'solana','max_wallets':'5','can_transfer':'true','can_manual_trade':'true','can_auto_trade':'true','created_epoch':now,'activated_epoch':now,'notes':'Synthetic isolated test identity; not linked to Telegram'
-              }])
-
-          user_settings=csvdir/'user_trading_settings.csv'
-          if not user_settings.exists():
-              write_csv(user_settings,['telegram_id','chain_id','setting','value','description'],[
-                  {'telegram_id':tid,'chain_id':'0','setting':'sibot_enabled','value':'true','description':'Enable isolated SiBot test user'},
-                  {'telegram_id':tid,'chain_id':'0','setting':'sibot_auto_trade_enabled','value':'true','description':'Allow automated test routing when service is later started'},
-                  {'telegram_id':tid,'chain_id':'-101','setting':'solana_live_enabled','value':'true','description':'Permit Solana LIVE path for isolated test user; no service is started by this workflow'},
-              ])
-
-          settings=[
-              ('enabled','true','Enable Solana SiBot research and monitoring'),
-              ('lookback_days','60','Realised SOL-denominated Top-20 lookback'),
-              ('leaders_per_user','2','Solana leaders selected per user'),
-              ('min_closed_trades','5','Minimum reconstructed SOL round trips'),
-              ('min_win_rate_pct','50','Minimum leader win rate'),
-              ('leader_poll_seconds','5','Fresh leader polling cadence'),
-              ('position_poll_seconds','15','Open-position quote cadence'),
-              ('max_signal_age_seconds','30','Maximum leader BUY signal age'),
-              ('max_roundtrip_loss_pct','3','Maximum immediate quote round-trip loss'),
-              ('max_entry_deterioration_pct','2','Maximum worse entry versus leader'),
-              ('estimated_entry_fee_sol','0.00002','Estimated entry fee'),
-              ('estimated_exit_fee_sol','0.00002','Estimated exit fee'),
-              ('stop_loss_pct','10','Independent stop loss'),
-              ('take_profit_pct','25','Independent take profit'),
-              ('leader_exit_loss_cap_pct','2.5','Maximum tolerated loss after leader exit'),
-              ('break_even_trigger_pct','5','Break-even activation'),
-              ('break_even_floor_pct','0.10','Break-even net floor'),
-              ('trailing_trigger_pct','10','Trailing-profit activation'),
-              ('trailing_gap_pct','5','Maximum give-back from peak'),
-              ('max_hold_hours','24','Close old profitable positions'),
-              ('mirror_partial_sells','true','Mirror leader partial sells'),
-              ('live_trade_sol','0.005','Real SOL amount per copied BUY'),
-              ('live_min_sol_reserve','0.02','SOL reserve for fees and exits'),
-              ('live_max_positions','1','Maximum simultaneous LIVE positions'),
-              ('live_require_simulation','true','Require successful simulation before execute'),
-          ]
-          write_csv(csvdir/'solana_settings.csv',['setting','value','description'],[{'setting':a,'value':b,'description':c} for a,b,c in settings])
-
-          wallet_csv=csvdir/'auto/solana_user_wallets.csv'
-          rows=[]
-          if wallet_csv.exists():
-              with wallet_csv.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          active=[r for r in rows if str(r.get('telegram_id'))==tid and str(r.get('enabled','true')).lower() in {'1','true','yes','on'} and str(r.get('signing','')).lower()=='true']
-          if active:
-              address=str(active[0].get('address') or '')
-              print('wallet_created=NO_ALREADY_EXISTS')
-              print('wallet_address='+address)
-          else:
-              key=Ed25519PrivateKey.generate()
-              seed=key.private_bytes(Encoding.Raw,PrivateFormat.Raw,NoEncryption())
-              pub=key.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw)
-              raw=seed+pub
-              address=b58(pub)
-              wid='s'+secrets.token_hex(4)
-              fkey=datadir/'.solana_wallet_store.key'
-              if not fkey.exists():
-                  fkey.write_bytes(Fernet.generate_key()); os.chmod(fkey,0o600)
-              f=Fernet(fkey.read_bytes().strip())
-              token=f.encrypt(raw).decode('ascii')
-              enc=datadir/'user_solana_wallets'/tid/(wid+'.enc.json')
-              enc.write_text(json.dumps({'version':1,'telegram_id':tid,'wallet_id':wid,'address':address,'source':'isolated-test-generated','encrypted_keypair':token},indent=2),encoding='utf-8')
-              os.chmod(enc,0o600)
-              now=int(time.time())
-              rows.append({'telegram_id':tid,'wallet_id':wid,'label':'Learn Test Wallet','address':address,'signing':'true','enabled':'true','active':'true','created_epoch':now,'notes':'encrypted-signing-key'})
-              write_csv(wallet_csv,['telegram_id','wallet_id','label','address','signing','enabled','active','created_epoch','notes'],rows)
-              backup=privdir/'solana_test_wallet_backup.json'
-              backup.write_text(json.dumps({'address':address,'keypair_64_byte_json':list(raw),'warning':'PRIVATE KEY BACKUP - KEEP SECRET - TEST WALLET'},indent=2),encoding='utf-8')
-              os.chmod(backup,0o600)
-              print('wallet_created=YES')
-              print('wallet_address='+address)
-              print('wallet_backup_path='+str(backup))
-              print('wallet_backup_mode=600')
-              print('encrypted_wallet_path='+str(enc))
-
-          print('test_internal_user='+tid)
-          print('telegram_linked=NO')
-          print('live_execution_started=NO')
-          print('production_service_restart=NO')
+          root=Path(os.environ['TARGET'])/'CSVbot'
+          for filename in ('solana_settings.csv','user_trading_settings.csv'):
+              p=root/filename
+              if not p.exists():
+                  continue
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for row in csv.DictReader(f):
+                      key=str(row.get('setting') or '')
+                      if key in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}:
+                          prefix='user=[redacted] ' if filename.startswith('user_') else 'platform '
+                          print(prefix+f"chain={row.get('chain_id','')} {key}={row.get('value','')}")
           PY
 
-      - name: Display buy sell and risk settings
-        shell: bash
-        run: |
-          set -euo pipefail
-          target=/home/ayman01323/BOOT/testingbots/learn
-          python3 - <<'PY'
-          import csv
+          echo '--- current LIVE state ---'
+          TARGET="$target" python3 - <<'PY'
+          import os, sqlite3, time
           from pathlib import Path
-          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
-          with p.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          for r in rows:
-              print(f"SETTING {r['setting']}={r['value']} | {r['description']}")
+          db=Path(os.environ['TARGET'])/'data/solana_sibot.sqlite3'
+          conn=sqlite3.connect(f'file:{db}?mode=ro',uri=True)
+          conn.row_factory=sqlite3.Row
+          for row in conn.execute("select status,count(*) n from positions where mode='LIVE' group by status order by status"):
+              print(dict(row))
+          cutoff=int(time.time())-300
+          rows=conn.execute("select action,status,error,created_at from live_execution_attempts where created_at>=? order by created_at desc limit 20",(cutoff,)).fetchall()
+          print('attempts_last_5m='+str(len(rows)))
+          for row in rows:
+              d=dict(row); d['error']=str(d.get('error') or '')[:180]
+              print(d)
+          conn.close()
           PY
-          test -f "$target/CSVbot/auto/solana_user_wallets.csv"
-          test -f "$target/data/.solana_wallet_store.key"
-          test -f "$target/private/solana_test_wallet_backup.json"
-          stat -c 'backup_permissions=%a owner=%U group=%G path=%n' "$target/private/solana_test_wallet_backup.json"
-          echo "wallet_secret_printed=NO"
-          echo "live_execution_started=NO"
+
+          echo '--- stable service tail ---'
+          journalctl -u "$service" -n 120 --no-pager 2>/dev/null \
+            | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|Polygon|BUY|SELL|LIVE|entry|ERROR|REJECT' \
+            | tail -n 120 || true
+
+          test "$state1" = active
+          test "$state2" = active
+          test "$n1" = "$n2"
