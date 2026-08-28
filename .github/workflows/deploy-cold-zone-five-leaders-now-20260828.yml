@@ -1,4 +1,4 @@
-name: Fix SiRisky Candidate Coverage Google Only
+name: Inspect SiRisky Sizing Path Google Only
 
 on:
   workflow_dispatch:
@@ -11,19 +11,30 @@ permissions:
   contents: read
 
 jobs:
-  fix:
+  inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Increase SiRisky candidate coverage safely on botgoogle
+      - name: Inspect SiRisky probe and execution sizing on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/0b7daf5970d8f7c5cd11aeedf7f68317c530e386/scripts/sirisky_google_candidate_coverage_fix_20260828.sh \
-            -o "$tmp"
-          bash "$tmp"
+          sudo -n bash -lc '
+            cd /root/SiRisky
+            echo "=== RUNTIME SIZING ==="
+            grep -E "^(auto_probe_sol|auto_entry_usd|auto_entry_min_sol|auto_entry_max_sol|auto_evaluate_candidate_limit|live_enabled|broadcast_enabled)," CSV/runtime.csv || true
+            echo "=== RISK ==="
+            grep -E "^(min_forecast_net_pct|max_round_trip_cost_pct|min_exit_health_pct|untouched_sol_reserve|max_open_positions)," CSV/stage3_risk.csv || true
+            echo "=== STAGE2 ==="
+            sed -n "1,260p" sirisky/stage2_strategy.py
+            echo "=== STAGE4 ==="
+            sed -n "1,220p" sirisky/stage4_dispatch.py
+            echo "=== MODELS ==="
+            sed -n "1,260p" sirisky/models.py
+            echo "=== SAFETY PATCH ==="
+            grep -n -A35 -B5 "original_eval_pool" sirisky/safety_v2.py || true
+            echo "=== SERVICE ==="
+            systemctl is-active sirisky.service
+          '
