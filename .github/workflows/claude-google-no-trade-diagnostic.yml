@@ -5,10 +5,11 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/claude-google-no-trade-diagnostic.yml'
+      - '.github/claude-google-no-trade.trigger'
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: claude-google-no-trade-diagnostic
@@ -17,27 +18,43 @@ concurrency:
 jobs:
   diagnose:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 15
     env:
       SERVICE: claude-trading-bot.service
       STATE_FILE: /home/ayman01323/ClaudeServer/runtime/data/claude_bot_state.json
       CSV_DIR: /home/ayman01323/ClaudeServer/runtime/CSVbot
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
     steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
       - name: Verify Google runner
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
+          test -d "$MANAGED_REPO/.git"
 
-      - name: Current Claude control state
+      - name: Collect sanitised current no-trade evidence
         shell: bash
         run: |
           set -euo pipefail
+          : > /tmp/claude-no-trade-context.txt
+          emit() { printf '%s\n' "$*" | tee -a /tmp/claude-no-trade-context.txt; }
+
+          emit "generated_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          emit "workflow_sha=$(git rev-parse HEAD)"
+          emit "server_sha=$(git -C "$MANAGED_REPO" rev-parse HEAD 2>/dev/null || echo UNKNOWN)"
           active="$(systemctl is-active "$SERVICE" || true)"
-          echo "service_active=$active"
-          systemctl show "$SERVICE" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
-          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          emit "service_active=$active"
+          while IFS= read -r line; do emit "service_$line"; done < <(systemctl show "$SERVICE" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState)
+
+          STATE_FILE="$STATE_FILE" python3 - <<'PY' | tee -a /tmp/claude-no-trade-context.txt
           import json, os
           from pathlib import Path
           p = Path(os.environ['STATE_FILE'])
@@ -48,14 +65,10 @@ jobs:
           print(f'effective_state={effective}')
           print(f'drawdown_latched={str(halted).lower()}')
           print(f'open_positions={int(raw.get("open_positions") or 0)}')
+          print(f'state_file_present={str(p.exists()).lower()}')
           PY
-          test "$active" = active
 
-      - name: Isolated platform and Solana bridge controls
-        shell: bash
-        run: |
-          set -euo pipefail
-          CSV_DIR="$CSV_DIR" python3 - <<'PY'
+          CSV_DIR="$CSV_DIR" python3 - <<'PY' | tee -a /tmp/claude-no-trade-context.txt
           import csv, os
           from pathlib import Path
           root = Path(os.environ['CSV_DIR'])
@@ -69,15 +82,14 @@ jobs:
                   continue
               with p.open('r', encoding='utf-8-sig', newline='') as f:
                   rows = list(csv.DictReader(f))
-              hits=[]
-              for i,r in enumerate(rows, start=2):
+              hits=0
+              for r in rows:
                   for k in keys:
                       if k in r and str(r.get(k,'')).strip().lower() in truthy:
-                          hits.append((i,k,str(r.get(k,''))))
-              total_truthy += len(hits)
-              print(f'{name}_rows={len(rows)} truthy_arming_fields={len(hits)}')
+                          hits += 1
+              total_truthy += hits
+              print(f'{name}_rows={len(rows)} truthy_arming_fields={hits}')
           print(f'isolated_truthy_arming_fields_total={total_truthy}')
-
           p = root / 'sibot1' / 'solana_live_control.csv'
           if not p.exists():
               print('solana_live_control=MISSING')
@@ -96,53 +108,135 @@ jobs:
               print(f'solana_live_control_rows={len(rows)} armed_rows={armed} live_rows={live} auto_rows={auto} all_three_rows={all3}')
           PY
 
-      - name: Recent opportunity pipeline and execution evidence
+          sudo -n journalctl -u "$SERVICE" --since '60 minutes ago' --no-pager > /tmp/claude-no-trade-journal.txt || true
+          count() { grep -Eic "$1" /tmp/claude-no-trade-journal.txt 2>/dev/null || true; }
+          fixed() { grep -Fic "$1" /tmp/claude-no-trade-journal.txt 2>/dev/null || true; }
+          emit "journal_lines=$(wc -l < /tmp/claude-no-trade-journal.txt)"
+          emit "rpc_http_401=$(count 'HTTP 401')"
+          emit "rpc_http_403=$(count 'HTTP 403')"
+          emit "rpc_http_429=$(count 'HTTP 429')"
+          emit "rpc_http_5xx=$(count 'HTTP 5[0-9][0-9]')"
+          emit "rpc_endpoint_errors=$(count 'SolanaRpcEndpointError|Solana RPC .*HTTP [45][0-9][0-9]')"
+          emit "jupiter_quote_failures=$(count 'Jupiter.*quote|quote.*Jupiter|Failed to get quotes|Quote unavailable')"
+          emit "leader_signature_events=$(fixed '[sibot-solana-leader-signature]')"
+          emit "leader_alignment_events=$(fixed '[solana-leader-edge-alignment]')"
+          emit "fast_market_scan_events=$(fixed '[fast-market-scan]')"
+          emit "live_route_scan_events=$(fixed '[live-route-scan]')"
+          emit "copy_top20_events=$(fixed '[copy-top20]')"
+          emit "broader_pool_events=$(count 'broader[_ -]?pool')"
+          emit "qualified_events=$(count 'qualified')"
+          emit "selected_events=$(count 'selected')"
+          emit "rejection_words=$(count 'reject|refus|blocked|skipp|ineligible|no candidate|no opportunity')"
+          emit "pool_rug_liquidity_words=$(count 'rug|liquidity|sellability|poolcheck')"
+          emit "signer_funding_account_words=$(count 'signer|funding|insufficient|account')"
+          emit "stale_signal_words=$(count 'stale signal|signal.*stale')"
+          emit "simulation_words=$(count 'simulation|simulate')"
+          emit "broadcast_words=$(count 'broadcast')"
+          emit "buy_words=$(count '(^|[^A-Z])BUY([^A-Z]|$)')"
+          emit "sell_words=$(count '(^|[^A-Z])SELL([^A-Z]|$)')"
+          emit "traceback_count=$(fixed 'Traceback')"
+          emit "main_process_exit_count=$(fixed 'Main process exited')"
+          emit "fatal_result_count=$(fixed 'Failed with result')"
+          emit "health_warning_disabled_markers=$(fixed '[ai-agent-health] automatic Telegram warnings disabled by owner')"
+          emit "raw_rpc_urls_persisted=false"
+          emit "wallet_secrets_read=false"
+          emit "live_state_changed=false"
+          emit "service_restarted_by_diagnostic=false"
+          test "$active" = active
+
+      - name: Claude analyses live evidence against current repository
+        id: claude
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DISABLE_AUTOUPDATER: '1'
         shell: bash
         run: |
           set -euo pipefail
-          log="$(sudo -n journalctl -u "$SERVICE" --since '30 minutes ago' --no-pager || true)"
-          count() { printf '%s\n' "$log" | grep -Ec "$1" || true; }
-          echo "rpc_429_count=$(count 'Solana RPC .*HTTP 429|HTTP 429')"
-          echo "rpc_error_count=$(count 'SolanaRpcEndpointError|Solana RPC .*HTTP [45][0-9][0-9]')"
-          echo "leader_signature_events=$(count '\[sibot-solana-leader-signature\]')"
-          echo "leader_alignment_events=$(count '\[solana-leader-edge-alignment\]')"
-          echo "fast_market_scan_events=$(count '\[fast-market-scan\]')"
-          echo "live_route_scan_events=$(count '\[live-route-scan\]')"
-          echo "copy_top20_events=$(count '\[copy-top20\]')"
-          echo "buy_word_events=$(count '(^|[^A-Z])BUY([^A-Z]|$)')"
-          echo "sell_word_events=$(count '(^|[^A-Z])SELL([^A-Z]|$)')"
-          echo "broadcast_word_events=$(count 'broadcast')"
-          echo "position_word_events=$(count 'position')"
-          echo "cooldown_events=$(count 'temporarily cooling down')"
+          test -n "${ANTHROPIC_API_KEY:-}"
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g @anthropic-ai/claude-code@latest >/tmp/claude-google-no-trade-install.log 2>&1
+          fi
+          claude --version
+          cat > /tmp/claude-google-no-trade-prompt.txt <<'EOF'
+          You are Claude performing a read-only engineering diagnosis of the CLAUDE TRADING BOT on the Google runner.
 
-          for tag in '[solana-leader-edge-alignment]' '[fast-market-scan]' '[live-route-scan]' '[copy-top20]'; do
-            line="$(printf '%s\n' "$log" | grep -F "$tag" | tail -1 || true)"
-            if [[ -n "$line" ]]; then
-              printf 'latest_%s=%s\n' "$(printf '%s' "$tag" | tr -cd '[:alnum:]-')" "$line" \
-                | sed -E 's/[A-Za-z0-9]{32,}/[redacted]/g'
-            else
-              printf 'latest_%s=NONE\n' "$(printf '%s' "$tag" | tr -cd '[:alnum:]-')"
-            fi
-          done
+          First read CLAUDE.md and inspect the current repository code relevant to claude-trading-bot startup, discovery, strategy selection, Solana RPC/Jupiter, PoolCheck/risk gates, control-plane state, signer/funding, simulation and execution eligibility. You may use read/search tools in this checkout, but you must not edit files, commit, push, restart services, arm/re-arm LIVE, sign, broadcast, weaken any risk/safety gate, or request secrets.
 
-          LOG="$log" python3 - <<'PY'
-          import os, re
-          from collections import Counter
-          text = os.environ.get('LOG','')
-          lines = [ln for ln in text.splitlines() if 'SolanaRpcEndpointError' in ln or re.search(r'Solana RPC .*HTTP [45][0-9][0-9]', ln)]
-          statuses = Counter()
-          methods = Counter()
-          for ln in lines:
-              m = re.search(r'HTTP\s+(\d{3})', ln)
-              if m: statuses[m.group(1)] += 1
-              m = re.search(r'Solana RPC\s+([A-Za-z][A-Za-z0-9_]*)', ln)
-              if m: methods[m.group(1)] += 1
-          print('rpc_status_counts=' + (','.join(f'{k}:{v}' for k,v in sorted(statuses.items())) or 'NONE'))
-          print('rpc_method_counts=' + (','.join(f'{k}:{v}' for k,v in methods.most_common(10)) or 'NONE'))
+          Then analyse the sanitised live evidence appended below. Distinguish clearly between CONFIRMED ROOT CAUSES, CONFIRMED NON-CAUSES, and INFERENCES/UNKNOWN. Explain why no trade has occurred and identify the exact code files/functions involved. If an engineering defect is confirmed, give the minimal safe patch and regression tests GPT should implement. Do not propose lowering thresholds or bypassing controls merely to force a trade. If evidence is insufficient, specify the smallest additional read-only diagnostic required.
+
+          Return a concise but evidence-based report with:
+          1. current service/control state;
+          2. pipeline stage where opportunities stop;
+          3. RPC/Jupiter status;
+          4. precise blocker(s);
+          5. exact safe fix plan and tests;
+          6. SAFE/NOT SAFE to deploy the proposed fix.
+          EOF
+          {
+            cat /tmp/claude-google-no-trade-prompt.txt
+            printf '\nSANITISED LIVE EVIDENCE\n'
+            cat /tmp/claude-no-trade-context.txt
+          } > /tmp/claude-google-no-trade-full-prompt.txt
+          claude -p --permission-mode plan --max-turns 6 --output-format text --model "${CLAUDE_GOOGLE_MODEL:-sonnet}" \
+            "$(cat /tmp/claude-google-no-trade-full-prompt.txt)" \
+            > /tmp/claude-google-no-trade-analysis.txt \
+            2> /tmp/claude-google-no-trade-error.txt
+          test -s /tmp/claude-google-no-trade-analysis.txt
+
+      - name: Publish deterministic evidence and Claude analysis
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, pathlib, time
+          context = pathlib.Path('/tmp/claude-no-trade-context.txt').read_text(encoding='utf-8', errors='replace') if pathlib.Path('/tmp/claude-no-trade-context.txt').exists() else ''
+          analysis = pathlib.Path('/tmp/claude-google-no-trade-analysis.txt').read_text(encoding='utf-8', errors='replace').strip() if pathlib.Path('/tmp/claude-google-no-trade-analysis.txt').exists() else ''
+          err = pathlib.Path('/tmp/claude-google-no-trade-error.txt').read_text(encoding='utf-8', errors='replace').strip() if pathlib.Path('/tmp/claude-google-no-trade-error.txt').exists() else ''
+          payload = {
+              'generated_epoch': int(time.time()),
+              'source_sha': __import__('subprocess').check_output(['git','rev-parse','HEAD'], text=True).strip(),
+              'deterministic_evidence': context[:24000],
+              'claude_analysis_available': bool(analysis),
+              'claude_analysis': analysis[:24000],
+              'claude_error': err[:4000] if not analysis else '',
+              'safety': {
+                  'live_state_changed': False,
+                  'service_restarted_by_diagnostic': False,
+                  'transaction_broadcast_by_diagnostic': False,
+                  'wallet_secrets_read': False,
+              },
+          }
+          pathlib.Path('/tmp/claude-google-no-trade-latest.json').write_text(json.dumps(payload, indent=2, sort_keys=True)+'\n', encoding='utf-8')
           PY
+          gh auth setup-git
+          git fetch --force origin ai-reviews:refs/remotes/origin/ai-reviews
+          rm -rf /tmp/claude-google-no-trade-ai-reviews
+          git worktree add --detach /tmp/claude-google-no-trade-ai-reviews origin/ai-reviews
+          mkdir -p /tmp/claude-google-no-trade-ai-reviews/claude-google-no-trade
+          cp /tmp/claude-google-no-trade-latest.json /tmp/claude-google-no-trade-ai-reviews/claude-google-no-trade/latest.json
+          cd /tmp/claude-google-no-trade-ai-reviews
+          git config user.name 'claude-google-no-trade-diagnostic'
+          git config user.email 'claude-google-no-trade-diagnostic@users.noreply.github.com'
+          git add claude-google-no-trade/latest.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'Publish Claude Google no-trade diagnosis'
+            git fetch origin ai-reviews
+            git rebase origin/ai-reviews
+            git push origin HEAD:ai-reviews
+          fi
 
-          echo 'rpc_urls_logged=false'
-          echo 'wallet_secrets_read=false'
-          echo 'live_state_changed=false'
-          echo 'service_restarted=false'
-          echo 'transaction_broadcast_by_diagnostic=false'
+      - name: Safety boundary summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Read-only no-trade diagnosis:'
+          echo '- current Claude service/control state and sanitised counters only'
+          echo '- Claude repository inspection in plan/read-only mode'
+          echo '- no service restart by diagnostic'
+          echo '- no LIVE/ARMED/AUTO mutation'
+          echo '- no signing or transaction broadcast'
+          echo '- no wallet/private-key/API-key output persisted'
