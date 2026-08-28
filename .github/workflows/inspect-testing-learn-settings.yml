@@ -41,24 +41,28 @@ jobs:
           python3 -m compileall -q "$GITHUB_WORKSPACE/learnerbot"
 
           before_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-          export TARGET SOURCE_SHA SERVICE GITHUB_WORKSPACE
-          sudo -n /usr/bin/bash -lc '
-            set -euo pipefail
-            ts="$(date -u +%Y%m%dT%H%M%SZ)"
-            backup="$TARGET/backups/morning-restore-$ts"
-            mkdir -p "$backup"
-            cp -a "$TARGET/learnerbot" "$backup/learnerbot.before"
-            cp -a "$TARGET/CSVbot/solana_settings.csv" "$backup/solana_settings.csv.before" 2>/dev/null || true
-            cp -a "$TARGET/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv.before" 2>/dev/null || true
-            systemctl stop "$SERVICE" || true
-            rm -rf "$TARGET/learnerbot"
-            cp -a "$GITHUB_WORKSPACE/learnerbot" "$TARGET/learnerbot"
-            chown -R ayman01323:ayman01323 "$TARGET/learnerbot"
-            printf "%s\n" "$SOURCE_SHA" > "$TARGET/RESTORED_SOURCE_SHA.txt"
-            chown ayman01323:ayman01323 "$TARGET/RESTORED_SOURCE_SHA.txt"
-            systemctl start "$SERVICE"
-            echo "$backup" > /tmp/learner-morning-backup-path.txt
-          '
+          sudo -n /usr/bin/env \
+            TARGET="$TARGET" \
+            SOURCE_SHA="$SOURCE_SHA" \
+            SERVICE="$SERVICE" \
+            GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            /usr/bin/bash -lc '
+              set -euo pipefail
+              ts="$(date -u +%Y%m%dT%H%M%SZ)"
+              backup="$TARGET/backups/morning-restore-$ts"
+              mkdir -p "$backup"
+              cp -a "$TARGET/learnerbot" "$backup/learnerbot.before"
+              cp -a "$TARGET/CSVbot/solana_settings.csv" "$backup/solana_settings.csv.before" 2>/dev/null || true
+              cp -a "$TARGET/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv.before" 2>/dev/null || true
+              systemctl stop "$SERVICE" || true
+              rm -rf "$TARGET/learnerbot"
+              cp -a "$GITHUB_WORKSPACE/learnerbot" "$TARGET/learnerbot"
+              chown -R ayman01323:ayman01323 "$TARGET/learnerbot"
+              printf "%s\n" "$SOURCE_SHA" > "$TARGET/RESTORED_SOURCE_SHA.txt"
+              chown ayman01323:ayman01323 "$TARGET/RESTORED_SOURCE_SHA.txt"
+              systemctl start "$SERVICE"
+              echo "$backup" > /tmp/learner-morning-backup-path.txt
+            '
           sleep 10
           after_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
 
