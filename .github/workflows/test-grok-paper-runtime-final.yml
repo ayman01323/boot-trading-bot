@@ -1,0 +1,63 @@
+name: Test Grok PAPER Runtime Final
+
+on:
+  push:
+    branches:
+      - agent/grok-paper-runtime-final
+      - main
+    paths:
+      - 'testingbots/grok_known_assets_bot/**'
+      - '.github/workflows/test-grok-paper-runtime-final.yml'
+      - '.github/workflows/deploy-grok-known-assets-testing-bot.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-paper-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated bot
+        working-directory: testingbots/grok_known_assets_bot
+        run: python -m pip install -e '.[test]'
+      - name: Run isolated tests
+        working-directory: testingbots/grok_known_assets_bot
+        run: pytest -q
+      - name: Compile persistent runner
+        working-directory: testingbots/grok_known_assets_bot
+        run: python -m compileall -q src tests
+      - name: Verify PAPER-only refusal
+        working-directory: testingbots/grok_known_assets_bot
+        run: |
+          cp config.example.json config.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path('config.json').read_text())
+          cfg['live']['enabled'] = True
+          Path('/tmp/grok-live-refusal.json').write_text(json.dumps(cfg))
+          PY
+          if python -m grok_known_assets_bot.live_runner --config /tmp/grok-live-refusal.json --db /tmp/grok-refusal.sqlite3 --once; then
+            echo 'ERROR: persistent runner accepted live.enabled=true'
+            exit 1
+          fi
+      - name: Public market connectivity smoke only
+        working-directory: testingbots/grok_known_assets_bot
+        run: |
+          python - <<'PY'
+          from grok_known_assets_bot.live_feed import SOL_MINT, USDC_MINT, _get_json, _quote, _select_solana_pair
+          data = _get_json(f'https://api.dexscreener.com/token-pairs/v1/solana/{SOL_MINT}', 12)
+          pair = _select_solana_pair(data)
+          assert float(pair['priceUsd']) > 0
+          sell = _quote(SOL_MINT, USDC_MINT, 5_000_000, slippage_bps=50, timeout=12)
+          buy = _quote(USDC_MINT, SOL_MINT, 1_000_000, slippage_bps=50, timeout=12)
+          assert int(sell['outAmount']) > 0
+          assert int(buy['outAmount']) > 0
+          print('public_feed_connectivity=PASS')
+          PY
