@@ -15,7 +15,9 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Verify zero exposure then rearm morning canary
+      - uses: actions/checkout@v4
+
+      - name: Verify zero exposure then apply 0.009 SOL fee-efficient profile
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -73,26 +75,38 @@ jobs:
           if len(wallet_addresses) != 1: raise SystemExit('REFUSE_REARM: expected one bound morning wallet')
           owner=next(iter(wallet_addresses)); bal=rpc('getBalance',[owner,{'commitment':'confirmed'}]); lamports=int((bal or {}).get('value') or 0)
           print('wallet_balance_sol='+format(lamports/1_000_000_000,'.9f'))
-          if lamports < 5_500_000: raise SystemExit('REFUSE_REARM: wallet below morning canary + reserve minimum')
+          # 0.009 SOL trade + 0.005 SOL untouched reserve + a small execution-fee buffer.
+          if lamports < 15_000_000: raise SystemExit('REFUSE_REARM: wallet below 0.009 trade + reserve + fee buffer')
           (root/'private').mkdir(exist_ok=True)
           marker=root/'private'/'.verified_morning_rearm_tid'
           marker.write_text(next(iter(tids)),encoding='utf-8'); os.chmod(marker,0o600)
           PY
 
+          # Overlay only the settings-source size wrapper. Core signing, simulation,
+          # liquidity/impact, execution and reconciliation modules remain untouched.
+          patch_src="$GITHUB_WORKSPACE/learnerbot/telegram_sibot_settings_source_patch.py"
+          patch_dst="$TARGET/learnerbot/telegram_sibot_settings_source_patch.py"
+          test -f "$patch_src"
+          grep -F 'MAX_FEE_EFFICIENT_SOLANA_LIVE_TRADE_SOL = Decimal("0.009")' "$patch_src"
+          owner=$(stat -c '%U' "$patch_dst")
+          group=$(stat -c '%G' "$patch_dst")
+          sudo -n install -o "$owner" -g "$group" -m 0644 "$patch_src" "$patch_dst"
+          echo 'runtime_size_wrapper_installed=true'
+
           sudo -n -u ayman01323 env TARGET="$TARGET" python3 - <<'PY'
-          import csv, os, tempfile
+          import csv, os
           from pathlib import Path
           root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
           path=root/'CSVbot'/'user_trading_settings.csv'
           headers=['telegram_id','chain_id','setting','value','description']
           with path.open('r',encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
           wanted={
-            ('-101','solana_live_trade_sol'):('0.0005','Restored morning isolated Learner canary size'),
-            ('-101','solana_live_min_reserve_sol'):('0.005','Restored morning isolated Learner reserve'),
-            ('-101','learner_new_entries_enabled'):('true','Morning Learner new-entry gate restored after verified zero exposure'),
-            ('-101','solana_live_enabled'):('true','Explicit owner rearm after both quarantined mints verified zero on-chain'),
-            ('*','sibot_enabled'):('true','Morning SiBot monitoring enabled'),
-            ('*','sibot_auto_trade_enabled'):('true','Morning automated routing enabled; all execution safety remains authoritative'),
+            ('-101','solana_live_trade_sol'):('0.009','Fee-efficient guarded Solana LIVE size; execution safety gates unchanged'),
+            ('-101','solana_live_min_reserve_sol'):('0.005','Morning isolated Learner reserve retained'),
+            ('-101','learner_new_entries_enabled'):('true','Learner new-entry gate enabled after verified zero exposure'),
+            ('-101','solana_live_enabled'):('true','Explicit owner LIVE authorization after verified zero exposure'),
+            ('*','sibot_enabled'):('true','SiBot monitoring enabled'),
+            ('*','sibot_auto_trade_enabled'):('true','Automated routing enabled; all execution safety remains authoritative'),
           }
           out=[]; seen=set()
           for row in rows:
@@ -134,27 +148,48 @@ jobs:
                   for r in rows:
                       if r.get('telegram_id','').strip()==tid and r.get('chain_id','').strip()==str(target) and r.get('setting','').strip()==name:value=r.get('value',default)
               return str(value).strip()
-          print('effective_live_enabled='+setting('solana_live_enabled',-101,'false').lower())
-          print('effective_trade_sol='+setting('solana_live_trade_sol',-101,'0.005'))
-          print('effective_reserve_sol='+setting('solana_live_min_reserve_sol',-101,'0.02'))
-          print('effective_new_entries='+setting('learner_new_entries_enabled',-101,'false').lower())
-          print('effective_sibot_enabled='+setting('sibot_enabled',0,'false').lower())
-          print('effective_sibot_auto='+setting('sibot_auto_trade_enabled',0,'false').lower())
+          print('configured_live_enabled='+setting('solana_live_enabled',-101,'false').lower())
+          print('configured_trade_sol='+setting('solana_live_trade_sol',-101,'0.005'))
+          print('configured_reserve_sol='+setting('solana_live_min_reserve_sol',-101,'0.02'))
+          print('configured_new_entries='+setting('learner_new_entries_enabled',-101,'false').lower())
+          print('configured_sibot_enabled='+setting('sibot_enabled',0,'false').lower())
+          print('configured_sibot_auto='+setting('sibot_auto_trade_enabled',0,'false').lower())
           con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
           print('open_live_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n']))
           print('reconcile_required_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='RECONCILE_REQUIRED'").fetchone()['n']))
           con.close()
           assert setting('solana_live_enabled',-101,'false').lower()=='true'
-          assert setting('solana_live_trade_sol',-101,'')=='0.0005'
+          assert setting('solana_live_trade_sol',-101,'')=='0.009'
           assert float(setting('solana_live_min_reserve_sol',-101,'0'))>=0.005
           assert setting('learner_new_entries_enabled',-101,'false').lower()=='true'
           assert setting('sibot_enabled',0,'false').lower()=='true'
           assert setting('sibot_auto_trade_enabled',0,'false').lower()=='true'
           PY
-          echo '=== MORNING SAFETY CORE ==='
-          grep -E '^(live_max_positions|live_require_simulation),' "$TARGET/CSVbot/solana_settings.csv" || true
-          echo '=== STARTUP ACCOUNT STATE ==='
-          journalctl -u "$service" -n 220 --no-pager -o cat 2>/dev/null | grep -E '\[telegram-account\]' | tail -4 | sed -E 's/tid=[0-9]+/tid=[redacted]/g' || true
-          echo 'morning_rearm=SUCCESS'
+
+          echo '=== EFFECTIVE RUNTIME SIZE ==='
+          pid=$(systemctl show -p MainPID --value "$service")
+          test "${pid:-0}" -gt 1
+          py=$(readlink -f "/proc/$pid/exe")
+          echo "runtime_python=$py"
+          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" "$py" - <<'PY'
+          import os
+          from pathlib import Path
+          from learnerbot import solana_live_patch as live
+          class A: pass
+          root=Path(os.environ['TARGET']); a=A(); a.csv_dir=root/'CSVbot'; a.data_dir=root/'data'
+          tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
+          trade,reserve=live.live_limits(a,tid)
+          print('effective_trade_sol='+str(trade))
+          print('effective_reserve_sol='+str(reserve))
+          print('live_limits_module='+str(getattr(live.live_limits,'__module__','')))
+          if str(trade) != '0.009': raise SystemExit('REFUSE_PROFILE: runtime effective trade size is not 0.009 SOL')
+          if reserve < live.Decimal('0.005'): raise SystemExit('REFUSE_PROFILE: reserve below morning floor')
+          PY
+
+          echo '=== SAFETY CORE UNCHANGED ==='
+          grep -E '^(live_max_positions|live_require_simulation|live_max_combined_impact_slippage_bps|live_max_rent_exposure_lamports),' "$TARGET/CSVbot/solana_settings.csv" || true
+          journalctl -u "$service" -n 260 --no-pager -o cat 2>/dev/null | grep -F 'max_live_trade_sol=0.009' | tail -2
+          echo 'fee_efficient_profile=SUCCESS'
+          echo 'trade_size_sol=0.009'
           echo 'manual_forced_trade=NO'
-          echo 'next_trade=ONLY_WHEN_EXISTING_MORNING_GATES_PASS'
+          echo 'next_trade=ONLY_WHEN_EXISTING_SAFETY_GATES_PASS'
