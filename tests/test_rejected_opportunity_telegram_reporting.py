@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 from types import SimpleNamespace
 
+# Focused regression coverage for refused-opportunity Telegram reporting.
+
 
 def test_format_rejected_telegram_includes_pool_usd_and_sol_equivalent():
     from learnerbot.rejected_opportunity_publisher import format_rejected_telegram
