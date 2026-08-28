@@ -1,0 +1,249 @@
+name: Claude Google Reconcile Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-reconcile-deploy.yml'
+      - '.github/claude-google-reconcile-deploy.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-reconcile-deploy
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 20
+    env:
+      MANAGED_ROOT: /home/ayman01323/ClaudeServer
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      STATE_FILE: /home/ayman01323/ClaudeServer/runtime/data/claude_bot_state.json
+      SERVICE: claude-trading-bot.service
+    steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify trusted fixes are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'SOLANA_RPC_AUTH_COOLDOWN_SECONDS' learnerbot/solana_rpc_failover_patch.py
+          grep -q 'endpoint_local_failover' learnerbot/solana_rpc_failover_patch.py
+          grep -q 'HTTP 401' tests/test_solana_rpc_failover.py
+          grep -q 'automatic Telegram warnings disabled by owner' learnerbot/ai_agent_health_4h_patch.py
+          grep -q 'claude_runtime_health_patch.install()' claude-trading-bot/claude_bot_patches.py
+          test -f claude-trading-bot/claude_runtime_health_patch.py
+          test -f learnerbot/rejected_opportunity_publisher.py
+          echo 'trusted_main_fix_set=PASS'
+          echo "trusted_main_sha=$(git rev-parse HEAD)"
+
+      - name: Verify Google runner, service, origin and OFF state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test -d "$MANAGED_REPO/.git"
+          test "$(systemctl is-active "$SERVICE")" = active
+          origin="$(git -C "$MANAGED_REPO" remote get-url origin)"
+          case "$origin" in
+            "https://github.com/${GITHUB_REPOSITORY}"|"https://github.com/${GITHUB_REPOSITORY}.git") ;;
+            *) echo "Unexpected managed origin" >&2; exit 2 ;;
+          esac
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['STATE_FILE'])
+          raw = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print(f'pre_reconcile_effective_state={effective}')
+          if effective != 'OFF':
+              raise SystemExit('Refusing reconcile: Claude effective state is not OFF')
+          PY
+
+      - name: Verify dirty workspace is exactly bounded
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowlist=(
+            'claude-trading-bot/claude_bot_patches.py'
+            'claude-trading-bot/solana_execution_risk_patch.py'
+            'claude-trading-bot/telegram_control_patch.py'
+            'learnerbot/ai_agent_health_4h_patch.py'
+            'learnerbot/sibot1_runtime_diag_export_patch.py'
+            'learnerbot/solana_pool_risk_gate.py'
+            'learnerbot/solana_rpc_failover_patch.py'
+            'claude-trading-bot/claude_runtime_health_patch.py'
+            'learnerbot/rejected_opportunity_publisher.py'
+          )
+          mapfile -t dirty < <(git -C "$MANAGED_REPO" status --porcelain | sed -E 's/^.. //' | sort -u)
+          for path in "${dirty[@]}"; do
+            ok=false
+            for allow in "${allowlist[@]}"; do
+              [[ "$path" == "$allow" ]] && ok=true && break
+            done
+            if [[ "$ok" != true ]]; then
+              echo "Refusing reconcile: unexpected dirty path: $path" >&2
+              exit 3
+            fi
+          done
+          printf 'bounded_dirty_paths=%s\n' "${dirty[*]:-(none)}"
+
+      - name: Preserve exact Google hot-fixes privately
+        id: backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          old_sha="$(git -C "$MANAGED_REPO" rev-parse HEAD)"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)-${old_sha:0:12}"
+          backup="$MANAGED_ROOT/hotfix-backups/$stamp"
+          mkdir -p "$backup/files"
+          chmod 700 "$MANAGED_ROOT/hotfix-backups" "$backup" "$backup/files"
+          git -C "$MANAGED_REPO" status --porcelain > "$backup/status.txt"
+          git -C "$MANAGED_REPO" diff --binary --no-ext-diff > "$backup/tracked.patch"
+          allowlist=(
+            'claude-trading-bot/claude_bot_patches.py'
+            'claude-trading-bot/solana_execution_risk_patch.py'
+            'claude-trading-bot/telegram_control_patch.py'
+            'learnerbot/ai_agent_health_4h_patch.py'
+            'learnerbot/sibot1_runtime_diag_export_patch.py'
+            'learnerbot/solana_pool_risk_gate.py'
+            'learnerbot/solana_rpc_failover_patch.py'
+            'claude-trading-bot/claude_runtime_health_patch.py'
+            'learnerbot/rejected_opportunity_publisher.py'
+          )
+          for rel in "${allowlist[@]}"; do
+            src="$MANAGED_REPO/$rel"
+            if [[ -f "$src" ]]; then
+              mkdir -p "$backup/files/$(dirname "$rel")"
+              cp -p "$src" "$backup/files/$rel"
+            fi
+          done
+          printf 'server_sha=%s\ntrusted_main_sha=%s\n' "$old_sha" "$(git rev-parse HEAD)" > "$backup/metadata.txt"
+          find "$backup" -type f -print0 | sort -z | xargs -0 sha256sum > "$backup/SHA256SUMS"
+          echo "backup_path=$backup" >> "$GITHUB_OUTPUT"
+          echo "private_backup_path=$backup"
+          echo 'hotfix_backup=PASS'
+
+      - name: Reconcile managed checkout to trusted current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          trusted_sha="$(git rev-parse HEAD)"
+          git -C "$MANAGED_REPO" fetch --prune origin main
+          git -C "$MANAGED_REPO" checkout main
+          git -C "$MANAGED_REPO" reset --hard origin/main
+          git -C "$MANAGED_REPO" clean -f -- \
+            claude-trading-bot/claude_runtime_health_patch.py \
+            learnerbot/rejected_opportunity_publisher.py
+          test -z "$(git -C "$MANAGED_REPO" status --porcelain)"
+          test "$(git -C "$MANAGED_REPO" rev-parse HEAD)" = "$trusted_sha"
+          echo "reconciled_server_sha=$trusted_sha"
+          echo 'managed_checkout_clean=true'
+
+      - name: Run targeted regression tests on reconciled server checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$MANAGED_REPO"
+          PYTHONPATH=. .venv/bin/python -m pytest -q \
+            tests/test_solana_rpc_failover.py \
+            claude-trading-bot/tests/test_claude_risk_and_state.py \
+            claude-trading-bot/tests/test_claude_execution_and_telegram.py
+          .venv/bin/python -m py_compile \
+            learnerbot/solana_rpc_failover_patch.py \
+            learnerbot/ai_agent_health_4h_patch.py \
+            claude-trading-bot/claude_runtime_health_patch.py
+          echo 'targeted_regression=PASS'
+
+      - name: Restart only isolated Claude service
+        id: restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          epoch="$(date +%s)"
+          echo "restart_epoch=$epoch" >> "$GITHUB_OUTPUT"
+          sudo -n systemctl restart "$SERVICE"
+          sleep 20
+          test "$(systemctl is-active "$SERVICE")" = active
+          systemctl show "$SERVICE" -p MainPID -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+
+      - name: Verify runtime, report stop and OFF safety state
+        shell: bash
+        env:
+          RESTART_EPOCH: ${{ steps.restart.outputs.restart_epoch }}
+        run: |
+          set -euo pipefail
+          log="$(sudo -n journalctl -u "$SERVICE" --since "@${RESTART_EPOCH}" --no-pager)"
+          printf '%s\n' "$log" | grep '\[claude-runtime-health\] install_attestation=OK'
+          printf '%s\n' "$log" | grep '\[trading-runtime-invariant\] OK'
+          printf '%s\n' "$log" | grep '\[final-runtime-integrity\] OK'
+          printf '%s\n' "$log" | grep '\[ai-agent-health\] automatic Telegram warnings disabled by owner'
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['STATE_FILE'])
+          raw = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print(f'post_restart_effective_state={effective}')
+          if effective != 'OFF':
+              raise SystemExit('Post-restart Claude state is not OFF')
+          PY
+          if printf '%s\n' "$log" | grep -Eq 'Traceback|Main process exited|Failed with result'; then
+            echo 'Fatal runtime error detected after reconcile' >&2
+            printf '%s\n' "$log" | tail -120
+            exit 4
+          fi
+          echo 'runtime_integrity=PASS'
+          echo 'automatic_ai_health_report=DISABLED'
+          echo 'ARM_LIVE_NOT_PERFORMED=true'
+          echo 'TRANSACTION_BROADCAST=false'
+
+      - name: Measure post-restart RPC auth pressure
+        shell: bash
+        env:
+          RESTART_EPOCH: ${{ steps.restart.outputs.restart_epoch }}
+        run: |
+          set -euo pipefail
+          sleep 45
+          log="$(sudo -n journalctl -u "$SERVICE" --since "@${RESTART_EPOCH}" --no-pager || true)"
+          rpc401="$(printf '%s\n' "$log" | grep -Ec 'HTTP 401' || true)"
+          auth_failover="$(printf '%s\n' "$log" | grep -Ec 'endpoint auth failed.*failing over|auth failed.*failing over' || true)"
+          rpc429="$(printf '%s\n' "$log" | grep -Ec 'HTTP 429' || true)"
+          jupiter="$(printf '%s\n' "$log" | grep -Eic 'Jupiter.*(quote|error|fail)' || true)"
+          echo "post_restart_rpc_401_count=$rpc401"
+          echo "post_restart_auth_failover_events=$auth_failover"
+          echo "post_restart_rpc_429_count=$rpc429"
+          echo "post_restart_jupiter_issue_lines=$jupiter"
+          if (( rpc401 > 10 )); then
+            echo "Persistent RPC 401 storm remains after deployment: $rpc401 in observation window" >&2
+            exit 5
+          fi
+          echo 'rpc_401_storm=CLEARED_OR_BOUNDED'
+
+      - name: Boundary summary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Claude Google reconcile boundary:'
+          echo '- exact allowlisted dirty code backed up privately before replacement'
+          echo '- managed repo reconciled only to trusted repository main'
+          echo '- targeted regression tests required before restart'
+          echo '- restarted only claude-trading-bot.service'
+          echo '- Claude remains OFF after restart by design'
+          echo '- no ARM command issued'
+          echo '- no wallet/signing material read or modified'
+          echo '- no transaction signed or broadcast'
