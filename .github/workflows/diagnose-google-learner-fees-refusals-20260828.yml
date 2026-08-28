@@ -28,11 +28,15 @@ jobs:
           echo "pid=$(systemctl show -p MainPID --value "$service")"
           echo '=== FEES ==='
           DB="$db" python3 - <<'PY'
-          import os, sqlite3, statistics, json
-          from decimal import Decimal, InvalidOperation
+          import os, sqlite3, time
+          from decimal import Decimal
+          from collections import Counter
           db=os.environ['DB']
           c=sqlite3.connect(db); c.row_factory=sqlite3.Row
           tables={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+          def dec(v):
+              try:return Decimal(str(v or 0))
+              except:return Decimal(0)
           if 'live_execution_receipts' not in tables:
               print('receipt_table=MISSING')
           else:
@@ -41,9 +45,6 @@ jobs:
                      rent_paid_lamports,rent_reclaimed_lamports
                      from live_execution_receipts order by created_at,signature""").fetchall()]
               print('receipt_rows_total='+str(len(rows)))
-              def dec(v):
-                  try:return Decimal(str(v or 0))
-                  except:return Decimal(0)
               def summarize(label, xs):
                   good=[]
                   for r in xs:
@@ -72,26 +73,23 @@ jobs:
               summarize('tid5923828381',mine)
               summarize('tid5923828381_buy',[r for r in mine if str(r.get('action') or '').upper()=='BUY'])
               summarize('tid5923828381_sell',[r for r in mine if str(r.get('action') or '').upper()=='SELL'])
-          # Compare with bot position/execution counts so we can state coverage.
           if 'positions' in tables:
-              for tid in ('5923828381',):
-                  n=c.execute("select count(*) from positions where telegram_id=? and mode='LIVE'",(tid,)).fetchone()[0]
-                  print('positions_live_tid_'+tid+'='+str(n))
-                  rows2=c.execute("select position_id,status,entry_tx,exit_signature,entry_cost_sol,realised_net_sol from positions where telegram_id=? and mode='LIVE' order by entry_ts",(tid,)).fetchall()
-                  for r in rows2:
-                      print('position|id=%s|status=%s|entry_tx=%s|exit_tx=%s|entry_cost_sol=%s|realised_net_sol=%s' % (
-                          str(r['position_id'])[:12],r['status'],str(r['entry_tx'] or '')[:12],str(r['exit_signature'] or '')[:12],r['entry_cost_sol'],r['realised_net_sol']))
+              n=c.execute("select count(*) from positions where telegram_id=? and mode='LIVE'",('5923828381',)).fetchone()[0]
+              print('positions_live_tid_5923828381='+str(n))
+              status_rows=c.execute("select status,count(*) n from positions where telegram_id=? and mode='LIVE' group by status order by status",('5923828381',)).fetchall()
+              for r in status_rows: print('positions_status_'+str(r['status'])+'='+str(r['n']))
           print('=== REFUSALS_24H ===')
           if 'live_decisions' in tables:
-              since=int(__import__('time').time())-86400
+              since=int(time.time())-86400
               rows=[dict(r) for r in c.execute("""select id,ts,event_action,decision,reason,mint,signature
                        from live_decisions where telegram_id=? and ts>=? order by ts desc""",('5923828381',since)).fetchall()]
-              from collections import Counter
               cnt=Counter(str(r.get('decision') or 'UNKNOWN').upper() for r in rows)
               print('decisions_24h='+str(len(rows)))
               for k in sorted(cnt): print('decision_'+k+'='+str(cnt[k]))
               refused=[r for r in rows if str(r.get('decision') or '').upper() in {'SKIP','REJECT','HARD_BLOCK','BLOCK','REFUSE','REFUSED'}]
               print('refused_24h='+str(len(refused)))
+              reason_counts=Counter(str(r.get('reason') or '').strip() for r in refused)
+              for reason,n in reason_counts.most_common(12): print('refusal_reason_count|n=%s|reason=%s' % (n,reason.replace('\n',' ')[:260]))
               for r in refused[:30]:
                   reason=str(r.get('reason') or '').replace('\n',' ')[:220]
                   print('refusal|id=%s|decision=%s|event=%s|mint=%s|reason=%s' % (r['id'],r['decision'],r['event_action'],str(r['mint'])[:12],reason))
