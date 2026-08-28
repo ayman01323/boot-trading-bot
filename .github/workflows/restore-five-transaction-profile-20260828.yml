@@ -1,0 +1,195 @@
+name: Restore Five-Transaction Solana Profile 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-five-transaction-profile-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-five-transaction-solana-profile
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore known-good five-transaction settings with only size changed
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          export TARGET=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          test -d "$TARGET/CSVbot"
+          test -f "$TARGET/KNOWN_GOOD_SNAPSHOT.txt"
+          test -f "$TARGET/private/.verified_morning_rearm_tid"
+
+          # Do not roll back code. Restore only the known-good Solana settings profile.
+          # The sole intended profile difference is live_trade_sol: 0.005 -> 0.009 SOL.
+          TARGET="$TARGET" python3 - <<'PY'
+          import csv, os, shutil, time
+          from pathlib import Path
+
+          root=Path(os.environ['TARGET'])
+          csvdir=root/'CSVbot'
+          tid=(root/'private'/'.verified_morning_rearm_tid').read_text(encoding='utf-8').strip()
+          if not tid:
+              raise SystemExit('REFUSE_RESTORE: missing verified trading account id')
+
+          stamp=time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
+          backup=root/'private'/f'pre-five-transaction-profile-{stamp}'
+          backup.mkdir(parents=True,exist_ok=False)
+          for name in ('solana_settings.csv','user_trading_settings.csv'):
+              p=csvdir/name
+              if p.exists(): shutil.copy2(p, backup/name)
+          print('backup_created='+str(backup))
+
+          settings=[
+              ('enabled','true','Enable Solana SiBot research and monitoring'),
+              ('lookback_days','60','Realised SOL-denominated Top-20 lookback'),
+              ('leaders_per_user','2','Solana leaders selected per user'),
+              ('min_closed_trades','5','Minimum reconstructed SOL round trips'),
+              ('min_win_rate_pct','50','Minimum leader win rate'),
+              ('leader_poll_seconds','5','Fresh leader polling cadence'),
+              ('position_poll_seconds','15','Open-position quote cadence'),
+              ('max_signal_age_seconds','30','Maximum leader BUY signal age'),
+              ('max_roundtrip_loss_pct','3','Maximum immediate quote round-trip loss'),
+              ('max_entry_deterioration_pct','2','Maximum worse entry versus leader'),
+              ('estimated_entry_fee_sol','0.00002','Estimated entry fee'),
+              ('estimated_exit_fee_sol','0.00002','Estimated exit fee'),
+              ('stop_loss_pct','10','Independent stop loss'),
+              ('take_profit_pct','25','Independent take profit'),
+              ('leader_exit_loss_cap_pct','2.5','Maximum tolerated loss after leader exit'),
+              ('break_even_trigger_pct','5','Break-even activation'),
+              ('break_even_floor_pct','0.10','Break-even net floor'),
+              ('trailing_trigger_pct','10','Trailing-profit activation'),
+              ('trailing_gap_pct','5','Maximum give-back from peak'),
+              ('max_hold_hours','24','Close old profitable positions'),
+              ('mirror_partial_sells','true','Mirror leader partial sells'),
+              ('live_trade_sol','0.009','Known-good five-transaction profile; only size changed from 0.005 to 0.009 SOL'),
+              ('live_min_sol_reserve','0.02','SOL reserve for fees and exits'),
+              ('live_max_positions','1','Maximum simultaneous LIVE positions'),
+              ('live_require_simulation','true','Require successful simulation before execute'),
+          ]
+
+          def write_csv(path, headers, rows):
+              tmp=path.with_suffix(path.suffix+'.tmp')
+              with tmp.open('w',encoding='utf-8',newline='') as f:
+                  w=csv.DictWriter(f,fieldnames=headers)
+                  w.writeheader(); w.writerows(rows); f.flush(); os.fsync(f.fileno())
+              os.replace(tmp,path)
+
+          write_csv(csvdir/'solana_settings.csv',['setting','value','description'],[
+              {'setting':a,'value':b,'description':c} for a,b,c in settings
+          ])
+
+          usp=csvdir/'user_trading_settings.csv'
+          with usp.open('r',encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          headers=['telegram_id','chain_id','setting','value','description']
+
+          # Preserve unrelated user settings. Align only the runtime-control keys needed
+          # to make the restored profile effective through the current settings-source wrapper.
+          wanted={
+              ('0','sibot_settings_source'):('SELF','Use this account settings for restored known-good profile'),
+              ('0','sibot_enabled'):('true','SiBot enabled as in active five-transaction operation'),
+              ('0','sibot_auto_trade_enabled'):('true','AUTO enabled as in active five-transaction operation'),
+              ('*','sibot_enabled'):('true','SiBot enabled as in active five-transaction operation'),
+              ('*','sibot_auto_trade_enabled'):('true','AUTO enabled as in active five-transaction operation'),
+              ('-101','solana_live_enabled'):('true','Solana LIVE enabled'),
+              ('-101','learner_new_entries_enabled'):('true','New entries enabled'),
+              ('-101','solana_live_trade_sol'):('0.009','Only requested change from known-good profile'),
+              ('-101','solana_live_min_reserve_sol'):('0.02','Match known-good five-transaction reserve'),
+          }
+          out=[]; seen=set()
+          for r in rows:
+              if str(r.get('telegram_id') or '').strip()!=tid:
+                  out.append({h:r.get(h,'') for h in headers}); continue
+              key=(str(r.get('chain_id') or '').strip(),str(r.get('setting') or '').strip())
+              if key in wanted:
+                  if key in seen: continue
+                  value,desc=wanted[key]
+                  out.append({'telegram_id':tid,'chain_id':key[0],'setting':key[1],'value':value,'description':desc})
+                  seen.add(key)
+              else:
+                  out.append({h:r.get(h,'') for h in headers})
+          for key,(value,desc) in wanted.items():
+              if key not in seen:
+                  out.append({'telegram_id':tid,'chain_id':key[0],'setting':key[1],'value':value,'description':desc})
+          write_csv(usp,headers,out)
+          print('settings_restored=true')
+          print('sole_profile_difference=live_trade_sol:0.005->0.009')
+          PY
+
+          sudo -n systemctl restart "$service"
+          sleep 12
+          test "$(systemctl is-active "$service")" = active
+
+          TARGET="$TARGET" python3 - <<'PY'
+          import csv, os, sqlite3
+          from decimal import Decimal
+          from pathlib import Path
+
+          root=Path(os.environ['TARGET']); csvdir=root/'CSVbot'
+          tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
+          expected={
+              'enabled':'true','lookback_days':'60','leaders_per_user':'2','min_closed_trades':'5',
+              'min_win_rate_pct':'50','leader_poll_seconds':'5','position_poll_seconds':'15',
+              'max_signal_age_seconds':'30','max_roundtrip_loss_pct':'3','max_entry_deterioration_pct':'2',
+              'estimated_entry_fee_sol':'0.00002','estimated_exit_fee_sol':'0.00002','stop_loss_pct':'10',
+              'take_profit_pct':'25','leader_exit_loss_cap_pct':'2.5','break_even_trigger_pct':'5',
+              'break_even_floor_pct':'0.10','trailing_trigger_pct':'10','trailing_gap_pct':'5',
+              'max_hold_hours':'24','mirror_partial_sells':'true','live_trade_sol':'0.009',
+              'live_min_sol_reserve':'0.02','live_max_positions':'1','live_require_simulation':'true',
+          }
+          with (csvdir/'solana_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              actual={str(r['setting']).strip():str(r['value']).strip() for r in csv.DictReader(f)}
+          if actual != expected:
+              missing={k:v for k,v in expected.items() if actual.get(k)!=v}
+              extra={k:v for k,v in actual.items() if k not in expected}
+              raise SystemExit(f'REFUSE_VERIFY: solana profile mismatch missing_or_changed={missing} extra={extra}')
+
+          with (csvdir/'user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          def us(name, chain, default=''):
+              value=default
+              for r in rows:
+                  if str(r.get('telegram_id') or '').strip()==tid and str(r.get('chain_id') or '').strip()==str(chain) and str(r.get('setting') or '').strip()==name:
+                      value=str(r.get('value') or '').strip()
+              return value
+          assert us('solana_live_enabled','-101').lower()=='true'
+          assert us('learner_new_entries_enabled','-101').lower()=='true'
+          assert us('solana_live_trade_sol','-101')=='0.009'
+          assert us('solana_live_min_reserve_sol','-101')=='0.02'
+
+          con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
+          open_live=int(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n'])
+          con.close()
+          print('profile_exact_match=true')
+          print('trade_size_sol=0.009')
+          print('reserve_sol=0.02')
+          print('leaders_per_user=2')
+          print('min_closed_trades=5')
+          print('min_win_rate_pct=50')
+          print('max_signal_age_seconds=30')
+          print('max_roundtrip_loss_pct=3')
+          print('max_entry_deterioration_pct=2')
+          print('stop_loss_pct=10')
+          print('take_profit_pct=25')
+          print('leader_exit_loss_cap_pct=2.5')
+          print('break_even_trigger_pct=5')
+          print('trailing_trigger_pct=10')
+          print('max_hold_hours=24')
+          print('live_max_positions=1')
+          print('live_require_simulation=true')
+          print('open_live_positions='+str(open_live))
+          print('code_rollback=NO')
+          PY
