@@ -1,4 +1,4 @@
-name: Deploy SiRisky Google Only
+name: Inspect SiRisky Google Only
 
 on:
   workflow_dispatch:
@@ -7,43 +7,57 @@ on:
     paths:
       - '.github/workflows/deploy-cold-zone-five-leaders-now-20260828.yml'
       - '.github/sirisky-google-only.trigger'
-      - 'scripts/sirisky_google_jupiter_governor_apply.sh'
 
 permissions:
   contents: read
 
 concurrency:
-  group: sirisky-google-only-deploy
+  group: sirisky-google-only-inspect
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Apply SiRisky Jupiter governor on botgoogle
+      - name: Inspect live capital and blockers on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/ops/google-master-menu-cutover-20260827/scripts/sirisky_google_jupiter_governor_apply.sh \
-            -o "$tmp"
-          bash "$tmp"
-
-      - name: Observe post-restart execution status
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "$(hostname)" = botgoogle
-          sleep 20
           sudo -n bash -lc '
-            echo "=== latest executions ==="
-            tail -n 12 /root/SiRisky/CSV/executions.csv 2>/dev/null || true
+            set -Eeuo pipefail
+            cd /root/SiRisky
+            value() { awk -F, -v key="$1" '\''$1==key {gsub(/\r/,"",$2); print $2}'\'' CSV/runtime.csv; }
+            echo "=== runtime ==="
+            for k in trading_mode live_enabled broadcast_enabled manual_approval_enabled manual_approval_require_external_signature auto_evaluate_candidate_limit jupiter_min_interval_seconds jupiter_max_retries; do
+              echo "$k=$(value "$k")"
+            done
+            echo "=== capital ==="
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+from sirisky.config import Settings
+from sirisky.wallet import WalletStore
+from sirisky.jupiter import wallet_balance_lamports
+s=Settings.load()
+a=WalletStore(s).address()
+b=wallet_balance_lamports(s,a)
+r=s.risk()
+reserve=float(r.get("untouched_sol_reserve") or 0.005)
+probe=float(s.runtime().get("auto_probe_sol") or 0.0005)
+print(f"wallet_balance_lamports={b}")
+print(f"wallet_balance_sol={b/1_000_000_000:.9f}")
+print(f"untouched_sol_reserve={reserve:.9f}")
+print(f"auto_probe_sol={probe:.9f}")
+print(f"required_for_next_canary={reserve+probe:.9f}")
+print(f"available_above_reserve={max(0,b/1_000_000_000-reserve):.9f}")
+print(f"capital_gate_pass={str(b/1_000_000_000 >= reserve+probe).lower()}")
+PY
+            echo "=== open positions ==="
+            tail -n 5 CSV/open_positions.csv 2>/dev/null || true
             echo "=== latest risk checks ==="
-            tail -n 8 /root/SiRisky/CSV/risk_checks.csv 2>/dev/null || true
+            tail -n 12 CSV/risk_checks.csv 2>/dev/null || true
+            echo "=== latest executions ==="
+            tail -n 12 CSV/executions.csv 2>/dev/null || true
             echo "service=$(systemctl is-active sirisky.service)"
           '
