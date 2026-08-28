@@ -4,9 +4,13 @@ import json
 import sqlite3
 from pathlib import Path
 
+import grok_known_assets_bot.telegram_control as telegram_control
 from grok_known_assets_bot.telegram_control import (
+    TelegramApiError,
     TelegramSettings,
+    _deliver_alert,
     _event_alert_text,
+    _mark_alert_sent,
     _read_alert_events,
     _should_send_alert,
     handle_command,
@@ -94,12 +98,30 @@ def test_status_shows_latest_decision(tmp_path: Path, monkeypatch):
     status = handle_command("/grokstatus", "123")
     assert status is not None
     assert "Latest decision: OPEN solana:SOL:NATIVE" in status
+    assert "Persisted PAPER positions: 0" in status
 
 
-def test_repeated_rejects_are_deduplicated():
+def test_repeated_rejects_are_deduplicated_after_success():
     sent_at: dict[str, float] = {}
     payload = {"reason": "WEAK_5M_MOMENTUM", "action": "REJECT"}
     assert _should_send_alert("DECISION", "solana:SOL:NATIVE", payload, sent_at, now=1000.0, repeat_seconds=300.0)
+    _mark_alert_sent("DECISION", "solana:SOL:NATIVE", payload, sent_at, now=1000.0)
     assert not _should_send_alert("DECISION", "solana:SOL:NATIVE", payload, sent_at, now=1100.0, repeat_seconds=300.0)
     assert _should_send_alert("DECISION", "solana:SOL:NATIVE", payload, sent_at, now=1301.0, repeat_seconds=300.0)
     assert _should_send_alert("OPEN", "solana:SOL:NATIVE", {"trade_id": "x"}, sent_at, now=1302.0, repeat_seconds=300.0)
+
+
+def test_bad_chat_does_not_block_good_chat(monkeypatch):
+    settings = TelegramSettings(token="test-token", chat_ids=frozenset({"bad", "good"}), poll_timeout_seconds=8)
+    delivered_to: list[str] = []
+
+    def fake_send(_settings: TelegramSettings, chat_id: str, _text: str) -> None:
+        if chat_id == "bad":
+            raise TelegramApiError(400, "sendMessage")
+        delivered_to.append(chat_id)
+
+    monkeypatch.setattr(telegram_control, "_send_message", fake_send)
+    delivered, failed = _deliver_alert(settings, settings.chat_ids, "test")
+    assert delivered == 1
+    assert failed == 1
+    assert delivered_to == ["good"]
