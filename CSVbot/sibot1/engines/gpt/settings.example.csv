@@ -1,8 +1,23 @@
 key,value,description
-chain,base,Primary chain selected by GPT engine
-strategy_id,gpt-netedge-arb-v1,Strategy identifier
-trade_size_quote,5,Requested quote-asset amount per opportunity
-min_net_edge_bps,12,Minimum expected net edge after estimated costs
+chain,base,Primary EVM chain selected by GPT engine
+strategy_id,gpt-netedge-arb-v1,Base atomic/cross-DEX strategy identifier
+trade_size_quote,5,Virtual quote-asset amount per Base paper opportunity
+min_net_edge_bps,12,Minimum expected Base net edge after estimated costs
 max_quote_age_ms,15000,AI observation window; LIVE executor still re-quotes/re-simulates and rejects candidates older than 20s
-max_open_ms,15000,Maximum unexpected open-exposure age
-emergency_loss_pct,0.8,Unexpected exposure loss threshold percent
+max_open_ms,15000,Maximum unexpected Base open-exposure age
+emergency_loss_pct,0.8,Unexpected Base exposure loss threshold
+solana_enabled,true,Enable independent GPT Solana leader-quality nominations
+solana_strategy_id,gpt-leader-quality-v1,GPT Solana strategy identifier
+solana_trade_size_quote,1,Virtual SOL-denominated PAPER reservation per Solana candidate; LIVE canary size remains bridge-controlled
+solana_min_liquidity_usd,15000,Minimum aggregate DexScreener Solana liquidity
+solana_min_volume_usd,2500,Minimum aggregate 24h Solana volume
+solana_min_volume_liquidity_ratio,0.10,Minimum volume to liquidity ratio
+solana_min_confidence,0.70,Minimum source-completeness confidence
+solana_max_source_age_ms,2500,Maximum normalized market-data age at nomination
+solana_max_leader_age_ms,180000,Require leader BUY within three minutes
+solana_min_liquidity_velocity_pct,-10,Reject rapidly collapsing liquidity; zero first-sample volume velocity is not a blocker
+solana_min_lp_locked_pct,25,Minimum LP locked percentage when RugCheck exposes the field
+solana_require_dev_safe,true,Require fail-closed developer-flow evidence before nomination
+solana_take_profit_pct,0.03,Paper/live-linked strategy exit at +3 percent mark-to-market
+solana_stop_loss_pct,-0.015,Paper/live-linked strategy exit at -1.5 percent mark-to-market
+solana_max_open_ms,180000,Maximum Solana holding time before full time-stop exit
