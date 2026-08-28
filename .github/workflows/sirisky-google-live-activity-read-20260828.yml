@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read SiRisky runtime and recent decisions
+      - name: Read SiRisky state only
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -27,28 +27,12 @@ jobs:
             echo "=== STATE ==="
             date -u +"utc=%Y-%m-%dT%H:%M:%SZ"
             echo "service=$(systemctl is-active sirisky.service || true)"
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-from sirisky.config import Settings
-from sirisky.safety_v2 import entry_sol
-s=Settings.load(); rt=s.runtime()
-for k in ["trading_mode","live_enabled","broadcast_enabled","manual_approval_enabled","auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol","auto_evaluate_candidate_limit","jupiter_min_interval_seconds"]:
-    print(f"{k}={rt.get(k)}")
-print(f"entry_sol={entry_sol(s):.9f}")
-PY
-            echo "=== OPEN LIVE ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv
-from pathlib import Path
-p=Path("CSV/open_positions.csv"); rows=[]
-if p.exists():
-    with p.open(encoding="utf-8-sig",newline="") as f: rows=list(csv.DictReader(f))
-live=[r for r in rows if str(r.get("status") or "").upper()=="OPEN" and str(r.get("mode") or "").upper()=="LIVE"]
-print("open_live="+str(len(live)))
-PY
-            echo "=== RECENT DECISIONS ==="
-            journalctl -u sirisky.service --since "10 minutes ago" --no-pager -o cat 2>/dev/null \
-              | grep -Ei "candidate|NO_TRIGGER|QUOTE_REJECT|HTTPError|stage[0-9]|OPENED|CLOSED|BUY|SELL|JUPITER|fee|risk|reject|discover|opportun" \
-              | tail -n 500 || true
-            echo "=== TAIL ==="
-            journalctl -u sirisky.service -n 100 --no-pager -o cat 2>/dev/null || true
+            echo "=== RUNTIME ==="
+            grep -E "^(trading_mode|live_enabled|broadcast_enabled|paper_auto_trade_enabled|poll_seconds|auto_probe_sol|auto_entry_min_sol|auto_entry_max_sol|auto_evaluate_candidate_limit|manual_approval_enabled)," CSV/runtime.csv || true
+            echo "=== ACTIVE STRATEGY ==="
+            grep -E "^HR_NEW_01," CSV/stage2_strategy.csv || true
+            echo "=== RISK ==="
+            grep -E "^(max_open_positions|min_exit_health_pct|min_forecast_net_pct|max_round_trip_cost_pct|untouched_sol_reserve|fast_take_profit_floor_pct|fast_take_profit_cap_pct|fast_stop_net_pct|warm_reversal_pct|hot_reversal_pct|fast_max_hold_cap_seconds)," CSV/stage3_risk.csv || true
+            echo "=== OPEN POSITIONS ==="
+            tail -n +2 CSV/open_positions.csv 2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l
           '
