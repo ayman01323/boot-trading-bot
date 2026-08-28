@@ -1,0 +1,106 @@
+name: Check Google Learner AMZN Owner 20260828 1451
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-google-learner-amzn-owner-20260828-1451.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - name: Read-only AMZN/BvKg owner and balance check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          db="$target/data/solana_sibot.sqlite3"
+          mint='BvKgVjsUQ8KV22RNKhk3btZHKSDdrRfziGad4ugTCcJS'
+          position='714f26073ebc1928896ac985c96371f7'
+          echo "service=$(systemctl is-active learnerbot-learn.service)"
+          echo "pid=$(systemctl show -p MainPID --value learnerbot-learn.service)"
+          sudo -n TARGET="$target" DB="$db" MINT="$mint" POSITION="$position" python3 - <<'PY'
+          import os, sqlite3, json, re, urllib.request
+          from pathlib import Path
+          db=Path(os.environ['DB']); mint=os.environ['MINT']; position=os.environ['POSITION']; target=Path(os.environ['TARGET'])
+          con=sqlite3.connect(str(db)); con.row_factory=sqlite3.Row
+          print('=== POSITION ===')
+          cols=[r[1] for r in con.execute('pragma table_info(positions)')]
+          wanted=[c for c in ['position_id','mint','status','mode','token_amount_raw','entry_cost_sol','realised_net_sol','unrealised_pct','leader_exit_pending','exit_reason','updated_at'] if c in cols]
+          r=con.execute('select '+','.join(wanted)+' from positions where position_id=?',(position,)).fetchone()
+          print(json.dumps(dict(r) if r else {}, sort_keys=True, default=str))
+          owners=[]
+          for table in ['live_position_wallets','position_wallets']:
+              try:
+                  tcols=[x[1] for x in con.execute(f'pragma table_info({table})')]
+                  if not tcols: continue
+                  print('table=',table,'columns=',','.join(tcols))
+                  rows=con.execute(f'select * from {table}').fetchall()
+                  for row in rows:
+                      d=dict(row)
+                      text=' '.join(str(v) for v in d.values())
+                      if position in text or mint in text:
+                          safe={k:v for k,v in d.items() if not any(x in k.lower() for x in ('private','secret','seed','mnemonic','password'))}
+                          print('OWNER_ROW',json.dumps(safe,sort_keys=True,default=str))
+                          for k,v in safe.items():
+                              if v and ('wallet' in k.lower() or 'owner' in k.lower() or 'address' in k.lower()):
+                                  s=str(v).strip()
+                                  if 30 <= len(s) <= 60 and re.fullmatch(r'[1-9A-HJ-NP-Za-km-z]+',s): owners.append(s)
+              except Exception as e:
+                  print('table_error',table,type(e).__name__,str(e)[:120])
+          con.close()
+          owners=list(dict.fromkeys(owners))
+          print('owner_candidates=',len(owners))
+          for i,o in enumerate(owners,1): print(f'owner_{i}={o}')
+
+          # Load .env privately only to make read-only RPC calls; never print URLs.
+          env={}
+          p=target/'.env'
+          if p.is_file():
+              for line in p.read_text(errors='ignore').splitlines():
+                  line=line.strip()
+                  if not line or line.startswith('#') or '=' not in line: continue
+                  k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"\'')
+          urls=[]
+          for key in ('SOLANA_RPC_URLS','SOLANA_RPC_FALLBACK_URLS'):
+              for u in re.split(r'[;,\s]+',env.get(key,'') or ''):
+                  u=u.strip()
+                  if u and u not in urls: urls.append(u)
+          def rpc(url,method,params):
+              data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+              req=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json','User-Agent':'BOOT-AMZN-OWNER-DIAG/1.0'})
+              with urllib.request.urlopen(req,timeout=8) as rr:
+                  obj=json.loads(rr.read(131072).decode('utf-8','replace'))
+              if obj.get('error'): raise RuntimeError(str(obj['error']))
+              return obj.get('result')
+          if owners and urls:
+              for oi,o in enumerate(owners,1):
+                  done=False
+                  for ri,u in enumerate(urls,1):
+                      try:
+                          res=rpc(u,'getTokenAccountsByOwner',[o,{'mint':mint},{'encoding':'jsonParsed'}])
+                          total_raw=0; ui_total=0.0; accounts=0
+                          for item in (res or {}).get('value',[]):
+                              accounts+=1
+                              info=item.get('account',{}).get('data',{}).get('parsed',{}).get('info',{})
+                              ta=info.get('tokenAmount',{})
+                              try: total_raw += int(ta.get('amount') or 0)
+                              except: pass
+                              try: ui_total += float(ta.get('uiAmount') or 0)
+                              except: pass
+                          print(f'onchain_owner_{oi}_rpc_{ri}=PASS token_accounts={accounts} raw_balance={total_raw} ui_balance={ui_total:.9f}')
+                          done=True; break
+                      except Exception as e:
+                          print(f'onchain_owner_{oi}_rpc_{ri}=FAIL type={type(e).__name__}')
+                  if not done: print(f'onchain_owner_{oi}=UNVERIFIED')
+          print('urls_or_private_keys_printed=NO')
+          print('trading_action=NONE')
+          print('service_restart=NO')
+          PY
