@@ -15,6 +15,36 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
+      - name: Checkout current main for one-time Learner min-trade deploy
+        if: github.event_name == 'push'
+        uses: actions/checkout@v4
+
+      - name: Deploy only Telegram minimum-trade files to isolated Learner
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target/learnerbot"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$target/private/pre-telegram-min-trade-$stamp"
+          sudo -n mkdir -p "$backup"
+          sudo -n cp -a "$target/learnerbot/telegram_solana_live_patch.py" "$backup/"
+          sudo -n cp -a "$target/learnerbot/solana_overhead_gate_correction_patch.py" "$backup/"
+          sudo -n cp -a learnerbot/telegram_solana_live_patch.py "$target/learnerbot/telegram_solana_live_patch.py"
+          sudo -n cp -a learnerbot/solana_overhead_gate_correction_patch.py "$target/learnerbot/solana_overhead_gate_correction_patch.py"
+          python3 -m py_compile "$target/learnerbot/telegram_solana_live_patch.py" "$target/learnerbot/solana_overhead_gate_correction_patch.py"
+          grep -q 'sibot:solana:mintrade' "$target/learnerbot/telegram_solana_live_patch.py"
+          grep -q 'solana_live_min_economic_trade_sol' "$target/learnerbot/solana_overhead_gate_correction_patch.py"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 8
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          echo learner_only=true
+          echo target="$target"
+          echo telegram_min_trade_control=installed
+          echo service=active
+
       - name: Classify morning Solana exit evidence before rearm
         shell: bash
         run: |
@@ -98,7 +128,6 @@ jobs:
                       except Exception: pass
               print('current_balance_rpc_error='+str(berr or '')); print('current_token_balance_raw='+str(current))
               if current != 0: safe_to_reconcile=False
-              # A finalized successful stored signature must be an actual negative token delta if relied upon as the exit.
               if not (meta is not None and meta.get('err') is None and delta < 0):
                   print('stored_exit_signature_not_proven_sell=true')
           print('all_reconcile_wallet_balances_zero='+str(safe_to_reconcile and bool(positions)).lower())
