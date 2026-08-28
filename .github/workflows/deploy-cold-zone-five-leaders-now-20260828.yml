@@ -1,4 +1,4 @@
-name: SiRisky One USD Safety Audit Google Only
+name: Deploy SiRisky One USD Safety V2 Google Only
 
 on:
   workflow_dispatch:
@@ -11,11 +11,11 @@ permissions:
   contents: read
 
 jobs:
-  audit:
+  deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - name: Audit Jupiter builder and token cleanup tooling on botgoogle
+      - name: Deploy test cleanup and arm $1 SiRisky on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,7 +24,7 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/d2afa8599dce319d27406ad7732e60d36afe19cf/scripts/sirisky_google_one_usd_safety_audit.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/84ab5917972a2c0f1e3fafdf5c6d765097b51340/scripts/sirisky_google_one_usd_deploy_arm.sh \
             -o "$tmp"
-          grep -q 'SIRISKY ONE USD SAFETY AUDIT V2' "$tmp"
+          grep -q 'SIRISKY ONE USD SAFETY DEPLOY' "$tmp"
           bash "$tmp"
