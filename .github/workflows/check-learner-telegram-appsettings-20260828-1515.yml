@@ -5,6 +5,7 @@ on:
     branches: [fix/solana-aug17-canary-restore]
     paths:
       - '.github/workflows/check-learner-telegram-appsettings-20260828-1515.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -21,8 +22,10 @@ jobs:
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           target=/home/ayman01323/BOOT/testingbots/learn
+          py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          test -x "$py"
           cd "$target"
-          sudo -n -u ayman01323 env PYTHONPATH="$target" "$target/.venv/bin/python" - <<'PY'
+          sudo -n -u ayman01323 env PYTHONPATH="$target" "$py" - <<'PY'
           import json, urllib.request, urllib.error
           from learnerbot.config import AppSettings
           app=AppSettings.load()
