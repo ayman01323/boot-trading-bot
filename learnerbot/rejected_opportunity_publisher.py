@@ -178,6 +178,28 @@ def _sol(value: Decimal | None) -> str:
     return "unavailable" if value is None else f"{value:,.2f} SOL"
 
 
+_DEXVIEW_CHAIN_SLUGS = {
+    "solana": "solana",
+    "ethereum": "eth",
+    "eth": "eth",
+    "bsc": "bsc",
+    "bnb": "bsc",
+    "bnbchain": "bsc",
+    "base": "base",
+    "arbitrum": "arbitrum",
+    "arbitrum_one": "arbitrum",
+    "polygon": "polygon",
+}
+
+
+def _dexview_url(chain: str, token_address: str) -> str:
+    token = str(token_address or "").strip()
+    slug = _DEXVIEW_CHAIN_SLUGS.get(str(chain or "").strip().lower())
+    if not token or not slug:
+        return ""
+    return f"https://www.dexview.com/{slug}/{token}"
+
+
 def format_rejected_telegram(
     *,
     candidate_id: str,
@@ -209,6 +231,9 @@ def format_rejected_telegram(
         lines.append(f"DEX: {dex}")
     if pool_address:
         lines.append(f"Pool: {pool_address}")
+    dexview_url = _dexview_url(chain, token_address)
+    if dexview_url:
+        lines.append(f"DexView: {dexview_url}")
     lines.extend(
         [
             f"Pool value USD: {_money(liquidity_usd)}",

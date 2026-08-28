@@ -103,6 +103,7 @@ def test_format_rejected_telegram_includes_pool_usd_and_sol_equivalent(monkeypat
     assert "Token price: $0.01" in text
     assert "Reason: Large Amount of LP Unlocked" in text
     assert "Pool: Pool111" in text
+    assert "DexView: https://www.dexview.com/solana/Mint111" in text
 
 
 def test_market_values_use_captured_liquidity_without_pool_lookup(monkeypatch):
