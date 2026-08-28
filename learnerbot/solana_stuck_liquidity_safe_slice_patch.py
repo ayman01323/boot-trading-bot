@@ -185,3 +185,11 @@ def install() -> None:
 
 
 install()
+
+# These protections deliberately load after the established emergency/safe-slice
+# stack above so they can compose with it without replacing its impact, fee,
+# simulation or signing gates. This module is already imported by normal startup,
+# making it a stable source-only activation hook.
+from . import solana_entry_exit_liquidity_preflight_patch as _entry_exit_preflight  # noqa: E402,F401
+from . import solana_rpc_exit_priority_patch as _rpc_exit_priority  # noqa: E402,F401
+from . import solana_loss_containment_patch as _loss_containment  # noqa: E402,F401
