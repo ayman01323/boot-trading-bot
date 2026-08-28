@@ -1,0 +1,145 @@
+name: SiRisky Trade Ledger 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-trade-ledger-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ledger:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Build successful LIVE trade ledger
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n /root/SiRisky/.venv/bin/python - <<'PY'
+          import csv, json, os, re, time
+          from pathlib import Path
+          from datetime import datetime, timezone, timedelta
+          from zoneinfo import ZoneInfo
+          import requests
+
+          ROOT=Path('/root/SiRisky')
+          exec_path=ROOT/'CSV/executions.csv'
+          london=ZoneInfo('Europe/London')
+          day=datetime.now(timezone.utc).astimezone(london).date()
+
+          def read_env(path):
+              out={}
+              if not path.exists(): return out
+              for line in path.read_text(errors='ignore').splitlines():
+                  s=line.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              return out
+
+          env=read_env(ROOT/'.env')
+          rpc=(env.get('SOLANA_RPC_URL') or env.get('SOLANA_RPC_HTTP_URL') or env.get('RPC_URL') or '').strip()
+          if not rpc:
+              for k,v in env.items():
+                  if 'RPC' in k.upper() and isinstance(v,str) and v.startswith('http'):
+                      rpc=v; break
+
+          rows=[]
+          if exec_path.exists():
+              with exec_path.open(encoding='utf-8-sig',newline='') as f:
+                  rows=list(csv.DictReader(f))
+
+          success=[]
+          for r in rows:
+              if str(r.get('mode') or '').upper()!='LIVE' or str(r.get('status') or '').upper()!='SUCCESS':
+                  continue
+              try: ts=int(float(r.get('timestamp') or 0))
+              except: continue
+              dt=datetime.fromtimestamp(ts,timezone.utc).astimezone(london)
+              if dt.date()!=day: continue
+              a=str(r.get('action') or '').upper()
+              if a not in {'BUY','SELL'}: continue
+              success.append({**r,'_ts':ts,'_dt':dt,'_action':a})
+          success.sort(key=lambda x:x['_ts'])
+
+          # FIFO pair by mint.
+          queues={}
+          pairs=[]
+          for r in success:
+              mint=str(r.get('mint') or '')
+              if r['_action']=='BUY':
+                  queues.setdefault(mint,[]).append(r)
+              else:
+                  q=queues.get(mint) or []
+                  if q:
+                      b=q.pop(0); pairs.append((b,r))
+
+          def tx_fee_sol(sig):
+              if not sig or not rpc: return None
+              try:
+                  payload={'jsonrpc':'2.0','id':1,'method':'getTransaction','params':[sig,{'encoding':'json','maxSupportedTransactionVersion':0,'commitment':'confirmed'}]}
+                  j=requests.post(rpc,json=payload,timeout=12).json()
+                  fee=((j.get('result') or {}).get('meta') or {}).get('fee')
+                  return (float(fee)/1e9) if fee is not None else None
+              except Exception:
+                  return None
+
+          price_cache={}
+          def sol_usd(ts):
+              minute=ts-ts%60
+              if minute in price_cache: return price_cache[minute]
+              # Coinbase Exchange public 1-minute candle; use close.
+              try:
+                  start=datetime.fromtimestamp(minute,timezone.utc)
+                  end=start+timedelta(minutes=1)
+                  url='https://api.exchange.coinbase.com/products/SOL-USD/candles'
+                  params={'start':start.isoformat().replace('+00:00','Z'),'end':end.isoformat().replace('+00:00','Z'),'granularity':60}
+                  rr=requests.get(url,params=params,headers={'User-Agent':'trade-ledger/1.0'},timeout=12)
+                  data=rr.json()
+                  if isinstance(data,list) and data:
+                      # [time, low, high, open, close, volume]
+                      px=float(data[0][4]); price_cache[minute]=px; return px
+              except Exception:
+                  pass
+              return None
+
+          out=[]
+          for i,(b,s) in enumerate(pairs,1):
+              buy_sol=float(b.get('input_raw') or 0)/1e9
+              sell_sol=float(s.get('output_raw') or 0)/1e9
+              bf=tx_fee_sol(str(b.get('signature') or ''))
+              sf=tx_fee_sol(str(s.get('signature') or ''))
+              fee_sol=(bf or 0.0)+(sf or 0.0) if (bf is not None or sf is not None) else None
+              bpx=sol_usd(b['_ts']); spx=sol_usd(s['_ts'])
+              buy_usd=(buy_sol*bpx) if bpx is not None else None
+              sell_usd=(sell_sol*spx) if spx is not None else None
+              net_sol=sell_sol-buy_sol-((fee_sol or 0.0) if fee_sol is not None else 0.0)
+              npct=(net_sol/buy_sol*100.0) if buy_sol>0 else None
+              out.append({
+                  'trade':i,
+                  'mint':str(b.get('mint') or '')[:8]+'…',
+                  'buy_time':b['_dt'].strftime('%H:%M:%S'),
+                  'sell_time':s['_dt'].strftime('%H:%M:%S'),
+                  'buy_sol':round(buy_sol,9),
+                  'sell_sol':round(sell_sol,9),
+                  'buy_sol_usd_px':round(bpx,4) if bpx is not None else None,
+                  'sell_sol_usd_px':round(spx,4) if spx is not None else None,
+                  'buy_usd':round(buy_usd,4) if buy_usd is not None else None,
+                  'sell_usd':round(sell_usd,4) if sell_usd is not None else None,
+                  'buy_fee_sol':round(bf,9) if bf is not None else None,
+                  'sell_fee_sol':round(sf,9) if sf is not None else None,
+                  'fees_sol':round(fee_sol,9) if fee_sol is not None else None,
+                  'fees_usd_est':round((fee_sol or 0.0)*(((bpx or 0)+(spx or 0))/2),4) if fee_sol is not None and (bpx is not None or spx is not None) else None,
+                  'net_sol':round(net_sol,9),
+                  'net_profit_pct':round(npct,4) if npct is not None else None,
+              })
+          print('day='+str(day))
+          print('successful_live_executions='+str(len(success)))
+          print('paired_closed_trades='+str(len(out)))
+          print('rpc_fee_available='+str(bool(rpc)).lower())
+          for row in out:
+              print('TRADE '+json.dumps(row,sort_keys=True))
+          PY
