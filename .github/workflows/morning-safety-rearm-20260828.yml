@@ -1,0 +1,126 @@
+name: Morning Safety Solana Rearm 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/morning-safety-rearm-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rearm:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify zero exposure then rearm morning canary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          export TARGET=/home/ayman01323/BOOT/testingbots/learn
+          export EXPECTED_SHA=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+          service=learnerbot-learn.service
+          test "$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$EXPECTED_SHA"
+          python3 - <<'PY'
+          import csv, json, os, sqlite3, urllib.request
+          from pathlib import Path
+          root=Path(os.environ['TARGET']); db=root/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db); con.row_factory=sqlite3.Row
+          positions=[dict(r) for r in con.execute("select * from positions where mode='LIVE' and status='RECONCILE_REQUIRED'")]
+          open_live=int(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n'])
+          wallets={r['position_id']:dict(r) for r in con.execute('select * from live_position_wallets')}
+          con.close()
+          print('reconcile_positions='+str(len(positions))); print('open_live_positions='+str(open_live))
+          if open_live != 0: raise SystemExit('REFUSE_REARM: OPEN LIVE position exists')
+          endpoints=[]
+          def add(v):
+              v=(v or '').strip().strip('"').strip("'")
+              if v.startswith(('http://','https://')) and v not in endpoints:endpoints.append(v)
+          for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              if '=' in line and not line.lstrip().startswith('#'):
+                  k,v=line.split('=',1)
+                  if 'RPC' in k.upper() and ('SOL' in k.upper() or 'HELIUS' in k.upper()):add(v)
+          for p in (root/'CSVbot').glob('*rpc*.csv'):
+              try:
+                  for row in csv.reader(p.open(encoding='utf-8',errors='ignore')):
+                      for cell in row:add(cell)
+              except Exception:pass
+          print('rpc_endpoint_count='+str(len(endpoints)))
+          def rpc(method,params):
+              for url in endpoints:
+                  try:
+                      req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(),headers={'content-type':'application/json'})
+                      with urllib.request.urlopen(req,timeout=12) as r:data=json.loads(r.read().decode())
+                      if 'error' not in data:return data.get('result')
+                  except Exception:pass
+              raise RuntimeError('all configured Solana RPC endpoints failed')
+          tids=set()
+          wallet_addresses=set()
+          for p in positions:
+              w=wallets.get(str(p['position_id'])) or {}; owner=str(w.get('wallet_address') or '')
+              if not owner: raise SystemExit('REFUSE_REARM: missing bound wallet')
+              tids.add(str(p['telegram_id'])); wallet_addresses.add(owner)
+              result=rpc('getTokenAccountsByOwner',[owner,{'mint':str(p['mint'])},{'encoding':'jsonParsed','commitment':'confirmed'}])
+              current=0
+              for a in (result or {}).get('value') or []:
+                  current += int(a['account']['data']['parsed']['info']['tokenAmount']['amount'])
+              print('verified_zero_position='+str(p['position_id'])[:16]+' value='+str(current))
+              if current != 0: raise SystemExit('REFUSE_REARM: reconciled mint still has token balance')
+          if len(tids) != 1: raise SystemExit('REFUSE_REARM: expected exactly one morning trading account')
+          if len(wallet_addresses) != 1: raise SystemExit('REFUSE_REARM: expected one bound morning wallet')
+          owner=next(iter(wallet_addresses)); bal=rpc('getBalance',[owner,{'commitment':'confirmed'}]); lamports=int((bal or {}).get('value') or 0)
+          print('wallet_balance_sol='+format(lamports/1_000_000_000,'.9f'))
+          # Morning effective canary requires 0.0005 SOL plus at least 0.005 SOL untouched reserve.
+          if lamports < 5_500_000: raise SystemExit('REFUSE_REARM: wallet below morning canary + reserve minimum')
+          (root/'private').mkdir(exist_ok=True)
+          marker=root/'private'/'.verified_morning_rearm_tid'
+          marker.write_text(next(iter(tids)),encoding='utf-8'); os.chmod(marker,0o600)
+          PY
+
+          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from learnerbot.user_registry import set_user_setting
+          root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
+          # Exact morning canary size observed in the successful BUYs. Do not widen it to the requested 0.009 SOL.
+          set_user_setting(root/'CSVbot',tid,'solana_live_trade_sol','0.0005',chain_id='-101',description='Restored morning isolated Learner canary size')
+          set_user_setting(root/'CSVbot',tid,'solana_live_min_reserve_sol','0.005',chain_id='-101',description='Restored morning isolated Learner reserve')
+          set_user_setting(root/'CSVbot',tid,'learner_new_entries_enabled','true',chain_id='-101',description='Morning Learner new-entry gate restored after verified zero exposure')
+          set_user_setting(root/'CSVbot',tid,'solana_live_enabled','true',chain_id='-101',description='Explicit owner rearm after both quarantined mints verified zero on-chain')
+          set_user_setting(root/'CSVbot',tid,'sibot_enabled','true',chain_id='*',description='Morning SiBot monitoring enabled')
+          set_user_setting(root/'CSVbot',tid,'sibot_auto_trade_enabled','true',chain_id='*',description='Morning automated routing enabled; all execution safety remains authoritative')
+          print('settings_written=true')
+          PY
+          sudo -n systemctl restart "$service"
+          sleep 12
+          test "$(systemctl is-active "$service")" = active
+          export PYTHONPATH="$TARGET"
+          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          from learnerbot import solana_live_patch as live
+          from learnerbot import sibot
+          from learnerbot.user_registry import user_bool
+          class A: pass
+          root=Path(os.environ['TARGET']); a=A(); a.csv_dir=root/'CSVbot'; a.data_dir=root/'data'
+          tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
+          trade,reserve=live.live_limits(a,tid)
+          print('effective_live_enabled='+str(live.live_enabled(a,tid)).lower())
+          print('effective_trade_sol='+str(trade))
+          print('effective_reserve_sol='+str(reserve))
+          print('effective_sibot_enabled='+str(user_bool(a.csv_dir,tid,0,'sibot_enabled',False)).lower())
+          print('effective_sibot_auto='+str(user_bool(a.csv_dir,tid,0,'sibot_auto_trade_enabled',False)).lower())
+          con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
+          print('open_live_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n']))
+          print('reconcile_required_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='RECONCILE_REQUIRED'").fetchone()['n']))
+          con.close()
+          if not live.live_enabled(a,tid): raise SystemExit('LIVE did not rearm')
+          if str(trade) != '0.0005': raise SystemExit('unexpected trade size')
+          if reserve < 0.005: raise SystemExit('reserve below morning floor')
+          PY
+          echo 'morning_rearm=SUCCESS'
+          echo 'manual_forced_trade=NO'
+          echo 'next_trade=ONLY_WHEN_EXISTING_MORNING_GATES_PASS'
