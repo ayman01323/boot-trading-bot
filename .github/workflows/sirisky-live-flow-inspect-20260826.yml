@@ -15,19 +15,21 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect Learner cold-zone refusal notification path
+      - name: Inspect exact Learner Telegram REJECT sender
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           root=/home/ayman01323/BOOT/testingbots/learn
-          echo '=== cold zone definitions ==='
-          sudo -n grep -Rsn --include='*.py' -E 'cold_zone_decisions|COLD_ZONE_OPEN|ACTUAL_SIZE_PREFLIGHT|cold_zone' "$root/learnerbot" 2>/dev/null | head -100 || true
-          echo '=== reject action consumers ==='
-          sudo -n grep -Rsn --include='*.py' -E 'action.*REJECT|REJECT.*action|\"REJECT\"|\x27REJECT\x27' "$root/learnerbot" 2>/dev/null | head -120 || true
-          echo '=== telegram send helpers ==='
-          sudo -n grep -Rsn --include='*.py' -E 'sendMessage|TELEGRAM_BOT_TOKEN|telegram.*send|send.*telegram' "$root/learnerbot" 2>/dev/null | head -120 || true
-          echo '=== solana_sibot target region ==='
-          sudo -n sed -n '700,850p' "$root/learnerbot/solana_sibot.py"
+          echo '=== telegram_solana_send_patch ==='
+          sudo -n sed -n '1,260p' "$root/learnerbot/telegram_solana_send_patch.py"
+          echo '=== cli action loop ==='
+          sudo -n sed -n '175,220p' "$root/learnerbot/cli.py"
+          echo '=== solana_live notification region ==='
+          sudo -n sed -n '1,115p' "$root/learnerbot/solana_live_patch.py"
+          echo '=== positive edge reject region ==='
+          sudo -n sed -n '360,450p' "$root/learnerbot/solana_positive_edge_entry_gate_patch.py"
+          echo '=== main composition ==='
+          sudo -n sed -n '1,100p' "$root/learnerbot/__main__.py"
           echo '=== service ==='
           systemctl is-active learnerbot-learn.service || true
