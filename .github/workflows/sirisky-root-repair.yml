@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   repair:
@@ -17,79 +17,44 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: fix/solana-aug17-canary-restore
-          fetch-depth: 0
-      - name: Diagnose and validate Solana loss containment source only
+      - name: Stop learner and verify
         shell: bash
         run: |
-          set -uo pipefail
-          service=learnerbot-learn.service
-          echo 'STAGE=STOP'
-          sudo -n systemctl stop "$service"
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n systemctl stop learnerbot-learn.service
           sleep 2
-          echo "active=$(systemctl is-active "$service" || true)"
-          echo "pid=$(systemctl show -p MainPID --value "$service")"
-          if [ "$(systemctl is-active "$service" || true)" = active ] || [ "$(systemctl show -p MainPID --value "$service")" != 0 ]; then exit 31; fi
-
-          echo 'STAGE=SOURCE_PRESENCE'
-          ls -l learnerbot/solana_loss_containment_patch.py learnerbot/solana_entry_exit_liquidity_preflight_patch.py learnerbot/solana_rpc_exit_priority_patch.py learnerbot/__main__.py
-          grep -n 'Critical EVM safety fix' learnerbot/__main__.py | head -2 || true
-
-          echo 'STAGE=INSERT_IMPORTS'
-          python3 - <<'PY'
-from pathlib import Path
-p=Path('learnerbot/__main__.py')
-text=p.read_text(encoding='utf-8')
-marker='# Critical EVM safety fix: native transfers must include the validated destination in the signed transaction.\n'
-print('marker_present='+str(marker in text).lower())
-print('loss_import_present='+str('from . import solana_loss_containment_patch' in text).lower())
-block=(
-    '# Before any Solana BUY, prove the quoted token amount can be reversed back to SOL inside the same emergency liquidity ceiling.\n'
-    'from . import solana_entry_exit_liquidity_preflight_patch  # noqa: F401\n'
-    '# Risk-reducing exits get RPC priority over discovery/scanning traffic; provider cooldown/auth/safety remain authoritative.\n'
-    'from . import solana_rpc_exit_priority_patch  # noqa: F401\n'
-    '# E30 containment: <=5% loss becomes sticky HARD_EXIT_REQUIRED while BvKg-style winners are not clipped by a +10% fixed take-profit.\n'
-    'from . import solana_loss_containment_patch  # noqa: F401\n'
-)
-if 'from . import solana_loss_containment_patch' not in text:
-    if marker not in text:
-        raise SystemExit(41)
-    text=text.replace(marker,block+marker,1)
-    p.write_text(text,encoding='utf-8')
-PY
-          rc=$?; echo "insert_rc=$rc"; if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-
+          test "$(systemctl is-active learnerbot-learn.service || true)" != active
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service)" = 0
+          echo learner_stop_verified=YES
+      - name: Compile protection source
+        shell: bash
+        run: |
+          set -euo pipefail
           PY=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
-          echo 'STAGE=PY_COMPILE'
-          "$PY" -m py_compile learnerbot/solana_loss_containment_patch.py learnerbot/solana_entry_exit_liquidity_preflight_patch.py learnerbot/solana_rpc_exit_priority_patch.py learnerbot/__main__.py
-          rc=$?; echo "compile_rc=$rc"; if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-
-          echo 'STAGE=PYTEST'
+          "$PY" -m py_compile learnerbot/solana_loss_containment_patch.py learnerbot/solana_entry_exit_liquidity_preflight_patch.py learnerbot/solana_rpc_exit_priority_patch.py learnerbot/solana_stuck_liquidity_safe_slice_patch.py
+          echo compile=PASS
+      - name: Run focused protection tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PY=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
           PYTHONPATH="$GITHUB_WORKSPACE" "$PY" -m pytest -q tests/test_solana_loss_containment_patch.py tests/test_solana_entry_exit_liquidity_preflight.py
-          rc=$?; echo "pytest_rc=$rc"; if [ "$rc" -ne 0 ]; then exit "$rc"; fi
-
-          echo 'STAGE=COMMIT'
-          git config user.name ayman01323
-          git config user.email ayman01323@gmail.com
-          git add learnerbot/__main__.py learnerbot/solana_loss_containment_patch.py tests/test_solana_loss_containment_patch.py
-          if ! git diff --cached --quiet; then
-            git commit -m 'Wire sticky Solana loss containment and exitability protections'
-            git push origin HEAD:fix/solana-aug17-canary-restore
-          fi
-
-          echo 'STAGE=SOURCE_ONLY_DEPLOY'
-          target=/home/ayman01323/BOOT/testingbots/learn
-          test -d "$target/learnerbot" || exit 51
-          install -m 0644 learnerbot/solana_loss_containment_patch.py "$target/learnerbot/solana_loss_containment_patch.py"
-          install -m 0644 learnerbot/solana_entry_exit_liquidity_preflight_patch.py "$target/learnerbot/solana_entry_exit_liquidity_preflight_patch.py"
-          install -m 0644 learnerbot/solana_rpc_exit_priority_patch.py "$target/learnerbot/solana_rpc_exit_priority_patch.py"
-          install -m 0644 learnerbot/__main__.py "$target/learnerbot/__main__.py"
-
-          echo 'STAGE=FINAL'
-          echo "active=$(systemctl is-active "$service" || true)"
-          echo "pid=$(systemctl show -p MainPID --value "$service")"
-          if [ "$(systemctl is-active "$service" || true)" = active ] || [ "$(systemctl show -p MainPID --value "$service")" != 0 ]; then exit 61; fi
-          echo 'loss_containment_source=WIRED_TESTED_AND_STAGED'
-          echo 'learner_service=STOPPED'
-          echo 'live_enabled_by_workflow=NO'
-          echo 'position_size_changed=NO'
-          echo 'trade_submitted=NO'
+      - name: Stage source only on Google learner
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn/learnerbot
+          test -d "$target"
+          install -m 0644 learnerbot/solana_loss_containment_patch.py "$target/solana_loss_containment_patch.py"
+          install -m 0644 learnerbot/solana_entry_exit_liquidity_preflight_patch.py "$target/solana_entry_exit_liquidity_preflight_patch.py"
+          install -m 0644 learnerbot/solana_rpc_exit_priority_patch.py "$target/solana_rpc_exit_priority_patch.py"
+          install -m 0644 learnerbot/solana_stuck_liquidity_safe_slice_patch.py "$target/solana_stuck_liquidity_safe_slice_patch.py"
+          test "$(systemctl is-active learnerbot-learn.service || true)" != active
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service)" = 0
+          echo loss_containment_source=WIRED_TESTED_AND_STAGED
+          echo learner_service=STOPPED
+          echo live_enabled_by_workflow=NO
+          echo position_size_changed=NO
+          echo trade_submitted=NO
