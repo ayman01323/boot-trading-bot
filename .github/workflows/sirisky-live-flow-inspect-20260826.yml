@@ -14,70 +14,106 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Diagnose isolated Learner Telegram delivery
+      - name: Restore isolated Learner Telegram delivery
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
-          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
-          echo "pid=$(systemctl show "$service" -p MainPID --value 2>/dev/null || true)"
+          prod=/root/multichain-learning-bot-v2.2-fast-direct-market
+          py="$prod/.venv/bin/python"
+          test -x "$py"
+          test -f "$target/.env"
           echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
-          echo '=== UNIT ==='
-          systemctl show "$service" -p FragmentPath -p ExecStart -p WorkingDirectory --no-pager || true
-          echo '=== PYTHON CANDIDATES ==='
-          for p in "$target/.venv/bin/python" "$target/venv/bin/python" "$target/.wallet-venv/bin/python" /usr/bin/python3; do
-            [[ -x "$p" ]] && echo "python_candidate=$p"
-          done
+
+          sudo -n /usr/bin/env TARGET="$target" PROD="$prod" /usr/bin/bash -lc '
+            set -Eeuo pipefail
+            src="$PROD/.env"
+            dst="$TARGET/.env"
+            test -f "$src"
+            test -f "$dst"
+            cp -a "$dst" "$TARGET/backups/.env.before-telegram-sync"
+            python3 - "$src" "$dst" <<"PY"
+import pathlib, sys
+src=pathlib.Path(sys.argv[1]); dst=pathlib.Path(sys.argv[2])
+keys=("TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID","TELEGRAM_CHAT_IDS")
+def parse(p):
+    out={}
+    for raw in p.read_text(encoding="utf-8").splitlines():
+        s=raw.strip()
+        if not s or s.startswith("#") or "=" not in s: continue
+        k,v=s.split("=",1); out[k.strip()]=v
+    return out
+s=parse(src); d=parse(dst)
+changed=[]
+for k in keys:
+    if s.get(k,"`).strip():
+        d[k]=s[k]; changed.append(k)
+if not d.get("TELEGRAM_BOT_TOKEN","").strip():
+    raise SystemExit("production TELEGRAM_BOT_TOKEN is missing")
+lines=[]; seen=set()
+for raw in dst.read_text(encoding="utf-8").splitlines():
+    if "=" in raw and not raw.lstrip().startswith("#"):
+        k=raw.split("=",1)[0].strip()
+        if k in keys:
+            if k in seen: continue
+            lines.append(f"{k}={d.get(k,'')}"); seen.add(k); continue
+    lines.append(raw)
+for k in keys:
+    if k in d and k not in seen:
+        lines.append(f"{k}={d[k]}")
+dst.write_text("\n".join(lines).rstrip()+"\n",encoding="utf-8")
+print("telegram_keys_synced="+str(len(changed)))
+print("token_present_after=true")
+PY
+            chown ayman01323:ayman01323 "$dst"
+            chmod 600 "$dst"
+          '
+
+          sudo -n systemctl restart "$service"
+          sleep 8
+          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "restarts=$(systemctl show "$service" -p NRestarts --value 2>/dev/null || true)"
+
           cd "$target"
-          py=/usr/bin/python3
-          if [[ -x "$target/venv/bin/python" ]]; then py="$target/venv/bin/python"; fi
-          if [[ -x "$target/.venv/bin/python" ]]; then py="$target/.venv/bin/python"; fi
-          echo "using_python=$py"
           PYTHONPATH=. "$py" - <<'PY'
-          import csv
-          from pathlib import Path
-          try:
-              from learnerbot.config import AppSettings
-              from learnerbot.telegram import get_me
-              app=AppSettings.load()
-              print('app_import_ok=true')
-              print('token_present='+str(bool(app.telegram_bot_token)).lower())
-              print('configured_chat_ids='+str(len(app.telegram_chat_ids)))
-              try:
-                  me=get_me(app.telegram_bot_token)
-                  print('telegram_getme_ok=true')
-                  print('bot_username='+str(me.get('username') or ''))
-              except Exception as e:
-                  print('telegram_getme_ok=false')
-                  print('telegram_getme_error='+type(e).__name__+': '+str(e)[:220])
-          except Exception as e:
-              print('app_import_ok=false')
-              print('app_import_error='+type(e).__name__+': '+str(e)[:220])
-          users=[]
-          p=Path('CSVbot/users.csv')
-          if p.exists():
-              with p.open(encoding='utf-8-sig',newline='') as f: users=list(csv.DictReader(f))
-          active=[r for r in users if str(r.get('status') or '').upper()=='ACTIVE']
-          print('active_users='+str(len(active)))
-          print('master_users='+str(sum(1 for r in active if str(r.get('role') or '').upper()=='MASTER')))
-          settings=[]
-          p=Path('CSVbot/user_trading_settings.csv')
-          if p.exists():
-              with p.open(encoding='utf-8-sig',newline='') as f: settings=list(csv.DictReader(f))
-          for key in ('sibot_enabled','sibot_auto_trade_enabled','solana_live_enabled','learner_new_entries_enabled'):
-              vals=[str(r.get('value') or '').lower() for r in settings if str(r.get('setting') or '')==key]
-              print(key+'_true='+str(sum(v in {'1','true','yes','on'} for v in vals)))
-              print(key+'_false='+str(sum(v in {'0','false','no','off'} for v in vals)))
-          PY
-          echo '=== ENV FILE PRESENCE ==='
-          [[ -f "$target/.env" ]] && echo 'target_env_present=true' || echo 'target_env_present=false'
-          echo '=== TELEGRAM-RELATED SERVICE LOGS ==='
-          journalctl -u "$service" --since '3 hours ago' --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'telegram|sendMessage|chat|bot token|HTTPError|401|403|429|notify|alert' \
-            | tail -n 220 || true
-          echo '=== RECENT LIVE/ALERT EVENTS ==='
-          journalctl -u "$service" --since '3 hours ago' --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'LIVE BUY|LIVE SELL|execution fault|automatically disabled|RECONCILE|exit|entry' \
-            | tail -n 220 || true
+import csv
+from pathlib import Path
+from learnerbot.config import AppSettings
+from learnerbot.telegram import get_me, send_message
+app=AppSettings.load()
+print('token_present='+str(bool(app.telegram_bot_token)).lower())
+print('configured_chat_ids='+str(len(app.telegram_chat_ids)))
+me=get_me(app.telegram_bot_token)
+print('telegram_getme_ok=true')
+print('bot_username='+str(me.get('username') or ''))
+# Pick the active Solana user that has signing enabled; do not print the id.
+users=[]
+p=Path('CSVbot/users.csv')
+if p.exists():
+    with p.open(encoding='utf-8-sig',newline='') as f: users=list(csv.DictReader(f))
+wallets=[]
+wp=Path('CSVbot/auto/solana_user_wallets.csv')
+if wp.exists():
+    with wp.open(encoding='utf-8-sig',newline='') as f: wallets=list(csv.DictReader(f))
+active_ids={str(r.get('telegram_id') or '') for r in users if str(r.get('status') or '').upper()=='ACTIVE'}
+candidates=[]
+for r in wallets:
+    tid=str(r.get('telegram_id') or '')
+    signing=str(r.get('signing') or '').lower() in {'1','true','yes','on'}
+    enabled=str(r.get('enabled','true')).lower() in {'1','true','yes','on'}
+    if tid in active_ids and signing and enabled and tid not in candidates:
+        candidates.append(tid)
+if not candidates:
+    raise SystemExit('no active signing Solana Telegram recipient')
+resp=send_message(app.telegram_bot_token,candidates[0],"🧠 Learner Bot Telegram connection restored. This is a delivery test only; no trade was placed.",protect_content=True)
+print('smoke_test_ok='+str(bool(resp.get('message_id'))).lower())
+print('smoke_test_recipient=active_signing_solana_user')
+PY
+
+          sleep 5
+          state2="$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "service_after_test=$state2"
+          journalctl -u "$service" -n 80 --no-pager -o cat 2>/dev/null | grep -Ei 'TELEGRAM_BOT_TOKEN|telegram|Main process exited|Failed with result' | tail -n 80 || true
+          test "$state2" = active
