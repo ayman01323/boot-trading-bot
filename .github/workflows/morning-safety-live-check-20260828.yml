@@ -1,0 +1,54 @@
+name: Morning Solana Safety Live Check 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/morning-safety-live-check-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Inspect restored morning Solana LIVE safety state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
+          echo '=== SOLANA SETTINGS ==='
+          grep -E '^(live_trade_sol|live_min_sol_reserve|live_max_positions|live_require_simulation),' "$target/CSVbot/solana_settings.csv" || true
+          echo '=== USER LIVE CONTROLS ==='
+          grep -E ',(learner_new_entries_enabled|solana_live_enabled|sibot_enabled|sibot_auto_trade_enabled|solana_live_trade_sol|solana_live_min_reserve_sol),' "$target/CSVbot/user_trading_settings.csv" | sed -E 's/^[^,]+,/[redacted],/' || true
+          echo '=== SQLITE STATE ==='
+          TARGET="$target" python3 - <<'PY'
+          import sqlite3
+          from pathlib import Path
+          root=Path(__import__('os').environ['TARGET'])
+          db=root/'data'/'solana_sibot.sqlite3'
+          print('db_exists='+str(db.exists()).lower())
+          if db.exists():
+              con=sqlite3.connect(db)
+              con.row_factory=sqlite3.Row
+              tables=[r[0] for r in con.execute("select name from sqlite_master where type='table' order by name")]
+              print('tables='+','.join(tables))
+              for table in ('positions','live_execution_attempts'):
+                  if table not in tables: continue
+                  cols=[r[1] for r in con.execute(f'pragma table_info("{table}")')]
+                  print(f'{table}_columns='+','.join(cols))
+                  rows=con.execute(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 12').fetchall()
+                  for i,row in enumerate(rows):
+                      safe={k:row[k] for k in row.keys() if k.lower() not in {'private_key','secret','signature','signed_tx','raw_tx','transaction'}}
+                      print(f'{table}_row_{i}='+repr(safe)[:1800])
+              con.close()
+          PY
+          echo '=== RECENT RECONCILIATION / EXECUTION LOGS ==='
+          journalctl -u "$service" -n 500 --no-pager -o cat 2>/dev/null | grep -Ei 'reconcil|jupiter|LIVE|BUY|SELL|entry|exit|halt|reserve|simulation|broadcast|position' | tail -n 220 || true
