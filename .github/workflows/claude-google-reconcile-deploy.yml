@@ -160,15 +160,24 @@ jobs:
           testdeps="$RUNNER_TEMP/claude-reconcile-testdeps"
           rm -rf "$testdeps"
           python3 -m pip install --disable-pip-version-check --no-input --target "$testdeps" 'pytest>=8,<9'
-          PYTHONPATH="$testdeps:$MANAGED_REPO" .venv/bin/python -m pytest -q \
-            tests/test_solana_rpc_failover.py \
-            claude-trading-bot/tests/test_claude_risk_and_state.py \
+          test_pythonpath="$testdeps:$MANAGED_REPO"
+
+          # Each suite runs in a fresh interpreter. Claude's quarantine contract
+          # intentionally requires its bootstrap test to execute before any
+          # learnerbot import in that Python process.
+          PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q \
+            tests/test_solana_rpc_failover.py
+          PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q \
+            claude-trading-bot/tests/test_claude_risk_and_state.py
+          PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q \
             claude-trading-bot/tests/test_claude_execution_and_telegram.py
+
           .venv/bin/python -m py_compile \
             learnerbot/solana_rpc_failover_patch.py \
             learnerbot/ai_agent_health_4h_patch.py \
             claude-trading-bot/claude_runtime_health_patch.py
           echo 'targeted_regression=PASS'
+          echo 'test_process_isolation=PASS'
           echo 'runtime_venv_modified=false'
 
       - name: Restart only isolated Claude service
@@ -245,7 +254,7 @@ jobs:
           echo 'Claude Google reconcile boundary:'
           echo '- allowlisted server code is backed up before any replacement'
           echo '- managed repo reconciles only to the exact trusted checkout SHA'
-          echo '- tests use ephemeral dependencies; runtime venv is not modified'
+          echo '- tests use ephemeral dependencies and isolated processes; runtime venv is not modified'
           echo '- restart is allowed only after targeted tests pass'
           echo '- restarted only claude-trading-bot.service when validation passes'
           echo '- Claude remains OFF after restart by design'
