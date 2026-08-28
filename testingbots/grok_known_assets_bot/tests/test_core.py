@@ -40,6 +40,35 @@ def test_position_sizing_respects_gross_cap(tmp_path):
     assert d.action == "ENTER" and d.size_usd <= 100.000001
 
 
+def test_small_pullback_no_longer_fails_host_momentum_gate(tmp_path):
+    d = engine(tmp_path).evaluate_entry(
+        snap(ret_5m_pct=-0.048, ret_15m_pct=-0.077),
+        10000,
+        now=1000,
+    )
+    assert d.action == "ENTER"
+    assert d.reason == "TREND_RISK_ACCEPTABLE"
+
+
+def test_adverse_5m_momentum_still_rejected(tmp_path):
+    d = engine(tmp_path).evaluate_entry(snap(ret_5m_pct=-0.051), 10000, now=1000)
+    assert d.action == "REJECT" and d.reason == "ADVERSE_5M_MOMENTUM"
+
+
+def test_adverse_15m_trend_still_rejected(tmp_path):
+    d = engine(tmp_path).evaluate_entry(snap(ret_15m_pct=-0.301), 10000, now=1000)
+    assert d.action == "REJECT" and d.reason == "ADVERSE_15M_TREND"
+
+
+def test_momentum_thresholds_are_configurable(tmp_path):
+    d = engine(tmp_path, momentum_5m_min_pct=0.20).evaluate_entry(
+        snap(ret_5m_pct=0.10),
+        10000,
+        now=1000,
+    )
+    assert d.action == "REJECT" and d.reason == "ADVERSE_5M_MOMENTUM"
+
+
 def test_daily_loss_breaker(tmp_path):
     now = time.time(); e = engine(tmp_path, daily_realised_loss_pct=2.0); e.start_of_day_equity = 10000
     e.journal.event("CLOSE", "solana:SOL:NATIVE", {"realised_pnl_usd": -250, "reason": "HARD_STOP"})
