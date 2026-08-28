@@ -26,13 +26,12 @@ jobs:
           echo "service_active=$(systemctl is-active "$service" || true)"
           echo '--- unit execution identity ---'
           systemctl show "$service" -p ExecStart -p WorkingDirectory -p MainPID -p ActiveState -p SubState -p Restart
-          echo '--- latest traceback context (paths/errors only) ---'
-          sudo -n journalctl -u "$service" -n 180 --no-pager \
-            | grep -A28 -B2 -E 'Traceback \(most recent call last\):' \
-            | tail -70 \
-            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#(api[-_]?key[=:/ ]+)[^[:space:]]+#\1<REDACTED>#Ig' || true
+          echo '--- latest traceback, complete ---'
+          sudo -n journalctl -u "$service" -n 500 --no-pager -o cat \
+            | python3 -c 'import sys,re; lines=sys.stdin.read().splitlines(); starts=[i for i,x in enumerate(lines) if "Traceback (most recent call last):" in x]; s=starts[-1] if starts else max(0,len(lines)-40); out=lines[s:s+100]; text="\n".join(out); text=re.sub(r"https?://\S+","<URL_REDACTED>",text); text=re.sub(r"(?i)(api[-_]?key[=:/ ]+)\S+",r"\1<REDACTED>",text); print(text)' \
+            | head -100
           echo '--- safe startup markers ---'
-          sudo -n journalctl -u "$service" -n 180 --no-pager \
+          sudo -n journalctl -u "$service" -n 220 --no-pager \
             | grep -E '\[learner-newpoll45\]|\[final-runtime-integrity\]|Starting multi-chain learning loop|Main process exited|Failed with result' \
             | tail -80 || true
           echo '--- import presence ---'
