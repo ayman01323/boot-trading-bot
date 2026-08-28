@@ -14,13 +14,16 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 3
     steps:
-      - name: Read current BvKg sale state
+      - name: Read current BvKg sale state and wallet balance
         shell: bash
         run: |
           set -euo pipefail
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
+          owner='8zTnKUPW648NZZ285mz7ijFBpsbGu8AziRoZsH9JBfA3'
+          mint='BvKgVjsUQ8KV22RNKhk3btZHKSDdrRfziGad4ugTCcJS'
           test "$(systemctl is-active "$service")" = active
+
           TARGET="$target" python3 - <<'PY'
           import json, os, sqlite3
           from pathlib import Path
@@ -45,7 +48,48 @@ jobs:
                   print('CIRCUIT=NONE')
           con.close()
           PY
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          rpc='https://api.mainnet-beta.solana.com'
+          curl -fsS --max-time 20 -H 'content-type: application/json' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\",\"params\":[\"$owner\",{\"mint\":\"$mint\"},{\"encoding\":\"jsonParsed\",\"commitment\":\"confirmed\"}]}" \
+            "$rpc" > "$tmp/tokens.json"
+          curl -fsS --max-time 20 -H 'content-type: application/json' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"getBalance\",\"params\":[\"$owner\",{\"commitment\":\"confirmed\"}]}" \
+            "$rpc" > "$tmp/sol.json"
+
+          TOKENS="$tmp/tokens.json" SOL="$tmp/sol.json" OWNER="$owner" MINT="$mint" python3 - <<'PY'
+          import json, os
+          token_doc=json.load(open(os.environ['TOKENS'],encoding='utf-8'))
+          sol_doc=json.load(open(os.environ['SOL'],encoding='utf-8'))
+          if token_doc.get('error'):
+              print('ONCHAIN_TOKEN_RPC_ERROR='+json.dumps(token_doc['error'],separators=(',',':')))
+          else:
+              vals=(token_doc.get('result') or {}).get('value') or []
+              total_raw=0; decimals=None
+              for v in vals:
+                  info=(((v.get('account') or {}).get('data') or {}).get('parsed') or {}).get('info') or {}
+                  amt=info.get('tokenAmount') or {}
+                  total_raw += int(amt.get('amount') or 0)
+                  if decimals is None: decimals=int(amt.get('decimals') or 0)
+              ui=(total_raw/(10**decimals)) if decimals is not None else 0
+              print('ONCHAIN_OWNER='+os.environ['OWNER'])
+              print('ONCHAIN_MINT='+os.environ['MINT'])
+              print('ONCHAIN_TOKEN_ACCOUNTS='+str(len(vals)))
+              print('ONCHAIN_BVKG_RAW='+str(total_raw))
+              print('ONCHAIN_BVKG_DECIMALS='+str(decimals if decimals is not None else 'UNKNOWN'))
+              print('ONCHAIN_BVKG_UI='+format(ui,'.12f'))
+              print('ONCHAIN_BVKG_ZERO='+('YES' if total_raw == 0 else 'NO'))
+          if sol_doc.get('error'):
+              print('ONCHAIN_SOL_RPC_ERROR='+json.dumps(sol_doc['error'],separators=(',',':')))
+          else:
+              lamports=(sol_doc.get('result') or {}).get('value')
+              print('ONCHAIN_SOL_LAMPORTS='+str(lamports))
+              if lamports is not None: print('ONCHAIN_SOL='+format(lamports/1_000_000_000,'.9f'))
+          PY
+
           echo '--- recent relevant journal ---'
           sudo -n journalctl -u "$service" --since '-15 min' --no-pager -o cat \
-            | grep -Ei '714f2607|BvKgVjs|exit circuit reconciled|reconciliation|LIVE SELL confirmed' \
+            | grep -Ei '714f2607|BvKgVjs|exit circuit reconciled|reconciliation|LIVE SELL confirmed|learner-full-exit-only' \
             | tail -80 || true
