@@ -20,6 +20,10 @@ jobs:
           set -euo pipefail
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
+          echo '=== TELEGRAM SEND ERROR SOURCE ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -C 6 'Telegram API sendMessage failed' "$target/learnerbot" || true
+          echo '=== SEND MESSAGE PATCHES ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E '(_tg|telegram)\.send_message\s*=|send_message_with|def send_message' "$target/learnerbot" | head -120 || true
           echo '=== SOURCE CONTRACT ==='
           grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'NewPoll45 • Open Position|Total open positions|FULL SALE RESULT|Pool change since open|DEX Viewer' \
             "$target/learnerbot/telegram_learner_position_update_patch.py" \
