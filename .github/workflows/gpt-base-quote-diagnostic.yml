@@ -1,0 +1,113 @@
+name: GPT Base Quote Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - diagnostics/trigger-gpt-base-quote.txt
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gpt-base-quote-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - name: Build redacted Base quote diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import csv, json, re, time
+          from collections import Counter
+          from pathlib import Path
+
+          roots = [
+              Path('/root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot/auto'),
+              Path('/root/boot-trading-bot/CSVbot/auto'),
+          ]
+          auto = next((p for p in roots if p.exists()), None)
+          if auto is None:
+              raise SystemExit('CSVbot/auto not found')
+
+          path = auto / 'base_full_power_rejections.csv'
+          rows = []
+          if path.exists():
+              with path.open('r', encoding='utf-8', errors='replace', newline='') as f:
+                  rows = list(csv.DictReader(f))[-200:]
+
+          def cls(reason):
+              text = str(reason or '')
+              low = text.lower()
+              # Scanner formats V3 quote failures as Dex:ExceptionType:detail.
+              parts = text.split(':', 2)
+              exc = parts[1].strip() if len(parts) >= 2 else ''
+              safe_exc = exc if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.]{0,79}', exc) else 'unknown'
+              if 'execution reverted' in low or 'contractlogicerror' in low or 'contractcustomerror' in low:
+                  code = 'quote_revert'
+              elif 'badfunctioncalloutput' in low or 'could not decode' in low or 'insufficient data' in low:
+                  code = 'quote_decode'
+              elif 'mismatchedabi' in low or 'abi' in low:
+                  code = 'quote_abi'
+              elif 'timeout' in low:
+                  code = 'provider_timeout'
+              elif '429' in low or 'rate limit' in low or 'too many requests' in low:
+                  code = 'provider_rate_limit'
+              elif 'connection' in low:
+                  code = 'provider_connection'
+              elif 'rpc' in low:
+                  code = 'provider_rpc'
+              else:
+                  code = 'quote_other'
+              return safe_exc, code
+
+          by_kind = Counter()
+          by_stage = Counter()
+          by_exc = Counter()
+          by_code = Counter()
+          for r in rows:
+              by_kind[str(r.get('route_kind') or 'unknown')[:40]] += 1
+              by_stage[str(r.get('stage') or 'unknown')[:40]] += 1
+              exc, code = cls(r.get('reason'))
+              by_exc[exc] += 1
+              by_code[code] += 1
+
+          out = {
+              'schema_version': 1,
+              'updated_epoch': int(time.time()),
+              'source_exists': path.exists(),
+              'rows_tail': len(rows),
+              'route_kind_counts': dict(by_kind),
+              'stage_counts': dict(by_stage),
+              'exception_class_counts': dict(by_exc),
+              'reason_class_counts': dict(by_code),
+              'raw_reasons_exported': False,
+              'addresses_exported': False,
+              'read_only': True,
+          }
+          Path('/tmp/gpt-base-quote-diagnostic.json').write_text(json.dumps(out, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(out, indent=2, sort_keys=True))
+          PY
+
+      - name: Publish redacted diagnosis
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/contents/diagnostics/latest-gpt-base-quote.json"
+          existing_sha="$(gh api -H 'Accept: application/vnd.github+json' "${api}?ref=server-diagnostics" --jq '.sha' 2>/dev/null || true)"
+          encoded="$(base64 -w0 /tmp/gpt-base-quote-diagnostic.json)"
+          python3 - "$encoded" "$existing_sha" <<'PY' > /tmp/gpt-base-quote-put.json
+          import json,sys
+          out={'message':'Update redacted GPT Base quote diagnosis','content':sys.argv[1],'branch':'server-diagnostics'}
+          if sys.argv[2]: out['sha']=sys.argv[2]
+          print(json.dumps(out))
+          PY
+          gh api -X PUT "$api" --input /tmp/gpt-base-quote-put.json >/dev/null
