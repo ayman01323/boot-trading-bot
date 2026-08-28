@@ -128,6 +128,6 @@ PY
 echo "service=$(systemctl is-active sirisky.service)"
 echo "module_sha=$MODULE_SHA"
 echo "backup=$backup"
-echo "stage3_sha256=$(sha256sum sirisky/stage3_risk.py | awk '{print $1}')"
+echo "stage3_sha256=$(sha256sum sirisky/stage3_risk.py | cut -d" " -f1)"
 echo "telegram_position_reporting=DEPLOYED"
 '
