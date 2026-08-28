@@ -1,0 +1,66 @@
+name: Set Cold Zone Discovery 6x15 Now
+
+on:
+  push:
+    branches:
+      - ops/google-master-menu-cutover-20260827
+    paths:
+      - .github/workflows/set-cold-zone-discovery-6x15-now-20260828.yml
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Set six finalized blocks per fifteen seconds
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          SETTINGS="$LEARN/CSVbot/solana_settings.csv"
+          test -f "$SETTINGS"
+
+          python3 - "$SETTINGS" <<'PY'
+          import csv,pathlib,sys
+          p=pathlib.Path(sys.argv[1])
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              rd=csv.DictReader(f); fields=rd.fieldnames or ['setting','value','description']; rows=list(rd)
+          wanted={'discovery_blocks_per_cycle':'6','discovery_interval_seconds':'15'}
+          seen=set()
+          for r in rows:
+              k=str(r.get('setting') or '').strip()
+              if k in wanted:
+                  print(k+'_before='+str(r.get('value') or ''))
+                  r['value']=wanted[k]; seen.add(k)
+          for k,v in wanted.items():
+              if k not in seen:
+                  rows.append({'setting':k,'value':v,'description':'Cold Zone isolated learner discovery cadence'})
+                  print(k+'_before=MISSING')
+          tmp=p.with_suffix('.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+          print('discovery_blocks_per_cycle_after=6')
+          print('discovery_interval_seconds_after=15')
+          PY
+
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 18
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          python3 - "$SETTINGS" <<'PY'
+          import csv,sys
+          d={}
+          with open(sys.argv[1],encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f): d[str(r.get('setting') or '').strip()]=str(r.get('value') or '').strip()
+          print('verified_discovery_blocks_per_cycle='+d.get('discovery_blocks_per_cycle','MISSING'))
+          print('verified_discovery_interval_seconds='+d.get('discovery_interval_seconds','MISSING'))
+          assert d.get('discovery_blocks_per_cycle')=='6'
+          assert d.get('discovery_interval_seconds')=='15'
+          PY
+
+          echo "learner_runtime=$(sudo -n systemctl is-active learnerbot-learn.service)"
+          echo "cold_zone_relay=$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)"
+          echo 'cold_zone_discovery_6x15=SUCCESS'
