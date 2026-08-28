@@ -8,11 +8,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: verify-local-ai-agent-ws-bus
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   verify:
@@ -52,9 +52,7 @@ jobs:
           PY
 
   sirisky_auto_live:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_run' }}
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
