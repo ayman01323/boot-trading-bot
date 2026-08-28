@@ -1,0 +1,21 @@
+[Unit]
+Description=Grok Known Assets Telegram Control (dedicated PAPER-only receiver)
+After=network-online.target grok-known-assets-bot.service
+Wants=network-online.target
+ConditionPathExists=/home/ayman01323/.config/grok-known-assets-bot/telegram.env
+
+[Service]
+Type=simple
+User=ayman01323
+WorkingDirectory=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/ayman01323/.config/grok-known-assets-bot/telegram.env
+ExecStart=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/python -m grok_known_assets_bot.telegram_control
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

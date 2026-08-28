@@ -19,6 +19,9 @@ jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
+    env:
+      ACTION_GROK_TELEGRAM_BOT_TOKEN: ${{ secrets.GROK_TELEGRAM_BOT_TOKEN }}
+      ACTION_GROK_TELEGRAM_CHAT_IDS: ${{ secrets.GROK_TELEGRAM_CHAT_IDS }}
     steps:
       - name: Verify isolated Google runner
         shell: bash
@@ -66,13 +69,145 @@ jobs:
           sudo systemctl is-active --quiet grok-known-assets-bot.service
           sudo systemctl show grok-known-assets-bot.service -p ActiveState -p SubState -p MainPID -p User -p WorkingDirectory --no-pager
 
-      - name: Confirm real-feed PAPER process evidence
+      - name: Prepare dedicated Grok Telegram credentials without exposing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE=/tmp/grok-telegram-credential-state
+          rm -f "$STATE"
+          sudo env \
+            ACTION_GROK_TELEGRAM_BOT_TOKEN="$ACTION_GROK_TELEGRAM_BOT_TOKEN" \
+            ACTION_GROK_TELEGRAM_CHAT_IDS="$ACTION_GROK_TELEGRAM_CHAT_IDS" \
+            python3 - "$STATE" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          state_path = Path(sys.argv[1])
+          config_dir = Path('/home/ayman01323/.config/grok-known-assets-bot')
+          env_file = config_dir / 'telegram.env'
+          sources = [
+              env_file,
+              Path('/var/tmp/ai_council_runtime.env'),
+              Path('/var/tmp/boot/ai_council_runtime.env'),
+              Path('/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env'),
+              Path('/root/SiRisky/.env'),
+          ]
+
+          def parse(path: Path) -> dict[str, str]:
+              values: dict[str, str] = {}
+              try:
+                  raw = path.read_text(encoding='utf-8', errors='replace')
+              except Exception:
+                  return values
+              for line in raw.splitlines():
+                  line = line.strip()
+                  if not line or line.startswith('#') or '=' not in line:
+                      continue
+                  key, value = line.split('=', 1)
+                  values[key.strip()] = value.strip().strip('"').strip("'")
+              return values
+
+          all_values = [parse(path) for path in sources]
+          existing = all_values[0]
+          token = existing.get('GROK_TELEGRAM_BOT_TOKEN', '').strip()
+          chat_ids = existing.get('GROK_TELEGRAM_CHAT_IDS', '').strip()
+
+          if not token:
+              token = os.environ.get('ACTION_GROK_TELEGRAM_BOT_TOKEN', '').strip()
+          if not chat_ids:
+              chat_ids = os.environ.get('ACTION_GROK_TELEGRAM_CHAT_IDS', '').strip()
+
+          for values in all_values[1:]:
+              if not token:
+                  token = (
+                      values.get('GROK_TELEGRAM_BOT_TOKEN', '')
+                      or values.get('TELEGRAM_GROK_BOT_TOKEN', '')
+                  ).strip()
+              if not chat_ids:
+                  chat_ids = (
+                      values.get('GROK_TELEGRAM_CHAT_IDS', '')
+                      or values.get('TELEGRAM_GROK_CHAT_IDS', '')
+                      or values.get('TELEGRAM_CHAT_IDS', '')
+                      or values.get('TELEGRAM_CHAT_ID', '')
+                  ).strip()
+
+          shared_tokens = set()
+          for values in all_values:
+              for key in (
+                  'TELEGRAM_BOT_TOKEN',
+                  'SIRISKY_TELEGRAM_BOT_TOKEN',
+                  'CLAUDE_TELEGRAM_BOT_TOKEN',
+                  'LEARNER_TELEGRAM_BOT_TOKEN',
+              ):
+                  value = values.get(key, '').strip()
+                  if value:
+                      shared_tokens.add(value)
+
+          if not token:
+              state = 'MISSING_DEDICATED_TOKEN'
+          elif token in shared_tokens:
+              state = 'REJECTED_SHARED_TOKEN_COLLISION'
+          elif not chat_ids:
+              state = 'MISSING_CHAT_IDS'
+          else:
+              config_dir.mkdir(parents=True, exist_ok=True)
+              env_file.write_text(
+                  'GROK_TELEGRAM_BOT_TOKEN=' + token + '\n'
+                  'GROK_TELEGRAM_CHAT_IDS=' + chat_ids + '\n'
+                  'GROK_TELEGRAM_POLL_TIMEOUT=25\n',
+                  encoding='utf-8',
+              )
+              os.chmod(env_file, 0o600)
+              try:
+                  import pwd
+                  user = pwd.getpwnam('ayman01323')
+                  os.chown(config_dir, user.pw_uid, user.pw_gid)
+                  os.chown(env_file, user.pw_uid, user.pw_gid)
+              except Exception:
+                  pass
+              state = 'READY'
+
+          state_path.write_text(state + '\n', encoding='utf-8')
+          print('grok_telegram_credentials=' + state)
+          print('dedicated_token_value=REDACTED' if token else 'dedicated_token_value=ABSENT')
+          print('chat_ids_value=REDACTED' if chat_ids else 'chat_ids_value=ABSENT')
+          PY
+
+      - name: Install isolated Grok Telegram service
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATE="$(cat /tmp/grok-telegram-credential-state 2>/dev/null || echo UNKNOWN)"
+          SRC=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-telegram.service.example
+          sudo install -m 0644 "$SRC" /etc/systemd/system/grok-known-assets-telegram.service
+          sudo systemctl daemon-reload
+          if [[ "$STATE" == "READY" ]]; then
+            sudo systemctl enable grok-known-assets-telegram.service
+            sudo systemctl restart grok-known-assets-telegram.service
+            sleep 5
+            sudo systemctl is-active --quiet grok-known-assets-telegram.service
+            echo "grok_telegram_receiver=ACTIVE"
+            sudo systemctl show grok-known-assets-telegram.service -p ActiveState -p SubState -p MainPID -p User -p WorkingDirectory --no-pager
+            sudo journalctl -u grok-known-assets-telegram.service --since '2 minutes ago' -n 30 --no-pager \
+              | sed -E 's#[0-9]{6,}:[A-Za-z0-9_-]{20,}#<redacted-token>#g'
+          else
+            sudo systemctl disable --now grok-known-assets-telegram.service 2>/dev/null || true
+            echo "grok_telegram_receiver=WAITING_FOR_DEDICATED_TOKEN"
+            echo "grok_telegram_credential_state=$STATE"
+          fi
+
+      - name: Confirm isolation and real-feed PAPER evidence
         shell: bash
         run: |
           set -euo pipefail
           echo "deployment_scope=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot"
-          echo "production_service_restart=NO"
+          echo "sirisky_service_restart=NO"
+          echo "claude_service_restart=NO"
           echo "live_execution=DISABLED"
           echo "paper_service=grok-known-assets-bot.service"
+          echo "telegram_service=$(sudo systemctl is-active grok-known-assets-telegram.service 2>/dev/null || true)"
+          echo "sirisky_service=$(sudo systemctl is-active sirisky.service 2>/dev/null || true)"
           sudo journalctl -u grok-known-assets-bot.service --since '3 minutes ago' -n 120 --no-pager
           sudo systemctl is-active grok-known-assets-bot.service
+          rm -f /tmp/grok-telegram-credential-state
