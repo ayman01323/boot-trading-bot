@@ -13,9 +13,16 @@ from urllib import error, request
 
 from .control import load_state, save_state
 
-
 API_ROOT = "https://api.telegram.org"
-ALERT_KINDS = ("REJECT", "FEED_REJECT", "DECISION", "OPEN", "CLOSE")
+ALERT_KINDS = (
+    "REJECT",
+    "FEED_REJECT",
+    "DECISION",
+    "LIVE_READY",
+    "LIVE_PREFLIGHT_REJECT",
+    "OPEN",
+    "CLOSE",
+)
 
 
 @dataclass(frozen=True)
@@ -26,8 +33,6 @@ class TelegramSettings:
 
     @classmethod
     def from_env(cls) -> "TelegramSettings":
-        # Deliberately do NOT fall back to TELEGRAM_BOT_TOKEN. Grok must use a
-        # dedicated token so it can never compete with SiRisky/Claude polling.
         token = str(os.environ.get("GROK_TELEGRAM_BOT_TOKEN") or "").strip()
         raw_ids = str(os.environ.get("GROK_TELEGRAM_CHAT_IDS") or "").strip()
         chat_ids = frozenset(x.strip() for x in raw_ids.replace(";", ",").split(",") if x.strip())
@@ -61,7 +66,6 @@ def _api_call(token: str, method: str, payload: dict[str, Any]) -> dict[str, Any
         with request.urlopen(req, timeout=max(20, int(payload.get("timeout") or 0) + 8)) as response:
             data = json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
-        # Never include exc/URL in logs because the Telegram token is embedded in it.
         raise TelegramApiError(getattr(exc, "code", None), method) from None
     except Exception:
         raise TelegramApiError(None, method) from None
@@ -79,8 +83,7 @@ def _send_message(settings: TelegramSettings, chat_id: str, text: str) -> None:
 
 
 def _journal_db_path() -> Path:
-    raw = str(os.environ.get("GROK_JOURNAL_DB") or "state.sqlite3").strip()
-    return Path(raw)
+    return Path(str(os.environ.get("GROK_JOURNAL_DB") or "state.sqlite3").strip())
 
 
 def _latest_event_id(path: Path) -> int:
@@ -158,13 +161,16 @@ def _latest_decision_text(path: Path) -> str:
 def _status_text() -> str:
     state = load_state()
     path = _journal_db_path()
+    readiness = bool(state.get("live_readiness_enabled"))
     return "\n".join(
         [
             "🤖 GROK KNOWN-ASSETS BOT",
-            f"PAPER arm: {'🟢 ARMED' if state.get('armed') else '⚪ OFF'}",
+            f"Arm: {'🟢 ARMED' if state.get('armed') else '⚪ OFF'}",
+            f"Mode: {'🟡 LIVE READINESS' if readiness else 'PAPER ONLY'}",
             f"Persisted PAPER positions: {_position_count(path)}",
             "Market feed: REAL PUBLIC DATA",
-            "Execution: PAPER ONLY",
+            f"Live route preflight: {'🟢 ENABLED' if readiness else '⚪ OFF'}",
+            "Canary target: 0.0005 SOL (hard max 0.001 SOL)",
             "Real-money signing: DISABLED",
             "Transaction broadcast: DISABLED",
             _latest_decision_text(path),
@@ -183,27 +189,46 @@ def handle_command(text: str, chat_id: str) -> str | None:
     command, args = _normalise_command(text)
     if command in {"/start", "/help"}:
         return (
-            "Grok PAPER controls:\n/grokstatus\n/grokarm on CONFIRM\n/grokarm off\n/grokstop\n\n"
-            "Automatic Telegram alerts: PAPER entries, exits/P&L, feed rejects, and strategy/research rejects.\n"
-            "These commands control Grok only. LIVE money execution is not exposed."
+            "Grok controls:\n"
+            "/grokstatus\n"
+            "/grokarm on CONFIRM\n"
+            "/grokarm off\n"
+            "/groklivecheck on CONFIRM\n"
+            "/groklivecheck off\n"
+            "/grokstop\n\n"
+            "LIVE CHECK uses fresh Jupiter entry/reverse/3x-stress quotes and produces a LIVE-READY ticket.\n"
+            "Signing and transaction broadcast are not enabled."
         )
     if command == "/grokstatus":
         return _status_text()
     if command == "/grokstop":
-        save_state(armed=False, updated_by=f"telegram:{chat_id}")
-        return "🛑 GROK PAPER DISARMED. New PAPER entries are blocked."
+        save_state(armed=False, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
+        return "🛑 GROK STOPPED. PAPER entries and LIVE-readiness checks are blocked."
     if command == "/grokarm":
         if len(args) == 1 and args[0].lower() == "off":
-            save_state(armed=False, updated_by=f"telegram:{chat_id}")
+            save_state(armed=False, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
             return "✅ GROK PAPER ARM: OFF."
         if len(args) == 2 and args[0].lower() == "on" and args[1].upper() == "CONFIRM":
-            save_state(armed=True, updated_by=f"telegram:{chat_id}")
+            save_state(armed=True, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
             return (
                 "✅ GROK PAPER ARMED. Grok may open PAPER positions when research and risk gates pass.\n"
                 "📣 Entry/exit/rejection alerts are enabled.\n"
                 "🔒 Real-money signing and transaction broadcast remain disabled."
             )
         return "❌ Use exactly: /grokarm on CONFIRM  or  /grokarm off"
+    if command == "/groklivecheck":
+        if len(args) == 1 and args[0].lower() == "off":
+            save_state(armed=False, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
+            return "✅ GROK LIVE READINESS: OFF."
+        if len(args) == 2 and args[0].lower() == "on" and args[1].upper() == "CONFIRM":
+            save_state(armed=True, live_readiness_enabled=True, updated_by=f"telegram:{chat_id}")
+            return (
+                "🟡 GROK LIVE READINESS ARMED.\n"
+                "Qualified SOL entries will be re-quoted USDC→SOL, full-reverse tested SOL→USDC, and 3x exit-stress checked.\n"
+                "Canary target: 0.0005 SOL; hard maximum: 0.001 SOL.\n"
+                "🔒 Signing: DISABLED. Broadcast: DISABLED."
+            )
+        return "❌ Use exactly: /groklivecheck on CONFIRM  or  /groklivecheck off"
     return None
 
 
@@ -234,7 +259,7 @@ def _event_alert_text(kind: str, asset: str, payload: dict[str, Any]) -> str | N
     if kind == "REJECT":
         confidence = payload.get("research_confidence")
         confidence_text = f"\nResearch confidence: {float(confidence):.3f}" if isinstance(confidence, (int, float)) else ""
-        if reason == "GROK_PAPER_DISARMED":
+        if reason in {"GROK_PAPER_DISARMED", "GROK_READINESS_DISARMED"}:
             return f"⚪ GROK QUALIFIED BUT DISARMED\nAsset: {asset_text}\nReason: {reason}{confidence_text}"
         return f"⛔ GROK REFUSED OPPORTUNITY\nAsset: {asset_text}\nReason: {reason}{confidence_text}"
     if kind == "FEED_REJECT":
@@ -245,6 +270,38 @@ def _event_alert_text(kind: str, asset: str, payload: dict[str, Any]) -> str | N
         confidence = payload.get("research_confidence")
         confidence_text = f"\nResearch confidence: {float(confidence):.3f}" if isinstance(confidence, (int, float)) else ""
         return f"⛔ GROK STRATEGY REFUSED\nAsset: {asset_text}\nReason: {reason}{confidence_text}"
+    if kind == "LIVE_READY":
+        confidence = float(payload.get("research_confidence") or 0.0)
+        spend = float(payload.get("estimated_spend_usdc") or 0.0)
+        sol_out = float(payload.get("quoted_sol_out") or 0.0)
+        reverse = float(payload.get("reverse_recovery_usdc") or 0.0)
+        loss = float(payload.get("roundtrip_loss_pct") or 0.0)
+        entry_impact = float(payload.get("entry_impact_bps") or 0.0)
+        reverse_impact = float(payload.get("reverse_impact_bps") or 0.0)
+        stress_impact = float(payload.get("stress_impact_bps") or 0.0)
+        slippage = int(payload.get("slippage_bps") or 0)
+        expires = int(payload.get("expires_epoch") or 0)
+        return (
+            "🟡 GROK LIVE-READY — PREFLIGHT PASS\n"
+            f"Asset: {asset_text}\n"
+            f"Research confidence: {confidence:.3f}\n"
+            f"USDC→SOL canary: ${spend:.6f} → {sol_out:.9f} SOL\n"
+            f"Full reverse recovery: ${reverse:.6f}\n"
+            f"Estimated round-trip loss: {loss:.3f}%\n"
+            f"Impact bps entry/reverse/3x stress: {entry_impact:.2f} / {reverse_impact:.2f} / {stress_impact:.2f}\n"
+            f"Slippage cap: {slippage} bps\n"
+            f"Ticket expires epoch: {expires}\n"
+            "Signing: DISABLED\nBroadcast: DISABLED"
+        )
+    if kind == "LIVE_PREFLIGHT_REJECT":
+        confidence = float(payload.get("research_confidence") or 0.0)
+        return (
+            "🟠 GROK QUALIFIED — LIVE PREFLIGHT BLOCKED\n"
+            f"Asset: {asset_text}\n"
+            f"Reason: {reason}\n"
+            f"Research confidence: {confidence:.3f}\n"
+            "No signing or broadcast attempted."
+        )
     if kind == "OPEN":
         size = float(payload.get("size_usd") or 0.0)
         price = float(payload.get("entry_price") or 0.0)
@@ -273,7 +330,6 @@ def _mark_alert_sent(kind: str, asset: str, payload: dict[str, Any], sent_at: di
 
 
 def _deliver_alert(settings: TelegramSettings, chat_ids: Iterable[str], text: str) -> tuple[int, int]:
-    """Try each destination independently; one bad chat must never block another."""
     delivered = 0
     failed = 0
     for chat_id in sorted(set(chat_ids)):
@@ -282,11 +338,7 @@ def _deliver_alert(settings: TelegramSettings, chat_ids: Iterable[str], text: st
             delivered += 1
         except TelegramApiError as exc:
             failed += 1
-            print(
-                json.dumps({"status": "ALERT_CHAT_ERROR", "http_status": exc.status, "method": exc.method}, separators=(",", ":")),
-                file=sys.stderr,
-                flush=True,
-            )
+            print(json.dumps({"status": "ALERT_CHAT_ERROR", "http_status": exc.status, "method": exc.method}, separators=(",", ":")), file=sys.stderr, flush=True)
     return delivered, failed
 
 
@@ -309,13 +361,7 @@ def run() -> int:
         repeat_seconds = 300.0
     sent_at: dict[str, float] = {}
     verified_chat_ids: set[str] = set()
-    print(
-        json.dumps(
-            {"status": "STARTED", "receiver": "GROK_DEDICATED_TELEGRAM", "paper_only": True, "decision_alerts": True, "journal_cursor": journal_cursor, "authorised_chat_count": len(settings.chat_ids)},
-            separators=(",", ":"),
-        ),
-        flush=True,
-    )
+    print(json.dumps({"status": "STARTED", "receiver": "GROK_DEDICATED_TELEGRAM", "live_readiness_supported": True, "money_execution": False, "decision_alerts": True, "journal_cursor": journal_cursor, "authorised_chat_count": len(settings.chat_ids)}, separators=(",", ":")), flush=True)
 
     offset = 0
     consecutive_errors = 0
@@ -325,11 +371,7 @@ def run() -> int:
             consecutive_errors = 0
         except TelegramApiError as exc:
             consecutive_errors += 1
-            print(
-                json.dumps({"status": "TELEGRAM_ERROR", "http_status": exc.status, "method": exc.method, "consecutive_errors": consecutive_errors}, separators=(",", ":")),
-                file=sys.stderr,
-                flush=True,
-            )
+            print(json.dumps({"status": "TELEGRAM_ERROR", "http_status": exc.status, "method": exc.method, "consecutive_errors": consecutive_errors}, separators=(",", ":")), file=sys.stderr, flush=True)
             time.sleep(min(30.0, 2.0 * consecutive_errors))
             continue
 
@@ -352,11 +394,7 @@ def run() -> int:
                     _send_message(settings, chat_id, reply)
                     verified_chat_ids.add(chat_id)
                 except TelegramApiError as exc:
-                    print(
-                        json.dumps({"status": "COMMAND_REPLY_ERROR", "http_status": exc.status, "method": exc.method}, separators=(",", ":")),
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    print(json.dumps({"status": "COMMAND_REPLY_ERROR", "http_status": exc.status, "method": exc.method}, separators=(",", ":")), file=sys.stderr, flush=True)
 
         for event_id, _ts, kind, asset, payload in _read_alert_events(journal_path, journal_cursor):
             alert = _event_alert_text(kind, asset, payload)
@@ -370,20 +408,11 @@ def run() -> int:
             targets = verified_chat_ids or set(settings.chat_ids)
             delivered, failed = _deliver_alert(settings, targets, alert)
             if delivered <= 0:
-                # Keep this event pending. Once the user opens/starts the dedicated
-                # bot and a chat becomes reachable, the alert is retried.
-                print(
-                    json.dumps({"status": "ALERT_DELIVERY_FAILED", "event_id": event_id, "kind": kind, "asset": asset, "failed": failed}, separators=(",", ":")),
-                    file=sys.stderr,
-                    flush=True,
-                )
+                print(json.dumps({"status": "ALERT_DELIVERY_FAILED", "event_id": event_id, "kind": kind, "asset": asset, "failed": failed}, separators=(",", ":")), file=sys.stderr, flush=True)
                 break
             journal_cursor = event_id
             _mark_alert_sent(kind, asset, payload, sent_at, now=now)
-            print(
-                json.dumps({"status": "ALERT_SENT", "event_id": event_id, "kind": kind, "asset": asset, "delivered": delivered, "failed": failed}, separators=(",", ":")),
-                flush=True,
-            )
+            print(json.dumps({"status": "ALERT_SENT", "event_id": event_id, "kind": kind, "asset": asset, "delivered": delivered, "failed": failed}, separators=(",", ":")), flush=True)
 
     print('{"status":"STOPPED","receiver":"GROK_DEDICATED_TELEGRAM"}', flush=True)
     return 0

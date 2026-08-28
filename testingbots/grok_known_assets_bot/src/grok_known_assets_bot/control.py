@@ -18,6 +18,7 @@ def default_state() -> dict[str, Any]:
     return {
         "armed": False,
         "mode": "PAPER_ONLY",
+        "live_readiness_enabled": False,
         "live_money_enabled": False,
         "updated_epoch": 0,
         "updated_by": "",
@@ -37,19 +38,29 @@ def load_state(path: Path | None = None) -> dict[str, Any]:
         # Fail closed if the control file is malformed or unreadable.
         return default_state()
 
-    # This isolated bot remains PAPER-only regardless of file contents.
     state["armed"] = bool(state.get("armed", False))
-    state["mode"] = "PAPER_ONLY"
+    state["live_readiness_enabled"] = bool(state.get("live_readiness_enabled", False))
+    state["mode"] = "LIVE_READINESS" if state["live_readiness_enabled"] else "PAPER_ONLY"
+    # Hard boundary: this component never signs or broadcasts money transactions.
     state["live_money_enabled"] = False
     return state
 
 
-def save_state(*, armed: bool, updated_by: str = "", path: Path | None = None) -> dict[str, Any]:
+def save_state(
+    *,
+    armed: bool,
+    live_readiness_enabled: bool | None = None,
+    updated_by: str = "",
+    path: Path | None = None,
+) -> dict[str, Any]:
     target = path or control_path()
     target.parent.mkdir(parents=True, exist_ok=True)
+    previous = load_state(target)
+    readiness = previous.get("live_readiness_enabled", False) if live_readiness_enabled is None else bool(live_readiness_enabled)
     state = {
         "armed": bool(armed),
-        "mode": "PAPER_ONLY",
+        "mode": "LIVE_READINESS" if readiness else "PAPER_ONLY",
+        "live_readiness_enabled": readiness,
         "live_money_enabled": False,
         "updated_epoch": int(time.time()),
         "updated_by": str(updated_by or ""),
@@ -74,3 +85,8 @@ def save_state(*, armed: bool, updated_by: str = "", path: Path | None = None) -
 
 def is_armed(path: Path | None = None) -> bool:
     return bool(load_state(path).get("armed", False))
+
+
+def is_live_readiness_enabled(path: Path | None = None) -> bool:
+    state = load_state(path)
+    return bool(state.get("armed") and state.get("live_readiness_enabled"))
