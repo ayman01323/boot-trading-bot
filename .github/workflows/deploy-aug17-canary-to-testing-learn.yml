@@ -5,243 +5,32 @@ on:
     branches: [fix/solana-aug17-canary-restore]
     paths:
       - '.github/workflows/deploy-aug17-canary-to-testing-learn.yml'
-      - 'learnerbot/telegram_learner_only_menu_patch.py'
-      - 'learnerbot/telegram_learner_identity_patch.py'
-      - 'learnerbot/telegram_learner_position_update_patch.py'
-      - 'learnerbot/telegram_order_usd_patch.py'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# This workflow previously performed a broad rsync into the isolated learner.
+# That is unsafe while LIVE Solana positions exist because unrelated production
+# startup modules can be copied into the Solana-only runtime.  NewPoll45 and other
+# presentation changes use narrowly scoped deploy workflows instead.
 concurrency:
   group: deploy-aug17-canary-testing-learn
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
-  deploy:
+  blocked-broad-deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 2
     steps:
-      - name: Verify isolated Google runner and target
+      - name: Confirm broad deploy is disabled
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = "botgoogle"
-          test "$(id -un)" = "ayman01323"
-          target=/home/ayman01323/BOOT/testingbots/learn
-          test -d "$target"
-          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
-          echo "target=$target"
-          echo "production_service_touched=NO"
-
-      - name: Install restoration branch code without touching wallet or runtime data
-        shell: bash
-        run: |
-          set -euo pipefail
-          target=/home/ayman01323/BOOT/testingbots/learn
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-
-          preserve="$tmp/preserve.sha256"
-          : > "$preserve"
-          for f in \
-            "$target/.env" \
-            "$target/CSVbot/solana_settings.csv" \
-            "$target/CSVbot/auto/solana_user_wallets.csv" \
-            "$target/data/.solana_wallet_store.key" \
-            "$target/private/solana_test_wallet_backup.json"; do
-            if [[ -f "$f" ]]; then sha256sum "$f" >> "$preserve"; fi
-          done
-
-          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore \
-            https://github.com/ayman01323/boot-trading-bot.git "$tmp/repo"
-          source_sha="$(git -C "$tmp/repo" rev-parse HEAD)"
-
-          rsync -a --delete \
-            --exclude='.git/' \
-            --exclude='.github/' \
-            --exclude='.env' \
-            --exclude='CSVbot/' \
-            --exclude='data/' \
-            --exclude='private/' \
-            --exclude='.venv/' \
-            --exclude='.wallet-venv/' \
-            --exclude='KNOWN_GOOD_SNAPSHOT.txt' \
-            --exclude='DEPLOYED_CODE_REF.txt' \
-            "$tmp/repo/" "$target/"
-
-          # These presentation layers must exist ONLY in the isolated Google
-          # learner. Activate them after the final trading-runtime integrity gate
-          # so reporting cannot replace or weaken an audited execution hook.
-          TARGET="$target" python3 - <<'PY'
-          import os
-          from pathlib import Path
-          target = Path(os.environ['TARGET'])
-          p = target/'learnerbot'/'final_runtime_integrity_patch.py'
-          markers = [
-              'from . import telegram_learner_only_menu_patch  # noqa: E402,F401',
-              'from . import telegram_learner_identity_patch  # noqa: E402,F401',
-              'from . import telegram_learner_position_update_patch  # noqa: E402,F401',
-          ]
-          text = p.read_text(encoding='utf-8').rstrip()
-          for marker in markers:
-              if marker not in text:
-                  text += '\n' + marker
-          p.write_text(text + '\n', encoding='utf-8')
-          PY
-
-          cat > "$target/DEPLOYED_CODE_REF.txt" <<EOF
-          purpose=isolated_aug17_strategy_canary
-          source_branch=fix/solana-aug17-canary-restore
-          source_commit=$source_sha
-          historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e
-          target=/home/ayman01323/BOOT/testingbots/learn
-          learner_only_telegram_menu=YES
-          learner_telegram_identity=GOOGLE_TEST_NOT_PRODUCTION
-          learner_position_report=NEWPOLL45
-          learner_position_report_seconds=45
-          solana_safety_exit_monitor_changed=NO
-          production_service_started_or_restarted=NO
-          wallet_runtime_data_preserved=YES
-          EOF
-
-          test -f "$target/learnerbot/solana_aug17_canary_restore_patch.py"
-          test -f "$target/learnerbot/solana_live_executor.py"
-          test -f "$target/learnerbot/solana_live_patch.py"
-          test -f "$target/learnerbot/solana_liquidity_stuck_nonblocking_patch.py"
-          test -f "$target/learnerbot/solana_stuck_liquidity_safe_slice_patch.py"
-          test -f "$target/learnerbot/telegram_learner_only_menu_patch.py"
-          test -f "$target/learnerbot/telegram_learner_identity_patch.py"
-          test -f "$target/learnerbot/telegram_learner_position_update_patch.py"
-          grep -Fq 'from . import telegram_learner_only_menu_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
-          grep -Fq 'from . import telegram_learner_identity_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
-          grep -Fq 'from . import telegram_learner_position_update_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
-
-          (cd "$target" && python3 -m compileall -q learnerbot scripts)
-
-          if [[ -s "$preserve" ]]; then
-            while read -r oldsum oldpath; do
-              newsum="$(sha256sum "$oldpath" | awk '{print $1}')"
-              test "$newsum" = "$oldsum"
-            done < "$preserve"
-          fi
-
-          echo "installed_path=$target"
-          echo "source_commit=$source_sha"
-          echo "historical_strategy_reference=a524c530e19a70f8b303dc9a3e65b3ac9596705e"
-          echo "learner_only_telegram_menu=YES"
-          echo "learner_telegram_identity=GOOGLE_TEST_NOT_PRODUCTION"
-          echo "learner_position_report=NEWPOLL45"
-          echo "learner_position_report_seconds=45"
-          echo "solana_safety_exit_monitor_changed=NO"
-          echo "wallet_runtime_data_preserved=YES"
-          echo "production_service_started_or_restarted=NO"
-          echo "live_execution_started=NO"
-
-      - name: Reload active isolated learner safely
-        shell: bash
-        run: |
-          set -euo pipefail
-          target=/home/ayman01323/BOOT/testingbots/learn
-          service=learnerbot-learn.service
-
-          # Never start a stopped learner merely because presentation code changed.
-          if ! systemctl is-active --quiet "$service"; then
-            echo "learner_service_was_active=NO"
-            echo "learner_service_restart=SKIPPED"
-            exit 0
-          fi
-
-          echo "learner_service_was_active=YES"
-
-          # Do not interrupt a freshly claimed execution attempt. Retry for up to
-          # one minute; if it remains in flight, leave the existing process alone.
-          safe=0
-          for _ in $(seq 1 12); do
-            inflight="$(TARGET="$target" python3 - <<'PY'
-          import os, sqlite3, time
-          from pathlib import Path
-          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
-          if not db.exists():
-              print(0)
-              raise SystemExit
-          try:
-              con=sqlite3.connect(db, timeout=2)
-              exists=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_execution_attempts'").fetchone()
-              if not exists:
-                  print(0)
-              else:
-                  cutoff=int(time.time())-120
-                  n=con.execute(
-                      "SELECT COUNT(*) FROM live_execution_attempts WHERE status='CLAIMED' AND updated_at>=?",
-                      (cutoff,),
-                  ).fetchone()[0]
-                  print(int(n or 0))
-              con.close()
-          except Exception:
-              print(1)
-          PY
-          )"
-            if [[ "$inflight" = "0" ]]; then
-              safe=1
-              break
-            fi
-            echo "fresh_execution_attempt_inflight=$inflight"
-            sleep 5
-          done
-
-          if [[ "$safe" != "1" ]]; then
-            echo "learner_service_restart=DEFERRED_FRESH_EXECUTION_INFLIGHT"
-            exit 0
-          fi
-
-          systemctl restart "$service"
-          sleep 4
-          systemctl is-active --quiet "$service"
-          echo "learner_service_restart=YES_ISOLATED_ONLY"
-          echo "production_service_touched=NO"
-
-          # Verify the new reporter source is installed and the service is running.
-          grep -Fq 'LEARNER POSITION UPDATE — NewPoll45' \
-            "$target/learnerbot/telegram_learner_position_update_patch.py"
-          open_positions="$(TARGET="$target" python3 - <<'PY'
-          import os, sqlite3
-          from pathlib import Path
-          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
-          if not db.exists():
-              print(0)
-              raise SystemExit
-          try:
-              con=sqlite3.connect(db, timeout=2)
-              n=con.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND mode='LIVE'").fetchone()[0]
-              con.close()
-              print(int(n or 0))
-          except Exception:
-              print(0)
-          PY
-          )"
-          echo "open_live_positions_after_restart=$open_positions"
-          echo "newpoll45_first_report_due_after_seconds=45"
-
-      - name: Show installed code identity and public wallet only
-        shell: bash
-        run: |
-          set -euo pipefail
-          target=/home/ayman01323/BOOT/testingbots/learn
-          cat "$target/DEPLOYED_CODE_REF.txt"
-          python3 - <<'PY'
-          import csv
-          from pathlib import Path
-          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/auto/solana_user_wallets.csv')
-          if p.exists():
-              rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
-              for r in rows:
-                  if str(r.get('enabled','true')).lower() in {'1','true','yes','on'}:
-                      print('public_wallet='+str(r.get('address') or ''))
-                      break
-          print('private_key_printed=NO')
-          print('telegram_menu=LEARNER_ONLY')
-          print('telegram_identity=LEARNER_BOT_GOOGLE_TEST_NOT_PRODUCTION')
-          print('telegram_position_report=NEWPOLL45')
-          PY
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          echo 'broad_rsync_deploy=DISABLED'
+          echo 'reason=isolated learner must not receive unrelated production startup modules'
+          echo 'use_scoped_hotfix_deploy=YES'
+          echo 'runtime_files_changed=NO'
+          echo 'production_service_touched=NO'
