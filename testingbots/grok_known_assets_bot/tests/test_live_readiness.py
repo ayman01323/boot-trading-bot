@@ -32,19 +32,19 @@ def test_live_readiness_passes_fresh_entry_reverse_and_stress(monkeypatch):
     def fake_quote(input_mint, output_mint, amount, *, slippage_bps, timeout):
         calls.append((input_mint, output_mint, amount))
         if len(calls) == 1:
-            return {"outAmount": "500000", "priceImpactPct": "0.001", "routePlan": []}
+            return {"outAmount": "9000000", "priceImpactPct": "0.001", "routePlan": []}
         if len(calls) == 2:
-            return {"outAmount": "49000", "priceImpactPct": "0.0015", "routePlan": []}
-        return {"outAmount": "146000", "priceImpactPct": "0.003", "routePlan": []}
+            return {"outAmount": "882000", "priceImpactPct": "0.0015", "routePlan": []}
+        return {"outAmount": "2646000", "priceImpactPct": "0.003", "routePlan": []}
 
     monkeypatch.setattr(live_readiness, "_quote", fake_quote)
     result = live_readiness.assess_live_readiness(_snapshot(), LiveFeedSettings(), now=1000.0)
     assert result.ready is True
     assert result.reason == "LIVE_ROUTE_PREFLIGHT_PASS"
-    assert result.canary_target_sol == 0.0005
-    assert result.estimated_spend_usdc == 0.05
-    assert result.quoted_sol_out == 0.0005
-    assert result.reverse_recovery_usdc == 0.049
+    assert result.entry_target_sol == 0.009
+    assert result.estimated_spend_usdc == 0.9
+    assert result.quoted_sol_out == 0.009
+    assert result.reverse_recovery_usdc == 0.882
     assert result.roundtrip_loss_pct < 3.0
     assert result.signing_enabled is False
     assert result.broadcast_enabled is False
@@ -58,10 +58,10 @@ def test_live_readiness_rejects_excessive_reverse_impact(monkeypatch):
         nonlocal calls
         calls += 1
         if calls == 1:
-            return {"outAmount": "500000", "priceImpactPct": "0.001", "routePlan": []}
+            return {"outAmount": "9000000", "priceImpactPct": "0.001", "routePlan": []}
         if calls == 2:
-            return {"outAmount": "49000", "priceImpactPct": "0.03", "routePlan": []}
-        return {"outAmount": "146000", "priceImpactPct": "0.003", "routePlan": []}
+            return {"outAmount": "882000", "priceImpactPct": "0.03", "routePlan": []}
+        return {"outAmount": "2646000", "priceImpactPct": "0.003", "routePlan": []}
 
     monkeypatch.setattr(live_readiness, "_quote", fake_quote)
     result = live_readiness.assess_live_readiness(_snapshot(), LiveFeedSettings(), now=1000.0)
