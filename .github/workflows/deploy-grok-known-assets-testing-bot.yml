@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           STATE=/tmp/grok-telegram-credential-state
-          rm -f "$STATE"
+          sudo rm -f "$STATE"
           sudo env \
             ACTION_GROK_TELEGRAM_BOT_TOKEN="$ACTION_GROK_TELEGRAM_BOT_TOKEN" \
             ACTION_GROK_TELEGRAM_CHAT_IDS="$ACTION_GROK_TELEGRAM_CHAT_IDS" \
@@ -210,4 +210,4 @@ jobs:
           echo "sirisky_service=$(sudo systemctl is-active sirisky.service 2>/dev/null || true)"
           sudo journalctl -u grok-known-assets-bot.service --since '3 minutes ago' -n 120 --no-pager
           sudo systemctl is-active grok-known-assets-bot.service
-          rm -f /tmp/grok-telegram-credential-state
+          sudo rm -f /tmp/grok-telegram-credential-state || true
