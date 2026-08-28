@@ -1,0 +1,144 @@
+name: Check Google Learner RPC Health
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-google-learner-rpc-health.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-rpc:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - name: Read-only Solana RPC health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo "service=$(systemctl is-active "$service")"
+          echo "pid=$(systemctl show -p MainPID --value "$service")"
+
+          sudo -n TARGET="$target" SERVICE="$service" python3 - <<'PY'
+          import os, re, shlex, json, time
+          from pathlib import Path
+          import urllib.request, urllib.error
+
+          target=Path(os.environ['TARGET'])
+          service=os.environ['SERVICE']
+          env={}
+
+          def add_line(line):
+              line=line.strip()
+              if not line or line.startswith('#') or '=' not in line:
+                  return
+              k,v=line.split('=',1)
+              k=k.strip()
+              if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k):
+                  return
+              v=v.strip()
+              if (len(v)>=2 and v[0]==v[-1] and v[0] in "'\""):
+                  v=v[1:-1]
+              env[k]=v
+
+          # Learner-local env files first. Never print contents.
+          candidates=[target/'.env', target/'learnerbot.env', Path('/var/tmp/ai_council_runtime.env')]
+          for p in candidates:
+              try:
+                  if p.is_file():
+                      for line in p.read_text(errors='ignore').splitlines(): add_line(line)
+              except Exception:
+                  pass
+
+          # Systemd EnvironmentFile entries, if any.
+          try:
+              import subprocess
+              out=subprocess.check_output(['systemctl','show',service,'-p','EnvironmentFiles','--value'], text=True, stderr=subprocess.DEVNULL)
+              for token in shlex.split(out):
+                  if token.startswith('/'):
+                      p=Path(token)
+                      if p.is_file():
+                          try:
+                              for line in p.read_text(errors='ignore').splitlines(): add_line(line)
+                          except Exception: pass
+          except Exception:
+              pass
+
+          def split_urls(v):
+              return [x.strip() for x in re.split(r'[;,\s]+', v or '') if x.strip()]
+          urls=[]
+          def add(u, source):
+              u=(u or '').strip()
+              if u and all(u != x[0] for x in urls): urls.append((u,source))
+          for u in split_urls(env.get('SOLANA_RPC_URLS','')): add(u,'SOLANA_RPC_URLS')
+          for u in split_urls(env.get('SOLANA_RPC_FALLBACK_URLS','')): add(u,'SOLANA_RPC_FALLBACK_URLS')
+          add(env.get('SOLANA_RPC_URL',''),'SOLANA_RPC_URL')
+          add(env.get('HELIUS_RPC_URL',''),'HELIUS_RPC_URL')
+          hk=env.get('HELIUS_API_KEY','').strip()
+          if hk: add('https://mainnet.helius-rpc.com/?api-key='+hk,'HELIUS_API_KEY')
+          add('https://api.mainnet-beta.solana.com','PUBLIC_FALLBACK')
+
+          print('configured_rpc_candidates=', len(urls))
+          if len(urls)==1 and urls[0][1]=='PUBLIC_FALLBACK':
+              print('private_rpc_config_found=NO')
+          else:
+              print('private_rpc_config_found=YES')
+
+          def classify_http(code):
+              if code in (401,403): return 'AUTH_FAILURE'
+              if code==429: return 'RATE_LIMIT'
+              if code>=500: return 'PROVIDER_5XX'
+              return 'HTTP_'+str(code)
+
+          def call(url, method, timeout=8):
+              data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':[]}).encode()
+              req=urllib.request.Request(url, data=data, headers={'Content-Type':'application/json','User-Agent':'BOOT-RPC-DIAG/1.0'})
+              t=time.monotonic()
+              try:
+                  with urllib.request.urlopen(req, timeout=timeout) as r:
+                      code=r.status
+                      body=r.read(65536)
+                  ms=(time.monotonic()-t)*1000
+              except urllib.error.HTTPError as e:
+                  return False, classify_http(e.code), (time.monotonic()-t)*1000, None
+              except Exception as e:
+                  name=type(e).__name__
+                  if 'timeout' in str(e).lower() or name in ('TimeoutError',): name='TIMEOUT'
+                  return False, name, (time.monotonic()-t)*1000, None
+              try:
+                  obj=json.loads(body.decode('utf-8','replace'))
+              except Exception:
+                  return False,'INVALID_JSON',ms,None
+              if not isinstance(obj,dict): return False,'INVALID_ENVELOPE',ms,None
+              if obj.get('error'):
+                  text=str(obj['error']).lower()
+                  status='RPC_ERROR'
+                  if 'rate' in text or '429' in text: status='RATE_LIMIT_RPC'
+                  elif 'behind' in text or 'unhealthy' in text: status='UNHEALTHY_RPC'
+                  return False,status,ms,None
+              return True,'OK',ms,obj.get('result')
+
+          healthy=0
+          for i,(url,source) in enumerate(urls,1):
+              ok1,s1,ms1,res1=call(url,'getHealth')
+              ok2,s2,ms2,res2=call(url,'getSlot')
+              ok=ok1 and ok2 and isinstance(res2,int)
+              if ok: healthy+=1
+              print(f'RPC-{i} source={source} health={s1} slot={s2} latency_health_ms={ms1:.0f} latency_slot_ms={ms2:.0f} overall={"PASS" if ok else "FAIL"}')
+          print('healthy_rpc_count=', healthy)
+          print('rpc_pool_status=', 'HEALTHY' if healthy>=2 else 'DEGRADED' if healthy==1 else 'DOWN')
+          print('urls_or_keys_printed=NO')
+          PY
+
+          echo '=== RECENT RPC ERRORS ==='
+          sudo -n journalctl -u "$service" --since '10 minutes ago' --no-pager -o cat \
+            | grep -Ei 'SolanaRpcEndpointError|all RPC endpoints|HTTP 401|HTTP 403|HTTP 429|rate limit|cooling down|temporarily busy' \
+            | tail -80 || true
+          echo 'trading_action=NONE'
+          echo 'service_restart=NO'
