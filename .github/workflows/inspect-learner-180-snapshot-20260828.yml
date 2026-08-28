@@ -1,4 +1,4 @@
-name: Trace Learner pre-1240 Runtime 20260828
+name: Read Learner pre-1240 Settings 20260828
 
 on:
   push:
@@ -15,75 +15,74 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read-only trace of runtime and config before 12:40 BST
+      - name: Read full historical settings and safe user overrides
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
-          TARGET=/home/ayman01323/BOOT/testingbots/learn
-          test -d "$TARGET"
-          export TARGET
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          HIST="$ROOT/data/transaction_audits/run_20260828_115717/strategy_snapshot/solana_settings.csv"
+          CUR="$ROOT/CSVbot/solana_settings.csv"
+          test -f "$HIST"
+          test -f "$CUR"
+          export ROOT HIST CUR
 
-          echo 'target_time_bst=2026-08-28T12:40:00+01:00'
-          echo 'target_time_utc=2026-08-28T11:40:00Z'
-          echo 'mutation=NO'
-
-          echo '--- SERVICE_EVENTS_1030_1150_UTC ---'
-          sudo -n journalctl -u learnerbot-learn.service \
-            --since '2026-08-28 10:30:00 UTC' --until '2026-08-28 11:50:00 UTC' --no-pager 2>/dev/null \
-            | grep -Ei 'Starting|Started|Stopping|Stopped|Main process exited|Failed|solana-min-settings|solana-profit-first-live|solana-first-day-strategy|solana-leader-quality|sibot-leader-quality-floor|solana-entry-exit-liquidity|solana-preflight-cache|solana-pool-risk|solana-emergency-liquidity|telegram-account|sibot-settings-source|live_trade_sol|signal_age|take_profit|stop=|roundtrip|entry_deterioration' \
-            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
-            | tail -500 || true
-
-          echo '--- CONFIG_FILES_NEAR_TARGET ---'
           python3 - <<'PY'
-          import os, datetime
+          import csv, hashlib, os, datetime
           from pathlib import Path
-          root=Path(os.environ['TARGET'])
+
+          root=Path(os.environ['ROOT']); hist=Path(os.environ['HIST']); cur=Path(os.environ['CUR'])
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+          print('target_bst=2026-08-28T12:40:00+01:00')
+          print('mutation=NO')
+          print('historical_path='+str(hist))
+          print('historical_mtime_utc='+datetime.datetime.fromtimestamp(hist.stat().st_mtime,datetime.timezone.utc).isoformat())
+          print('historical_sha256='+sha(hist))
+          print('current_sha256='+sha(cur))
+          print('same_as_current='+str(sha(hist)==sha(cur)).lower())
+          print('--- HISTORICAL_SOLANA_SETTINGS_ALL_ROWS ---')
+          with hist.open(encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          print('fieldnames='+','.join(rows[0].keys() if rows else []))
+          for r in rows:
+              print('SETTING '+ ' | '.join(f'{k}={v}' for k,v in r.items()))
+
+          print('--- CURRENT_DIFF_FROM_HISTORICAL ---')
+          with cur.open(encoding='utf-8-sig',newline='') as f:
+              crows=list(csv.DictReader(f))
+          h={str(r.get('setting') or ''):str(r.get('value') or '') for r in rows}
+          c={str(r.get('setting') or ''):str(r.get('value') or '') for r in crows}
+          for k in sorted(set(h)|set(c)):
+              if h.get(k)!=c.get(k): print(f'DIFF {k}: historical={h.get(k)} current={c.get(k)}')
+
+          print('--- USER_SETTINGS_FILES_AT_OR_BEFORE_TARGET ---')
           target=datetime.datetime(2026,8,28,11,40,0,tzinfo=datetime.timezone.utc).timestamp()
-          deny=('wallet','secret','token','private','credential','key','telegram','.env')
-          exts={'.csv','.json','.txt','.bak','.old'}
-          hits=[]
-          for base in [root/'CSVbot', root/'data', root]:
-              if not base.exists(): continue
-              for p in base.rglob('*'):
-                  if not p.is_file() or p.suffix.lower() not in exts: continue
-                  rel=str(p.relative_to(root)).lower()
-                  if any(x in rel for x in deny): continue
-                  try: m=p.stat().st_mtime
-                  except Exception: continue
-                  if abs(m-target)<=4*3600:
-                      hits.append((m,p))
-          seen=set()
-          for m,p in sorted(hits):
-              s=str(p)
-              if s in seen: continue
-              seen.add(s)
-              dt=datetime.datetime.fromtimestamp(m,datetime.timezone.utc)
-              print(f'FILE mtime_utc={dt.isoformat()} delta_seconds={int(m-target)} path={p}')
+          deny=('wallet','secret','token','private','credential','api_key','.env')
+          candidates=[]
+          for p in root.rglob('user_trading_settings.csv'):
+              try: m=p.stat().st_mtime
+              except Exception: continue
+              if m<=target:
+                  candidates.append((m,p))
+          for m,p in sorted(candidates, reverse=True)[:30]:
+              print('USERFILE path='+str(p)+' mtime_utc='+datetime.datetime.fromtimestamp(m,datetime.timezone.utc).isoformat())
+              try:
+                  rr=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+              except Exception as exc:
+                  print('READ_ERROR '+type(exc).__name__); continue
+              for r in rr:
+                  setting=str(r.get('setting') or '').strip()
+                  if not setting: continue
+                  if any(x in setting.lower() for x in deny): continue
+                  if setting in {'sibot_settings_source','sibot_enabled','sibot_auto_trade_enabled','solana_live_enabled','learner_new_entries_enabled','solana_live_trade_sol','solana_live_min_reserve_sol','solana_live_min_economic_trade_sol','solana_min_trade_sol'}:
+                      print('USER_SETTING '+' | '.join(f'{k}={v}' for k,v in r.items()))
           PY
 
-          echo '--- CURRENT_RELEVANT_SETTINGS_SAFE ---'
-          python3 - <<'PY'
-          import csv, os
-          from pathlib import Path
-          root=Path(os.environ['TARGET'])
-          for p in [root/'CSVbot'/'solana_settings.csv', root/'CSVbot'/'user_trading_settings.csv', root/'data'/'user_trading_settings.csv']:
-              if not p.exists(): continue
-              print('### '+str(p))
-              try:
-                  rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
-              except Exception as e:
-                  print('READ_ERROR '+type(e).__name__); continue
-              for r in rows:
-                  k=str(r.get('setting') or '').strip()
-                  if not k: continue
-                  if any(x in k.lower() for x in ('wallet','secret','token','private','credential','key','telegram')): continue
-                  if any(x in k.lower() for x in ('solana','signal','profit','loss','slippage','position','leader','sibot','entry','exit','reserve','trade')):
-                      print('ROW '+' | '.join(f'{a}={b}' for a,b in r.items() if a and not any(x in a.lower() for x in ('wallet','secret','token','private','credential','key','telegram'))))
-          PY
+          echo '--- JOURNAL_1135_1145_UTC_GATES ---'
+          sudo -n journalctl -u learnerbot-learn.service --since '2026-08-28 11:35:00 UTC' --until '2026-08-28 11:45:00 UTC' --no-pager 2>/dev/null \
+            | grep -Ei 'solana-live|sibot|auto|armed|entry|buy|setting|signal|leader|position|route-scan|new.entries' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' | tail -350 || true
 
           echo inspection_complete=true
           echo settings_mutated=NO
-          echo service_restarted=NO
