@@ -1,0 +1,65 @@
+name: Learner Telegram Menu Hotfix 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/learner-telegram-menu-hotfix-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hotfix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Add direct Min SOL Trade button to isolated Learner menu
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          file="$target/learnerbot/telegram_user_menu_compact_patch.py"
+          test -f "$file"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$target/private/pre-min-sol-menu-$stamp"
+          sudo -n mkdir -p "$backup"
+          sudo -n cp -a "$file" "$backup/"
+          TARGET_FILE="$file" sudo -n -E python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          p = Path(os.environ["TARGET_FILE"])
+          text = p.read_text(encoding="utf-8")
+
+          user_marker = '"callback_data": "sibot:solana:mintrade"'
+          if user_marker not in text:
+              needle = '''    [\n        {"text": "🔐 Wallets", "callback_data": "menu:wallet"},\n        {"text": "💱 Trading", "callback_data": "menu:trading"},\n    ],\n'''
+              insert = needle + '''    [\n        {"text": "📏 Min SOL Trade", "callback_data": "sibot:solana:mintrade"},\n    ],\n'''
+              if needle not in text:
+                  raise SystemExit("compact USER menu insertion point not found")
+              text = text.replace(needle, insert, 1)
+
+          master_marker = '# Direct Solana minimum-trade shortcut for MASTER menu.'
+          if master_marker not in text:
+              needle = '''    rows = list(kb.get("inline_keyboard") or [])\n    return {"inline_keyboard": _insert_reports_button(rows)}\n'''
+              insert = '''    rows = list(kb.get("inline_keyboard") or [])\n    # Direct Solana minimum-trade shortcut for MASTER menu.\n    if not any(any(b.get("callback_data") == "sibot:solana:mintrade" for b in row) for row in rows):\n        insert_at = len(rows)\n        for i, row in enumerate(rows):\n            if any(b.get("callback_data") in {"menu:status", "menu:help"} for b in row):\n                insert_at = i\n                break\n        rows.insert(insert_at, [{"text": "📏 Min SOL Trade", "callback_data": "sibot:solana:mintrade"}])\n    return {"inline_keyboard": _insert_reports_button(rows)}\n'''
+              if needle not in text:
+                  raise SystemExit("MASTER menu insertion point not found")
+              text = text.replace(needle, insert, 1)
+
+          p.write_text(text, encoding="utf-8")
+          PY
+          python3 -m py_compile "$file"
+          grep -q '📏 Min SOL Trade' "$file"
+          grep -q 'sibot:solana:mintrade' "$file"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 8
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          echo learner_only=true
+          echo direct_min_sol_menu=installed
+          echo service=active
+          echo '--- telegram update transport markers ---'
+          grep -nE 'get_updates|outbound|start_menu_thread' "$target/learnerbot/telegram_ui.py" | tail -30 || true
