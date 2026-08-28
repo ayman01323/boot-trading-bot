@@ -24,11 +24,11 @@ jobs:
           backup="$target/private/pre-five-transaction-profile-20260828T213034Z"
           test -f "$backup/solana_settings.csv"
           test -f "$backup/user_trading_settings.csv"
-          cp -a "$backup/solana_settings.csv" "$target/CSVbot/solana_settings.csv"
-          cp -a "$backup/user_trading_settings.csv" "$target/CSVbot/user_trading_settings.csv"
+          sudo -n cp -a "$backup/solana_settings.csv" "$target/CSVbot/solana_settings.csv"
+          sudo -n cp -a "$backup/user_trading_settings.csv" "$target/CSVbot/user_trading_settings.csv"
           sudo -n systemctl restart learnerbot-learn.service
           sleep 8
           test "$(systemctl is-active learnerbot-learn.service)" = active
-          cmp -s "$backup/solana_settings.csv" "$target/CSVbot/solana_settings.csv"
-          cmp -s "$backup/user_trading_settings.csv" "$target/CSVbot/user_trading_settings.csv"
+          sudo -n cmp -s "$backup/solana_settings.csv" "$target/CSVbot/solana_settings.csv"
+          sudo -n cmp -s "$backup/user_trading_settings.csv" "$target/CSVbot/user_trading_settings.csv"
           echo learner_restore=VERIFIED
