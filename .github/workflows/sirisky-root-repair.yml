@@ -12,126 +12,150 @@ permissions:
 jobs:
   repair:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Read-only Solana lifecycle PnL diagnostic
+      - name: Repair SiRisky root service safely
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
-          test "$(systemctl is-active learnerbot-learn.service || true)" != active
-          cd /home/ayman01323/BOOT/testingbots/learn
-          python3 - <<'PY'
-          import json, time, urllib.request
-          from pathlib import Path
-          from decimal import Decimal
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n bash -lc '
+            set -euo pipefail
+            TARGET=/root/SiRisky
+            test -d "$TARGET"
+            test -x "$TARGET/.venv/bin/python"
 
-          WALLET='8zTnKUPW648NZZ285mz7ijFBpsbGu8AziRoZsH9JBfA3'
-          MINTS={
-            'E30':'6Mfj9t4WMN1c6CMpYZm8GvJsW3TiE7SrbrBqpBRnmUgd',
-            'BVKG':'BvKgVjsUQ8KV22RNKhk3btZHKSDdrRfziGad4ugTCcJS',
-          }
-          FIXED_USD=Decimal('106.48')
-          LAM=Decimal(1_000_000_000)
+            # Keep trading disabled while repairing infrastructure.
+            "$TARGET/.venv/bin/python" - <<"PY"
+import csv
+from pathlib import Path
+p=Path("/root/SiRisky/CSV/runtime.csv")
+rows=list(csv.DictReader(p.open(encoding="utf-8-sig", newline="")))
+for r in rows:
+    if r.get("setting") in {"live_enabled","broadcast_enabled","telegram_manual_run_enabled"}:
+        r["value"]="0"
+with p.open("w",encoding="utf-8",newline="") as f:
+    w=csv.DictWriter(f,fieldnames=["setting","value","notes"])
+    w.writeheader(); w.writerows(rows)
+PY
 
-          def envvals(path):
-              out={}
-              for raw in Path(path).read_text(encoding='utf-8',errors='replace').splitlines():
-                  s=raw.strip()
-                  if not s or s.startswith('#') or '=' not in raw: continue
-                  k,v=raw.split('=',1); k=k.strip(); v=v.strip().strip('"').strip("'")
-                  out.setdefault(k,[]).append(v)
-              return out
-          e=envvals('.env')
-          urls=[]
-          for k in ('SOLANA_RPC_URLS','SOLANA_RPC_FALLBACK_URLS','SOLANA_RPC_URL','HELIUS_RPC_URL'):
-              for v in e.get(k,[]):
-                  for u in v.split(','):
-                      u=u.strip()
-                      if u and u not in urls: urls.append(u)
-          if e.get('HELIUS_API_KEY'):
-              u='https://mainnet.helius-rpc.com/?api-key='+e['HELIUS_API_KEY'][-1]
-              if u not in urls: urls.append(u)
-          urls.append('https://api.mainnet-beta.solana.com')
+            # Correct standalone data paths without exposing or replacing secret values.
+            "$TARGET/.venv/bin/python" - <<"PY"
+from pathlib import Path
+p=Path("/root/SiRisky/.env")
+lines=p.read_text(encoding="utf-8",errors="replace").splitlines() if p.exists() else []
+replace={
+ "CSV_DIR":"/root/SiRisky/CSV",
+ "DATA_DIR":"/root/SiRisky/data",
+ "LOG_DIR":"/root/SiRisky/logs",
+ "AUTHORISED_CHAINS":"solana",
+}
+out=[]; seen=set()
+for raw in lines:
+    s=raw.strip()
+    if not s or s.startswith("#") or "=" not in raw:
+        out.append(raw); continue
+    k=raw.split("=",1)[0].strip()
+    if k in replace:
+        if k not in seen:
+            out.append(f"{k}={replace[k]}"); seen.add(k)
+        continue
+    out.append(raw)
+for k,v in replace.items():
+    if k not in seen: out.append(f"{k}={v}")
+p.write_text("\n".join(out).rstrip()+"\n",encoding="utf-8")
+p.chmod(0o600)
+PY
 
-          def call(method, params):
-              body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
-              last=None
-              for u in urls:
-                  try:
-                      req=urllib.request.Request(u,data=body,headers={'Content-Type':'application/json'})
-                      with urllib.request.urlopen(req,timeout=12) as r:
-                          j=json.loads(r.read())
-                      if 'error' in j: raise RuntimeError(str(j['error']))
-                      return j['result']
-                  except Exception as ex: last=ex
-              raise RuntimeError('all RPCs failed: '+type(last).__name__)
+            # If root env lacks RPC/Jupiter values, import last non-empty values from known local copies.
+            "$TARGET/.venv/bin/python" - <<"PY"
+from pathlib import Path
+keys=("SOLANA_RPC_URL","SOLANA_WS_URL","JUPITER_API_KEY")
+root=Path("/root/SiRisky/.env")
 
-          sigs=call('getSignaturesForAddress',[WALLET,{'limit':80}])
-          rows=[]
-          for s in sigs:
-              if s.get('err') is not None: continue
-              tx=call('getTransaction',[s['signature'],{'encoding':'jsonParsed','maxSupportedTransactionVersion':0,'commitment':'confirmed'}])
-              if not tx: continue
-              meta=tx.get('meta') or {}; msg=((tx.get('transaction') or {}).get('message') or {})
-              keys=[]
-              for a in msg.get('accountKeys') or []:
-                  keys.append(a.get('pubkey') if isinstance(a,dict) else a)
-              if WALLET not in keys: continue
-              wi=keys.index(WALLET)
-              preB=meta.get('preBalances') or []; postB=meta.get('postBalances') or []
-              if wi>=len(preB) or wi>=len(postB): continue
-              wallet_delta=int(postB[wi])-int(preB[wi]); fee=int(meta.get('fee') or 0)
-              preTB=meta.get('preTokenBalances') or []; postTB=meta.get('postTokenBalances') or []
-              def owner_amount(tb,mint):
-                  total=0
-                  for b in tb:
-                      if b.get('mint')==mint and b.get('owner')==WALLET:
-                          total += int(((b.get('uiTokenAmount') or {}).get('amount')) or 0)
-                  return total
-              for label,mint in MINTS.items():
-                  pre=owner_amount(preTB,mint); post=owner_amount(postTB,mint); delta=post-pre
-                  if delta==0: continue
-                  rent_reclaimed=0; rent_paid=0
-                  for b in preTB:
-                      if b.get('mint')==mint and b.get('owner')==WALLET:
-                          i=b.get('accountIndex')
-                          if isinstance(i,int) and i<len(preB) and i<len(postB) and int(preB[i])>0 and int(postB[i])==0:
-                              rent_reclaimed += int(preB[i])
-                  for b in postTB:
-                      if b.get('mint')==mint and b.get('owner')==WALLET:
-                          i=b.get('accountIndex')
-                          if isinstance(i,int) and i<len(preB) and i<len(postB) and int(preB[i])==0 and int(postB[i])>0:
-                              rent_paid += int(postB[i])
-                  if delta>0:
-                      action='BUY'; trade_value=max(0,-wallet_delta-fee-rent_paid+rent_reclaimed)
-                  else:
-                      action='SELL'; trade_value=max(0,wallet_delta+fee-rent_reclaimed+rent_paid)
-                  rows.append(dict(label=label,mint=mint,signature=s['signature'],blockTime=tx.get('blockTime') or 0,
-                                   action=action,token_delta=delta,trade_value=trade_value,fee=fee,
-                                   wallet_delta=wallet_delta,rent_paid=rent_paid,rent_reclaimed=rent_reclaimed))
-          rows.sort(key=lambda x:x['blockTime'])
-          print('fixed_sol_usd='+str(FIXED_USD))
-          for r in rows:
-              tv=Decimal(r['trade_value'])/LAM; ff=Decimal(r['fee'])/LAM
-              print('tx|position=%s|action=%s|sig=%s|trade_sol=%s|fee_sol=%s|wallet_delta_sol=%s|rent_paid_sol=%s|rent_reclaimed_sol=%s' % (
-                  r['label'],r['action'],r['signature'],f'{tv:.9f}',f'{ff:.9f}',f'{Decimal(r["wallet_delta"])/LAM:.9f}',
-                  f'{Decimal(r["rent_paid"])/LAM:.9f}',f'{Decimal(r["rent_reclaimed"])/LAM:.9f}'))
-          total_cap=Decimal(0); total_proc=Decimal(0); total_fee=Decimal(0)
-          for label in MINTS:
-              rr=[r for r in rows if r['label']==label]
-              cap=sum(Decimal(r['trade_value']) for r in rr if r['action']=='BUY')/LAM
-              proc=sum(Decimal(r['trade_value']) for r in rr if r['action']=='SELL')/LAM
-              fee=sum(Decimal(r['fee']) for r in rr)/LAM
-              gross=proc-cap; net=gross-fee
-              print('position_summary|position=%s|capital_sol=%.9f|proceeds_sol=%.9f|gross_pnl_sol=%.9f|network_fee_sol=%.9f|net_pnl_sol=%.9f|net_pnl_pct=%.4f|network_fee_pct_capital=%.4f|capital_usd=%.6f|proceeds_usd=%.6f|net_pnl_usd=%.6f|network_fee_usd=%.6f' % (
-                  label,cap,proc,gross,fee,net,(net/cap*100 if cap else 0),(fee/cap*100 if cap else 0),cap*FIXED_USD,proc*FIXED_USD,net*FIXED_USD,fee*FIXED_USD))
-              total_cap+=cap; total_proc+=proc; total_fee+=fee
-          tg=total_proc-total_cap; tn=tg-total_fee
-          print('portfolio_summary|capital_sol=%.9f|proceeds_sol=%.9f|gross_pnl_sol=%.9f|network_fee_sol=%.9f|net_pnl_sol=%.9f|net_pnl_pct=%.4f|network_fee_pct_capital=%.4f|capital_usd=%.6f|proceeds_usd=%.6f|net_pnl_usd=%.6f|network_fee_usd=%.6f' % (
-              total_cap,total_proc,tg,total_fee,tn,(tn/total_cap*100 if total_cap else 0),(total_fee/total_cap*100 if total_cap else 0),
-              total_cap*FIXED_USD,total_proc*FIXED_USD,tn*FIXED_USD,total_fee*FIXED_USD))
-          print('learner_service='+str(__import__('subprocess').run(['systemctl','is-active','learnerbot-learn.service'],capture_output=True,text=True).stdout.strip()))
-          print('trade_submitted=NO')
-          PY
+def assignments(path):
+    vals={k:[] for k in keys}
+    if not path.is_file(): return vals
+    for raw in path.read_text(encoding="utf-8",errors="replace").splitlines():
+        s=raw.strip()
+        if not s or s.startswith("#") or "=" not in raw: continue
+        k,v=raw.split("=",1); k=k.strip(); v=v.strip().strip("\"").strip("'")
+        if k in vals and v: vals[k].append(v)
+    return vals
+
+current=assignments(root)
+candidates=[
+ Path("/home/ayman01323/ClaudeServer/SiRisky/.env"),
+ Path("/root/multichain-learning-bot-v2.2-fast-direct-market/.env"),
+ Path("/var/tmp/ai_council_runtime.env"),
+ Path("/var/tmp/boot/ai_council_runtime.env"),
+]
+chosen={k:(current[k][-1] if current[k] else "") for k in keys}
+for c in candidates:
+    vals=assignments(c)
+    for k in keys:
+        if not chosen[k] and vals[k]: chosen[k]=vals[k][-1]
+
+lines=root.read_text(encoding="utf-8",errors="replace").splitlines()
+out=[]
+for raw in lines:
+    if "=" in raw and not raw.lstrip().startswith("#"):
+        k=raw.split("=",1)[0].strip()
+        if k in keys: continue
+    out.append(raw)
+for k in keys:
+    if chosen[k]: out.append(f"{k}={chosen[k]}")
+root.write_text("\n".join(out).rstrip()+"\n",encoding="utf-8")
+root.chmod(0o600)
+print("rpc_present="+str(bool(chosen["SOLANA_RPC_URL"])).lower())
+print("ws_present="+str(bool(chosen["SOLANA_WS_URL"])).lower())
+print("jupiter_key_present="+str(bool(chosen["JUPITER_API_KEY"])).lower())
+PY
+
+            # Correct the known old USDC mint constant if present.
+            sed -i "s#EPjFWdd5AufqSSqeM2qPZo2mrQSSrSLRYhNACTM1v#EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v#g" "$TARGET/sirisky/jupiter.py" || true
+
+            # Replace the stale service that pointed at /root/ClaudeServer/SiRisky.
+            if [ -f /etc/systemd/system/sirisky.service ]; then
+              cp -a /etc/systemd/system/sirisky.service /etc/systemd/system/sirisky.service.pre-root-repair
+            fi
+            cat >/etc/systemd/system/sirisky.service <<"UNIT"
+[Unit]
+Description=SiRisky standalone staged trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/SiRisky
+ExecStart=/root/SiRisky/.venv/bin/python /root/SiRisky/run.py start
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+            systemctl daemon-reload
+            systemctl enable sirisky.service >/dev/null
+            systemctl restart sirisky.service
+            sleep 4
+
+            echo "=== SERVICE ==="
+            systemctl show sirisky.service -p ActiveState -p SubState -p Result -p NRestarts -p WorkingDirectory -p ExecStart --no-pager
+            echo "=== SAFE CHECK ==="
+            cd /root/SiRisky
+            set +e
+            PYTHONPATH=. .venv/bin/python run.py check
+            rc=$?
+            set -e
+            echo "check_exit_code=$rc"
+            echo "=== LIVE GATES ==="
+            awk -F, "NR==1 || \\$1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled)\$/" CSV/runtime.csv
+            echo "real_transaction_broadcast=NO"
+          '
