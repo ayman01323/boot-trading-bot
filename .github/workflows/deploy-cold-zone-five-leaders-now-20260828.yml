@@ -1,4 +1,4 @@
-name: Deploy SiRisky Telegram Reporting Google Only
+name: Finalize SiRisky Telegram Reporting Google Only
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Deploy BUY SELL and NewPoll45 Telegram reporting on botgoogle
+      - name: Finalize BUY SELL and NewPoll45 Telegram reporting on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,7 +24,7 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/1033eebfcd33d75abee2a3db8d22faa6c92d2589/scripts/sirisky_google_jupiter_governor_apply.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/721fc8c7b09f6e0a60054940bcd449755c70b439/scripts/sirisky_google_telegram_finalize.sh \
             -o "$tmp"
-          grep -q 'DEPLOY SIRISKY TELEGRAM POSITION REPORTER' "$tmp"
+          grep -q 'FINALIZE SIRISKY TELEGRAM POSITION REPORTER' "$tmp"
           bash "$tmp"
