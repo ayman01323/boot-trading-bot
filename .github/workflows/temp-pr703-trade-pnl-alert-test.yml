@@ -1,0 +1,30 @@
+name: Temporary PR703 Trade PnL Alert Test
+
+on:
+  push:
+    branches:
+      - fix/rejected-telegram-pool-value-20260828
+    paths:
+      - '.github/workflows/temp-pr703-trade-pnl-alert-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/rejected-telegram-pool-value-20260828
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install focused dependencies
+        run: python -m pip install --disable-pip-version-check -q pytest
+      - name: Compile accounting and alert modules
+        run: python -m py_compile learnerbot/trade_pnl_accounting.py learnerbot/sibot1_trade_pnl_alert_patch.py learnerbot/sibot1_solana_poolcheck_dex_link_patch.py tests/test_trade_pnl_accounting.py
+      - name: Run trade PnL accounting tests
+        run: pytest -q tests/test_trade_pnl_accounting.py
