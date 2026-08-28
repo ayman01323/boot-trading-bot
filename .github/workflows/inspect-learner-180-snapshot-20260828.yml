@@ -1,4 +1,4 @@
-name: Inspect Learner 0040 Snapshot 20260828
+name: Inspect Learner 1240 Snapshot 20260828
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read-only recovery of settings nearest 00:40 BST
+      - name: Read-only recovery of settings nearest 12:40 BST
         shell: bash
         run: |
           set -euo pipefail
@@ -26,53 +26,98 @@ jobs:
           export TARGET
 
           python3 - <<'PY'
-          import csv, os, datetime
+          import csv, os, re
           from pathlib import Path
+          from datetime import datetime, timezone
+
           root=Path(os.environ['TARGET'])
-          target_epoch=int(datetime.datetime(2026,8,27,23,40,0,tzinfo=datetime.timezone.utc).timestamp())
-          print('target_time_bst=2026-08-28T00:40:00+01:00')
-          print('target_time_utc=2026-08-27T23:40:00Z')
+          target=datetime(2026,8,28,11,40,0,tzinfo=timezone.utc)
+          print('target_time_bst=2026-08-28T12:40:00+01:00')
+          print('target_time_utc=2026-08-28T11:40:00Z')
           print('mutation=NO')
-          names={'solana_settings.csv','user_trading_settings.csv'}
-          files=[]
-          for p in root.rglob('*'):
-              if p.is_file() and p.name in names:
-                  try: files.append((int(p.stat().st_mtime),p))
-                  except Exception: pass
-          for name in ('solana_settings.csv','user_trading_settings.csv'):
-              prior=[(m,p) for m,p in files if p.name==name and m<=target_epoch]
-              print(f'--- {name} ---')
-              if not prior:
-                  print('selected=NONE_BEFORE_TARGET')
-                  continue
-              m,p=max(prior,key=lambda x:x[0])
-              print('selected_path='+str(p))
-              print('mtime_epoch='+str(m))
-              print('seconds_before_target='+str(target_epoch-m))
-              with p.open(encoding='utf-8-sig',newline='') as f:
-                  rows=list(csv.DictReader(f))
-              if name=='solana_settings.csv':
-                  for r in rows:
-                      k=str(r.get('setting') or '').strip(); v=str(r.get('value') or '').strip(); d=str(r.get('description') or '').strip()
-                      if k: print(f'SETTING {k}={v} | {d}')
-              else:
-                  allowed={'sibot_settings_source','sibot_enabled','sibot_auto_trade_enabled','solana_live_enabled','learner_new_entries_enabled','solana_live_trade_sol','solana_live_min_reserve_sol','solana_live_max_positions','solana_min_trade_sol'}
-                  for r in rows:
-                      k=str(r.get('setting') or '').strip()
-                      if k not in allowed: continue
-                      chain=str(r.get('chain_id') or '').strip(); v=str(r.get('value') or '').strip(); d=str(r.get('description') or '').strip()
-                      print(f'USER_SETTING chain={chain} {k}={v} | {d}')
-          print('--- SNAPSHOT_TIMELINE_PLUS_MINUS_6H ---')
-          for m,p in sorted((m,p) for m,p in files if abs(m-target_epoch)<=21600):
-              print(f'SNAPSHOT path={p} mtime_epoch={m} delta_seconds={m-target_epoch}')
+
+          audit=root/'data'/'transaction_audits'
+          candidates=[]
+          if audit.exists():
+              for d in audit.glob('run_20260828_*'):
+                  m=re.fullmatch(r'run_(\d{8})_(\d{6})', d.name)
+                  if not m or not d.is_dir():
+                      continue
+                  try:
+                      ts=datetime.strptime(m.group(1)+m.group(2),'%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+                  except Exception:
+                      continue
+                  snap=d/'strategy_snapshot'
+                  if ts<=target and snap.is_dir():
+                      candidates.append((ts,d,snap))
+          print('eligible_strategy_snapshots='+str(len(candidates)))
+          if not candidates:
+              print('selected_snapshot=NONE')
+          else:
+              ts,d,snap=max(candidates,key=lambda x:x[0])
+              print('selected_snapshot='+str(snap))
+              print('selected_run_utc='+ts.isoformat())
+              print('seconds_before_target='+str(int((target-ts).total_seconds())))
+              print('--- SNAPSHOT_FILES ---')
+              for p in sorted(snap.iterdir()):
+                  if p.is_file():
+                      print('FILE '+p.name+' size='+str(p.stat().st_size))
+              print('--- SAFE_SETTINGS_CONTENT ---')
+              deny=('wallet','secret','token','private','credential','key','telegram','.env')
+              for p in sorted(snap.iterdir()):
+                  if not p.is_file() or any(x in p.name.lower() for x in deny):
+                      continue
+                  if p.suffix.lower() not in {'.csv','.json','.txt'}:
+                      continue
+                  print('### '+p.name)
+                  try:
+                      text=p.read_text(encoding='utf-8-sig',errors='replace')
+                  except Exception as exc:
+                      print('READ_ERROR '+type(exc).__name__)
+                      continue
+                  if p.suffix.lower()=='.csv':
+                      try:
+                          rows=list(csv.DictReader(text.splitlines()))
+                      except Exception:
+                          rows=[]
+                      if rows:
+                          fields=[f for f in (rows[0].keys() if rows else []) if f]
+                          print('FIELDS '+','.join(fields))
+                          for r in rows:
+                              safe=[]
+                              for k,v in r.items():
+                                  kl=(k or '').lower()
+                                  if any(x in kl for x in deny):
+                                      continue
+                                  safe.append(f'{k}={v}')
+                              print('ROW '+' | '.join(safe))
+                          continue
+                  for line in text.splitlines()[:300]:
+                      low=line.lower()
+                      if any(x in low for x in deny):
+                          continue
+                      print(line[:1000])
+
+          print('--- RUNS_AROUND_TARGET ---')
+          around=[]
+          if audit.exists():
+              for d in audit.glob('run_20260828_*'):
+                  m=re.fullmatch(r'run_(\d{8})_(\d{6})', d.name)
+                  if not m: continue
+                  try: ts=datetime.strptime(m.group(1)+m.group(2),'%Y%m%d%H%M%S').replace(tzinfo=timezone.utc)
+                  except Exception: continue
+                  if abs((ts-target).total_seconds())<=3600:
+                      around.append((ts,d))
+          for ts,d in sorted(around):
+              print('RUN '+d.name+' delta_seconds='+str(int((ts-target).total_seconds())))
           PY
 
-          echo '--- JOURNAL_0030_TO_0050_BST ---'
+          echo '--- JOURNAL_1230_TO_1250_BST ---'
           sudo -n journalctl -u learnerbot-learn.service \
-            --since '2026-08-27 23:30:00 UTC' --until '2026-08-27 23:50:00 UTC' --no-pager 2>/dev/null \
-            | grep -Ei 'signal|setting|live|entry|trade|leader|position|armed|enabled|disabled|cold.zone' \
+            --since '2026-08-28 11:30:00 UTC' --until '2026-08-28 11:50:00 UTC' --no-pager 2>/dev/null \
+            | grep -Ei 'signal|setting|live|entry|trade|leader|position|armed|enabled|disabled|cold.zone|max_signal|risk|slippage|profit|loss' \
             | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
-            | tail -250 || true
+            | tail -350 || true
 
           echo inspection_complete=true
           echo settings_mutated=NO
