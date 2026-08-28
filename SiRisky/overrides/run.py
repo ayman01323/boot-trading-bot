@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -18,6 +20,9 @@ from sirisky.position_telegram import PositionTelegramReporter
 from sirisky.rpc import rpc_call
 from sirisky.telegram import TelegramClient
 from sirisky.wallet import WalletStore
+
+
+GROK_CONTROL_DEFAULT=Path("/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/grok_control.json")
 
 
 def status_line(ok,name,detail=""):
@@ -82,12 +87,74 @@ def _pending_text(engine, settings):
     return "\n\n".join(gate.format_for_user(r) for r in rows[:3])[:3500]
 
 
+def _grok_control_path():
+    return Path(os.environ.get("GROK_CONTROL_FILE",str(GROK_CONTROL_DEFAULT))).expanduser()
+
+
+def _grok_default_state():
+    return {"armed":False,"mode":"PAPER_ONLY","live_money_enabled":False,"updated_epoch":0,"updated_by":""}
+
+
+def _grok_load_state():
+    state=_grok_default_state()
+    try:
+        raw=json.loads(_grok_control_path().read_text(encoding="utf-8"))
+        if isinstance(raw,dict): state.update(raw)
+    except FileNotFoundError: pass
+    except Exception: return _grok_default_state()
+    state["armed"]=bool(state.get("armed",False)); state["mode"]="PAPER_ONLY"; state["live_money_enabled"]=False
+    return state
+
+
+def _grok_save_state(armed,chat):
+    target=_grok_control_path(); target.parent.mkdir(parents=True,exist_ok=True)
+    state={"armed":bool(armed),"mode":"PAPER_ONLY","live_money_enabled":False,"updated_epoch":int(time.time()),"updated_by":str(chat or "")}
+    fd,tmp=tempfile.mkstemp(prefix=target.name+".",suffix=".tmp",dir=str(target.parent))
+    try:
+        with os.fdopen(fd,"w",encoding="utf-8") as handle:
+            json.dump(state,handle,sort_keys=True,separators=(",",":")); handle.write("\n"); handle.flush(); os.fsync(handle.fileno())
+        os.chmod(tmp,0o644); os.replace(tmp,target)
+    finally:
+        try:
+            if os.path.exists(tmp): os.unlink(tmp)
+        except OSError: pass
+    return state
+
+
+def _grok_status_text():
+    state=_grok_load_state()
+    return "\n".join([
+        "🤖 GROK KNOWN-ASSETS BOT — STATUS",
+        f"PAPER arm: {'ARMED' if state.get('armed') else 'OFF'}",
+        "Market feed: REAL PUBLIC DATA",
+        "Execution mode: PAPER ONLY",
+        "Real-money signing: DISABLED",
+        "Transaction broadcast: DISABLED",
+    ])
+
+
+def _grok_command(cmd,chat):
+    parts=str(cmd or "").strip().split(); command=parts[0].lower().split("@",1)[0] if parts else ""; args=parts[1:]
+    if command=="/grokstatus": return _grok_status_text()
+    if command=="/grokstop":
+        _grok_save_state(False,chat); return "🛑 GROK PAPER DISARMED. New PAPER entries are blocked. Real-money execution remains disabled."
+    if command=="/grokarm" and len(args)==1 and args[0].lower()=="off":
+        _grok_save_state(False,chat); return "✅ GROK PAPER ARM: OFF. Real-money execution remains disabled."
+    if command=="/grokarm" and len(args)==2 and args[0].lower()=="on" and args[1].upper()=="CONFIRM":
+        _grok_save_state(True,chat); return "✅ GROK PAPER ARMED. Grok may open PAPER positions when its research and risk gates pass.\n🔒 LIVE MONEY remains disabled: no signing and no transaction broadcast."
+    if command=="/grokarm": return "❌ Use exactly: /grokarm on CONFIRM  or  /grokarm off"
+    return None
+
+
 def telegram_handler(engine, settings, cmd, chat):
-    if cmd=="/status":
+    grok=_grok_command(cmd,chat)
+    if grok is not None: return grok
+    command=str(cmd or "").strip().split()[0].lower().split("@",1)[0] if str(cmd or "").strip() else ""
+    if command=="/status":
         return f"SiRisky status\nOpen positions: {len(engine.open_positions())}\nPending approvals: {len(engine.pending_approvals())}\nLIVE: {settings.runtime().get('live_enabled','0')}\nBroadcast: {settings.runtime().get('broadcast_enabled','0')}\nManual approval: {settings.runtime().get('manual_approval_enabled','0')}"
-    if cmd=="/pending": return _pending_text(engine,settings)
-    if cmd=="/check": return "Run server-side: python run.py check (safe, no broadcast)."
-    if cmd=="/runone":
+    if command=="/pending": return _pending_text(engine,settings)
+    if command=="/check": return "Run server-side: python run.py check (safe, no broadcast)."
+    if command=="/runone":
         if not as_bool(settings.runtime().get("telegram_manual_run_enabled"),False): return "SiRisky /runone is disabled in CSV."
         try:return json.dumps(engine.run_once(),default=str)[:3500]
         except Exception as exc:return f"SiRisky cycle failed: {type(exc).__name__}"
