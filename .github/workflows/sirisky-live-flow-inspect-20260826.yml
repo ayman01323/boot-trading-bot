@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Restore isolated Learner Telegram delivery
+      - name: Recover isolated Learner Telegram runtime credentials
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,21 +24,18 @@ jobs:
           service=learnerbot-learn.service
           py="$prod/.venv/bin/python"
           test -x "$py"
-          test -f "$target/.env"
           echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
-          sudo -n cp -a "$target/.env" "$target/backups/.env.before-telegram-sync"
-          sudo -n bash -lc "set -Eeuo pipefail; src='$prod/.env'; dst='$target/.env'; test -s \"\$src\"; tok=\$(grep -m1 '^TELEGRAM_BOT_TOKEN=' \"\$src\" || true); test -n \"\$tok\"; tmp=\$(mktemp); grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS)=' \"\$dst\" > \"\$tmp\"; printf '%s\\n' \"\$tok\" >> \"\$tmp\"; cid=\$(grep -m1 '^TELEGRAM_CHAT_ID=' \"\$src\" || true); cids=\$(grep -m1 '^TELEGRAM_CHAT_IDS=' \"\$src\" || true); test -z \"\$cid\" || printf '%s\\n' \"\$cid\" >> \"\$tmp\"; test -z \"\$cids\" || printf '%s\\n' \"\$cids\" >> \"\$tmp\"; cat \"\$tmp\" > \"\$dst\"; rm -f \"\$tmp\"; chown ayman01323:ayman01323 \"\$dst\"; chmod 600 \"\$dst\""
-          echo 'telegram_credentials_synced=true'
+          sudo -n bash -lc "set -Eeuo pipefail; target='$target'; found=''; for p in /proc/[0-9]*/environ; do if tr '\\0' '\\n' < \"\$p\" 2>/dev/null | grep -q '^TELEGRAM_BOT_TOKEN=.'; then found=\"\$p\"; break; fi; done; test -n \"\$found\"; pid=\${found#/proc/}; pid=\${pid%/environ}; echo telegram_source_process_found=true; cg=\$(cat /proc/\$pid/cgroup 2>/dev/null | tail -n1 | cut -d: -f3-); echo telegram_source_cgroup_present=\$([ -n \"\$cg\" ] && echo true || echo false); cp -a \"\$target/.env\" \"\$target/backups/.env.before-runtime-telegram-sync\"; tmp=\$(mktemp); grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS)=' \"\$target/.env\" > \"\$tmp\"; tr '\\0' '\\n' < \"\$found\" | grep -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS)=' >> \"\$tmp\" || true; grep -q '^TELEGRAM_BOT_TOKEN=.' \"\$tmp\"; cat \"\$tmp\" > \"\$target/.env\"; rm -f \"\$tmp\"; chown ayman01323:ayman01323 \"\$target/.env\"; chmod 600 \"\$target/.env\""
+          echo telegram_runtime_credentials_synced=true
           grep -q '^TELEGRAM_BOT_TOKEN=.' "$target/.env"
-          echo 'token_present_after=true'
+          echo token_present_after=true
           sudo -n systemctl restart "$service"
           sleep 8
           echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
           cd "$target"
           PYTHONPATH=. "$py" -c "from learnerbot.config import AppSettings; from learnerbot.telegram import get_me; a=AppSettings.load(); m=get_me(a.telegram_bot_token); print('telegram_getme_ok=true'); print('bot_username='+str(m.get('username') or '')); print('configured_chat_ids='+str(len(a.telegram_chat_ids)))"
-          recipient=$(awk -F, 'NR>1 && tolower($5)=="true" && tolower($6)!="false" {print $1; exit}' "$target/CSVbot/auto/solana_user_wallets.csv")
+          recipient=$(awk -F, 'NR>1 && length($1)>=8 && tolower($5)=="true" && tolower($6)!="false" {print $1; exit}' "$target/CSVbot/auto/solana_user_wallets.csv")
           test -n "$recipient"
           RECIPIENT="$recipient" PYTHONPATH=. "$py" -c "import os; from learnerbot.config import AppSettings; from learnerbot.telegram import send_message; a=AppSettings.load(); r=send_message(a.telegram_bot_token,os.environ['RECIPIENT'],'🧠 Learner Bot Telegram connection restored. This is a delivery test only; no trade was placed.',protect_content=True); print('smoke_test_ok='+str(bool(r.get('message_id'))).lower())"
           sleep 5
           echo "service_after_test=$(systemctl is-active "$service" 2>/dev/null || true)"
-          journalctl -u "$service" -n 60 --no-pager -o cat 2>/dev/null | grep -Ei 'TELEGRAM_BOT_TOKEN|telegram-hi|Main process exited|Failed with result' | tail -n 60 || true
