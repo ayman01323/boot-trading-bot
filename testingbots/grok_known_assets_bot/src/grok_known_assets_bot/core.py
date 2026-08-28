@@ -38,6 +38,10 @@ class RiskConfig:
     min_liquidity_usd: float = 250_000.0
     min_volume_5m_usd: float = 25_000.0
     max_liquidity_fraction_pct: float = 0.10
+    momentum_1m_min_pct: float = -0.50
+    momentum_5m_min_pct: float = -0.05
+    momentum_5m_max_pct: float = 5.0
+    momentum_15m_min_pct: float = -0.30
     stop_min_pct: float = 2.5
     stop_max_pct: float = 4.0
     take_profit_1_pct: float = 2.0
@@ -285,6 +289,8 @@ def _validate_risk(r: RiskConfig) -> None:
         raise ValueError("max_quote_age_s must be >0")
     if min(r.max_spread_bps, r.max_price_impact_bps, r.min_net_edge_pct) < 0:
         raise ValueError("risk units may not be negative")
+    if r.momentum_5m_min_pct > r.momentum_5m_max_pct:
+        raise ValueError("momentum_5m_min_pct must be <= momentum_5m_max_pct")
 
 
 class StrategyEngine:
@@ -350,13 +356,13 @@ class StrategyEngine:
         return round_trip_execution_cost_bps(snap) / 100.0
 
     def _momentum_ok(self, snap: MarketSnapshot) -> tuple[bool, str]:
-        if snap.ret_15m_pct <= 0:
-            return False, "NO_15M_TREND"
-        if snap.ret_5m_pct < 0.30:
-            return False, "WEAK_5M_MOMENTUM"
-        if snap.ret_5m_pct > 5.0:
+        if snap.ret_15m_pct < self.risk.momentum_15m_min_pct:
+            return False, "ADVERSE_15M_TREND"
+        if snap.ret_5m_pct < self.risk.momentum_5m_min_pct:
+            return False, "ADVERSE_5M_MOMENTUM"
+        if snap.ret_5m_pct > self.risk.momentum_5m_max_pct:
             return False, "OVEREXTENDED_5M"
-        if snap.ret_1m_pct < -0.50:
+        if snap.ret_1m_pct < self.risk.momentum_1m_min_pct:
             return False, "ADVERSE_1M_REVERSAL"
         return True, "OK"
 
@@ -417,7 +423,7 @@ class StrategyEngine:
             return Decision("REJECT", "NO_RISK_CAPACITY", stop_pct=stop_pct, net_edge_pct=net_edge)
         return Decision(
             "ENTER",
-            "MOMENTUM_CONFIRMED",
+            "TREND_RISK_ACCEPTABLE",
             size_usd=size_usd,
             stop_pct=stop_pct,
             net_edge_pct=net_edge,

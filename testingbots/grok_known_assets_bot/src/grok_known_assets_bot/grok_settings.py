@@ -1,6 +1,4 @@
 from pydantic import BaseModel, Field, model_validator, ConfigDict
-from typing import Literal
-from datetime import datetime
 
 
 class GrokResearchSettings(BaseModel):
@@ -43,10 +41,13 @@ class GrokResearchSettings(BaseModel):
         description="Minimum 5-minute trading volume in USD"
     )
 
-    # Momentum thresholds - expressed as percentage points (e.g. 0.30 = 0.30%)
+    # Momentum thresholds - expressed as percentage points.
+    # Native SOL is allowed to be briefly flat/slightly negative so that the
+    # scorer can recognise pullbacks and early trend formation instead of only
+    # buying after a +0.30% five-minute move has already happened.
     momentum_5m_min_pct: float = Field(
-        default=0.30,
-        description="Minimum 5m momentum in percentage points (0.30 = 0.30%)"
+        default=-0.05,
+        description="Hard minimum 5m momentum (-0.05 = -0.05%)"
     )
     momentum_5m_max_pct: float = Field(
         default=5.00,
@@ -56,9 +57,13 @@ class GrokResearchSettings(BaseModel):
         default=-0.50,
         description="Minimum 1m momentum in percentage points (-0.50 = -0.50%)"
     )
+    momentum_15m_min_pct: float = Field(
+        default=-0.30,
+        description="Hard minimum 15m momentum (-0.30 = -0.30%)"
+    )
     require_positive_momentum_15m: bool = Field(
-        default=True,
-        description="Whether 15m momentum must be strictly positive"
+        default=False,
+        description="Legacy strict mode: require 15m momentum to be > 0 instead of using momentum_15m_min_pct"
     )
 
     # Edge and risk parameters
