@@ -18,7 +18,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Verify isolated Google runner
         shell: bash
@@ -31,16 +31,48 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Deploy testing bot only
+      - name: Deploy isolated bot files and run tests
         shell: bash
         run: |
           set -euo pipefail
           chmod +x testingbots/grok_known_assets_bot/scripts/install.sh
           testingbots/grok_known_assets_bot/scripts/install.sh "$GITHUB_WORKSPACE/testingbots/grok_known_assets_bot"
 
-      - name: Confirm no production restart
+      - name: Enforce PAPER-only deployed config
         shell: bash
         run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          cfg = json.loads(Path('/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/config.json').read_text())
+          if str(cfg.get('mode', '')).lower() != 'paper':
+              raise SystemExit('refusing deployment: mode must be paper')
+          if bool(cfg.get('live', {}).get('enabled', False)):
+              raise SystemExit('refusing deployment: live.enabled must be false')
+          print('paper_boundary=PASS')
+          PY
+
+      - name: Install and start persistent PAPER service
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-bot.service.example
+          sudo install -m 0644 "$SRC" /etc/systemd/system/grok-known-assets-bot.service
+          sudo systemctl daemon-reload
+          sudo systemctl enable grok-known-assets-bot.service
+          sudo systemctl restart grok-known-assets-bot.service
+          sleep 8
+          sudo systemctl is-active --quiet grok-known-assets-bot.service
+          sudo systemctl show grok-known-assets-bot.service -p ActiveState -p SubState -p MainPID -p User -p WorkingDirectory --no-pager
+
+      - name: Confirm real-feed PAPER process evidence
+        shell: bash
+        run: |
+          set -euo pipefail
           echo "deployment_scope=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot"
           echo "production_service_restart=NO"
           echo "live_execution=DISABLED"
+          echo "paper_service=grok-known-assets-bot.service"
+          sudo journalctl -u grok-known-assets-bot.service --since '3 minutes ago' -n 120 --no-pager
+          sudo systemctl is-active grok-known-assets-bot.service
