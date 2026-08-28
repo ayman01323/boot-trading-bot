@@ -1,0 +1,174 @@
+name: Restore SiRisky Five-Trade Profile 0.009 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-sirisky-five-trade-profile-009-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: restore-sirisky-five-trade-profile-009
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Restore exact SiRisky five-trade settings; change size only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            root=/root/SiRisky
+            csv="$root/CSV"
+            snap="$root/data/one-usd-safety-backup-20260828T152708Z"
+            service=sirisky.service
+            test -f "$snap/runtime.csv"
+            test -f "$snap/stage3_risk.csv"
+            test -f "$csv/runtime.csv"
+            test -f "$csv/stage3_risk.csv"
+
+            open_rows=0
+            if test -f "$csv/open_positions.csv"; then
+              open_rows=$(tail -n +2 "$csv/open_positions.csv" | sed "/^[[:space:]]*$/d" | wc -l)
+            fi
+            echo "pre_restore_open_positions=$open_rows"
+            test "$open_rows" -eq 0 || { echo "REFUSE_RESTORE: SiRisky has an open position"; exit 41; }
+
+            stamp=$(date -u +%Y%m%dT%H%M%SZ)
+            backup="$root/data/pre-five-trade-009-restore-$stamp"
+            mkdir -p "$backup"
+            cp -a "$csv/runtime.csv" "$backup/runtime.csv"
+            cp -a "$csv/stage3_risk.csv" "$backup/stage3_risk.csv"
+            test ! -f "$csv/risk.csv" || cp -a "$csv/risk.csv" "$backup/risk.csv"
+            echo "pre_restore_backup=$backup"
+
+            changed=0
+            rollback() {
+              rc=$?
+              if test "$rc" -ne 0 && test "$changed" -eq 1; then
+                echo "RESTORE_FAILED: rolling SiRisky settings back"
+                cp -a "$backup/runtime.csv" "$csv/runtime.csv"
+                cp -a "$backup/stage3_risk.csv" "$csv/stage3_risk.csv"
+                if test -f "$backup/risk.csv"; then cp -a "$backup/risk.csv" "$csv/risk.csv"; fi
+                systemctl restart "$service" || true
+              fi
+              exit "$rc"
+            }
+            trap rollback EXIT
+
+            # Freeze autonomous execution while the two settings files are changed atomically.
+            systemctl stop "$service"
+
+            # Restore the exact preserved settings from the five-trade period.
+            cp -a "$snap/runtime.csv" "$csv/runtime.csv"
+            cp -a "$snap/stage3_risk.csv" "$csv/stage3_risk.csv"
+            changed=1
+
+            # Sole logical change requested by the owner: entry/probe size 0.0005 -> 0.009 SOL.
+            ROOT="$root" python3 - <<"PY"
+import csv, os
+from pathlib import Path
+p=Path(os.environ["ROOT"])/"CSV"/"runtime.csv"
+with p.open("r",encoding="utf-8-sig",newline="") as f:
+    rd=csv.DictReader(f)
+    fields=list(rd.fieldnames or [])
+    rows=list(rd)
+if "key" not in fields or "value" not in fields:
+    raise SystemExit("REFUSE_RESTORE: runtime.csv is not key,value format")
+wanted={"auto_probe_sol":"0.009","auto_entry_min_sol":"0.009","auto_entry_max_sol":"0.009"}
+seen=set()
+for r in rows:
+    k=str(r.get("key") or "").strip()
+    if k in wanted:
+        r["value"]=wanted[k]
+        seen.add(k)
+for k,v in wanted.items():
+    if k not in seen:
+        row={name:"" for name in fields}; row["key"]=k; row["value"]=v; rows.append(row)
+tmp=p.with_suffix(".csv.tmp")
+with tmp.open("w",encoding="utf-8",newline="") as f:
+    w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows); f.flush(); os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+
+            # Prove every non-size runtime value is identical to the five-trade snapshot.
+            ROOT="$root" SNAP="$snap" python3 - <<"PY"
+import csv, os
+from pathlib import Path
+size_keys={"auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol"}
+def read(path):
+    with Path(path).open("r",encoding="utf-8-sig",newline="") as f:
+        return {str(r.get("key") or "").strip():str(r.get("value") or "").strip() for r in csv.DictReader(f)}
+snap=read(Path(os.environ["SNAP"])/"runtime.csv")
+cur=read(Path(os.environ["ROOT"])/"CSV"/"runtime.csv")
+for k,v in snap.items():
+    if k in size_keys: continue
+    if cur.get(k)!=v: raise SystemExit(f"REFUSE_VERIFY: non-size runtime changed {k}: {cur.get(k)!r} != {v!r}
+")
+extra=set(cur)-set(snap)-size_keys
+if extra: raise SystemExit(f"REFUSE_VERIFY: unexpected runtime keys after restore: {sorted(extra)}")
+for k in size_keys:
+    if cur.get(k)!="0.009": raise SystemExit(f"REFUSE_VERIFY: {k}={cur.get(k)!r}")
+required={
+ "live_enabled":"1","broadcast_enabled":"1","telegram_manual_run_enabled":"0","poll_seconds":"5",
+ "auto_discovery_enabled":"1","auto_promote_to_selected":"1","manual_approval_enabled":"0",
+ "manual_approval_ttl_seconds":"60","manual_approval_require_external_signature":"0","armed_manual_approval":"0",
+ "auto_evaluate_candidate_limit":"1","trading_mode":"LIVE","paper_auto_trade_enabled":"0"
+}
+for k,v in required.items():
+    if cur.get(k)!=v: raise SystemExit(f"REFUSE_VERIFY: historical runtime {k}={cur.get(k)!r}, expected {v!r}")
+print("runtime_matches_five_trade_snapshot_except_size=true")
+PY
+            cmp -s "$snap/stage3_risk.csv" "$csv/stage3_risk.csv"
+            echo "stage3_risk_matches_five_trade_snapshot=true"
+
+            systemctl restart "$service"
+            sleep 10
+            test "$(systemctl is-active "$service")" = active
+
+            cd "$root"
+            PYTHONPATH=. .venv/bin/python - <<"PY"
+from decimal import Decimal
+from sirisky.config import Settings
+from sirisky.safety_v2 import entry_sol
+s=Settings.load()
+rt=s.runtime(); rk=s.risk()
+size=Decimal(str(entry_sol(s)))
+if size != Decimal("0.009"):
+    raise SystemExit(f"REFUSE_VERIFY: effective entry size is {size}, not 0.009")
+checks={
+ "max_open_positions":"1","min_exit_health_pct":"85","max_round_trip_cost_pct":"8",
+ "fast_take_profit_floor_pct":"2.0","fast_take_profit_cap_pct":"5.0","fast_stop_net_pct":"3.0",
+ "warm_reversal_pct":"1.5","hot_reversal_pct":"3.0","fast_max_hold_cap_seconds":"300",
+ "lp_recent_sell_sim_max_age_sec":"300"
+}
+for k,v in checks.items():
+    got=str(rk.get(k))
+    if got != v:
+        # tolerate numeric normalisation such as 1 vs 1.0
+        try:
+            if Decimal(got) == Decimal(v): continue
+        except Exception: pass
+        raise SystemExit(f"REFUSE_VERIFY: effective risk {k}={got!r}, expected {v!r}")
+print("five_trade_profile_restore=VERIFIED")
+print("effective_entry_sol=0.009000000")
+print("live_enabled="+str(rt.get("live_enabled")))
+print("broadcast_enabled="+str(rt.get("broadcast_enabled")))
+print("manual_approval_enabled="+str(rt.get("manual_approval_enabled")))
+print("auto_evaluate_candidate_limit="+str(rt.get("auto_evaluate_candidate_limit")))
+for k in checks: print(f"{k}={rk.get(k)}")
+print("only_logical_change=trade_size_0.0005_to_0.009")
+print("forced_trade=NO")
+PY
+
+            echo "service_active=true"
+            trap - EXIT
+          '
