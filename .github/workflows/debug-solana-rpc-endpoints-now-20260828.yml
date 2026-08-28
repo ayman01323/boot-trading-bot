@@ -1,0 +1,84 @@
+name: Debug Solana RPC Endpoints Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/debug-solana-rpc-endpoints-now-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Probe configured Solana RPC endpoints safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          PID="$(systemctl show learnerbot-learn.service -p MainPID --value)"
+          test "$PID" -gt 1
+          sudo -n python3 - "$PID" /home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv <<'PY'
+          import csv,json,os,re,sys,time,urllib.parse,urllib.request,urllib.error
+          pid=int(sys.argv[1]); csvp=sys.argv[2]
+          raw=open(f'/proc/{pid}/environ','rb').read().split(b'\0')
+          env={}
+          for item in raw:
+              if b'=' not in item: continue
+              k,v=item.split(b'=',1)
+              env[k.decode(errors='ignore')]=v.decode(errors='ignore')
+          cfg={}
+          if os.path.exists(csvp):
+              with open(csvp,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      k=str(r.get('setting') or '').strip()
+                      if k: cfg[k]=str(r.get('value') or '').strip()
+          urls=[]
+          def add(v):
+              v=str(v or '').strip()
+              if v and v not in urls: urls.append(v)
+          def split(v):
+              return [x.strip() for x in re.split(r'[;,\s]+',str(v or '')) if x.strip()]
+          for v in split(env.get('SOLANA_RPC_URLS','')): add(v)
+          for v in split(env.get('SOLANA_RPC_FALLBACK_URLS','')): add(v)
+          explicit=env.get('SOLANA_RPC_URL','').strip()
+          if explicit and explicit!='https://api.mainnet-beta.solana.com': add(explicit)
+          add(env.get('HELIUS_RPC_URL','').strip())
+          hk=env.get('HELIUS_API_KEY','').strip()
+          if hk: add('https://mainnet.helius-rpc.com/?api-key='+hk)
+          c=cfg.get('rpc_url','').strip()
+          if c and c!='https://api.mainnet-beta.solana.com': add(c)
+          add('https://api.mainnet-beta.solana.com')
+          print('candidate_endpoint_count='+str(len(urls)))
+          print('helius_key_present='+('YES' if hk else 'NO'))
+          print('explicit_multi_urls='+str(len(split(env.get('SOLANA_RPC_URLS','')))+len(split(env.get('SOLANA_RPC_FALLBACK_URLS','')))))
+          for i,url in enumerate(urls,1):
+              p=urllib.parse.urlsplit(url)
+              label=p.hostname or 'unknown'
+              body=json.dumps({'jsonrpc':'2.0','id':1,'method':'getSlot','params':[{'commitment':'confirmed'}]}).encode()
+              req=urllib.request.Request(url,data=body,headers={'Content-Type':'application/json','User-Agent':'BOOT-RPC-DIAG/1.0'})
+              t=time.monotonic()
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as resp:
+                      status=resp.status; data=json.loads(resp.read().decode())
+                  ms=int((time.monotonic()-t)*1000)
+                  if isinstance(data,dict) and 'result' in data:
+                      print(f'endpoint_{i}=host:{label} http:{status} rpc:OK latency_ms:{ms}')
+                  else:
+                      err=(data or {}).get('error') if isinstance(data,dict) else 'invalid'
+                      print(f'endpoint_{i}=host:{label} http:{status} rpc:ERROR latency_ms:{ms} detail:{str(err)[:140]}')
+              except urllib.error.HTTPError as e:
+                  ms=int((time.monotonic()-t)*1000)
+                  try:
+                      payload=json.loads(e.read().decode(errors='replace'))
+                      detail=str(payload.get('error') or payload.get('message') or payload.get('description') or '')[:140]
+                  except Exception:
+                      detail=''
+                  print(f'endpoint_{i}=host:{label} http:{e.code} rpc:HTTP_ERROR latency_ms:{ms} detail:{detail}')
+              except Exception as e:
+                  ms=int((time.monotonic()-t)*1000)
+                  print(f'endpoint_{i}=host:{label} rpc:TRANSPORT_ERROR latency_ms:{ms} detail:{type(e).__name__}')
+          PY
