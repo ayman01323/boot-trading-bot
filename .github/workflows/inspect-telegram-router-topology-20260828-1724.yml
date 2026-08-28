@@ -1,0 +1,55 @@
+name: Inspect Telegram Router Topology 20260828 1724
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/inspect-telegram-router-topology-20260828-1724.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect poller owners and relay source without secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== PIDS / CGROUPS / UNITS ==='
+          for pid in $(pgrep -f 'learnerbot run|SiRisky/run.py start|google_learner_telegram_relay.py' || true); do
+            echo "PID=$pid CMD=$(tr '\0' ' ' </proc/$pid/cmdline | sed -E 's/[0-9]{8,}:[A-Za-z0-9_-]{20,}/<redacted-token>/g')"
+            cat /proc/$pid/cgroup 2>/dev/null | tail -5 || true
+          done
+          echo '=== RELAY SOURCE STRUCTURE ==='
+          p=/home/ayman01323/.local/libexec/google_learner_telegram_relay.py
+          if [ -r "$p" ]; then
+            python3 - "$p" <<'PY'
+          import ast,sys
+          p=sys.argv[1]
+          src=open(p,encoding='utf-8',errors='ignore').read()
+          tree=ast.parse(src)
+          print('lines=',len(src.splitlines()))
+          for n in ast.walk(tree):
+              if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)):
+                  print('FUNCTION',n.name,'line',n.lineno)
+          for i,line in enumerate(src.splitlines(),1):
+              low=line.lower()
+              if any(k in low for k in ('getupdates','offset','command','learner','sirisky','telegram','update_id','subprocess','systemctl','socket','queue')):
+                  # redact assignments/strings that could carry tokens
+                  out=line
+                  if 'token' in low and '=' in line: out=line.split('=',1)[0]+'=<redacted>'
+                  print(f'LINE {i}: {out[:500]}')
+          PY
+          else
+            echo 'relay_source=UNREADABLE'
+          fi
+          echo '=== SYSTEMD UNITS MATCHING PIDS ==='
+          systemctl --no-pager --type=service --all | grep -Ei 'learner|sirisky|telegram' || true
+          echo '=== NO CHANGES MADE ==='
+          echo 'service_change=NO'
+          echo 'telegram_send=NO'
+          echo 'trading_action=NONE'
