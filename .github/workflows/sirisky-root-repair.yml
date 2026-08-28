@@ -18,13 +18,20 @@ jobs:
         with:
           ref: fix/solana-aug17-canary-restore
           fetch-depth: 0
-      - name: Wire and validate Solana loss containment source only
+      - name: Stop learner then wire and validate loss containment
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          test "$(systemctl is-active learnerbot-learn.service || true)" != active
+          service=learnerbot-learn.service
+          echo "before_active=$(systemctl is-active "$service" || true)"
+          echo "before_pid=$(systemctl show -p MainPID --value "$service")"
+          sudo -n systemctl stop "$service"
+          sleep 2
+          test "$(systemctl is-active "$service" || true)" != active
+          test "$(systemctl show -p MainPID --value "$service")" = 0
+          echo 'learner_stop_verified=YES'
 
           python3 - <<'PY'
           from pathlib import Path
@@ -69,7 +76,16 @@ jobs:
             git push origin HEAD:fix/solana-aug17-canary-restore
           fi
 
-          echo 'loss_containment_source=WIRED_AND_TESTED'
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target/learnerbot"
+          install -m 0644 learnerbot/solana_loss_containment_patch.py "$target/learnerbot/solana_loss_containment_patch.py"
+          install -m 0644 learnerbot/solana_entry_exit_liquidity_preflight_patch.py "$target/learnerbot/solana_entry_exit_liquidity_preflight_patch.py"
+          install -m 0644 learnerbot/solana_rpc_exit_priority_patch.py "$target/learnerbot/solana_rpc_exit_priority_patch.py"
+          install -m 0644 learnerbot/__main__.py "$target/learnerbot/__main__.py"
+
+          test "$(systemctl is-active "$service" || true)" != active
+          test "$(systemctl show -p MainPID --value "$service")" = 0
+          echo 'loss_containment_source=WIRED_TESTED_AND_STAGED'
           echo 'learner_service=STOPPED'
           echo 'live_enabled_by_workflow=NO'
           echo 'position_size_changed=NO'
