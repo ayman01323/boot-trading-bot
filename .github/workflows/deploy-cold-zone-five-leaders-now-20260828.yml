@@ -1,4 +1,4 @@
-name: Inspect SiRisky Sizing Path Google Only
+name: Inspect SiRisky Strategy Size Google Only
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect SiRisky probe and execution sizing on botgoogle
+      - name: Inspect SiRisky strategy sizing on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -23,18 +23,12 @@ jobs:
           test "$(id -un)" = ayman01323
           sudo -n bash -lc '
             cd /root/SiRisky
-            echo "=== RUNTIME SIZING ==="
-            grep -E "^(auto_probe_sol|auto_entry_usd|auto_entry_min_sol|auto_entry_max_sol|auto_evaluate_candidate_limit|live_enabled|broadcast_enabled)," CSV/runtime.csv || true
-            echo "=== RISK ==="
-            grep -E "^(min_forecast_net_pct|max_round_trip_cost_pct|min_exit_health_pct|untouched_sol_reserve|max_open_positions)," CSV/stage3_risk.csv || true
-            echo "=== STAGE2 ==="
-            sed -n "1,260p" sirisky/stage2_strategy.py
-            echo "=== STAGE4 ==="
-            sed -n "1,220p" sirisky/stage4_dispatch.py
-            echo "=== MODELS ==="
-            sed -n "1,260p" sirisky/models.py
-            echo "=== SAFETY PATCH ==="
-            grep -n -A35 -B5 "original_eval_pool" sirisky/safety_v2.py || true
+            echo "=== STRATEGY FILES ==="
+            find CSV -maxdepth 1 -type f -print | sort
+            echo "=== POSITION SIZE ROWS ==="
+            grep -RniE "position_sol|HR_NEW_01" CSV 2>/dev/null || true
+            echo "=== CURRENT OPEN ==="
+            cat CSV/open_positions.csv 2>/dev/null || true
             echo "=== SERVICE ==="
             systemctl is-active sirisky.service
           '
