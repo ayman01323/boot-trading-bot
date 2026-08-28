@@ -1,0 +1,149 @@
+name: Restore Isolated Learner Morning 894c
+
+on:
+  push:
+    branches:
+      - fix/learner-original-poolcheck-009-sol-20260828
+    paths:
+      - '.github/workflows/restore-isolated-learner-morning-894c.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: restore-isolated-learner-morning-894c
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    env:
+      TARGET: /home/ayman01323/BOOT/testingbots/learn
+      SOURCE_SHA: 894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+      SERVICE: learnerbot-learn.service
+      REPORT_BRANCH: fix/learner-original-poolcheck-009-sol-20260828
+      REPORT_PATH: diagnostics/learner-morning-restore-894c.txt
+    steps:
+      - name: Checkout exact morning source
+        uses: actions/checkout@v4
+        with:
+          ref: 894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Restore isolated Learner code and restart existing service
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test -d "$TARGET"
+          test -d "$TARGET/learnerbot"
+          test -d "$TARGET/CSVbot"
+          test -d "$TARGET/data"
+          test -d "$GITHUB_WORKSPACE/learnerbot"
+
+          before_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$TARGET/backups/morning-restore-$ts"
+          mkdir -p "$backup"
+          cp -a "$TARGET/learnerbot" "$backup/learnerbot.before"
+          cp -a "$TARGET/CSVbot/solana_settings.csv" "$backup/solana_settings.csv.before" 2>/dev/null || true
+          cp -a "$TARGET/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv.before" 2>/dev/null || true
+
+          # Source-only restore. Wallets, CSV settings, SQLite state, encrypted keys,
+          # and all data directories remain exactly where they are.
+          rm -rf "$TARGET/learnerbot.restore-tmp"
+          mkdir -p "$TARGET/learnerbot.restore-tmp"
+          cp -a "$GITHUB_WORKSPACE/learnerbot/." "$TARGET/learnerbot.restore-tmp/"
+          python3 -m compileall -q "$TARGET/learnerbot.restore-tmp"
+          rm -rf "$TARGET/learnerbot"
+          mv "$TARGET/learnerbot.restore-tmp" "$TARGET/learnerbot"
+          printf '%s\n' "$SOURCE_SHA" > "$TARGET/RESTORED_SOURCE_SHA.txt"
+
+          # Restart the isolated Learner service only. Existing LIVE/new-entry
+          # settings remain authoritative; this workflow does not arm or disarm them.
+          systemctl restart "$SERVICE"
+          sleep 8
+          after_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+
+          REPORT=/tmp/learner-morning-restore.txt
+          {
+            echo "utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "host=$(hostname)"
+            echo "target=$TARGET"
+            echo "source_sha=$SOURCE_SHA"
+            echo "service_before=$before_active"
+            echo "service_after=$after_active"
+            echo "backup=$backup"
+            echo "wallet_data_modified=NO"
+            echo "csv_settings_modified=NO"
+            echo "database_modified_by_restore=NO"
+            echo
+            echo "=== SAVED CONTROL SETTINGS ==="
+            ROOT="$TARGET" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])/'CSVbot'
+          p=root/'solana_settings.csv'
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      if r.get('setting') in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct'}:
+                          print(f"platform {r.get('setting')}={r.get('value','')}")
+          p=root/'user_trading_settings.csv'
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      if r.get('setting') in {'learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}:
+                          print(f"user=[redacted] chain={r.get('chain_id','')} {r.get('setting')}={r.get('value','')}")
+          PY
+            echo
+            echo "=== LIVE POSITION STATE ==="
+            ROOT="$TARGET" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          db=Path(os.environ['ROOT'])/'data/solana_sibot.sqlite3'
+          if not db.exists():
+              print('db=missing'); raise SystemExit
+          c=sqlite3.connect(f'file:{db}?mode=ro',uri=True); c.row_factory=sqlite3.Row
+          rows=c.execute("select position_id,status,mode,entry_cost_sol,realised_net_sol,strategy_version,git_sha from positions where mode='LIVE' order by updated_at desc limit 20").fetchall()
+          print('live_positions='+str(len(rows)))
+          for r in rows: print(dict(r))
+          c.close()
+          PY
+            echo
+            echo "=== SERVICE TAIL ==="
+            journalctl -u "$SERVICE" -n 80 --no-pager 2>/dev/null \
+              | sed -E 's/(token|key|secret|password)=[^ ]+/\1=[redacted]/Ig' \
+              | tail -n 80 || true
+          } > "$REPORT"
+          cat "$REPORT"
+          test "$after_active" = active
+
+          # Publish a sanitized attestation to this temporary branch so the chat
+          # can verify the server result without exposing wallet/mint/signature data.
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/${REPORT_PATH}"
+          current="$(curl -fsS -H "Authorization: Bearer ${GITHUB_TOKEN}" -H 'Accept: application/vnd.github+json' "${api}?ref=${REPORT_BRANCH}" || true)"
+          existing_sha="$(printf '%s' "$current" | python3 -c 'import json,sys; s=sys.stdin.read().strip(); print((json.loads(s).get("sha") if s else "") or "")' 2>/dev/null || true)"
+          encoded="$(base64 -w0 "$REPORT")"
+          if [[ -n "$existing_sha" ]]; then
+            payload="$(python3 - "$encoded" "$existing_sha" "$REPORT_BRANCH" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Update isolated Learner morning restore attestation','content':sys.argv[1],'sha':sys.argv[2],'branch':sys.argv[3]}))
+          PY
+          )"
+          else
+            payload="$(python3 - "$encoded" "$REPORT_BRANCH" <<'PY'
+          import json,sys
+          print(json.dumps({'message':'Create isolated Learner morning restore attestation','content':sys.argv[1],'branch':sys.argv[2]}))
+          PY
+          )"
+          fi
+          curl -fsS -X PUT \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "$api" -d "$payload" >/dev/null
