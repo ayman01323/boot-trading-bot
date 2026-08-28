@@ -1,0 +1,139 @@
+name: Verify Manual Exit 6Mfj 20260828 1535
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/verify-manual-exit-6mfj-20260828-1535.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only on-chain and learner DB verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          python3 - <<'PY'
+          import json, sqlite3, time, urllib.request, urllib.error
+          from pathlib import Path
+
+          root=Path('/home/ayman01323/BOOT/testingbots/learn')
+          wallet='8zTnKUPW648NZZ285mz7ijFBpsbGu8AziRoZsH9JBfA3'
+          mint='6Mfj9t4WMN1c6CMpYZm8GvJsW3TiE7SrbrBqpBRnmUgd'
+          position_id='e30ca86e1878bd4e5f1648d3fbb7cbf2'
+
+          env={}
+          ep=root/'.env'
+          if ep.exists():
+              for line in ep.read_text(errors='ignore').splitlines():
+                  s=line.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          urls=[]
+          for key in ('SOLANA_RPC_URLS','SOLANA_RPC_FALLBACK_URLS','SOLANA_RPC_URL'):
+              raw=env.get(key,'')
+              for part in raw.replace(';',',').split(','):
+                  u=part.strip()
+                  if u and u not in urls: urls.append(u)
+          if not urls:
+              urls=['https://api.mainnet-beta.solana.com']
+
+          def rpc(method, params):
+              last=None
+              for idx,url in enumerate(urls,1):
+                  req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(),headers={'Content-Type':'application/json','User-Agent':'BOOT-readonly-exit-verify'})
+                  try:
+                      with urllib.request.urlopen(req,timeout=15) as r:
+                          data=json.loads(r.read(2_000_000).decode())
+                      if data.get('error'): raise RuntimeError(str(data['error']))
+                      return data.get('result'), idx
+                  except Exception as e:
+                      last=e
+              raise RuntimeError(type(last).__name__ if last else 'RPC failed')
+
+          bal, rpc_idx = rpc('getBalance',[wallet,{'commitment':'confirmed'}])
+          print('rpc_used=RPC-'+str(rpc_idx))
+          print('wallet_sol_lamports='+str(int((bal or {}).get('value') or 0)))
+
+          accts,_=rpc('getTokenAccountsByOwner',[wallet,{'mint':mint},{'encoding':'jsonParsed','commitment':'confirmed'}])
+          total_raw=0; ui=0.0; count=0
+          for row in (accts or {}).get('value',[]):
+              count+=1
+              info=((((row.get('account') or {}).get('data') or {}).get('parsed') or {}).get('info') or {})
+              amt=(info.get('tokenAmount') or {})
+              total_raw += int(amt.get('amount') or 0)
+              try: ui += float(amt.get('uiAmountString') or 0)
+              except: pass
+          print('token_accounts='+str(count))
+          print('current_token_raw='+str(total_raw))
+          print('current_token_ui='+format(ui,'.9f'))
+
+          sigs,_=rpc('getSignaturesForAddress',[wallet,{'limit':30,'commitment':'confirmed'}])
+          found=None
+          for s in sigs or []:
+              sig=str(s.get('signature') or '')
+              if not sig: continue
+              tx,_=rpc('getTransaction',[sig,{'encoding':'jsonParsed','commitment':'confirmed','maxSupportedTransactionVersion':0}])
+              if not tx: continue
+              meta=tx.get('meta') or {}
+              if meta.get('err') is not None: continue
+              pre=0; post=0
+              for row in meta.get('preTokenBalances') or []:
+                  if str(row.get('mint') or '')==mint and str(row.get('owner') or '')==wallet:
+                      pre += int((row.get('uiTokenAmount') or {}).get('amount') or 0)
+              for row in meta.get('postTokenBalances') or []:
+                  if str(row.get('mint') or '')==mint and str(row.get('owner') or '')==wallet:
+                      post += int((row.get('uiTokenAmount') or {}).get('amount') or 0)
+              if pre > post:
+                  keys=[]
+                  msg=((tx.get('transaction') or {}).get('message') or {})
+                  for k in msg.get('accountKeys') or []:
+                      keys.append(str(k.get('pubkey') if isinstance(k,dict) else k))
+                  sol_delta=None
+                  try:
+                      i=keys.index(wallet)
+                      sol_delta=int((meta.get('postBalances') or [])[i])-int((meta.get('preBalances') or [])[i])
+                  except Exception:
+                      pass
+                  found={
+                      'signature':sig,
+                      'block_time':tx.get('blockTime') or s.get('blockTime'),
+                      'pre_raw':pre,'post_raw':post,'sold_raw':pre-post,
+                      'wallet_sol_delta_lamports':sol_delta,
+                      'fee_lamports':int(meta.get('fee') or 0),
+                  }
+                  break
+          if found:
+              print('manual_sell_found=YES')
+              print('sell_signature='+found['signature'])
+              print('sell_block_time='+str(found['block_time']))
+              print('sell_pre_raw='+str(found['pre_raw']))
+              print('sell_post_raw='+str(found['post_raw']))
+              print('sell_amount_raw='+str(found['sold_raw']))
+              print('wallet_sol_delta_lamports='+str(found['wallet_sol_delta_lamports']))
+              print('transaction_fee_lamports='+str(found['fee_lamports']))
+          else:
+              print('manual_sell_found=NO')
+
+          db=root/'data'/'solana_sibot.sqlite3'
+          if db.exists():
+              c=sqlite3.connect(db); c.row_factory=sqlite3.Row
+              r=c.execute('select position_id,status,mode,token_amount_raw,entry_cost_sol,current_exit_sol,unrealised_net_sol,unrealised_pct,realised_net_sol,exit_signature,exit_reason,closed_at,updated_at from positions where position_id=?',(position_id,)).fetchone()
+              if r:
+                  d=dict(r)
+                  for k,v in d.items(): print('db_'+k+'='+str(v))
+              else: print('db_position_found=NO')
+              c.close()
+          else:
+              print('db_missing=YES')
+          print('trading_action=NONE')
+          print('service_restart=NO')
+          print('secrets_printed=NO')
+          PY
