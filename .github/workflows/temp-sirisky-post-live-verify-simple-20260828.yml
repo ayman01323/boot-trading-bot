@@ -1,0 +1,33 @@
+name: Temporary SiRisky Post-Live Verify Simple 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/temp-sirisky-post-live-verify-simple-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Verify SiRisky live state independently
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n test "$(sudo -n systemctl is-active sirisky.service)" = active
+          sudo -n grep -q '^trading_mode,LIVE,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^live_enabled,1,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^broadcast_enabled,1,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^manual_approval_enabled,0,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^auto_evaluate_candidate_limit,1,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^auto_probe_sol,0.009,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^auto_entry_min_sol,0.009,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^auto_entry_max_sol,0.009,' /root/SiRisky/CSV/runtime.csv
+          sudo -n grep -q '^max_open_positions,1,' /root/SiRisky/CSV/stage3_risk.csv
+          sudo -n bash -lc "cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -c 'from decimal import Decimal; from sirisky.config import Settings; from sirisky.safety_v2 import entry_sol; s=Settings.load(); x=Decimal(str(entry_sol(s))); print(\"effective_entry_sol=%.9f\" % x); assert x==Decimal(\"0.009\"); print(\"service_active=true\"); print(\"trading_mode=LIVE\"); print(\"broadcast_enabled=1\")'"
