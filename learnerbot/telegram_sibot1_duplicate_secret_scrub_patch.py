@@ -181,3 +181,8 @@ from . import sibot1_gpt_solana_control_patch as _sibot1_gpt_solana_control  # n
 # separate control CSV and recognises /gemini_* commands without changing GPT,
 # Grok, Claude, PoolCheck, signer, quote, simulation or execution safety gates.
 from . import sibot1_gemini_solana_control_patch as _sibot1_gemini_solana_control  # noqa: E402,F401
+
+# A dedicated Telegram transport is layered on top of the Gemini control plane.
+# It reads only GEMINI_TELEGRAM_BOT_TOKEN from the root-readable runtime secret
+# bridge and never exposes the token to the shared production/SiRisky Telegram bot.
+from . import sibot1_gemini_telegram_dedicated_patch as _sibot1_gemini_telegram_dedicated  # noqa: E402,F401
