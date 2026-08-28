@@ -85,14 +85,16 @@ def complete_pool_context_html(app, position: dict, current: dict | None = None)
     dex = html.escape(str(ident.get("dex") or "DEX unavailable"))
     pair = html.escape(str(ident.get("pair") or "Pool address unavailable"))
 
-    current_exit = _d(position.get("current_exit_sol"), 0)
-    unrealised = _d(position.get("unrealised_net_sol"), 0)
+    closed = str(position.get("status") or "").upper() == "CLOSED"
+    current_exit = Decimal(0) if closed else _d(position.get("current_exit_sol"), 0)
+    unrealised = Decimal(0) if closed else _d(position.get("unrealised_net_sol"), 0)
     realised = _d(position.get("realised_net_sol"), 0)
 
     lines = [
         "🪙 <b>TOKEN / POSITION</b>",
         f"🏷 Token: <b>{symbol}</b> — <b>{name}</b>",
         f"🧾 Mint: <code>{html.escape(mint)}</code>",
+        f"📌 Status: <b>{html.escape(str(position.get('status') or 'UNKNOWN').upper())}</b>",
         "💼 " + _sol_usd_line("Current position", current_exit, sol_price),
         "📊 " + _sol_usd_line("Unrealised P&L", unrealised, sol_price, signed=True),
         "✅ " + _sol_usd_line("Realised P&L", realised, sol_price, signed=True),
@@ -112,7 +114,7 @@ def install() -> None:
     _position._learner_complete_market_context_installed = True
     print(
         "[learner-complete-market-context] active=true token_name=true token_symbol=true "
-        "dex_viewer=true pool=true position_sol=true position_usd=true pnl_sol=true pnl_usd=true",
+        "dex_viewer=true pool=true position_sol=true position_usd=true pnl_sol=true pnl_usd=true sale_safe=true",
         flush=True,
     )
 
