@@ -15,50 +15,41 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Restore outbound-only Telegram for isolated Learner
+      - name: Route Learner Telegram to actual trading account
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
-          marker="$target/private/.telegram_source_path"
-          test -s "$marker"
+          envp="$target/.env"
           test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "894c5597c5cf0c695f1f75df39f26ebe64c2dce9"
-          source_file="$(cat "$marker")"
-          test -f "$source_file"
-          token="$(sudo -n grep -m1 '^TELEGRAM_BOT_TOKEN=.' "$source_file" | cut -d= -f2-)"
-          token="${token%\"}"
-          token="${token#\"}"
-          token="${token%\'}"
-          token="${token#\'}"
+          grep -q '^TELEGRAM_BOT_TOKEN=.' "$envp"
+          grep -q '^LEARNER_TELEGRAM_OUTBOUND_ONLY=true$' "$envp"
+          grep -q 'outbound-only mode: polling disabled' "$target/learnerbot/telegram_ui.py"
+
+          token="$(grep -m1 '^TELEGRAM_BOT_TOKEN=.' "$envp" | cut -d= -f2-)"
+          token="${token%\"}"; token="${token#\"}"; token="${token%\'}"; token="${token#\'}"
           test -n "$token"
           curl -fsS --max-time 15 "https://api.telegram.org/bot${token}/getMe" | grep -q '"ok":true'
-          echo "telegram_token_valid=true"
+          echo 'telegram_token_valid=true'
 
-          ui="$target/learnerbot/telegram_ui.py"
-          if ! grep -q 'outbound-only mode: polling disabled' "$ui"; then
-            sudo -n cp -a "$ui" "$target/backups/telegram_ui.py.before-outbound-only"
-            sudo -n sed -i '/^def start_menu_thread(app):$/a\    if os.getenv("LEARNER_TELEGRAM_OUTBOUND_ONLY","").strip().lower() in {"1","true","yes","on"}:\n        print("[telegram-menu] outbound-only mode: polling disabled")\n        return None' "$ui"
+          recipient="$(awk -F, 'NR>1 && $3=="learner_new_entries_enabled" && tolower($4)=="true" && length($1)>=8 && $1 ~ /^[0-9-]+$/ {print $1; exit}' "$target/CSVbot/user_trading_settings.csv")"
+          if [[ -z "$recipient" ]]; then
+            recipient="$(awk -F, 'NR>1 && tolower($5)=="true" && tolower($6)!="false" && length($1)>=8 && $1 ~ /^[0-9-]+$/ {print $1; exit}' "$target/CSVbot/auto/solana_user_wallets.csv")"
           fi
-          grep -q 'outbound-only mode: polling disabled' "$ui"
-          sudo -n /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m py_compile "$ui"
-          echo "telegram_polling_guard=true"
+          test -n "$recipient"
+          awk -F, -v id="$recipient" 'NR>1 && $1==id && toupper($3)=="ACTIVE" {ok=1} END {exit(ok?0:1)}' "$target/CSVbot/users.csv"
+          echo 'actual_trading_recipient_found=true'
 
-          master="$(awk -F, 'NR>1 && toupper($2)=="MASTER" && toupper($3)=="ACTIVE" && $1 ~ /^[0-9-]+$/ {print $1; exit}' "$target/CSVbot/users.csv")"
-          test -n "$master"
-          envp="$target/.env"
           tmp="$(mktemp)"
-          grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS|LEARNER_TELEGRAM_OUTBOUND_ONLY)=' "$envp" > "$tmp" || true
-          printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" >> "$tmp"
-          printf 'TELEGRAM_CHAT_ID=%s\n' "$master" >> "$tmp"
-          printf 'LEARNER_TELEGRAM_OUTBOUND_ONLY=true\n' >> "$tmp"
-          sudo -n cp -a "$envp" "$target/backups/.env.before-telegram-outbound-fix"
+          grep -v -E '^(TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS)=' "$envp" > "$tmp"
+          printf 'TELEGRAM_CHAT_ID=%s\n' "$recipient" >> "$tmp"
           sudo -n cp "$tmp" "$envp"
           rm -f "$tmp"
-          sudo -n chown ayman01323:ayman01323 "$envp" "$ui"
+          sudo -n chown ayman01323:ayman01323 "$envp"
           sudo -n chmod 600 "$envp"
-          echo "telegram_outbound_configured=true"
+          echo 'telegram_recipient_updated=true'
 
           sudo -n systemctl restart "$service"
           sleep 10
@@ -72,11 +63,20 @@ jobs:
           echo "restart_count_1=$n1"
           echo "restart_count_2=$n2"
 
-          payload="$(printf '{\"chat_id\":\"%s\",\"text\":\"🧠 Learner Bot Telegram connection restored. Outbound trade/status alerts are active. Telegram command polling remains on the main bot only. No trade was placed by this test.\",\"protect_content\":true}' "$master")"
-          curl -fsS --max-time 15 -H 'Content-Type: application/json' -d "$payload" "https://api.telegram.org/bot${token}/sendMessage" | grep -q '"ok":true'
-          echo "smoke_test_ok=true"
+          payload="$(printf '{\"chat_id\":\"%s\",\"text\":\"🧠 Learner Bot Telegram connection restored. Outbound trade/status alerts are active. No trade was placed by this test.\",\"protect_content\":true}' "$recipient")"
+          response="$(curl -sS --max-time 15 -H 'Content-Type: application/json' -d "$payload" "https://api.telegram.org/bot${token}/sendMessage")"
+          if printf '%s' "$response" | grep -q '"ok":true'; then
+            echo 'smoke_test_ok=true'
+          else
+            echo 'smoke_test_ok=false'
+            if printf '%s' "$response" | grep -qi 'chat not found'; then echo 'telegram_error_class=chat_not_found';
+            elif printf '%s' "$response" | grep -qi 'bot was blocked'; then echo 'telegram_error_class=bot_blocked';
+            elif printf '%s' "$response" | grep -qi 'forbidden'; then echo 'telegram_error_class=forbidden';
+            else echo 'telegram_error_class=other'; fi
+            exit 1
+          fi
 
-          journalctl -u "$service" -n 180 --no-pager -o cat 2>/dev/null | grep -Ei 'outbound-only mode|TELEGRAM_BOT_TOKEN|telegram-menu|Main process exited|Failed with result' | tail -n 120 || true
+          journalctl -u "$service" -n 160 --no-pager -o cat 2>/dev/null | grep -Ei 'outbound-only mode|telegram-menu|Main process exited|Failed with result' | tail -n 100 || true
           test "$state1" = active
           test "$state2" = active
           test "$n1" = "$n2"
