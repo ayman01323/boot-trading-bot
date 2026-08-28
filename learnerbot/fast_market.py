@@ -21,6 +21,11 @@ _base_lock=threading.Lock()
 _base_pressure_streak=0
 
 
+def scan_full_power_hot_routes(app,ctxs):
+    """Resolve the scanner dynamically so installed patches stay authoritative."""
+    return _full_power_scanner.scan_full_power_hot_routes(app,ctxs)
+
+
 def _bool(v,default=False):
     if v is None:return default
     return str(v).strip().lower() in {"1","true","yes","on","y"}
@@ -81,9 +86,9 @@ def run_fast_market_pass(app):
     ctxs=[];started=time.monotonic()
     try:
         ctxs=contexts(app,enabled_only=True,with_rpc=False)
-        # Resolve through the module at call time so the installed candidate-rotation
-        # patch is honoured instead of a stale function object captured at import.
-        market_path,market_rows,_power_rejections=_full_power_scanner.scan_full_power_hot_routes(app,ctxs)
+        # This wrapper resolves through the module at call time, so the installed
+        # candidate-rotation patch is honoured instead of a stale imported function.
+        market_path,market_rows,_power_rejections=scan_full_power_hot_routes(app,ctxs)
         learned_rows=_rows(Path(app.csv_dir)/"auto"/"learned_route_opportunities.csv")
         opp_path,live_rows=merge_live_opportunities(app,learned_rows,market_rows)
         eligible=sum(1 for r in live_rows if str(r.get("enabled") or "").lower()=="true")
