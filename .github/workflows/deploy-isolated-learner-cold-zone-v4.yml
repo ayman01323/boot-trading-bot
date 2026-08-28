@@ -1,0 +1,161 @@
+name: Deploy Isolated Learner Cold Zone Strategy v4
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/deploy-isolated-learner-cold-zone-v4.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-isolated-learner-cold-zone
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Deploy and verify Cold Zone strategy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          MOD="$LEARN/learnerbot/solana_cold_zone_strategy_patch.py"
+          MAIN="$LEARN/learnerbot/__main__.py"
+          RELAY=/home/ayman01323/.local/libexec/google_learner_cold_zone_relay.py
+          RELAY_ENV=/home/ayman01323/.config/google-learner-telegram-relay.env
+          UNIT=/etc/systemd/system/google-learner-cold-zone-relay.service
+          BACKUP="$HOME/.cache/cold-zone-v4-${GITHUB_RUN_ID}"
+          mkdir -p "$BACKUP"
+
+          test -d "$LEARN/learnerbot" && test -f "$MAIN" && test -f "$RELAY_ENV"
+          sudo -n test -f "$PROD/learnerbot/__main__.py"
+          sudo -n test -f "$PROD/learnerbot/solana_live_patch.py"
+          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+
+          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import sqlite3,sys
+          con=sqlite3.connect(sys.argv[1],timeout=5)
+          n=con.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND mode='LIVE'").fetchone()[0]
+          con.close(); print(f'predeploy_open_live_positions={n}')
+          if n: raise SystemExit('Refusing Cold Zone cutover while a prior LIVE position is open')
+          PY
+
+          cp -a "$MAIN" "$BACKUP/__main__.py"
+          [[ ! -f "$MOD" ]] || cp -a "$MOD" "$BACKUP/solana_cold_zone_strategy_patch.py"
+          [[ ! -f "$RELAY" ]] || cp -a "$RELAY" "$BACKUP/google_learner_cold_zone_relay.py"
+          [[ ! -f "$UNIT" ]] || sudo -n cp -a "$UNIT" "$BACKUP/google-learner-cold-zone-relay.service"
+          rollback() {
+            rc=$?; echo "cold_zone_rollback=YES rc=$rc"
+            cp -a "$BACKUP/__main__.py" "$MAIN" || true
+            if [[ -f "$BACKUP/solana_cold_zone_strategy_patch.py" ]]; then cp -a "$BACKUP/solana_cold_zone_strategy_patch.py" "$MOD" || true; else rm -f "$MOD" || true; fi
+            if [[ -f "$BACKUP/google_learner_cold_zone_relay.py" ]]; then cp -a "$BACKUP/google_learner_cold_zone_relay.py" "$RELAY" || true; else rm -f "$RELAY" || true; fi
+            if [[ -f "$BACKUP/google-learner-cold-zone-relay.service" ]]; then sudo -n cp -a "$BACKUP/google-learner-cold-zone-relay.service" "$UNIT" || true; else sudo -n rm -f "$UNIT" || true; fi
+            sudo -n systemctl daemon-reload || true
+            sudo -n systemctl restart learnerbot-learn.service || true
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          SRC_COMMIT=21e6334f1e3a54ee7f50becd5804fdd06296c916
+          curl -fsSL --retry 3 --connect-timeout 10 "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_cold_zone_strategy_patch.py" -o "$MOD"
+          curl -fsSL --retry 3 --connect-timeout 10 "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/google_learner_cold_zone_relay.py" -o "$RELAY"
+          chmod 0644 "$MOD"; chmod 0755 "$RELAY"; chown ayman01323:ayman01323 "$MOD" "$RELAY"
+          python3 - "$MOD" "$RELAY" <<'PY'
+          import sys
+          for path in sys.argv[1:]:
+              source=open(path,encoding='utf-8').read()
+              compile(source,path,'exec')
+              print('syntax_ok='+path)
+          PY
+
+          python3 - "$MAIN" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          line='from . import solana_cold_zone_strategy_patch  # noqa: F401\n'
+          s=s.replace(line,''); marker='from .cli import main\n'
+          if marker not in s: raise SystemExit('isolated __main__.py has no cli marker')
+          s=s.replace(marker,'# Isolated learner only: 17-Aug COLD ZONE strategy.\n'+line+marker,1)
+          p.write_text(s,encoding='utf-8')
+          compile(s,str(p),'exec')
+          PY
+          chown ayman01323:ayman01323 "$MAIN"
+
+          python3 - "$MOD" "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import ast,sqlite3,sys
+          tree=ast.parse(open(sys.argv[1],encoding='utf-8').read()); schema=None
+          for node in tree.body:
+              if isinstance(node,ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target,ast.Name) and target.id=='_SCHEMA': schema=ast.literal_eval(node.value)
+          if not schema: raise SystemExit('Cold Zone schema not found')
+          con=sqlite3.connect(sys.argv[2],timeout=10); con.executescript(schema); con.commit(); con.close()
+          PY
+
+          cat > "$BACKUP/unit.new" <<EOF
+          [Unit]
+          Description=Google isolated learner Cold Zone Telegram relay
+          After=network-online.target learnerbot-learn.service
+          Wants=network-online.target
+          [Service]
+          Type=simple
+          User=ayman01323
+          Group=ayman01323
+          EnvironmentFile=$RELAY_ENV
+          ExecStart=/usr/bin/python3 $RELAY
+          Restart=always
+          RestartSec=3
+          NoNewPrivileges=true
+          PrivateTmp=true
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sudo -n install -m 0644 "$BACKUP/unit.new" "$UNIT"
+          sudo -n systemctl daemon-reload
+          sudo -n systemctl enable --now google-learner-cold-zone-relay.service
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 8
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+          sudo -n journalctl -u learnerbot-learn.service --since '3 minutes ago' --no-pager -n 500 | grep -F '[solana-cold-zone] installed=true'
+
+          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import sqlite3,sys
+          con=sqlite3.connect(sys.argv[1],timeout=5)
+          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          for name in ('cold_zone_positions','cold_zone_notifications','cold_zone_decisions'): assert name in tables
+          print('cold_zone_tables=YES')
+          print('open_live_positions='+str(con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]))
+          con.close()
+          PY
+
+          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER" && test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
+          trap - ERR
+          echo 'cold_zone_deploy=SUCCESS'
+          echo 'scope=ISOLATED_LEARNER_ONLY'
+          echo 'strategy_profile=COLD_ZONE_17AUG_V1'
+          echo 'active_position_slots=10'
+          echo 'trade_size_sol=0.0005'
+          echo 'entry_pool_age=0-45m'
+          echo 'target_net_profit=5pct_after_costs'
+          echo 'at_45m=full_exit_if_net_nonnegative'
+          echo 'loss_grace=5m'
+          echo 'at_50m=full_exit_no_pnl_floor'
+          echo 'leader_sell_signals=IGNORED'
+          echo 'partial_sells=OFF'
+          echo 'break_even_trailing_collapse_exit=OFF'
+          echo 'poolcheck=HARD_BLOCKS_PLUS_WARNINGS'
+          echo 'rugged_positions=NONBLOCKING_AFTER_3_FAILURES_60S'
+          echo 'writeoff_reminder=30m'
+          echo 'telegram_true_net=SOL+USD+PCT'
+          echo 'production_files_changed=NO'
