@@ -1,4 +1,4 @@
-name: Apply SiRisky Automatic LIVE Now
+name: Apply SiRisky Automatic LIVE Google Only
 
 on:
   workflow_dispatch:
@@ -6,12 +6,13 @@ on:
     branches: [ops/google-master-menu-cutover-20260827]
     paths:
       - '.github/workflows/deploy-cold-zone-five-leaders-now-20260828.yml'
+      - '.github/sirisky-google-only.trigger'
 
 permissions:
   contents: read
 
 concurrency:
-  group: sirisky-auto-live-now
+  group: sirisky-google-only-auto-live
   cancel-in-progress: false
 
 jobs:
@@ -19,24 +20,23 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Check out trusted current main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Reinstall SiRisky governed LIVE wrapper and apply automatic execution
+      - name: Install and arm SiRisky automatic LIVE on botgoogle only
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          test -f scripts/install_sirisky_governed_live_ops.sh
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/install_sirisky_governed_live_ops.sh \
+            -o "$tmp"
+          grep -q 'manual_approval_enabled,0' "$tmp"
+          grep -q 'manual_approval_require_external_signature,0' "$tmp"
           sudo -n true
-          sudo -n env ARM_NOW=1 bash "$GITHUB_WORKSPACE/scripts/install_sirisky_governed_live_ops.sh"
+          sudo -n env ARM_NOW=1 bash "$tmp"
 
-      - name: Verify live root runtime
+      - name: Verify automatic LIVE root runtime
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -52,7 +52,8 @@ jobs:
             test "$(value manual_approval_require_external_signature)" = 0
             test "$(value telegram_manual_run_enabled)" = 0
             systemctl is-active --quiet sirisky.service
-            echo "=== VERIFIED SIRISKY AUTO LIVE ==="
+            echo "=== VERIFIED SIRISKY GOOGLE-ONLY AUTO LIVE ==="
+            echo "host=$(hostname)"
             echo "service=$(systemctl is-active sirisky.service)"
             echo "trading_mode=$(value trading_mode)"
             echo "live_enabled=$(value live_enabled)"
