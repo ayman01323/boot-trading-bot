@@ -2,11 +2,13 @@ from __future__ import annotations
 
 """45-second presentation-only open-position reporting for the isolated learner.
 
-This patch does not alter the 15-second Solana safety/exit monitor. It starts a
-separate reporting thread after the existing Telegram/Solana workers are started.
+NewPoll45 is independent of the faster Solana safety/exit monitor.  Pool-at-open
+is persisted only for positions created after this capture layer is installed;
+we never invent a historical baseline for older positions.
 """
 
 import html
+import json
 import sys
 import threading
 import time
@@ -24,9 +26,11 @@ _REPORT_SECONDS = 45
 _PREV_START_MENU = _ui.start_menu_thread
 _START_LOCK = threading.Lock()
 _STARTED = False
+_POOL_OPEN_PREFIX = "learner_pool_open:"
+_POOL_CONTEXT_MARKER = "<!--learner-pool-context-->"
 
-# Last successfully delivered NewPoll45 snapshot per position. Process-local on
-# purpose: no trading state or wallet data is mutated by this presentation layer.
+# Previous successfully delivered 45-second report.  This is deliberately
+# process-local because it is a presentation delta, not trading/accounting state.
 _PREVIOUS: dict[str, dict[str, Decimal]] = {}
 
 
@@ -84,10 +88,7 @@ def _pool_snapshot(mint: str, cfg: dict, sol_price: Decimal) -> dict[str, Decima
         total_usd = sum((_pool._liq_usd(p) for p in pairs), Decimal(0))
         sol_quote = sum(
             (
-                max(
-                    Decimal(0),
-                    _d((p.get("liquidity") or {}).get("quote"), 0),
-                )
+                max(Decimal(0), _d((p.get("liquidity") or {}).get("quote"), 0))
                 for p in pairs
                 if str((p.get("quoteToken") or {}).get("address") or "") == _sol.WSOL_MINT
             ),
@@ -95,7 +96,7 @@ def _pool_snapshot(mint: str, cfg: dict, sol_price: Decimal) -> dict[str, Decima
         )
         sol_equiv = total_usd / sol_price if total_usd > 0 and sol_price > 0 else Decimal(0)
         return {
-            "available": True,
+            "available": bool(pairs),
             "usd": total_usd,
             "sol_equiv": sol_equiv,
             "sol_quote": sol_quote,
@@ -109,6 +110,114 @@ def _pool_snapshot(mint: str, cfg: dict, sol_price: Decimal) -> dict[str, Decima
             "sol_quote": Decimal(0),
             "cached": False,
         }
+
+
+def _pool_key(position_id: str) -> str:
+    return _POOL_OPEN_PREFIX + str(position_id)
+
+
+def load_pool_open(app, position_id: str) -> dict:
+    if not position_id:
+        return {}
+    try:
+        with _sol.connect(app) as conn:
+            raw = _sol._state(conn, _pool_key(position_id), "") or ""
+        value = json.loads(raw) if raw else {}
+        if not isinstance(value, dict):
+            return {}
+        return value
+    except Exception:
+        return {}
+
+
+def capture_pool_open(app, position_id: str, mint: str) -> dict:
+    """Persist the first proved pool snapshot for one newly opened position.
+
+    Existing values are immutable-by-policy: repeated notifications/restarts can
+    never move the 'open' baseline forward in time.
+    """
+    if not position_id or not mint:
+        return {}
+    existing = load_pool_open(app, position_id)
+    if existing:
+        return existing
+
+    cfg = _sol.settings(app)
+    sol_price = _sol_usd(app)
+    snap = _pool_snapshot(mint, cfg, sol_price)
+    if not bool(snap.get("available")):
+        return {}
+
+    value = {
+        "position_id": str(position_id),
+        "mint": str(mint),
+        "captured_at": int(time.time()),
+        "usd": str(_d(snap.get("usd"), 0)),
+        "sol_equiv": str(_d(snap.get("sol_equiv"), 0)),
+        "sol_quote": str(_d(snap.get("sol_quote"), 0)),
+        "sol_usd": str(sol_price),
+        "source": "DEXSCREENER_SHARED_CACHE_AT_POSITION_OPEN",
+    }
+    try:
+        with _sol._DB_LOCK, _sol.connect(app) as conn:
+            # Re-check under the DB lock so concurrent BUY-notification paths can
+            # never replace an earlier baseline.
+            raw = _sol._state(conn, _pool_key(position_id), "") or ""
+            if raw:
+                try:
+                    prior = json.loads(raw)
+                    if isinstance(prior, dict) and prior:
+                        return prior
+                except Exception:
+                    pass
+            _sol._set_state(conn, _pool_key(position_id), json.dumps(value, separators=(",", ":")))
+        return value
+    except Exception:
+        return {}
+
+
+def _pool_value_line(label: str, pool: dict, sol_price: Decimal) -> str:
+    usd = _d(pool.get("usd"), 0)
+    sol_equiv = _d(pool.get("sol_equiv"), 0)
+    if sol_equiv <= 0 and usd > 0 and sol_price > 0:
+        sol_equiv = usd / sol_price
+    sol_text = f"≈ {sol_equiv:,.4f} SOL-equivalent" if sol_equiv > 0 else "SOL-equivalent unavailable"
+    return f"💧 {label}: <b>{sol_text}</b> • <b>{_usd_text(usd)}</b>"
+
+
+def pool_context_html(app, position: dict, current: dict | None = None) -> str:
+    """Reusable pool block for every position-specific learner Telegram message."""
+    pid = str((position or {}).get("position_id") or "")
+    mint = str((position or {}).get("mint") or "")
+    cfg = _sol.settings(app)
+    sol_price = _sol_usd(app)
+    current = dict(current or _pool_snapshot(mint, cfg, sol_price))
+    opened = load_pool_open(app, pid)
+
+    lines = [_POOL_CONTEXT_MARKER]
+    if opened:
+        lines.append(_pool_value_line("Pool at open", opened, sol_price))
+    else:
+        lines.append("💧 Pool at open: <b>unavailable — position predates pool-open capture or the open snapshot failed</b>")
+
+    if bool(current.get("available")):
+        lines.append(_pool_value_line("Pool current", current, sol_price))
+        current_usd = _d(current.get("usd"), 0)
+        opened_usd = _d(opened.get("usd"), 0) if opened else Decimal(0)
+        if opened_usd > 0:
+            delta = current_usd - opened_usd
+            pct = delta * Decimal(100) / opened_usd
+            lines.append(f"📊 Pool change since open: <b>{pct:+.2f}%</b> • <b>{_usd_text(delta)}</b>")
+        quote_now = _d(current.get("sol_quote"), 0)
+        quote_open = _d(opened.get("sol_quote"), 0) if opened else Decimal(0)
+        if quote_open > 0 or quote_now > 0:
+            lines.append(f"🌊 SOL-quoted depth: open <b>{quote_open:,.4f} SOL</b> → current <b>{quote_now:,.4f} SOL</b>")
+    else:
+        lines.append("💧 Pool current: <b>temporarily unavailable</b>")
+
+    if mint:
+        lines.append(f'🔎 <a href="https://www.dexview.com/solana/{html.escape(mint, quote=True)}">DEX Viewer</a>')
+    return "\n".join(lines)
 
 
 def _age_text(entry_ts) -> str:
@@ -163,35 +272,20 @@ def _position_section(app, position: dict, index: int, total: int, cfg: dict, so
             + (f" (≈ {_usd_text(delta_net * sol_price)})" if sol_price > 0 else " (USD unavailable)")
         )
 
-    if bool(pool.get("available")):
-        pool_usd = _d(pool.get("usd"), 0)
-        pool_sol = _d(pool.get("sol_equiv"), 0)
-        sol_quote = _d(pool.get("sol_quote"), 0)
-        if sol_price > 0:
-            lines.append(
-                f"💧 Pool liquidity: <b>≈ {pool_sol:,.4f} SOL-equivalent</b> • "
-                f"<b>{_usd_text(pool_usd)}</b>"
-            )
-        else:
-            lines.append(f"💧 Pool liquidity: <b>SOL-equivalent unavailable</b> • <b>{_usd_text(pool_usd)}</b>")
-        if sol_quote > 0:
-            lines.append(f"🌊 SOL-quoted pool depth: <b>{sol_quote:,.4f} SOL</b>")
-        if previous is not None and "pool_usd" in previous:
-            prior_pool = previous.get("pool_usd", Decimal(0))
-            delta_pool = pool_usd - prior_pool
-            if prior_pool > 0:
-                delta_pool_pct = delta_pool * Decimal(100) / prior_pool
-                lines.append(
-                    f"💧 Pool Δ vs previous NewPoll45: <b>{delta_pool_pct:+.2f}%</b> • "
-                    f"<b>{_usd_text(delta_pool)}</b>"
-                )
-    else:
-        lines.append("💧 Pool liquidity: <b>temporarily unavailable</b>")
+    lines.append(pool_context_html(app, position, pool))
 
-    lines += [
-        f"⏱ Open for: <b>{_age_text(position.get('entry_ts'))}</b>",
-        f'🔎 <a href="https://www.dexview.com/solana/{html.escape(mint, quote=True)}">DEX Viewer</a>',
-    ]
+    if bool(pool.get("available")) and previous is not None and "pool_usd" in previous:
+        pool_usd = _d(pool.get("usd"), 0)
+        prior_pool = previous.get("pool_usd", Decimal(0))
+        if prior_pool > 0:
+            delta_pool = pool_usd - prior_pool
+            delta_pool_pct = delta_pool * Decimal(100) / prior_pool
+            lines.append(
+                f"🔁 Pool Δ vs previous NewPoll45: <b>{delta_pool_pct:+.2f}%</b> • "
+                f"<b>{_usd_text(delta_pool)}</b>"
+            )
+
+    lines.append(f"⏱ Open for: <b>{_age_text(position.get('entry_ts'))}</b>")
 
     snapshot = {
         "pct": current_pct,
@@ -246,7 +340,7 @@ def _emit(app) -> None:
         text = "\n".join([
             "📡 <b>LEARNER POSITION UPDATE — NewPoll45</b>",
             "🔒 <b>LEARNER ONLY • GOOGLE TEST</b>",
-            f"⏱ Report: <b>45s</b> • safety/exit monitor remains <b>{html.escape(str(cfg.get('position_poll_seconds', '15')))}s</b>",
+            f"⏱ Report: <b>45s</b> • safety/exit monitor remains <b>{html.escape(str(cfg.get('position_poll_seconds', '10')))}s</b>",
             "━━━━━━━━━━━━",
             "",
             "\n\n━━━━━━━━━━━━\n\n".join(sections),
@@ -264,15 +358,12 @@ def _emit(app) -> None:
             print("[learner-newpoll45] send", type(exc).__name__, exc, flush=True)
             continue
 
-        # "Previous poll" means previous successfully delivered NewPoll45.
         for pid, snapshot in snapshots:
             if pid:
                 _PREVIOUS[pid] = snapshot
 
 
 def _report_worker(app) -> None:
-    # Let the normal workers populate the first current-exit valuation before the
-    # first presentation report.
     time.sleep(_REPORT_SECONDS)
     while True:
         started = time.monotonic()
@@ -297,7 +388,7 @@ def _start_reporter(app) -> None:
         name="learner-newpoll45-position-reporter",
     ).start()
     print(
-        "[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled",
+        "[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=open+current dexscreener usd=enabled",
         flush=True,
     )
 
@@ -313,11 +404,7 @@ def install() -> None:
         return
     _ui.start_menu_thread = start_menu_thread
 
-    # cli imports start_menu_thread by value. On this heavily patched runtime the
-    # cli module may already have been imported before this final isolated-only
-    # presentation patch is installed, so update that cached symbol as well. This
-    # is presentation/thread startup only; no trading or Solana monitor hook is
-    # replaced.
+    # cli imports start_menu_thread by value. Update that cached symbol too.
     cli_mod = sys.modules.get("learnerbot.cli")
     if cli_mod is not None:
         setattr(cli_mod, "start_menu_thread", start_menu_thread)
