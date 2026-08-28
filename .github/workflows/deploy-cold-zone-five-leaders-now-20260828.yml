@@ -20,26 +20,28 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 20
     steps:
-      - name: Repair trusted main checkout in place on botgoogle
+      - name: Create clean trusted main checkout on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo 'google_only_trigger=2026-08-28T10:16Z'
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           SRC=/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot
-          mkdir -p "$SRC"
-          cd "$SRC"
-          rm -rf .git
-          git init
-          git remote add origin https://github.com/ayman01323/boot-trading-bot.git
-          git fetch --depth 1 origin main
-          git checkout -B main FETCH_HEAD
-          git reset --hard FETCH_HEAD
-          test -d .git
-          test -f SiRisky/overrides/run.py
-          git status --short --branch
-          echo "TARGET_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          PARENT="$(dirname "$SRC")"
+          STALE="$PARENT/boot-trading-bot.stale-${GITHUB_RUN_ID}"
+          cd /home/ayman01323
+          if [[ -e "$SRC" ]]; then
+            mv "$SRC" "$STALE"
+          fi
+          mkdir -p "$PARENT"
+          git clone --depth 1 --branch main \
+            https://github.com/ayman01323/boot-trading-bot.git "$SRC"
+          test -d "$SRC/.git"
+          test -f "$SRC/SiRisky/overrides/run.py"
+          TARGET_SHA="$(git -C "$SRC" rev-parse HEAD)"
+          echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
+          echo "checkout_sha=$TARGET_SHA"
+          echo "stale_checkout=$STALE"
 
       - name: Deploy current main SiRisky files safely in SHADOW
         shell: bash
