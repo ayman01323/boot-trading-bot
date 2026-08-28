@@ -1,0 +1,38 @@
+name: Temporary SiRisky Five Trade Profile Read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/temp-sirisky-five-trade-profile-read.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read SiRisky profile backups only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          echo '=== CURRENT SERVICE ==='
+          sudo -n systemctl is-active sirisky.service || true
+          echo '=== CURRENT OPEN POSITIONS ==='
+          sudo -n bash -lc "cd /root/SiRisky && if test -f CSV/open_positions.csv; then cat CSV/open_positions.csv; else echo NO_OPEN_POSITIONS_FILE; fi"
+          echo '=== BACKUP FILES ==='
+          sudo -n find /root/SiRisky/data -type f \( -name 'live-armed-runtime-backup-*.csv' -o -name 'runtime.csv' -o -name 'risk.csv' -o -name 'stage3_risk.csv' \) -printf '%TY-%Tm-%TdT%TH:%TM:%TS %p\n' 2>/dev/null | sort | tail -n 200
+          echo '=== CURRENT RELEVANT RUNTIME ==='
+          sudo -n grep -E '^(key,value|trading_mode,|paper_auto_trade_enabled,|live_enabled,|broadcast_enabled,|auto_discovery_enabled,|auto_promote_to_selected,|auto_evaluate_candidate_limit,|manual_approval_enabled,|armed_manual_approval,|manual_approval_ttl_seconds,|manual_approval_require_external_signature,|telegram_manual_run_enabled,|poll_seconds,|auto_probe_sol,|auto_entry_usd,|auto_entry_min_sol,|auto_entry_max_sol,|max_buy_network_fee_pct,|max_sell_network_fee_pct,|max_emergency_sell_network_fee_pct,|max_priority_fee_lamports,)' /root/SiRisky/CSV/runtime.csv || true
+          echo '=== CURRENT RELEVANT RISK ==='
+          sudo -n grep -E '^(key,value|max_open_positions,|max_round_trip_cost_pct,|fast_take_profit_floor_pct,|fast_take_profit_cap_pct,|fast_target_net_pct,|fast_target_net_cap_pct,|fast_stop_net_pct,|warm_reversal_pct,|hot_reversal_pct,|fast_max_hold_cap_seconds,|min_pool_position_depth_multiple,|min_exit_health_pct,|lp_recent_sell_sim_max_age_sec,)' /root/SiRisky/CSV/risk.csv /root/SiRisky/CSV/stage3_risk.csv 2>/dev/null || true
+          echo '=== MORNING BACKUP RELEVANT VALUES ==='
+          sudo -n bash -lc "for f in /root/SiRisky/data/live-armed-runtime-backup-*.csv; do test -f \"\$f\" || continue; printf '\nFILE %s\n' \"\$f\"; grep -E '^(key,value|trading_mode,|paper_auto_trade_enabled,|live_enabled,|broadcast_enabled,|auto_discovery_enabled,|auto_promote_to_selected,|auto_evaluate_candidate_limit,|manual_approval_enabled,|armed_manual_approval,|manual_approval_ttl_seconds,|manual_approval_require_external_signature,|telegram_manual_run_enabled,|poll_seconds,|auto_probe_sol,|auto_entry_usd,|auto_entry_min_sol,|auto_entry_max_sol,|max_buy_network_fee_pct,|max_sell_network_fee_pct,|max_emergency_sell_network_fee_pct,|max_priority_fee_lamports,)' \"\$f\" || true; done"
+          echo '=== HRCWH BACKUP RELEVANT VALUES ==='
+          sudo -n bash -lc "find /root/SiRisky/data -type f \( -path '*/hrcwh-code-backup-*/runtime.csv' -o -path '*/hrcwh-code-backup-*/risk.csv' -o -path '*/hrcwh-code-backup-*/stage3_risk.csv' \) -print0 2>/dev/null | sort -z | while IFS= read -r -d '' f; do printf '\nFILE %s\n' \"\$f\"; grep -E '^(key,value|trading_mode,|paper_auto_trade_enabled,|live_enabled,|broadcast_enabled,|auto_discovery_enabled,|auto_promote_to_selected,|auto_evaluate_candidate_limit,|manual_approval_enabled,|armed_manual_approval,|manual_approval_ttl_seconds,|manual_approval_require_external_signature,|telegram_manual_run_enabled,|poll_seconds,|auto_probe_sol,|auto_entry_usd,|auto_entry_min_sol,|auto_entry_max_sol,|max_buy_network_fee_pct,|max_sell_network_fee_pct,|max_emergency_sell_network_fee_pct,|max_priority_fee_lamports,|max_open_positions,|max_round_trip_cost_pct,|fast_take_profit_floor_pct,|fast_take_profit_cap_pct,|fast_target_net_pct,|fast_target_net_cap_pct,|fast_stop_net_pct,|warm_reversal_pct,|hot_reversal_pct,|fast_max_hold_cap_seconds,|min_pool_position_depth_multiple,|min_exit_health_pct,|lp_recent_sell_sim_max_age_sec,)' \"\$f\" || true; done"
+          echo '=== EFFECTIVE SIZE ==='
+          sudo -n bash -lc "cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -c 'from sirisky.config import Settings; from sirisky.safety_v2 import entry_sol; s=Settings.load(); print(\"effective_entry_sol=%.9f\" % entry_sol(s))'"
