@@ -15,16 +15,19 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Locate exact cold-zone refusal formatter
+      - name: Inspect Learner cold-zone refusal notification path
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          echo '=== exact phrase ==='
-          sudo -n grep -Rsn --binary-files=without-match -F 'COLD ZONE BUY REFUSED' /root/SiRisky /home/ayman01323/BOOT 2>/dev/null | head -20 || true
-          echo '=== deterioration phrase ==='
-          sudo -n grep -Rsn --binary-files=without-match -F 'entry deterioration' /root/SiRisky /home/ayman01323/BOOT 2>/dev/null | head -30 || true
-          echo '=== warning code ==='
-          sudo -n grep -Rsn --binary-files=without-match -F 'POOL_NEW_COOLING' /root/SiRisky /home/ayman01323/BOOT 2>/dev/null | head -30 || true
+          root=/home/ayman01323/BOOT/testingbots/learn
+          echo '=== cold zone definitions ==='
+          sudo -n grep -Rsn --include='*.py' -E 'cold_zone_decisions|COLD_ZONE_OPEN|ACTUAL_SIZE_PREFLIGHT|cold_zone' "$root/learnerbot" 2>/dev/null | head -100 || true
+          echo '=== reject action consumers ==='
+          sudo -n grep -Rsn --include='*.py' -E 'action.*REJECT|REJECT.*action|\"REJECT\"|\x27REJECT\x27' "$root/learnerbot" 2>/dev/null | head -120 || true
+          echo '=== telegram send helpers ==='
+          sudo -n grep -Rsn --include='*.py' -E 'sendMessage|TELEGRAM_BOT_TOKEN|telegram.*send|send.*telegram' "$root/learnerbot" 2>/dev/null | head -120 || true
+          echo '=== solana_sibot target region ==='
+          sudo -n sed -n '700,850p' "$root/learnerbot/solana_sibot.py"
           echo '=== service ==='
           systemctl is-active learnerbot-learn.service || true
