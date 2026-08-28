@@ -1,4 +1,4 @@
-name: Finalize SiRisky Telegram Reporting Google Only
+name: SiRisky One USD Safety Audit Google Only
 
 on:
   workflow_dispatch:
@@ -11,11 +11,11 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  audit:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Finalize BUY SELL and NewPoll45 Telegram reporting on botgoogle
+      - name: Audit fee construction and recoverable token rent on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,7 +24,7 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/721fc8c7b09f6e0a60054940bcd449755c70b439/scripts/sirisky_google_telegram_finalize.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/8388026ed82027ab8e3c577cc0f86f00b2c8d332/scripts/sirisky_google_one_usd_safety_audit.sh \
             -o "$tmp"
-          grep -q 'FINALIZE SIRISKY TELEGRAM POSITION REPORTER' "$tmp"
+          grep -q 'SIRISKY ONE USD SAFETY AUDIT' "$tmp"
           bash "$tmp"
