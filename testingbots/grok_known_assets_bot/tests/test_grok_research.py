@@ -1,5 +1,3 @@
-from dataclasses import replace
-
 import pytest
 from pydantic import ValidationError
 
@@ -35,8 +33,10 @@ def test_settings_defaults_and_forbid_extra_fields():
     settings = GrokResearchSettings()
     assert settings.min_confidence == 0.60
     assert settings.max_source_age_seconds == 20.0
-    assert settings.momentum_5m_min_pct == 0.30
+    assert settings.momentum_5m_min_pct == -0.05
     assert settings.momentum_5m_max_pct == 5.00
+    assert settings.momentum_15m_min_pct == -0.30
+    assert settings.require_positive_momentum_15m is False
     assert settings.stop_loss_min_fraction == 0.025
     assert settings.take_profit_2_fraction == 0.040
     with pytest.raises(ValidationError):
@@ -72,6 +72,26 @@ def test_strong_observation_qualifies_and_features_are_immutable():
         assessment.features["freshness_score"] = 0.0
 
 
+def test_flat_native_sol_momentum_is_scored_not_hard_rejected():
+    assessment = GrokStrategy(GrokResearchSettings()).assess(
+        observation(momentum_5m_pct=0.010, momentum_15m_pct=0.000)
+    )
+    assert assessment.label == "QUALIFY"
+    assert assessment.confidence >= 0.60
+    assert not any("momentum_5m_out_of_range" in reason for reason in assessment.reasons)
+    assert not any("15m_momentum" in reason for reason in assessment.reasons)
+
+
+def test_small_native_sol_pullback_is_scored_not_hard_rejected():
+    assessment = GrokStrategy(GrokResearchSettings()).assess(
+        observation(momentum_5m_pct=-0.048, momentum_15m_pct=-0.077)
+    )
+    assert assessment.label == "QUALIFY"
+    assert assessment.confidence >= 0.60
+    assert assessment.features["momentum_5m_score"] >= 0.0
+    assert assessment.features["momentum_15m_score"] > 0.0
+
+
 @pytest.mark.parametrize(
     ("changes", "reason_fragment"),
     [
@@ -85,9 +105,9 @@ def test_strong_observation_qualifies_and_features_are_immutable():
         ({"spread_bps": 81.0}, "wide_or_invalid_spread"),
         ({"impact_bps": 101.0}, "high_or_invalid_impact"),
         ({"momentum_1m_pct": -0.51}, "adverse_1m_momentum"),
-        ({"momentum_5m_pct": 0.29}, "momentum_5m_out_of_range"),
+        ({"momentum_5m_pct": -0.051}, "momentum_5m_out_of_range"),
         ({"momentum_5m_pct": 5.01}, "momentum_5m_out_of_range"),
-        ({"momentum_15m_pct": 0.0}, "non_positive_15m_momentum"),
+        ({"momentum_15m_pct": -0.301}, "adverse_15m_momentum"),
         ({"estimated_fee_bps": -1.0}, "invalid_negative_cost_component"),
     ],
 )
@@ -151,10 +171,11 @@ def test_zero_thresholds_are_safe_and_do_not_divide_by_zero():
     assert 0.0 <= assessment.confidence <= 1.0
 
 
-def test_positive_15m_requirement_can_be_disabled():
-    settings = GrokResearchSettings(require_positive_momentum_15m=False)
-    assessment = GrokStrategy(settings).assess(observation(momentum_15m_pct=-2.0))
-    assert assessment.label == "QUALIFY"
+def test_legacy_positive_15m_strict_mode_still_available():
+    settings = GrokResearchSettings(require_positive_momentum_15m=True)
+    assessment = GrokStrategy(settings).assess(observation(momentum_15m_pct=0.0))
+    assert assessment.label == "REJECT"
+    assert any("non_positive_15m_momentum" in reason for reason in assessment.reasons)
 
 
 def test_weight_sum_is_exactly_one():
