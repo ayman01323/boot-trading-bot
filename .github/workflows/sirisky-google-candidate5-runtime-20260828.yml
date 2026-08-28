@@ -1,0 +1,30 @@
+name: SiRisky Google Candidate 5 Runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-google-candidate5-runtime-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Apply candidate coverage 5 at fixed 0.009 SOL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/5e16977ff909f7d003a343cd434cdfaf43ba3913/scripts/sirisky_google_candidate_coverage_5_009.sh \
+            -o "$tmp"
+          grep -q 'SIRISKY 0.009 SOL CANDIDATE COVERAGE 5' "$tmp"
+          bash "$tmp"
