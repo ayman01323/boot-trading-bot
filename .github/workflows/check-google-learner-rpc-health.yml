@@ -26,13 +26,14 @@ jobs:
           echo "pid=$(systemctl show -p MainPID --value "$service")"
 
           sudo -n TARGET="$target" SERVICE="$service" python3 - <<'PY'
-          import os, re, shlex, json, time
+          import os, re, shlex, json, time, csv
           from pathlib import Path
           import urllib.request, urllib.error
 
           target=Path(os.environ['TARGET'])
           service=os.environ['SERVICE']
           env={}
+          public='https://api.mainnet-beta.solana.com'
 
           def add_line(line):
               line=line.strip()
@@ -43,11 +44,10 @@ jobs:
               if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k):
                   return
               v=v.strip()
-              if (len(v)>=2 and v[0]==v[-1] and v[0] in "'\""):
+              if len(v)>=2 and v[0]==v[-1] and v[0] in "'\"":
                   v=v[1:-1]
               env[k]=v
 
-          # Learner-local env files first. Never print contents.
           candidates=[target/'.env', target/'learnerbot.env', Path('/var/tmp/ai_council_runtime.env')]
           for p in candidates:
               try:
@@ -56,7 +56,6 @@ jobs:
               except Exception:
                   pass
 
-          # Systemd EnvironmentFile entries, if any.
           try:
               import subprocess
               out=subprocess.check_output(['systemctl','show',service,'-p','EnvironmentFiles','--value'], text=True, stderr=subprocess.DEVNULL)
@@ -82,13 +81,26 @@ jobs:
           add(env.get('HELIUS_RPC_URL',''),'HELIUS_RPC_URL')
           hk=env.get('HELIUS_API_KEY','').strip()
           if hk: add('https://mainnet.helius-rpc.com/?api-key='+hk,'HELIUS_API_KEY')
-          add('https://api.mainnet-beta.solana.com','PUBLIC_FALLBACK')
+
+          stored_found=False
+          for settings_path in (target/'CSVbot'/'solana_settings.csv', target/'CSVbot'/'auto'/'solana_settings.csv'):
+              try:
+                  if settings_path.is_file():
+                      with settings_path.open(newline='', errors='ignore') as f:
+                          for row in csv.DictReader(f):
+                              if str(row.get('setting') or '').strip()=='rpc_url':
+                                  val=str(row.get('value') or '').strip()
+                                  if val:
+                                      stored_found=True
+                                      add(val,'SOLANA_SETTINGS_CSV')
+              except Exception:
+                  pass
+          print('stored_rpc_setting_found=', 'YES' if stored_found else 'NO')
+          add(public,'PUBLIC_FALLBACK')
 
           print('configured_rpc_candidates=', len(urls))
-          if len(urls)==1 and urls[0][1]=='PUBLIC_FALLBACK':
-              print('private_rpc_config_found=NO')
-          else:
-              print('private_rpc_config_found=YES')
+          private=any(url != public for url,_ in urls)
+          print('private_rpc_config_found=', 'YES' if private else 'NO')
 
           def classify_http(code):
               if code in (401,403): return 'AUTH_FAILURE'
@@ -102,14 +114,13 @@ jobs:
               t=time.monotonic()
               try:
                   with urllib.request.urlopen(req, timeout=timeout) as r:
-                      code=r.status
                       body=r.read(65536)
                   ms=(time.monotonic()-t)*1000
               except urllib.error.HTTPError as e:
                   return False, classify_http(e.code), (time.monotonic()-t)*1000, None
               except Exception as e:
                   name=type(e).__name__
-                  if 'timeout' in str(e).lower() or name in ('TimeoutError',): name='TIMEOUT'
+                  if 'timeout' in str(e).lower() or name=='TimeoutError': name='TIMEOUT'
                   return False, name, (time.monotonic()-t)*1000, None
               try:
                   obj=json.loads(body.decode('utf-8','replace'))
@@ -126,7 +137,7 @@ jobs:
 
           healthy=0
           for i,(url,source) in enumerate(urls,1):
-              ok1,s1,ms1,res1=call(url,'getHealth')
+              ok1,s1,ms1,_=call(url,'getHealth')
               ok2,s2,ms2,res2=call(url,'getSlot')
               ok=ok1 and ok2 and isinstance(res2,int)
               if ok: healthy+=1
