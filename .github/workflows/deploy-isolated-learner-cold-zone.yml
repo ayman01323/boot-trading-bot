@@ -1,0 +1,172 @@
+name: Deploy Isolated Learner Cold Zone Strategy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/deploy-isolated-learner-cold-zone.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-isolated-learner-cold-zone
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Deploy Cold Zone strategy to isolated learner only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          MOD="$LEARN/learnerbot/solana_cold_zone_strategy_patch.py"
+          MAIN="$LEARN/learnerbot/__main__.py"
+          RELAY=/home/ayman01323/.local/libexec/google_learner_cold_zone_relay.py
+          RELAY_ENV=/home/ayman01323/.config/google-learner-telegram-relay.env
+          RELAY_STATE=/home/ayman01323/.local/state/google-learner-cold-zone-relay.json
+          UNIT=/etc/systemd/system/google-learner-cold-zone-relay.service
+          BACKUP="$HOME/.cache/cold-zone-${GITHUB_RUN_ID}"
+          mkdir -p "$BACKUP"
+
+          test -d "$LEARN/learnerbot"
+          test -f "$MAIN"
+          test -f "$PROD/learnerbot/__main__.py"
+          test -f "$PROD/learnerbot/solana_live_patch.py"
+          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+
+          cp -a "$MAIN" "$BACKUP/__main__.py"
+          [[ ! -f "$MOD" ]] || cp -a "$MOD" "$BACKUP/solana_cold_zone_strategy_patch.py"
+          [[ ! -f "$RELAY" ]] || cp -a "$RELAY" "$BACKUP/google_learner_cold_zone_relay.py"
+          [[ ! -f "$UNIT" ]] || sudo -n cp -a "$UNIT" "$BACKUP/google-learner-cold-zone-relay.service"
+
+          rollback() {
+            rc=$?
+            echo "cold_zone_rollback=YES rc=$rc"
+            cp -a "$BACKUP/__main__.py" "$MAIN" || true
+            if [[ -f "$BACKUP/solana_cold_zone_strategy_patch.py" ]]; then
+              cp -a "$BACKUP/solana_cold_zone_strategy_patch.py" "$MOD" || true
+            else
+              rm -f "$MOD" || true
+            fi
+            if [[ -f "$BACKUP/google_learner_cold_zone_relay.py" ]]; then
+              cp -a "$BACKUP/google_learner_cold_zone_relay.py" "$RELAY" || true
+            fi
+            if [[ -f "$BACKUP/google-learner-cold-zone-relay.service" ]]; then
+              sudo -n cp -a "$BACKUP/google-learner-cold-zone-relay.service" "$UNIT" || true
+            fi
+            sudo -n systemctl daemon-reload || true
+            sudo -n systemctl restart learnerbot-learn.service || true
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          STRATEGY_B64='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'
+          RELAY_B64='H4sIABY/kWoC/41WTW/bOBC961dw04MkQJHc5LIw6hZJ426LTeLAMbBYBIFASyObG4pUSSqON8h/3yEpObKDduuDzY/h48x7M0O/+y1rtcqWTGQgHkmzNWspToNKyZrkedWaVkGeE1Y3UhlChZCGGiaFDoJu7R8tRT+Wuh/p75wZOO2nhtXQj1vFOVumDVX6cE3B9xa08dc31Kxxsb/7BqdBcHFOJm4Yhdla1pDRbU3F6P3pyWl2PpstMoPnmVgtpdEZB6pEVlJDMy05FTTXDDfSzrkwDm4XZ4vpjxFTLgvKM40xQ7aScsXh2IGCOi4kL4//lQKOFXC6TS0PiLiY/Tm9RkSpUySUKSnSFZgoXEwvp3/Mz67y89kid0ZhQsIwTrVRrIn63/Bot3QUHsXBzezyMr+dfp5dX9wi6kkQBCVUhEta5s6tKCbHH0nJCjMOCH6M2vqB/ShA/YSTKLVHdOQCRp7xuIEnE4EoZIl8TcLWVMe/h3HsDsNTAY0hU/eDcr+BfA451SZnZTgmo5fOK00fofPKfY+dX87BayTKg3gPUH0QJq0fSqYiP9GThWohwbsZIssHN/XumLrB4P3JDTPrXLdVxZ6iMMWdcGeTbhTq6gNzMZdt3WjvS0I0ZlH+AFt/T4wXHcbucFA4BQ2nBUQImfhb4z5CEGVUrKmNfExQp4TY29zQxbmUkvs4WUWwWIjPB6ncpDvZT93RQ2a/UI51YRds4mLYw3pJceLchuh5dzDsYEPnRu9enLwa2Iu6XTscbjnYvEZENAi/Lq4uw8FuyTRdcsg3sMwbuoK8UfDIYGNtDbLY2b7EaeeV5xDr+NXxrqjTuf+NduhVuDam0eMsow1LDXBYKVqnUq0yrNJnx9xLZim/Aq3x9oFnlpuJ/XpdqgF7VzkJb2a3i84yflsSNn0OPcOpbEBEOE9cq5KtmbwfxYRqDEU32O7gFWGg1cloRD5MdjapzbRWkw/kdDT6tTryavvkclVJKwMq6oprTJjw9cOxJu5sNd3vZdfFeerKRUfxG+i7+7fRF1KgMF3/S3EmoDBRFVaMw/j54vzlk82EiZLYnFrFuorsKTmJh0Cpkpu8ooWRajsAncvNzsr7hpvWHJ6gaLE17BF5dIt98fOCvCdf5rOrDiSvMXxQ5K+v0/mUmG0Dk9DYPAzJ2fUFEbTGBdt/c9t/cySCVazw71J4tMOP0wpMge9Zn5YD4rxn+6JaJwsu9dD8LZ9uRW5sVE6QCAu/woJWqNVP4jzqIx16ixInfd7b8QMTZdJIzfrNGvVPap/9+drUPCkwSwxgnpg9fPw4An/ASkflwd0fP5HZ/GI6J+d/H26Ry29X31CW0Qg9T/auitCnPkHjZNBLOr4p51F8H/yM1Y5RS+OvlQlyHwSujyPtw8cv2KwxdYnNU3+ok2ZQS9ZdZ+0f4v7dim0XHnXvnRNQbqyEFuD1foFUTGwVRrjuAQ6Y6oGGGeaeCdttd4cGKvsD+PQnZM9kKPPOJt5PURfH3S6Ge/Stpk//E2Jio9hP6cOX+nUX+GGve0dusMGBegSEK0Hhi4l/BEsrDRa+WTON+mEbIF0AROATQxrJebqHs0RNHnxLwn6Sag7QRMP/N3HwH0bN7huOCgAA'
+
+          printf '%s' "$STRATEGY_B64" | base64 -d | gzip -d > "$MOD"
+          chmod 0644 "$MOD"
+          chown ayman01323:ayman01323 "$MOD"
+          python3 -m py_compile "$MOD"
+
+          python3 - "$MAIN" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text(encoding='utf-8')
+          line='from . import solana_cold_zone_strategy_patch  # noqa: F401\n'
+          s=s.replace(line,'')
+          marker='from .cli import main\n'
+          if marker not in s:
+              raise SystemExit('isolated __main__.py has no cli marker')
+          s=s.replace(marker, '# Isolated learner only: 17-Aug COLD ZONE strategy.\n'+line+marker, 1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          chown ayman01323:ayman01323 "$MAIN"
+          python3 -m py_compile "$MAIN"
+
+          install -d -m 0755 /home/ayman01323/.local/libexec
+          install -d -m 0700 /home/ayman01323/.local/state
+          printf '%s' "$RELAY_B64" | base64 -d | gzip -d > "$RELAY"
+          chmod 0755 "$RELAY"
+          chown ayman01323:ayman01323 "$RELAY"
+          python3 -m py_compile "$RELAY"
+          test -f "$RELAY_ENV"
+
+          cat > "$BACKUP/google-learner-cold-zone-relay.service.new" <<EOF
+          [Unit]
+          Description=Google isolated learner Cold Zone Telegram relay
+          After=network-online.target learnerbot-learn.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=ayman01323
+          Group=ayman01323
+          EnvironmentFile=$RELAY_ENV
+          ExecStart=/usr/bin/python3 $RELAY
+          Restart=always
+          RestartSec=3
+          NoNewPrivileges=true
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+          sudo -n install -m 0644 "$BACKUP/google-learner-cold-zone-relay.service.new" "$UNIT"
+          sudo -n systemctl daemon-reload
+          sudo -n systemctl enable --now google-learner-cold-zone-relay.service
+
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 7
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          LOG="$(sudo -n journalctl -u learnerbot-learn.service --since '3 minutes ago' --no-pager -n 300)"
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone] installed=true'
+
+          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import sqlite3,sys
+          p=sys.argv[1]
+          con=sqlite3.connect(p,timeout=5)
+          con.row_factory=sqlite3.Row
+          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          print('cold_zone_positions_table=' + ('YES' if 'cold_zone_positions' in tables else 'NO'))
+          print('cold_zone_notifications_table=' + ('YES' if 'cold_zone_notifications' in tables else 'NO'))
+          if 'positions' in tables:
+              print('open_live_positions=' + str(con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]))
+          con.close()
+          PY
+
+          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER"
+          test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
+
+          trap - ERR
+          echo 'cold_zone_deploy=SUCCESS'
+          echo 'scope=ISOLATED_LEARNER_ONLY'
+          echo 'strategy_profile=COLD_ZONE_17AUG_V1'
+          echo 'active_position_slots=10'
+          echo 'trade_size_sol=0.0005'
+          echo 'entry_pool_age=0-45m'
+          echo 'target_net_profit=5pct_after_costs'
+          echo 'at_45m=full_exit_if_net_nonnegative'
+          echo 'loss_grace=5m'
+          echo 'at_50m=full_exit_no_pnl_floor'
+          echo 'leader_sell_signals=IGNORED'
+          echo 'partial_sells=OFF'
+          echo 'break_even_trailing_collapse_exit=OFF'
+          echo 'poolcheck=HARD_BLOCKS_PLUS_WARNINGS'
+          echo 'rugged_positions=NONBLOCKING_AFTER_REPEATED_FAILURES'
+          echo 'writeoff_reminder=30m'
+          echo 'telegram_true_net=SOL+USD+PCT'
+          echo 'production_files_changed=NO'
