@@ -82,30 +82,20 @@ jobs:
           if 'state' in tables:
               n=con.execute("SELECT COUNT(*) FROM state WHERE key LIKE 'learner_pool_open:%'").fetchone()[0]
               print('persisted_pool_open_baselines='+str(n))
-              for row in con.execute('SELECT key,value FROM state ORDER BY key').fetchall():
-                  key=str(row['key'] or ''); low=key.lower()
-                  if any(x in low for x in ('e30ca86','6mfj9t4','714f2607','bvkgvjs','liquidity','exit_circuit','emergency')):
-                      value=str(row['value'] or '')
-                      if 'http://' in value or 'https://' in value: value='<URL_REDACTED_STATE>'
-                      print('state_key='+key+' value='+value[:500])
-          if 'live_execution_attempts' in tables:
-              cols={r['name'] for r in con.execute('PRAGMA table_info(live_execution_attempts)').fetchall()}
-              wanted=['attempt_key','telegram_id','mint','action','status','updated_at','error']
-              selected=[x for x in wanted if x in cols]
-              if 'mint' in cols:
-                  sql='SELECT '+','.join(selected)+' FROM live_execution_attempts WHERE mint IN (?,?) ORDER BY updated_at DESC LIMIT 30'
-                  for row in con.execute(sql,('6Mfj9t4WMN1c6CMpYZm8GvJsW3TiE7SrbrBqpBRnmUgd','BvKgVjsUQ8KV22RNKhk3btZHKSDdrRfziGad4ugTCcJS')).fetchall():
-                      print('attempt='+json.dumps(dict(row),separators=(',',':'),default=str)[:1200])
+          if 'live_exit_circuit' in tables:
+              c=con.execute("SELECT position_id,status,tx_signature,error,fraction,close_reason,sell_raw,opened_at,updated_at FROM live_exit_circuit WHERE position_id=?",('714f26073ebc1928896ac985c96371f7',)).fetchone()
+              if c:
+                  print('bvkg_circuit='+json.dumps(dict(c),separators=(',',':'),default=str))
           con.close()
           PY
 
           echo '--- relevant recent exit journal ---'
           printf '%s\n' "$log" \
-            | grep -Ei 'e30ca86|6Mfj9t4|714f2607|BvKgVjs|STOP_LOSS|TAKE_PROFIT|LEADER_EXIT|EMERGENCY|LIQUIDITY|evaluate|valuation|quote|Jupiter|exit circuit|learner-pool-context' \
+            | grep -Ei '714f2607|BvKgVjs|exit circuit reconciled|reconciliation|LIVE SELL confirmed|e30ca86|6Mfj9t4|STOP_LOSS|TAKE_PROFIT|LEADER_EXIT|EMERGENCY|LIQUIDITY|Jupiter' \
             | tail -240 \
             | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' || true
 
           echo "stable_main_pid=$pid2"
-          echo 'verification_refresh=2026-08-28T12:21Z'
+          echo 'verification_refresh=2026-08-28T12:28Z'
           echo 'verification_mutation=NO'
           echo 'production_service_touched=NO'
