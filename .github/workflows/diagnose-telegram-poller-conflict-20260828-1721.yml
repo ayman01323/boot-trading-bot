@@ -15,21 +15,35 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Read current learner startup failure only
+      - name: Stage final integrity compatibility fix only
         shell: bash
         run: |
-          set -u
-          echo '=== LEARNER SERVICE ==='
-          systemctl show learnerbot-learn.service -p ActiveState -p SubState -p MainPID -p NRestarts -p Result -p ExecMainStatus --no-pager 2>/dev/null || true
-          echo '=== STARTUP ERROR FILE ==='
-          sudo -n tail -120 /tmp/learnerbot-startup-error.txt 2>/dev/null || true
-          echo '=== RECENT JOURNAL ==='
-          sudo -n journalctl -u learnerbot-learn.service --since '15 minutes ago' --no-pager -o cat 2>/dev/null | tail -220 || true
-          echo '=== SIRISKY READ ONLY ==='
-          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
-          echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
-          echo '=== NO CHANGES ==='
-          echo 'service_change=NO'
+          set -euo pipefail
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          ROOTBOT=/root/multichain-learning-bot-v2.2-fast-direct-market
+          COMMIT=d6349dc399a543b977b3e2d7bffee1de7d69c65c
+          BEFORE=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
+          echo "sirisky_before=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$BEFORE"
+
+          sudo -n systemctl stop learnerbot-learn.service
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
+
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$COMMIT/learnerbot/final_runtime_integrity_patch.py" -o /tmp/final_runtime_integrity_patch.py
+          grep -q 'solana_close_rpc_priority_outer' /tmp/final_runtime_integrity_patch.py
+          grep -q 'solana_close_circuit_inner' /tmp/final_runtime_integrity_patch.py
+          grep -q 'solana_rpc_exit_priority_patch as _rpc_exit_priority' /tmp/final_runtime_integrity_patch.py
+          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile /tmp/final_runtime_integrity_patch.py
+          sudo -n install -m 0644 /tmp/final_runtime_integrity_patch.py "$LEARN/learnerbot/final_runtime_integrity_patch.py"
+          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$LEARN/learnerbot/final_runtime_integrity_patch.py"
+
+          AFTER=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
+          echo "learner_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "learner_pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
+          echo "sirisky_after=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$AFTER"
+          test "$BEFORE" = "$AFTER"
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
+          echo 'final_integrity_fix_staged=YES'
+          echo 'learner_stopped=YES'
+          echo 'sirisky_untouched=YES'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
-          echo 'sirisky_change=NO'
