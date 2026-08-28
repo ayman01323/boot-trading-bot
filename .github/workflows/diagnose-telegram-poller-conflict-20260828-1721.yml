@@ -15,14 +15,67 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Read-only learner Telegram and service status
+      - name: Deep read-only learner Telegram status
         shell: bash
         run: |
-          set -euo pipefail
-          echo "learner_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          echo "learner_pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
+          set -u
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          ROOTBOT=/root/multichain-learning-bot-v2.2-fast-direct-market
+
+          echo '=== SERVICE ==='
+          systemctl show learnerbot-learn.service -p ActiveState -p SubState -p MainPID -p NRestarts -p ExecMainCode -p ExecMainStatus -p Result -p WorkingDirectory --no-pager 2>/dev/null || true
           echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
           echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
+
+          echo '=== PROCESS LIST ==='
+          pgrep -af 'python.*learnerbot|learnerbot.*run|telegram' || true
+
+          echo '=== TELEGRAM TOKEN/API READ ONLY ==='
+          sudo -n python3 - <<'PY'
+          import hashlib, json, urllib.request
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/.env')
+          d={}
+          if p.exists():
+              for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  s=line.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); d[k.strip()]=v.strip().strip('"').strip("'")
+          t=d.get('TELEGRAM_BOT_TOKEN') or d.get('BOT_TOKEN') or d.get('TELEGRAM_TOKEN') or ''
+          print('token_present=',bool(t),sep='')
+          print('token_fingerprint=',hashlib.sha256(t.encode()).hexdigest()[:12] if t else 'NONE',sep='')
+          if t:
+              for method in ('getMe','getWebhookInfo'):
+                  try:
+                      with urllib.request.urlopen(f'https://api.telegram.org/bot{t}/{method}',timeout=12) as r: x=json.load(r)
+                      print(method+'_ok=',bool(x.get('ok')),sep='')
+                      if method=='getMe' and x.get('ok'):
+                          r=x.get('result') or {}; print('bot_username=@'+str(r.get('username') or ''))
+                      if method=='getWebhookInfo' and x.get('ok'):
+                          r=x.get('result') or {}; print('webhook_url_set=',bool(r.get('url')),sep=''); print('pending_update_count=',r.get('pending_update_count'),sep='')
+                  except Exception as e:
+                      print(method+'_error='+type(e).__name__+':'+str(e)[:180])
+          PY
+
+          echo '=== APP SETTINGS READ ONLY ==='
+          cd "$LEARN"
+          sudo -n "$ROOTBOT/.venv/bin/python" - <<'PY'
+          from learnerbot.config import AppSettings
+          app=AppSettings.load()
+          print('telegram_chat_ids_count=',len(app.telegram_chat_ids),sep='')
+          print('telegram_chat_ids=',','.join(str(x) for x in app.telegram_chat_ids),sep='')
+          PY
+
+          echo '=== POLLER/HANDLER SOURCE ==='
+          grep -nE 'get_updates|start_menu_thread|telegram_chat_ids|handle_update|telegram_solana_live' "$LEARN/learnerbot/telegram_ui.py" "$LEARN/learnerbot/telegram_solana_live_patch.py" 2>/dev/null | tail -120 || true
+
+          echo '=== RECENT LEARNER JOURNAL ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '20 minutes ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram|getUpdates|409|conflict|learnerarm|traceback|runtime invariant|failed|error|started|stopped|poll' \
+            | tail -260 || true
+
+          echo '=== NO CHANGES ==='
           echo 'service_change=NO'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
+          echo 'sirisky_change=NO'
