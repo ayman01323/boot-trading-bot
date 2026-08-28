@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Restore morning Learner code and restart isolated service
+      - name: Restore exact morning Learner source with authorized root path
         shell: bash
         run: |
           set -euo pipefail
@@ -38,31 +38,34 @@ jobs:
           test -d "$TARGET/CSVbot"
           test -d "$TARGET/data"
           test -d "$GITHUB_WORKSPACE/learnerbot"
+          python3 -m compileall -q "$GITHUB_WORKSPACE/learnerbot"
 
           before_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-          ts="$(date -u +%Y%m%dT%H%M%SZ)"
-          backup="$TARGET/backups/morning-restore-$ts"
-          mkdir -p "$backup"
-          cp -a "$TARGET/learnerbot" "$backup/learnerbot.before"
-          cp -a "$TARGET/CSVbot/solana_settings.csv" "$backup/solana_settings.csv.before" 2>/dev/null || true
-          cp -a "$TARGET/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv.before" 2>/dev/null || true
-
-          rm -rf "$TARGET/learnerbot.restore-tmp"
-          mkdir -p "$TARGET/learnerbot.restore-tmp"
-          cp -a "$GITHUB_WORKSPACE/learnerbot/." "$TARGET/learnerbot.restore-tmp/"
-          python3 -m compileall -q "$TARGET/learnerbot.restore-tmp"
-          rm -rf "$TARGET/learnerbot"
-          mv "$TARGET/learnerbot.restore-tmp" "$TARGET/learnerbot"
-          printf '%s\n' "$SOURCE_SHA" > "$TARGET/RESTORED_SOURCE_SHA.txt"
-
-          systemctl restart "$SERVICE"
-          sleep 8
+          export TARGET SOURCE_SHA SERVICE GITHUB_WORKSPACE
+          sudo -n /usr/bin/bash -lc '
+            set -euo pipefail
+            ts="$(date -u +%Y%m%dT%H%M%SZ)"
+            backup="$TARGET/backups/morning-restore-$ts"
+            mkdir -p "$backup"
+            cp -a "$TARGET/learnerbot" "$backup/learnerbot.before"
+            cp -a "$TARGET/CSVbot/solana_settings.csv" "$backup/solana_settings.csv.before" 2>/dev/null || true
+            cp -a "$TARGET/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv.before" 2>/dev/null || true
+            systemctl stop "$SERVICE" || true
+            rm -rf "$TARGET/learnerbot"
+            cp -a "$GITHUB_WORKSPACE/learnerbot" "$TARGET/learnerbot"
+            chown -R ayman01323:ayman01323 "$TARGET/learnerbot"
+            printf "%s\n" "$SOURCE_SHA" > "$TARGET/RESTORED_SOURCE_SHA.txt"
+            chown ayman01323:ayman01323 "$TARGET/RESTORED_SOURCE_SHA.txt"
+            systemctl start "$SERVICE"
+            echo "$backup" > /tmp/learner-morning-backup-path.txt
+          '
+          sleep 10
           after_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
 
-          echo "source_sha=$SOURCE_SHA"
+          echo "source_sha=$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
           echo "service_before=$before_active"
           echo "service_after=$after_active"
-          echo "backup=$backup"
+          echo "backup=$(cat /tmp/learner-morning-backup-path.txt 2>/dev/null || true)"
           echo "wallet_data_modified=NO"
           echo "csv_settings_modified=NO"
           echo "database_replaced=NO"
@@ -100,9 +103,24 @@ jobs:
           c.close()
           PY
           echo
+          echo '--- post-start attempts ---'
+          ROOT="$TARGET" python3 - <<'PY'
+          import os, sqlite3, time
+          from pathlib import Path
+          db=Path(os.environ['ROOT'])/'data/solana_sibot.sqlite3'
+          c=sqlite3.connect(f'file:{db}?mode=ro',uri=True); c.row_factory=sqlite3.Row
+          cutoff=int(time.time())-180
+          rows=c.execute("select action,status,error,created_at,updated_at from live_execution_attempts where created_at>=? order by created_at desc limit 30",(cutoff,)).fetchall()
+          print('attempts_last_3m='+str(len(rows)))
+          for r in rows:
+              d=dict(r); d['error']=str(d.get('error') or '')[:180]
+              print(d)
+          c.close()
+          PY
+          echo
           echo '--- service tail ---'
-          journalctl -u "$SERVICE" -n 100 --no-pager 2>/dev/null \
-            | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|BUY|SELL|LIVE|entry|position|route|ERROR|REJECT' \
-            | tail -n 100 || true
+          journalctl -u "$SERVICE" -n 160 --no-pager 2>/dev/null \
+            | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|BUY|SELL|LIVE|entry|position|route|ERROR|REJECT|learner' \
+            | tail -n 160 || true
 
           test "$after_active" = active
