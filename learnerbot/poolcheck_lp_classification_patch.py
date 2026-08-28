@@ -121,3 +121,8 @@ def install() -> None:
 
 
 install()
+
+# Root-owned runtime diagnostics may read the protected Solana LIVE attempt database
+# and publish only aggregate status/failure classes through the existing redacted
+# snapshot. This grants no new runner/file permissions and changes no trade path.
+from . import sibot1_solana_attempt_diag_patch as _sibot1_solana_attempt_diag  # noqa: E402,F401
