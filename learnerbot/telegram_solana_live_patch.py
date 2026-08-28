@@ -301,7 +301,7 @@ def handle_update(app, update):
 
 def install():
     _intel.solana_page = solana_page
-    _intel.solana_keyboard = solana_keyboard
+    _intel.solana_positions_page = solana_positions_page
     _ui.handle_update = handle_update
 
 
