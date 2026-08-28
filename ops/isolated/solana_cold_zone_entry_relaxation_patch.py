@@ -3,7 +3,7 @@ from __future__ import annotations
 """Isolated learner COLD ZONE entry relaxation + 5x sell-depth overlay.
 
 Owner-approved entry profile:
-- signal age <= 90s (hard)
+- stale leader signal age condition is DISABLED (age remains telemetry only)
 - entry deterioration <= 10% (hard)
 - LIVE trade size = 0.001 SOL
 - actual-size BUY->SELL round-trip <= 3% remains hard
@@ -23,8 +23,7 @@ from decimal import Decimal
 
 from . import solana_cold_zone_strategy_patch as _cz
 
-PROFILE = "COLD_ZONE_17AUG_V7_ENTRY_90S_10PCT_001SOL_DEPTH5X"
-MAX_SIGNAL_AGE_SECONDS = 90
+PROFILE = "COLD_ZONE_17AUG_V8_NO_SIGNAL_AGE_10PCT_001SOL_DEPTH5X"
 MAX_ENTRY_DETERIORATION_PCT = Decimal("10")
 LIVE_TRADE_SOL = Decimal("0.001")
 MAX_ESTIMATED_COST_PCT = Decimal("5")
@@ -34,7 +33,6 @@ MAX_SELL_DEPTH_ROUNDTRIP_LOSS_PCT = Decimal("3")
 _LIQUIDITY_CACHE_SECONDS = 30
 
 _BASE_SETTINGS = _cz.settings_cold_zone
-_BASE_COLD_PREFLIGHT = _cz._cold_preflight
 _BASE_POOL_HARD_VS_WARNING = _cz._pool_hard_vs_warning
 _BASE_QUEUE_NOTICE = _cz._queue_notice
 
@@ -47,7 +45,10 @@ def settings_relaxed(app) -> dict:
     cfg.update(
         {
             "solana_strategy_profile": PROFILE,
-            "max_signal_age_seconds": str(MAX_SIGNAL_AGE_SECONDS),
+            # Compatibility value only. Cold Zone preflight below no longer uses
+            # signal age as a rejection condition.
+            "max_signal_age_seconds": "2147483647",
+            "cold_zone_signal_age_guard_enabled": "false",
             "max_entry_deterioration_pct": str(MAX_ENTRY_DETERIORATION_PCT),
             "live_trade_sol": str(LIVE_TRADE_SOL),
             "cold_zone_max_estimated_cost_pct": str(MAX_ESTIMATED_COST_PCT),
@@ -131,13 +132,66 @@ def pool_hard_vs_warning_with_liquidity(app, event: dict, cfg: dict, pairs: list
     return ok, warnings, evidence
 
 
+def cold_preflight_without_signal_age(app, event: dict, allocation: Decimal, cfg: dict):
+    """Run the Cold Zone executable-entry checks with no signal-age rejection."""
+    signal_age = max(0, _cz._now() - _cz._i((event or {}).get("event_ts"), 0))
+    lamports = int(Decimal(allocation) * Decimal(1_000_000_000))
+    try:
+        buy = _cz._sol.jupiter_quote(app, _cz._sol.WSOL_MINT, str((event or {}).get("mint") or ""), lamports)
+        out_raw = _cz._i(buy.get("outAmount") or buy.get("outputAmount"), 0)
+        if out_raw <= 0:
+            return False, "Jupiter BUY quote returned no token output", {"signal_age_seconds": signal_age}
+        back = _cz._sol.jupiter_quote(app, str((event or {}).get("mint") or ""), _cz._sol.WSOL_MINT, out_raw)
+        back_lamports = _cz._i(back.get("outAmount") or back.get("outputAmount"), 0)
+    except Exception as exc:
+        return False, f"actual-size BUY→SELL liquidity quote failed: {type(exc).__name__}: {str(exc)[:220]}", {
+            "signal_age_seconds": signal_age,
+        }
+    if back_lamports <= 0:
+        return False, "actual-size reverse SELL quote returned no SOL", {
+            "out_raw": out_raw,
+            "signal_age_seconds": signal_age,
+        }
+
+    back_sol = Decimal(back_lamports) / Decimal(1_000_000_000)
+    roundtrip = max(Decimal(0), (Decimal(1) - back_sol / Decimal(allocation)) * Decimal(100))
+    limit = max(Decimal(0), _cz._d(cfg.get("max_roundtrip_loss_pct"), 3))
+    if roundtrip > limit:
+        return False, f"actual {Decimal(allocation):f}-size BUY→SELL loss {roundtrip:.3f}% > {limit:.3f}%", {
+            "out_raw": out_raw,
+            "roundtrip_loss_pct": roundtrip,
+            "signal_age_seconds": signal_age,
+        }
+
+    leader_sol = _cz._d((event or {}).get("sol_amount"), 0)
+    leader_raw = Decimal(max(0, _cz._i((event or {}).get("token_amount_raw"), 0)))
+    deterioration = Decimal(0)
+    if leader_sol > 0 and leader_raw > 0 and out_raw > 0:
+        leader_raw_per_sol = leader_raw / leader_sol
+        ours_raw_per_sol = Decimal(out_raw) / Decimal(allocation)
+        deterioration = max(Decimal(0), (leader_raw_per_sol / ours_raw_per_sol - Decimal(1)) * Decimal(100))
+    det_limit = max(Decimal(0), _cz._d(cfg.get("max_entry_deterioration_pct"), 2))
+    if deterioration > det_limit:
+        return False, f"entry deterioration {deterioration:.3f}% > {det_limit:.3f}%", {
+            "out_raw": out_raw,
+            "roundtrip_loss_pct": roundtrip,
+            "deterioration_pct": deterioration,
+            "signal_age_seconds": signal_age,
+        }
+    return True, "PASS", {
+        "out_raw": out_raw,
+        "back_lamports": back_lamports,
+        "roundtrip_loss_pct": roundtrip,
+        "deterioration_pct": deterioration,
+        "signal_age_seconds": signal_age,
+        "signal_age_guard_enabled": False,
+    }
+
+
 def cold_preflight_with_5x_sell_depth(app, event: dict, allocation: Decimal, cfg: dict):
-    ok, reason, detail = _BASE_COLD_PREFLIGHT(app, event, allocation, cfg)
+    ok, reason, detail = cold_preflight_without_signal_age(app, event, allocation, cfg)
     detail = dict(detail or {})
     if not ok:
-        # The base Cold Zone message still contains its original 0.0005 label.
-        # Keep the calculation unchanged but report the current configured size.
-        reason = str(reason).replace("actual 0.0005-size", f"actual {Decimal(allocation):f}-size")
         return False, reason, detail
 
     mint = str((event or {}).get("mint") or "")
@@ -218,10 +272,10 @@ def cold_preflight_with_5x_sell_depth(app, event: dict, allocation: Decimal, cfg
 
 def profit_test_relaxed(app, event: dict, allocation: Decimal, cfg: dict, preflight: dict, executor):
     """Keep the +5% target, but do not cap a new pool by leader mean return."""
-    leader = _cz._leader_available_gross(app, str(event.get("leader_wallet") or ""), cfg)
+    leader = _cz._leader_available_gross(app, str((event or {}).get("leader_wallet") or ""), cfg)
     roundtrip = max(Decimal(0), _cz._d(preflight.get("roundtrip_loss_pct"), 100))
     network_pct, fee_detail = _cz._estimated_network_fee_pct(
-        executor, str(event.get("mint") or ""), allocation, cfg
+        executor, str((event or {}).get("mint") or ""), allocation, cfg
     )
     slippage_bps = max(Decimal(0), _cz._d(cfg.get("live_order_slippage_bps"), 50))
     slippage_reserve_pct = slippage_bps * Decimal(2) / Decimal(100)
@@ -251,7 +305,6 @@ def profit_test_relaxed(app, event: dict, allocation: Decimal, cfg: dict, prefli
         "max_required_gross_pct": required_cap,
     }
 
-    # Original 17-Aug leader rule still requires at least 5 reconstructed closes.
     if int(leader.get("samples") or 0) < 5:
         return False, f"leader profit evidence has {int(leader.get('samples') or 0)} samples; need 5", detail
 
@@ -271,8 +324,6 @@ def profit_test_relaxed(app, event: dict, allocation: Decimal, cfg: dict, prefli
             detail,
         )
 
-    # Historical leader return remains visible as a score only. It cannot reject
-    # a technically executable new-pool trade under the approved hard cost caps.
     return True, "PASS_COST_CAPS_LEADER_GROSS_SCORE_ONLY", detail
 
 
@@ -358,7 +409,7 @@ def install() -> None:
     _cz._cold_zone_relaxed_entry_installed = True
     print(
         "[solana-cold-zone-entry] installed=true "
-        f"profile={PROFILE} signal_age<={MAX_SIGNAL_AGE_SECONDS}s "
+        f"profile={PROFILE} signal_age=DISABLED "
         f"entry_deterioration<={MAX_ENTRY_DETERIORATION_PCT}% live_trade={LIVE_TRADE_SOL}SOL "
         f"roundtrip<=3% sell_depth={SELL_DEPTH_MULTIPLIER}x<=3% "
         "leader_gross=score_only "
