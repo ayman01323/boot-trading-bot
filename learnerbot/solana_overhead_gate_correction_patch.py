@@ -11,15 +11,19 @@ def effective_minimum_trade(app, tid, cfg=None) -> Decimal:
     """Return the effective per-user minimum economic LIVE trade.
 
     Telegram/user overrides are restriction-only: they may raise the minimum but
-    can never weaken the platform-configured safety floor.
+    can never weaken the platform-configured safety floor. Lightweight/reporting
+    app objects without per-user CSV storage simply use the platform floor.
     """
     cfg = dict(cfg or _sol.settings(app))
     platform_minimum = max(
         Decimal("0.0001"),
         _sol._dec(cfg.get("live_min_economic_trade_sol"), "0.0005"),
     )
+    csv_dir = getattr(app, "csv_dir", None)
+    if csv_dir is None:
+        return platform_minimum
     raw = user_setting(
-        app.csv_dir,
+        csv_dir,
         tid,
         _sol.SOLANA_CHAIN_ID,
         "solana_live_min_economic_trade_sol",
