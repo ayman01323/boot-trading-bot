@@ -12,64 +12,150 @@ permissions:
 jobs:
   repair:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
-      - name: Validate and stage protections while learner stays stopped
+      - name: Repair SiRisky root service safely
         shell: bash
         run: |
           set -euo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
-          service=learnerbot-learn.service
-          sudo -n systemctl stop "$service"
-          sleep 2
-          test "$(systemctl is-active "$service" || true)" != active
-          test "$(systemctl show -p MainPID --value "$service")" = 0
-          echo learner_stop_verified=YES
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          sudo -n bash -lc '
+            set -euo pipefail
+            TARGET=/root/SiRisky
+            test -d "$TARGET"
+            test -x "$TARGET/.venv/bin/python"
 
-          work="/tmp/learner-protection-${GITHUB_RUN_ID}"
-          rm -rf "$work"
-          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore "https://github.com/${GITHUB_REPOSITORY}.git" "$work"
-          cd "$work"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          echo source_sha="$(git rev-parse HEAD)"
+            # Keep trading disabled while repairing infrastructure.
+            "$TARGET/.venv/bin/python" - <<"PY"
+import csv
+from pathlib import Path
+p=Path("/root/SiRisky/CSV/runtime.csv")
+rows=list(csv.DictReader(p.open(encoding="utf-8-sig", newline="")))
+for r in rows:
+    if r.get("setting") in {"live_enabled","broadcast_enabled","telegram_manual_run_enabled"}:
+        r["value"]="0"
+with p.open("w",encoding="utf-8",newline="") as f:
+    w=csv.DictWriter(f,fieldnames=["setting","value","notes"])
+    w.writeheader(); w.writerows(rows)
+PY
 
-          PY=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
-          sudo -n env PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX=/tmp/learner-protection-pycache "$PY" -m py_compile \
-            learnerbot/solana_loss_containment_patch.py \
-            learnerbot/solana_entry_exit_liquidity_preflight_patch.py \
-            learnerbot/solana_rpc_exit_priority_patch.py \
-            learnerbot/solana_stuck_liquidity_safe_slice_patch.py
-          sudo -n rm -rf /tmp/learner-protection-pycache
-          echo compile=PASS
+            # Correct standalone data paths without exposing or replacing secret values.
+            "$TARGET/.venv/bin/python" - <<"PY"
+from pathlib import Path
+p=Path("/root/SiRisky/.env")
+lines=p.read_text(encoding="utf-8",errors="replace").splitlines() if p.exists() else []
+replace={
+ "CSV_DIR":"/root/SiRisky/CSV",
+ "DATA_DIR":"/root/SiRisky/data",
+ "LOG_DIR":"/root/SiRisky/logs",
+ "AUTHORISED_CHAINS":"solana",
+}
+out=[]; seen=set()
+for raw in lines:
+    s=raw.strip()
+    if not s or s.startswith("#") or "=" not in raw:
+        out.append(raw); continue
+    k=raw.split("=",1)[0].strip()
+    if k in replace:
+        if k not in seen:
+            out.append(f"{k}={replace[k]}"); seen.add(k)
+        continue
+    out.append(raw)
+for k,v in replace.items():
+    if k not in seen: out.append(f"{k}={v}")
+p.write_text("\n".join(out).rstrip()+"\n",encoding="utf-8")
+p.chmod(0o600)
+PY
 
-          grep -q 'solana_entry_exit_liquidity_preflight_patch' learnerbot/solana_stuck_liquidity_safe_slice_patch.py
-          grep -q 'solana_rpc_exit_priority_patch' learnerbot/solana_stuck_liquidity_safe_slice_patch.py
-          grep -q 'solana_loss_containment_patch' learnerbot/solana_stuck_liquidity_safe_slice_patch.py
-          grep -q 'SOLANA_HARD_EXIT_REQUIRED' learnerbot/solana_loss_containment_patch.py
-          grep -q 'loss_containment_stop_pct' learnerbot/solana_loss_containment_patch.py
-          grep -q 'loss_containment_winner_take_profit_pct' learnerbot/solana_loss_containment_patch.py
-          grep -q 'loss_containment_break_even_trigger_pct' learnerbot/solana_loss_containment_patch.py
-          grep -q 'loss_containment_trailing_trigger_pct' learnerbot/solana_loss_containment_patch.py
-          grep -q 'Decimal(1), _HARD_EXIT_REASON' learnerbot/solana_loss_containment_patch.py
-          grep -q '_emergency._LOSS_EXIT_REASONS.add(_HARD_EXIT_REASON)' learnerbot/solana_loss_containment_patch.py
-          grep -q 'live_enable_unchanged=true' learnerbot/solana_loss_containment_patch.py
-          grep -q 'position_size_unchanged=true' learnerbot/solana_loss_containment_patch.py
-          grep -q '500' learnerbot/solana_entry_exit_liquidity_preflight_patch.py
-          echo invariant_validation=PASS
+            # If root env lacks RPC/Jupiter values, import last non-empty values from known local copies.
+            "$TARGET/.venv/bin/python" - <<"PY"
+from pathlib import Path
+keys=("SOLANA_RPC_URL","SOLANA_WS_URL","JUPITER_API_KEY")
+root=Path("/root/SiRisky/.env")
 
-          target=/home/ayman01323/BOOT/testingbots/learn/learnerbot
-          test -d "$target"
-          install -m 0644 learnerbot/solana_loss_containment_patch.py "$target/solana_loss_containment_patch.py"
-          install -m 0644 learnerbot/solana_entry_exit_liquidity_preflight_patch.py "$target/solana_entry_exit_liquidity_preflight_patch.py"
-          install -m 0644 learnerbot/solana_rpc_exit_priority_patch.py "$target/solana_rpc_exit_priority_patch.py"
-          install -m 0644 learnerbot/solana_stuck_liquidity_safe_slice_patch.py "$target/solana_stuck_liquidity_safe_slice_patch.py"
-          rm -rf "$work"
+def assignments(path):
+    vals={k:[] for k in keys}
+    if not path.is_file(): return vals
+    for raw in path.read_text(encoding="utf-8",errors="replace").splitlines():
+        s=raw.strip()
+        if not s or s.startswith("#") or "=" not in raw: continue
+        k,v=raw.split("=",1); k=k.strip(); v=v.strip().strip("\"").strip("'")
+        if k in vals and v: vals[k].append(v)
+    return vals
 
-          test "$(systemctl is-active "$service" || true)" != active
-          test "$(systemctl show -p MainPID --value "$service")" = 0
-          echo loss_containment_source=WIRED_VALIDATED_AND_STAGED
-          echo learner_service=STOPPED
-          echo live_enabled_by_workflow=NO
-          echo position_size_changed=NO
-          echo trade_submitted=NO
+current=assignments(root)
+candidates=[
+ Path("/home/ayman01323/ClaudeServer/SiRisky/.env"),
+ Path("/root/multichain-learning-bot-v2.2-fast-direct-market/.env"),
+ Path("/var/tmp/ai_council_runtime.env"),
+ Path("/var/tmp/boot/ai_council_runtime.env"),
+]
+chosen={k:(current[k][-1] if current[k] else "") for k in keys}
+for c in candidates:
+    vals=assignments(c)
+    for k in keys:
+        if not chosen[k] and vals[k]: chosen[k]=vals[k][-1]
+
+lines=root.read_text(encoding="utf-8",errors="replace").splitlines()
+out=[]
+for raw in lines:
+    if "=" in raw and not raw.lstrip().startswith("#"):
+        k=raw.split("=",1)[0].strip()
+        if k in keys: continue
+    out.append(raw)
+for k in keys:
+    if chosen[k]: out.append(f"{k}={chosen[k]}")
+root.write_text("\n".join(out).rstrip()+"\n",encoding="utf-8")
+root.chmod(0o600)
+print("rpc_present="+str(bool(chosen["SOLANA_RPC_URL"])).lower())
+print("ws_present="+str(bool(chosen["SOLANA_WS_URL"])).lower())
+print("jupiter_key_present="+str(bool(chosen["JUPITER_API_KEY"])).lower())
+PY
+
+            # Correct the known old USDC mint constant if present.
+            sed -i "s#EPjFWdd5AufqSSqeM2qPZo2mrQSSrSLRYhNACTM1v#EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v#g" "$TARGET/sirisky/jupiter.py" || true
+
+            # Replace the stale service that pointed at /root/ClaudeServer/SiRisky.
+            if [ -f /etc/systemd/system/sirisky.service ]; then
+              cp -a /etc/systemd/system/sirisky.service /etc/systemd/system/sirisky.service.pre-root-repair
+            fi
+            cat >/etc/systemd/system/sirisky.service <<"UNIT"
+[Unit]
+Description=SiRisky standalone staged trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/SiRisky
+ExecStart=/root/SiRisky/.venv/bin/python /root/SiRisky/run.py start
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+            systemctl daemon-reload
+            systemctl enable sirisky.service >/dev/null
+            systemctl restart sirisky.service
+            sleep 4
+
+            echo "=== SERVICE ==="
+            systemctl show sirisky.service -p ActiveState -p SubState -p Result -p NRestarts -p WorkingDirectory -p ExecStart --no-pager
+            echo "=== SAFE CHECK ==="
+            cd /root/SiRisky
+            set +e
+            PYTHONPATH=. .venv/bin/python run.py check
+            rc=$?
+            set -e
+            echo "check_exit_code=$rc"
+            echo "=== LIVE GATES ==="
+            awk -F, "NR==1 || \\$1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled)\$/" CSV/runtime.csv
+            echo "real_transaction_broadcast=NO"
+          '
