@@ -21,66 +21,46 @@ jobs:
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
-          prod=/root/multichain-learning-bot-v2.2-fast-direct-market
           service=learnerbot-learn.service
-          py="$prod/.venv/bin/python"
           marker="$target/private/.telegram_source_path"
-          test -x "$py"
           test -s "$marker"
           test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "894c5597c5cf0c695f1f75df39f26ebe64c2dce9"
+          source_file="$(cat "$marker")"
+          test -f "$source_file"
+          token="$(sudo -n grep -m1 '^TELEGRAM_BOT_TOKEN=.' "$source_file" | cut -d= -f2-)"
+          token="${token%\"}"
+          token="${token#\"}"
+          token="${token%\'}"
+          token="${token#\'}"
+          test -n "$token"
+          curl -fsS --max-time 15 "https://api.telegram.org/bot${token}/getMe" | grep -q '"ok":true'
+          echo "telegram_token_valid=true"
 
-          sudo -n TARGET="$target" PY="$py" SERVICE="$service" bash -lc '
-            set -Eeuo pipefail
-            source_file="$(cat "$TARGET/private/.telegram_source_path")"
-            test -f "$source_file"
-            token="$($PY -c "from dotenv import dotenv_values; import sys; print((dotenv_values(sys.argv[1]).get(\"TELEGRAM_BOT_TOKEN\") or \"\").strip())" "$source_file")"
-            test -n "$token"
-            echo "local_token_loaded=true"
+          ui="$target/learnerbot/telegram_ui.py"
+          if ! grep -q 'outbound-only mode: polling disabled' "$ui"; then
+            sudo -n cp -a "$ui" "$target/backups/telegram_ui.py.before-outbound-only"
+            sudo -n sed -i '/^def start_menu_thread(app):$/a\    if os.getenv("LEARNER_TELEGRAM_OUTBOUND_ONLY","").strip().lower() in {"1","true","yes","on"}:\n        print("[telegram-menu] outbound-only mode: polling disabled")\n        return None' "$ui"
+          fi
+          grep -q 'outbound-only mode: polling disabled' "$ui"
+          sudo -n /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m py_compile "$ui"
+          echo "telegram_polling_guard=true"
 
-            TOKEN="$token" $PY -c "import os; from learnerbot.telegram import get_me; m=get_me(os.environ[\"TOKEN\"]); print(\"telegram_token_valid=true\"); print(\"bot_identity_verified=\"+str(bool(m.get(\"id\"))).lower())" \
-              2>/dev/null
+          master="$(awk -F, 'NR>1 && toupper($2)=="MASTER" && toupper($3)=="ACTIVE" && $1 ~ /^[0-9-]+$/ {print $1; exit}' "$target/CSVbot/users.csv")"
+          test -n "$master"
+          envp="$target/.env"
+          tmp="$(mktemp)"
+          grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS|LEARNER_TELEGRAM_OUTBOUND_ONLY)=' "$envp" > "$tmp" || true
+          printf 'TELEGRAM_BOT_TOKEN=%s\n' "$token" >> "$tmp"
+          printf 'TELEGRAM_CHAT_ID=%s\n' "$master" >> "$tmp"
+          printf 'LEARNER_TELEGRAM_OUTBOUND_ONLY=true\n' >> "$tmp"
+          sudo -n cp -a "$envp" "$target/backups/.env.before-telegram-outbound-fix"
+          sudo -n cp "$tmp" "$envp"
+          rm -f "$tmp"
+          sudo -n chown ayman01323:ayman01323 "$envp" "$ui"
+          sudo -n chmod 600 "$envp"
+          echo "telegram_outbound_configured=true"
 
-            ui="$TARGET/learnerbot/telegram_ui.py"
-            envp="$TARGET/.env"
-            backup="$TARGET/backups/telegram_ui.py.before-outbound-only"
-            if ! grep -q "outbound-only mode: polling disabled" "$ui"; then
-              [[ -f "$backup" ]] || cp -a "$ui" "$backup"
-              UI="$ui" python3 - <<"PY"
-import os
-from pathlib import Path
-p=Path(os.environ["UI"])
-t=p.read_text(encoding="utf-8")
-old="def start_menu_thread(app):\n    if not app.telegram_bot_token:return None\n"
-new=("def start_menu_thread(app):\n"
-     "    if os.getenv(\"LEARNER_TELEGRAM_OUTBOUND_ONLY\",\"\").strip().lower() in {\"1\",\"true\",\"yes\",\"on\"}:\n"
-     "        print(\"[telegram-menu] outbound-only mode: polling disabled\")\n"
-     "        return None\n"
-     "    if not app.telegram_bot_token:return None\n")
-if old not in t:
-    raise SystemExit("start_menu_thread signature not found")
-p.write_text(t.replace(old,new,1),encoding="utf-8")
-PY
-            fi
-            grep -q "outbound-only mode: polling disabled" "$ui"
-            $PY -m py_compile "$ui"
-
-            master="$(awk -F, '"'"'NR>1 && toupper($2)=="MASTER" && toupper($3)=="ACTIVE" && $1 ~ /^[0-9-]+$/ {print $1; exit}'"'"' "$TARGET/CSVbot/users.csv")"
-            test -n "$master"
-            cp -a "$envp" "$TARGET/backups/.env.before-telegram-outbound-fix"
-            tmp="$(mktemp)"
-            grep -v -E "^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS|LEARNER_TELEGRAM_OUTBOUND_ONLY)=" "$envp" > "$tmp" || true
-            printf "TELEGRAM_BOT_TOKEN=%s\n" "$token" >> "$tmp"
-            printf "TELEGRAM_CHAT_ID=%s\n" "$master" >> "$tmp"
-            printf "LEARNER_TELEGRAM_OUTBOUND_ONLY=true\n" >> "$tmp"
-            cat "$tmp" > "$envp"
-            rm -f "$tmp"
-            chmod 600 "$envp"
-            chown ayman01323:ayman01323 "$envp" "$ui"
-            echo "outbound_only_configured=true"
-            echo "master_recipient_configured=true"
-            systemctl restart "$SERVICE"
-          '
-
+          sudo -n systemctl restart "$service"
           sleep 10
           state1="$(systemctl is-active "$service" 2>/dev/null || true)"
           n1="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
@@ -92,30 +72,11 @@ PY
           echo "restart_count_1=$n1"
           echo "restart_count_2=$n2"
 
-          cd "$target"
-          PYTHONPATH=. "$py" - <<'PY'
-          import csv
-          from pathlib import Path
-          from learnerbot.config import AppSettings
-          from learnerbot.telegram import get_me,send_message
-          app=AppSettings.load()
-          assert app.telegram_bot_token
-          get_me(app.telegram_bot_token)
-          recipient=''
-          with Path('CSVbot/users.csv').open(encoding='utf-8-sig',newline='') as f:
-              for r in csv.DictReader(f):
-                  tid=str(r.get('telegram_id') or '').strip()
-                  if str(r.get('role') or '').upper()=='MASTER' and str(r.get('status') or '').upper()=='ACTIVE' and tid.lstrip('-').isdigit():
-                      recipient=tid; break
-          assert recipient
-          result=send_message(app.telegram_bot_token,recipient,'🧠 Learner Bot Telegram connection restored. Outbound trade/status alerts are active. Telegram command polling remains on the main bot only. No trade was placed by this test.',protect_content=True)
-          print('smoke_test_ok='+str(bool(result.get('message_id'))).lower())
-          PY
+          payload="$(printf '{\"chat_id\":\"%s\",\"text\":\"🧠 Learner Bot Telegram connection restored. Outbound trade/status alerts are active. Telegram command polling remains on the main bot only. No trade was placed by this test.\",\"protect_content\":true}' "$master")"
+          curl -fsS --max-time 15 -H 'Content-Type: application/json' -d "$payload" "https://api.telegram.org/bot${token}/sendMessage" | grep -q '"ok":true'
+          echo "smoke_test_ok=true"
 
-          echo '=== TELEGRAM SERVICE CHECK ==='
-          journalctl -u "$service" -n 180 --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'outbound-only mode|TELEGRAM_BOT_TOKEN|telegram-menu|Main process exited|Failed with result' \
-            | tail -n 120 || true
+          journalctl -u "$service" -n 180 --no-pager -o cat 2>/dev/null | grep -Ei 'outbound-only mode|TELEGRAM_BOT_TOKEN|telegram-menu|Main process exited|Failed with result' | tail -n 120 || true
           test "$state1" = active
           test "$state2" = active
           test "$n1" = "$n2"
