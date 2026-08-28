@@ -28,8 +28,6 @@ def _key(event, allocation, cfg):
         str(cfg.get("live_entry_require_exit_liquidity_max_bps") or ""),
         str(cfg.get("live_emergency_exit_max_combined_bps") or ""),
         str(cfg.get("live_order_slippage_bps") or ""),
-        str(cfg.get("live_max_combined_impact_slippage_bps") or ""),
-        str(cfg.get("live_multihop_max_combined_bps") or ""),
     )
 
 
