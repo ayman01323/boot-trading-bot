@@ -14,41 +14,70 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 3
     steps:
-      - name: Locate compact learner position alert read-only
+      - name: Diagnose reporting activation safety read-only
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           target=/home/ayman01323/BOOT/testingbots/learn
-          rootcopy=/root/multichain-learning-bot-v2.2-fast-direct-market
           service=learnerbot-learn.service
           pid=$(systemctl show -p MainPID --value "$service")
-          echo '=== SERVICE PATHS ==='
+          echo '=== SERVICE ==='
           echo "pid=$pid"
           echo "working_directory=$(systemctl show -p WorkingDirectory --value "$service")"
-          echo "root_directory=$(systemctl show -p RootDirectory --value "$service")"
-          echo "exec=$(systemctl show -p ExecStart --value "$service" | sed -E 's/(TOKEN|KEY|SECRET|PASSWORD)=[^ ;]+/\1=<redacted>/g' | head -c 1200)"
           echo "proc_cwd=$(sudo -n readlink /proc/$pid/cwd 2>/dev/null || echo unavailable)"
-          echo '=== TARGET EXACT STRINGS ==='
-          grep -R -n --include='*.py' -F 'LEARNER POSITION UPDATE' "$target/learnerbot" 2>/dev/null || true
-          grep -R -n --include='*.py' -F 'Unrealised P&L' "$target/learnerbot" 2>/dev/null || true
-          echo '=== ROOT COPY EXACT STRINGS ==='
-          sudo -n grep -R -n --include='*.py' -F 'LEARNER POSITION UPDATE' "$rootcopy/learnerbot" 2>/dev/null | head -100 || true
-          sudo -n grep -R -n --include='*.py' -F 'Unrealised P&L' "$rootcopy/learnerbot" 2>/dev/null | head -100 || true
-          echo '=== SOURCE HASH COMPARISON ==='
-          for f in telegram_learner_position_update_patch.py telegram_learner_newpoll_full_format_patch.py telegram_learner_complete_market_context_patch.py solana_live_patch.py __main__.py; do
-            printf '%s target=' "$f"
-            sha256sum "$target/learnerbot/$f" 2>/dev/null | awk '{print $1}' || echo MISSING
-            printf '%s root=' "$f"
-            sudo -n sha256sum "$rootcopy/learnerbot/$f" 2>/dev/null | awk '{print $1}' || echo MISSING
-          done
-          echo '=== IMPORT ORDER TARGET ==='
-          grep -n -E 'telegram_learner|reconcile|position_update|full_format|complete_market' "$target/learnerbot/__main__.py" 2>/dev/null || true
-          echo '=== IMPORT ORDER ROOT ==='
-          sudo -n grep -n -E 'telegram_learner|reconcile|position_update|full_format|complete_market' "$rootcopy/learnerbot/__main__.py" 2>/dev/null || true
-          echo '=== RECENT RELATED LOGS ==='
-          sudo -n journalctl -u "$service" --since '25 minutes ago' --no-pager -o cat | grep -Ei 'learner-newpoll45|position update|reconcile|required|telegram' | tail -320 || true
+          echo '=== CURRENT ENTRY/LIVE GATES ==='
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/user_trading_settings.csv')
+          wanted={'learner_new_entries_enabled','solana_live_enabled','sibot_enabled','auto_trade_enabled'}
+          rows=list(csv.DictReader(p.open(encoding='utf-8-sig'))) if p.exists() else []
+          for key in sorted(wanted):
+              matches=[r for r in rows if str(r.get('telegram_id') or '')=='5923828381' and str(r.get('setting') or '')==key]
+              print(key+'='+(str(matches[-1].get('value') or '') if matches else 'MISSING'))
+          PY
+          echo '=== TELEGRAM + RENDER METRICS ==='
+          cd "$target"
+          set -a
+          [ -f .env ] && . ./.env || true
+          set +a
+          sudo -n -u ayman01323 env PYTHONPATH="$target" /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python - <<'PY'
+          import json, sqlite3, urllib.request, urllib.error
+          from decimal import Decimal
+          from learnerbot.config import AppSettings
+          from learnerbot import telegram_learner_position_update_patch as p
+          from learnerbot import telegram_learner_newpoll_full_format_patch as f
+          from learnerbot import solana_sibot as s
+          app=AppSettings.load()
+          print('telegram_token_present=' + ('YES' if app.telegram_bot_token else 'NO'))
+          if app.telegram_bot_token:
+              url='https://api.telegram.org/bot'+app.telegram_bot_token+'/getChat'
+              req=urllib.request.Request(url,data=json.dumps({'chat_id':'5923828381'}).encode(),headers={'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as r: data=json.loads(r.read(65536).decode())
+                  print('getChat=' + ('PASS' if data.get('ok') else 'FAIL'))
+                  if not data.get('ok'): print('getChat_error='+str(data.get('description') or '')[:200])
+              except Exception as e: print('getChat=ERROR:'+type(e).__name__)
+          db='/home/ayman01323/BOOT/testingbots/learn/data/solana_sibot.sqlite3'
+          c=sqlite3.connect(db); c.row_factory=sqlite3.Row
+          row=c.execute('select * from positions where position_id=?',('e30ca86e1878bd4e5f1648d3fbb7cbf2',)).fetchone(); c.close()
+          if row:
+              pos=dict(row); cfg=s.settings(app); solp=p._sol_usd(app)
+              section, pid, snap=p._position_section(app,pos,1,1,cfg,solp)
+              text='\n'.join(['📡 <b>LEARNER POSITION UPDATE — NewPoll45</b>','🔒 <b>LEARNER ONLY • GOOGLE TEST</b>',section])
+              plain=f._plain_from_html(text)
+              for label,value in [('html',text),('plain',plain)]:
+                  print(label+'_chars='+str(len(value)))
+                  print(label+'_utf16_units='+str(len(value.encode('utf-16-le'))//2))
+                  chunks=p._tg._split_text(value)
+                  print(label+'_chunks='+str(len(chunks)))
+                  print(label+'_max_chunk_chars='+str(max([len(x) for x in chunks] or [0])))
+                  print(label+'_max_chunk_utf16='+str(max([len(x.encode('utf-16-le'))//2 for x in chunks] or [0])))
+          print('telegram_message_sent=NO')
+          PY
+          echo '=== RECENT NEWPOLL ERRORS ==='
+          sudo -n journalctl -u "$service" --since '20 minutes ago' --no-pager -o cat | grep -Ei 'learner-newpoll45|reconcile|required' | tail -180 || true
           echo 'trading_action=NONE'
           echo 'service_restart=NO'
-          echo 'telegram_message_sent=NO'
