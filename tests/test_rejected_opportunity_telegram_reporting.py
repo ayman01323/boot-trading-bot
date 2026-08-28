@@ -1,15 +1,86 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
+import types
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
-# Focused regression coverage for refused-opportunity Telegram reporting.
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_format_rejected_telegram_includes_pool_usd_and_sol_equivalent():
-    from learnerbot.rejected_opportunity_publisher import format_rejected_telegram
+def _package(name: str) -> types.ModuleType:
+    module = types.ModuleType(name)
+    module.__path__ = []
+    return module
 
-    text = format_rejected_telegram(
+
+def _load_publisher(monkeypatch):
+    """Load only the changed publisher, without executing learnerbot/__init__.py."""
+    learnerbot = _package("learnerbot")
+    monkeypatch.setitem(sys.modules, "learnerbot", learnerbot)
+    name = "learnerbot.rejected_opportunity_publisher"
+    spec = importlib.util.spec_from_file_location(
+        name,
+        ROOT / "learnerbot" / "rejected_opportunity_publisher.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_poolcheck_patch(monkeypatch, publisher):
+    """Load only the changed PoolCheck patch with minimal contract stubs."""
+    sibot1 = _package("sibot1_engines")
+    shared = _package("sibot1_engines._shared")
+    monkeypatch.setitem(sys.modules, "sibot1_engines", sibot1)
+    monkeypatch.setitem(sys.modules, "sibot1_engines._shared", shared)
+
+    poolcheck_bridge = types.ModuleType("sibot1_engines._shared.poolcheck_bridge")
+
+    class FakeMandatoryShadowPoolCheck:
+        def assess_entry(self, intent):
+            return SimpleNamespace(verdict="PASS", reasons=())
+
+    poolcheck_bridge.MandatoryShadowPoolCheck = FakeMandatoryShadowPoolCheck
+    monkeypatch.setitem(
+        sys.modules,
+        "sibot1_engines._shared.poolcheck_bridge",
+        poolcheck_bridge,
+    )
+
+    rejected_reporting = types.ModuleType("sibot1_engines._shared.rejected_reporting")
+    rejected_reporting.publish_intent_rejection = lambda *args, **kwargs: None
+    monkeypatch.setitem(
+        sys.modules,
+        "sibot1_engines._shared.rejected_reporting",
+        rejected_reporting,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "learnerbot.rejected_opportunity_publisher",
+        publisher,
+    )
+
+    name = "sibot1_engines._shared.rejected_poolcheck_patch"
+    spec = importlib.util.spec_from_file_location(
+        name,
+        ROOT / "sibot1_engines" / "_shared" / "rejected_poolcheck_patch.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_format_rejected_telegram_includes_pool_usd_and_sol_equivalent(monkeypatch):
+    publisher = _load_publisher(monkeypatch)
+
+    text = publisher.format_rejected_telegram(
         candidate_id="candidate-1",
         chain="solana",
         token_address="Mint111",
@@ -35,7 +106,7 @@ def test_format_rejected_telegram_includes_pool_usd_and_sol_equivalent():
 
 
 def test_market_values_use_captured_liquidity_without_pool_lookup(monkeypatch):
-    import learnerbot.rejected_opportunity_publisher as publisher
+    publisher = _load_publisher(monkeypatch)
 
     def fail_lookup(**kwargs):
         raise AssertionError("DexScreener liquidity fallback should not run")
@@ -53,7 +124,7 @@ def test_market_values_use_captured_liquidity_without_pool_lookup(monkeypatch):
 
 
 def test_publish_rejection_notifies_only_new_observation(monkeypatch):
-    import learnerbot.rejected_opportunity_publisher as publisher
+    publisher = _load_publisher(monkeypatch)
 
     class FakeQueue:
         def __init__(self, inserted: bool):
@@ -72,7 +143,11 @@ def test_publish_rejection_notifies_only_new_observation(monkeypatch):
     queue = FakeQueue(inserted=True)
     monkeypatch.setattr(publisher, "_enabled", lambda: True)
     monkeypatch.setattr(publisher, "_queue", lambda: queue)
-    monkeypatch.setattr(publisher, "notify_rejection_only", lambda **kwargs: alerts.append(kwargs))
+    monkeypatch.setattr(
+        publisher,
+        "notify_rejection_only",
+        lambda **kwargs: alerts.append(kwargs),
+    )
 
     result = publisher.publish_rejection(
         chain="solana",
@@ -106,8 +181,8 @@ def test_publish_rejection_notifies_only_new_observation(monkeypatch):
 
 
 def test_poolcheck_shadow_only_alerts_without_queue_publish(monkeypatch):
-    import learnerbot.rejected_opportunity_publisher as publisher
-    from sibot1_engines._shared import rejected_poolcheck_patch as poolcheck_patch
+    publisher = _load_publisher(monkeypatch)
+    poolcheck_patch = _load_poolcheck_patch(monkeypatch, publisher)
 
     alerts = []
     queued = []
@@ -119,8 +194,16 @@ def test_poolcheck_shadow_only_alerts_without_queue_publish(monkeypatch):
             reasons=("RugCheck: Large Amount of LP Unlocked",),
         ),
     )
-    monkeypatch.setattr(publisher, "notify_rejection_only", lambda **kwargs: alerts.append(kwargs))
-    monkeypatch.setattr(poolcheck_patch, "publish_intent_rejection", lambda *args, **kwargs: queued.append((args, kwargs)))
+    monkeypatch.setattr(
+        publisher,
+        "notify_rejection_only",
+        lambda **kwargs: alerts.append(kwargs),
+    )
+    monkeypatch.setattr(
+        poolcheck_patch,
+        "publish_intent_rejection",
+        lambda *args, **kwargs: queued.append((args, kwargs)),
+    )
 
     intent = SimpleNamespace(
         intent_id="gpt-sol-1",
