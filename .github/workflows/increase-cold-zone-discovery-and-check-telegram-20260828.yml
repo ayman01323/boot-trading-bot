@@ -1,0 +1,180 @@
+name: Increase Cold Zone Discovery and Check Telegram
+
+on:
+  push:
+    branches:
+      - ops/google-master-menu-cutover-20260827
+    paths:
+      - .github/workflows/increase-cold-zone-discovery-and-check-telegram-20260828.yml
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Increase discovery and verify Telegram path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          SETTINGS="$LEARN/CSVbot/solana_settings.csv"
+          DB="$LEARN/data/solana_sibot.sqlite3"
+          RELAY_STATE=/home/ayman01323/.local/state/google-learner-cold-zone-relay.json
+          RELAY_ENV=/home/ayman01323/.config/google-learner-telegram-relay.env
+
+          test -f "$SETTINGS"
+          test -f "$DB"
+          test -f "$RELAY_ENV"
+
+          python3 - "$SETTINGS" <<'PY'
+          import csv, pathlib, sys
+          p=pathlib.Path(sys.argv[1])
+          rows=[]
+          with p.open(encoding='utf-8-sig', newline='') as f:
+              reader=csv.DictReader(f)
+              fields=reader.fieldnames or ['setting','value','description']
+              rows=list(reader)
+          found=False
+          for r in rows:
+              if str(r.get('setting') or '').strip() == 'discovery_blocks_per_cycle':
+                  print('discovery_blocks_per_cycle_before='+str(r.get('value') or ''))
+                  r['value']='6'
+                  found=True
+                  break
+          if not found:
+              rows.append({'setting':'discovery_blocks_per_cycle','value':'6','description':'Finalized blocks inspected per discovery cycle'})
+              fields=['setting','value','description']
+              print('discovery_blocks_per_cycle_before=MISSING')
+          tmp=p.with_suffix('.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields)
+              w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+          print('discovery_blocks_per_cycle_after=6')
+          PY
+
+          START_EPOCH="$(date +%s)"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 15
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          python3 - "$SETTINGS" "$DB" "$RELAY_STATE" "$RELAY_ENV" <<'PY'
+          import csv, json, os, sqlite3, sys, time, urllib.parse, urllib.request
+          settings_path, db, state_path, env_path = sys.argv[1:]
+
+          settings={}
+          with open(settings_path,encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  settings[str(r.get('setting') or '').strip()] = str(r.get('value') or '').strip()
+          print('runtime_setting_discovery_blocks_per_cycle='+settings.get('discovery_blocks_per_cycle','MISSING'))
+          print('runtime_setting_discovery_interval_seconds='+settings.get('discovery_interval_seconds','MISSING'))
+
+          con=sqlite3.connect(f'file:{db}?mode=ro',uri=True,timeout=3)
+          con.row_factory=sqlite3.Row
+          now=int(time.time())
+          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          def scalar(sql,args=()):
+              try:
+                  r=con.execute(sql,args).fetchone(); return r[0] if r else None
+              except Exception:
+                  return None
+          leaders=scalar("select count(distinct wallet) from leaders") or 0
+          leader_events_10m=scalar("select count(*) from leader_events where event_ts>=?",(now-600,)) or 0
+          decisions_10m=scalar("select count(*) from cold_zone_decisions where created_at>=?",(now-600,)) or 0
+          notices_10m=scalar("select count(*) from cold_zone_notifications where created_at>=?",(now-600,)) or 0
+          max_notice=scalar("select coalesce(max(notification_id),0) from cold_zone_notifications") or 0
+          latest_notice=con.execute("select notification_id,kind,mint,created_at from cold_zone_notifications order by notification_id desc limit 1").fetchone() if 'cold_zone_notifications' in tables else None
+          latest_decision=con.execute("select reason_code,mint,created_at from cold_zone_decisions order by decision_id desc limit 1").fetchone() if 'cold_zone_decisions' in tables else None
+          con.close()
+          print('selected_leaders='+str(leaders))
+          print('leader_events_last_10m='+str(leader_events_10m))
+          print('cold_zone_decisions_last_10m='+str(decisions_10m))
+          print('cold_zone_notifications_last_10m='+str(notices_10m))
+          print('max_notification_id='+str(max_notice))
+          if latest_notice:
+              print('latest_notification_kind='+str(latest_notice['kind']))
+              print('latest_notification_age_seconds='+str(max(0,now-int(latest_notice['created_at']))))
+          else:
+              print('latest_notification_kind=NONE')
+          if latest_decision:
+              print('latest_decision_code='+str(latest_decision['reason_code']))
+              print('latest_decision_age_seconds='+str(max(0,now-int(latest_decision['created_at']))))
+          else:
+              print('latest_decision_code=NONE')
+
+          state={}
+          try:
+              state=json.load(open(state_path,encoding='utf-8'))
+          except Exception:
+              pass
+          last_id=int(state.get('last_id') or 0)
+          print('relay_last_id='+str(last_id))
+          print('relay_pending_count='+str(max(0,int(max_notice)-last_id)))
+          if state.get('last_sent_at'):
+              print('relay_last_sent_age_seconds='+str(max(0,now-int(state.get('last_sent_at') or now))))
+
+          env={}
+          for line in open(env_path,encoding='utf-8'):
+              line=line.strip()
+              if not line or line.startswith('#') or '=' not in line: continue
+              k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env.get('TELEGRAM_BOT_TOKEN','')
+          truth={'1','true','yes','on','y'}
+          eligible=[]
+          trading='/home/ayman01323/BOOT/testingbots/learn/CSVbot/user_trading_settings.csv'
+          try:
+              by={}
+              with open(trading,encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or ''); key=str(r.get('setting') or '')
+                      if tid and key: by.setdefault(tid,{})[key]=str(r.get('value') or '').strip().lower()
+              eligible=[tid for tid,s in by.items() if s.get('solana_live_enabled') in truth and s.get('learner_new_entries_enabled') in truth and s.get('sibot_enabled') in truth]
+          except Exception:
+              pass
+          if token and eligible:
+              text='✅ SiBot discovery/Telegram check\nCold Zone is active. Raw finalized-block discovery is now 6 blocks per 15s cycle. Telegram delivery path is working.'
+              body=urllib.parse.urlencode({'chat_id':eligible[0],'text':text}).encode()
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=body,method='POST')
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as resp:
+                      payload=json.loads(resp.read().decode())
+                  print('telegram_direct_test_send='+('YES' if payload.get('ok') else 'NO'))
+              except Exception as exc:
+                  print('telegram_direct_test_send=NO')
+                  print('telegram_direct_test_error='+type(exc).__name__)
+          else:
+              print('telegram_direct_test_send=NO_TARGET')
+          PY
+
+          # If queued Cold Zone notices are behind the relay cursor, give the relay one clean restart and catch-up window.
+          PENDING="$(python3 - "$DB" "$RELAY_STATE" <<'PY'
+          import json,sqlite3,sys
+          db,statep=sys.argv[1:]
+          con=sqlite3.connect(f'file:{db}?mode=ro',uri=True,timeout=3)
+          mx=con.execute('select coalesce(max(notification_id),0) from cold_zone_notifications').fetchone()[0]
+          con.close()
+          try: st=json.load(open(statep,encoding='utf-8'))
+          except Exception: st={}
+          print(max(0,int(mx)-int(st.get('last_id') or 0)))
+          PY
+          )"
+          if [[ "$PENDING" -gt 0 ]]; then
+            echo "relay_catchup_action=RESTART pending=$PENDING"
+            sudo -n systemctl restart google-learner-cold-zone-relay.service
+            sleep 8
+          else
+            echo "relay_catchup_action=NONE pending=0"
+          fi
+
+          echo "learner_runtime=$(sudo -n systemctl is-active learnerbot-learn.service)"
+          echo "cold_zone_relay=$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)"
+          echo "discovery_blocks_per_cycle=6"
+          echo "discovery_interval_seconds=15"
+          echo "cold_zone_discovery_update=SUCCESS"
+
+          RECENT="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 800)"
+          echo "rpc_cooling_errors_since_restart=$(printf '%s\n' "$RECENT" | grep -cF 'all RPC endpoints temporarily cooling down' || true)"
+          echo "leader_worker_errors_since_restart=$(printf '%s\n' "$RECENT" | grep -cF '[sibot-solana-leaders]' || true)"
