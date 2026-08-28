@@ -4,7 +4,7 @@ from __future__ import annotations
 
 Owner-approved entry profile:
 - signal age <= 50s (hard)
-- entry deterioration <= 3.3% (hard)
+- entry deterioration <= 10% (hard)
 - actual-size BUY->SELL round-trip <= 3% remains hard in base Cold Zone
 - leader historical gross return is telemetry/score only, not a profit hard block
 - estimated total costs <= 5% (hard)
@@ -20,9 +20,9 @@ from decimal import Decimal
 
 from . import solana_cold_zone_strategy_patch as _cz
 
-PROFILE = "COLD_ZONE_17AUG_V3_ENTRY_50S_3P3"
+PROFILE = "COLD_ZONE_17AUG_V4_ENTRY_50S_10PCT"
 MAX_SIGNAL_AGE_SECONDS = 50
-MAX_ENTRY_DETERIORATION_PCT = Decimal("3.3")
+MAX_ENTRY_DETERIORATION_PCT = Decimal("10")
 MAX_ESTIMATED_COST_PCT = Decimal("5")
 MAX_REQUIRED_GROSS_PCT = Decimal("10")
 
