@@ -42,7 +42,7 @@ jobs:
 
           python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
           import sqlite3,sys
-          con=sqlite3.connect(sys.argv[1],timeout=5)
+          con=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True,timeout=5)
           n=con.execute("SELECT COUNT(*) FROM positions WHERE status='OPEN' AND mode='LIVE'").fetchone()[0]
           con.close(); print(f'predeploy_open_live_positions={n}')
           if n: raise SystemExit('Refusing Cold Zone cutover while a prior LIVE position is open')
@@ -54,6 +54,7 @@ jobs:
           [[ ! -f "$UNIT" ]] || sudo -n cp -a "$UNIT" "$BACKUP/google-learner-cold-zone-relay.service"
           rollback() {
             rc=$?; echo "cold_zone_rollback=YES rc=$rc"
+            sudo -n systemctl stop google-learner-cold-zone-relay.service >/dev/null 2>&1 || true
             cp -a "$BACKUP/__main__.py" "$MAIN" || true
             if [[ -f "$BACKUP/solana_cold_zone_strategy_patch.py" ]]; then cp -a "$BACKUP/solana_cold_zone_strategy_patch.py" "$MOD" || true; else rm -f "$MOD" || true; fi
             if [[ -f "$BACKUP/google_learner_cold_zone_relay.py" ]]; then cp -a "$BACKUP/google_learner_cold_zone_relay.py" "$RELAY" || true; else rm -f "$RELAY" || true; fi
@@ -89,17 +90,6 @@ jobs:
           PY
           chown ayman01323:ayman01323 "$MAIN"
 
-          python3 - "$MOD" "$LEARN/data/solana_sibot.sqlite3" <<'PY'
-          import ast,sqlite3,sys
-          tree=ast.parse(open(sys.argv[1],encoding='utf-8').read()); schema=None
-          for node in tree.body:
-              if isinstance(node,ast.Assign):
-                  for target in node.targets:
-                      if isinstance(target,ast.Name) and target.id=='_SCHEMA': schema=ast.literal_eval(node.value)
-          if not schema: raise SystemExit('Cold Zone schema not found')
-          con=sqlite3.connect(sys.argv[2],timeout=10); con.executescript(schema); con.commit(); con.close()
-          PY
-
           cat > "$BACKUP/unit.new" <<EOF
           [Unit]
           Description=Google isolated learner Cold Zone Telegram relay
@@ -120,22 +110,39 @@ jobs:
           EOF
           sudo -n install -m 0644 "$BACKUP/unit.new" "$UNIT"
           sudo -n systemctl daemon-reload
-          sudo -n systemctl enable --now google-learner-cold-zone-relay.service
+          sudo -n systemctl stop google-learner-cold-zone-relay.service >/dev/null 2>&1 || true
+
+          # IMPORTANT: do not create the strategy tables as the GitHub runner user.
+          # The learner runtime owns the writable SQLite path and creates the tables
+          # lazily from monitor_positions_cold_zone() on startup.
           sudo -n systemctl restart learnerbot-learn.service
-          sleep 8
+          sleep 10
           test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
-          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
-          sudo -n journalctl -u learnerbot-learn.service --since '3 minutes ago' --no-pager -n 500 | grep -F '[solana-cold-zone] installed=true'
+          sudo -n journalctl -u learnerbot-learn.service --since '3 minutes ago' --no-pager -n 600 | grep -F '[solana-cold-zone] installed=true'
 
           python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
-          import sqlite3,sys
-          con=sqlite3.connect(sys.argv[1],timeout=5)
-          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
-          for name in ('cold_zone_positions','cold_zone_notifications','cold_zone_decisions'): assert name in tables
-          print('cold_zone_tables=YES')
-          print('open_live_positions='+str(con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]))
-          con.close()
+          import sqlite3,sys,time
+          path=sys.argv[1]
+          deadline=time.time()+20
+          missing=[]
+          while True:
+              con=sqlite3.connect(f'file:{path}?mode=ro',uri=True,timeout=5)
+              tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+              missing=[n for n in ('cold_zone_positions','cold_zone_notifications','cold_zone_decisions') if n not in tables]
+              if not missing:
+                  print('cold_zone_tables=YES')
+                  print('open_live_positions='+str(con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]))
+                  con.close(); break
+              con.close()
+              if time.time()>=deadline: raise SystemExit('Cold Zone runtime did not create tables: '+','.join(missing))
+              time.sleep(2)
           PY
+
+          # Start outbound-only Telegram notices only after the runtime and DB schema
+          # are proven healthy, preventing a sidecar from racing the first DB create.
+          sudo -n systemctl enable --now google-learner-cold-zone-relay.service
+          sleep 3
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
 
           PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
           PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
@@ -144,6 +151,8 @@ jobs:
           echo 'cold_zone_deploy=SUCCESS'
           echo 'scope=ISOLATED_LEARNER_ONLY'
           echo 'strategy_profile=COLD_ZONE_17AUG_V1'
+          echo 'learner_runtime=ACTIVE'
+          echo 'cold_zone_relay=ACTIVE'
           echo 'active_position_slots=10'
           echo 'trade_size_sol=0.0005'
           echo 'entry_pool_age=0-45m'
