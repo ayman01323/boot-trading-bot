@@ -1,0 +1,104 @@
+name: Inspect Learner 180s Snapshot 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-learner-180-snapshot-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Read-only search for exact 180s Learner settings snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          TARGET=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$TARGET"
+          export TARGET
+
+          python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+
+          root=Path(os.environ['TARGET'])
+          print('target='+str(root))
+          print('mutation=NO')
+
+          # Restrict the forensic scan to Solana settings CSV snapshots/backups.
+          # Never read env, wallet, key, token, or user identity files.
+          candidates=[]
+          for p in root.rglob('*'):
+              if not p.is_file():
+                  continue
+              n=p.name.lower()
+              if 'solana_settings' not in n or not n.endswith(('.csv','.bak','.old','.txt')):
+                  continue
+              try:
+                  if p.stat().st_size > 2_000_000:
+                      continue
+                  text=p.read_text(encoding='utf-8-sig',errors='replace')
+              except Exception:
+                  continue
+              # Exact row-oriented match, allowing CSV whitespace/quoting variations.
+              if 'max_signal_age_seconds' not in text:
+                  continue
+              found180=False
+              try:
+                  rows=list(csv.DictReader(text.splitlines()))
+                  for r in rows:
+                      if str(r.get('setting') or '').strip()=='max_signal_age_seconds' and str(r.get('value') or '').strip()=='180':
+                          found180=True
+                          break
+              except Exception:
+                  pass
+              if not found180:
+                  # conservative fallback for simple backup text formats
+                  compact=text.replace(' ','').replace('"','').replace("'",'')
+                  found180=('max_signal_age_seconds,180' in compact or 'max_signal_age_seconds=180' in compact)
+              if found180:
+                  candidates.append(p)
+
+          print('exact_180_snapshot_count='+str(len(candidates)))
+          for i,p in enumerate(sorted(candidates,key=lambda x:x.stat().st_mtime),1):
+              st=p.stat()
+              print(f'--- SNAPSHOT {i} ---')
+              print('path='+str(p))
+              print('mtime_epoch='+str(int(st.st_mtime)))
+              try:
+                  with p.open(encoding='utf-8-sig',newline='') as f:
+                      rows=list(csv.DictReader(f))
+                  if rows and 'setting' in rows[0] and 'value' in rows[0]:
+                      for r in rows:
+                          k=str(r.get('setting') or '').strip()
+                          v=str(r.get('value') or '').strip()
+                          d=str(r.get('description') or '').strip()
+                          if k:
+                              print(f'SETTING {k}={v} | {d}')
+                  else:
+                      # Safe because candidate names are constrained to solana_settings only.
+                      print(p.read_text(encoding='utf-8-sig',errors='replace')[:100000])
+              except Exception as exc:
+                  print('read_error='+type(exc).__name__)
+
+          # Also inspect only safe journal lines that can establish when 180 became active.
+          print('--- JOURNAL_HINTS ---')
+          PY
+
+          sudo -n journalctl -u learnerbot-learn.service \
+            --since '2026-08-28 10:00:00' --until '2026-08-28 14:00:00' --no-pager 2>/dev/null \
+            | grep -Ei 'max_signal_age_seconds|signal_age=180|signal age.*180|180s|cold.zone.*180|profile.*180' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
+            | tail -200 || true
+
+          echo 'inspection_complete=true'
+          echo 'settings_mutated=NO'
+          echo 'service_restarted=NO'
