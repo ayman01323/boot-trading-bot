@@ -1,0 +1,85 @@
+name: Diagnose Telegram Poller Conflict 20260828 1721
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/diagnose-telegram-poller-conflict-20260828-1721.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Compare learner and SiRisky Telegram routing safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== SERVICES ==='
+          for s in learnerbot-learn.service sirisky.service; do
+            echo "$s active=$(systemctl is-active "$s" 2>/dev/null || true) pid=$(systemctl show -p MainPID --value "$s" 2>/dev/null || true)"
+          done
+
+          echo '=== TOKEN FINGERPRINTS (never token values) ==='
+          sudo -n python3 - <<'PY'
+          import hashlib, os, re
+          from pathlib import Path
+          candidates = [
+              ('learner', Path('/home/ayman01323/BOOT/testingbots/learn/.env')),
+              ('sirisky_root', Path('/root/SiRisky/.env')),
+              ('sirisky_home', Path('/home/ayman01323/BOOT/testingbots/SiRisky/.env')),
+              ('root_bot', Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')),
+          ]
+          names = ('TELEGRAM_BOT_TOKEN','BOT_TOKEN','TELEGRAM_TOKEN')
+          found=[]
+          for label,p in candidates:
+              if not p.exists():
+                  print(f'{label}: file=MISSING')
+                  continue
+              data={}
+              try:
+                  for line in p.read_text(encoding='utf-8', errors='ignore').splitlines():
+                      s=line.strip()
+                      if not s or s.startswith('#') or '=' not in s: continue
+                      k,v=s.split('=',1)
+                      data[k.strip()]=v.strip().strip('"').strip("'")
+              except Exception as e:
+                  print(f'{label}: read={type(e).__name__}')
+                  continue
+              token=''
+              key=''
+              for n in names:
+                  if data.get(n): token=data[n]; key=n; break
+              if token:
+                  fp=hashlib.sha256(token.encode()).hexdigest()[:12]
+                  found.append((label,fp))
+                  print(f'{label}: token_present=YES key={key} fingerprint={fp}')
+              else:
+                  print(f'{label}: token_present=NO')
+              chat = data.get('TELEGRAM_CHAT_ID') or data.get('CHAT_ID') or data.get('TELEGRAM_ALLOWED_CHAT_IDS') or ''
+              print(f'{label}: chat_config_present={"YES" if chat else "NO"}')
+          for i,(a,fa) in enumerate(found):
+              for b,fb in found[i+1:]:
+                  if fa==fb:
+                      print(f'SAME_TOKEN={a}:{b}:{fa}')
+          PY
+
+          echo '=== PROCESS COMMANDS ==='
+          ps -eo pid,user,cmd --no-headers | grep -E 'learnerbot|SiRisky|sirisky|telegram' | grep -v grep | sed -E 's/[0-9]{8,}:[A-Za-z0-9_-]{20,}/<redacted-token>/g' | head -80 || true
+
+          echo '=== RECENT TELEGRAM POLLING SIGNALS ==='
+          for s in learnerbot-learn.service sirisky.service; do
+            echo "--- $s ---"
+            sudo -n journalctl -u "$s" --since '15 minutes ago' --no-pager -o cat 2>/dev/null \
+              | grep -Ei 'telegram|getUpdates|409|conflict|poll|webhook|learnerarm|SiRisky commands' \
+              | tail -120 || true
+          done
+
+          echo '=== NO CHANGES MADE ==='
+          echo 'service_change=NO'
+          echo 'telegram_send=NO'
+          echo 'trading_action=NONE'
