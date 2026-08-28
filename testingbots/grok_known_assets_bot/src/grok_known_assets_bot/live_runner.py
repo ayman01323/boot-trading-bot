@@ -61,9 +61,21 @@ def _process_snapshot(
         return equity
 
     decision = engine.evaluate_entry(snap, equity, now=snap.ts)
+    decision_payload = {
+        **decision.__dict__,
+        "research_label": assessment.label,
+        "research_confidence": assessment.confidence,
+        "armed": armed,
+        "paper": True,
+        "feed": "real",
+    }
+    # Always journal the final post-research decision. Some StrategyEngine reject
+    # branches intentionally return without creating a REJECT event; DECISION is
+    # the canonical stream used by the dedicated Telegram notifier.
+    journal.event("DECISION", snap.asset_key, decision_payload)
     if decision.action == "ENTER":
         engine.open_paper(snap, decision)
-    print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, **decision.__dict__, "research_label": assessment.label, "research_confidence": assessment.confidence, "armed": armed, "paper": True, "feed": "real"}), flush=True)
+    print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, **decision_payload}), flush=True)
     return equity
 
 
