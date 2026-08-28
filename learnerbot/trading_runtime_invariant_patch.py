@@ -11,6 +11,7 @@ from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_cursor_reliability_patch as _cursor
 from . import solana_live_executor as _exec
+from . import solana_live_patch as _live
 from . import solana_overhead_gate_correction_patch as _overhead
 from . import solana_position_wallet_binding_patch as _binding
 from . import solana_preflight_cache_patch as _preflight
