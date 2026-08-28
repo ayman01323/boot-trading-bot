@@ -1,0 +1,107 @@
+name: Inspect Learner 0040 Snapshot 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-learner-0040-snapshot-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Find closest safe settings snapshot at or before 00:40 BST
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+          TARGET=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$TARGET"
+          export TARGET
+
+          python3 - <<'PY'
+          import csv, os, datetime
+          from pathlib import Path
+
+          root=Path(os.environ['TARGET'])
+          target_epoch=int(datetime.datetime(2026,8,27,23,40,0,tzinfo=datetime.timezone.utc).timestamp())
+          print('target_time_utc=2026-08-27T23:40:00Z')
+          print('target_time_bst=2026-08-28T00:40:00+01:00')
+          print('mutation=NO')
+
+          safe_names={'solana_settings.csv','user_trading_settings.csv'}
+          found=[]
+          for p in root.rglob('*'):
+              if not p.is_file() or p.name not in safe_names:
+                  continue
+              try:
+                  st=p.stat()
+              except Exception:
+                  continue
+              found.append((int(st.st_mtime),p))
+
+          for name in sorted(safe_names):
+              candidates=[(m,p) for m,p in found if p.name==name and m<=target_epoch]
+              if not candidates:
+                  print(f'NO_PRETARGET_SNAPSHOT {name}')
+                  # Show nearest file either side for diagnostic only.
+                  allc=[(abs(m-target_epoch),m,p) for m,p in found if p.name==name]
+                  if allc:
+                      _,m,p=min(allc)
+                      print(f'NEAREST_ANY {name} path={p} mtime_epoch={m} delta_seconds={m-target_epoch}')
+                  continue
+              m,p=max(candidates,key=lambda x:x[0])
+              print(f'--- SELECTED {name} ---')
+              print('path='+str(p))
+              print('mtime_epoch='+str(m))
+              print('seconds_before_target='+str(target_epoch-m))
+              try:
+                  with p.open(encoding='utf-8-sig',newline='') as f:
+                      rows=list(csv.DictReader(f))
+              except Exception as exc:
+                  print('read_error='+type(exc).__name__)
+                  continue
+              if name=='solana_settings.csv':
+                  for r in rows:
+                      k=str(r.get('setting') or '').strip()
+                      v=str(r.get('value') or '').strip()
+                      d=str(r.get('description') or '').strip()
+                      if k:
+                          print(f'SETTING {k}={v} | {d}')
+              else:
+                  allowed={
+                    'sibot_settings_source','sibot_enabled','sibot_auto_trade_enabled',
+                    'solana_live_enabled','learner_new_entries_enabled','solana_live_trade_sol',
+                    'solana_live_min_reserve_sol','solana_live_max_positions','solana_min_trade_sol'
+                  }
+                  for r in rows:
+                      k=str(r.get('setting') or '').strip()
+                      if k not in allowed:
+                          continue
+                      chain=str(r.get('chain_id') or '').strip()
+                      v=str(r.get('value') or '').strip()
+                      d=str(r.get('description') or '').strip()
+                      print(f'USER_SETTING chain={chain} {k}={v} | {d}')
+
+          print('--- ALL_SAFE_SNAPSHOTS_AROUND_TARGET ---')
+          nearby=sorted((m,p) for m,p in found if abs(m-target_epoch)<=6*3600)
+          for m,p in nearby:
+              print(f'SNAPSHOT path={p} mtime_epoch={m} delta_seconds={m-target_epoch}')
+          PY
+
+          echo '--- JOURNAL_0030_TO_0050_BST ---'
+          sudo -n journalctl -u learnerbot-learn.service \
+            --since '2026-08-27 23:30:00 UTC' --until '2026-08-27 23:50:00 UTC' --no-pager 2>/dev/null \
+            | grep -Ei 'signal|setting|live|entry|trade|leader|position|armed|enabled|disabled|cold.zone' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
+            | tail -250 || true
+
+          echo inspection_complete=true
+          echo settings_mutated=NO
+          echo service_restarted=NO
