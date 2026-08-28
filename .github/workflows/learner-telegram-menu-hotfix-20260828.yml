@@ -63,3 +63,47 @@ jobs:
           echo service=active
           echo '--- telegram update transport markers ---'
           grep -nE 'get_updates|outbound|start_menu_thread' "$target/learnerbot/telegram_ui.py" | tail -30 || true
+
+      - name: Diagnose Learner Telegram inbound ownership without consuming updates
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          echo '--- running learner services ---'
+          systemctl list-units --type=service --state=running --no-legend | awk '{print $1}' | grep -Ei '^learnerbot' || true
+          echo '--- learner processes ---'
+          pgrep -af 'python.*learnerbot' | sed -E 's#(/[A-Za-z0-9._-]+){3,}#<path>#g' || true
+          echo '--- recent telegram polling/conflict journal ---'
+          sudo -n journalctl -u learnerbot-learn.service --since '2 days ago' --no-pager 2>/dev/null | grep -Ei 'telegram-menu|outbound-only|getupdates|409|conflict|webhook' | tail -120 || true
+          echo '--- webhook state ---'
+          TARGET="$target" python3 - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          root = Path(os.environ['TARGET'])
+          token = ''
+          for path in (root/'.env', root/'CSVbot'/'telegram_settings.csv'):
+              if not path.exists():
+                  continue
+              for line in path.read_text(encoding='utf-8', errors='ignore').splitlines():
+                  if '=' in line:
+                      k,v=line.split('=',1)
+                      if 'TELEGRAM' in k.upper() and 'TOKEN' in k.upper() and v.strip():
+                          token=v.strip().strip('"').strip("'")
+                          break
+              if token:
+                  break
+          if not token:
+              print('telegram_token_present=false')
+              raise SystemExit(0)
+          print('telegram_token_present=true')
+          try:
+              with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/getWebhookInfo', timeout=10) as r:
+                  data=json.loads(r.read().decode())
+              result=data.get('result') or {}
+              print('webhook_ok='+str(bool(data.get('ok'))).lower())
+              print('webhook_configured='+str(bool(result.get('url'))).lower())
+              print('pending_update_count='+str(int(result.get('pending_update_count') or 0)))
+          except Exception as exc:
+              print('webhook_check_error='+type(exc).__name__)
+          PY
