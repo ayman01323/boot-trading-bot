@@ -1,0 +1,62 @@
+name: Check Google Learner Runtime RPC Env 20260828
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-google-learner-runtime-rpc-env-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect runtime RPC environment without exposing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          service=learnerbot-learn.service
+          target=/home/ayman01323/BOOT/testingbots/learn
+          echo "service=$(systemctl is-active "$service")"
+          echo "pid=$(systemctl show -p MainPID --value "$service")"
+          echo "started=$(systemctl show -p ActiveEnterTimestamp --value "$service")"
+          echo "environment_files=$(systemctl show "$service" -p EnvironmentFiles --value | sed -E 's#(/[^ ]+).*#\1#')"
+          echo 'unit_environment_keys:'
+          systemctl show "$service" -p Environment --value | tr ' ' '\n' | sed 's/=.*//' | grep -E '^(SOLANA_RPC_URLS|SOLANA_RPC_FALLBACK_URLS|SOLANA_RPC_URL|HELIUS_RPC_URL|HELIUS_API_KEY)$' || true
+          echo 'runtime_counts:'
+          pid="$(systemctl show -p MainPID --value "$service")"
+          sudo -n PID="$pid" TARGET="$target" python3 - <<'PY'
+          import os,re
+          from pathlib import Path
+          pid=os.environ['PID']; target=Path(os.environ['TARGET'])
+          data=Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+          env={}
+          for item in data:
+              if b'=' in item:
+                  k,v=item.split(b'=',1); env[k.decode(errors='ignore')]=v.decode(errors='ignore')
+          def split(v): return [x.strip() for x in re.split(r'[;,\s]+',v or '') if x.strip()]
+          print('runtime_SOLANA_RPC_URLS_count=',len(split(env.get('SOLANA_RPC_URLS',''))))
+          print('runtime_SOLANA_RPC_FALLBACK_URLS_count=',len(split(env.get('SOLANA_RPC_FALLBACK_URLS',''))))
+          print('runtime_SOLANA_RPC_URL_present=', 'YES' if env.get('SOLANA_RPC_URL') else 'NO')
+          print('runtime_HELIUS_RPC_URL_present=', 'YES' if env.get('HELIUS_RPC_URL') else 'NO')
+          print('runtime_HELIUS_API_KEY_present=', 'YES' if env.get('HELIUS_API_KEY') else 'NO')
+          file_env={}
+          p=target/'.env'
+          if p.is_file():
+              for line in p.read_text(errors='ignore').splitlines():
+                  line=line.strip()
+                  if not line or line.startswith('#') or '=' not in line: continue
+                  k,v=line.split('=',1); file_env[k.strip()]=v.strip().strip('"\'')
+          print('file_SOLANA_RPC_URLS_count=',len(split(file_env.get('SOLANA_RPC_URLS',''))))
+          print('file_SOLANA_RPC_FALLBACK_URLS_count=',len(split(file_env.get('SOLANA_RPC_FALLBACK_URLS',''))))
+          print('runtime_matches_file_primary=', 'YES' if env.get('SOLANA_RPC_URLS','')==file_env.get('SOLANA_RPC_URLS','') and file_env.get('SOLANA_RPC_URLS') else 'NO')
+          print('runtime_matches_file_fallback=', 'YES' if env.get('SOLANA_RPC_FALLBACK_URLS','')==file_env.get('SOLANA_RPC_FALLBACK_URLS','') and file_env.get('SOLANA_RPC_FALLBACK_URLS') else 'NO')
+          print('urls_or_keys_printed=NO')
+          PY
+          echo 'trading_action=NONE'
+          echo 'service_restart=NO'
