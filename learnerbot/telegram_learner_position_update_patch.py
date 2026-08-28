@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """45-second presentation-only open-position reporting for the isolated learner.
 
-NewPoll45 is independent of the faster Solana safety/exit monitor.  Pool-at-open
+NewPoll45 is independent of the faster Solana safety/exit monitor. Pool-at-open
 is persisted only for positions created after this capture layer is installed;
 we never invent a historical baseline for older positions.
 """
@@ -27,9 +27,9 @@ _PREV_START_MENU = _ui.start_menu_thread
 _START_LOCK = threading.Lock()
 _STARTED = False
 _POOL_OPEN_PREFIX = "learner_pool_open:"
-_POOL_CONTEXT_MARKER = "<!--learner-pool-context-->"
+_POOL_CONTEXT_MARKER = "💧 <b>POOL CONTEXT</b>"
 
-# Previous successfully delivered 45-second report.  This is deliberately
+# Previous successfully delivered 45-second report. This is deliberately
 # process-local because it is a presentation delta, not trading/accounting state.
 _PREVIOUS: dict[str, dict[str, Decimal]] = {}
 
@@ -160,8 +160,6 @@ def capture_pool_open(app, position_id: str, mint: str) -> dict:
     }
     try:
         with _sol._DB_LOCK, _sol.connect(app) as conn:
-            # Re-check under the DB lock so concurrent BUY-notification paths can
-            # never replace an earlier baseline.
             raw = _sol._state(conn, _pool_key(position_id), "") or ""
             if raw:
                 try:
@@ -404,7 +402,6 @@ def install() -> None:
         return
     _ui.start_menu_thread = start_menu_thread
 
-    # cli imports start_menu_thread by value. Update that cached symbol too.
     cli_mod = sys.modules.get("learnerbot.cli")
     if cli_mod is not None:
         setattr(cli_mod, "start_menu_thread", start_menu_thread)
