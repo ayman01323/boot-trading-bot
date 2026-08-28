@@ -1,0 +1,115 @@
+name: Claude Google Hotfix Snapshot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-google-hotfix-snapshot.yml'
+      - '.github/claude-google-hotfix-snapshot.trigger'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-google-hotfix-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+    steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Google runner and managed repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test -d "$MANAGED_REPO/.git"
+          echo "workflow_sha=$(git rev-parse HEAD)"
+          echo "server_sha=$(git -C "$MANAGED_REPO" rev-parse HEAD)"
+          git -C "$MANAGED_REPO" status --short --branch
+
+      - name: Build sanitised allowlisted hotfix snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/google-hotfix-snapshot"
+          rm -rf "$out"
+          mkdir -p "$out/files"
+          allowlist=(
+            'claude-trading-bot/claude_bot_patches.py'
+            'claude-trading-bot/solana_execution_risk_patch.py'
+            'claude-trading-bot/telegram_control_patch.py'
+            'learnerbot/ai_agent_health_4h_patch.py'
+            'learnerbot/sibot1_runtime_diag_export_patch.py'
+            'learnerbot/solana_pool_risk_gate.py'
+            'learnerbot/solana_rpc_failover_patch.py'
+            'claude-trading-bot/claude_runtime_health_patch.py'
+            'learnerbot/rejected_opportunity_publisher.py'
+          )
+
+          git -C "$MANAGED_REPO" status --short -- "${allowlist[@]}" > "$out/status.txt"
+          git -C "$MANAGED_REPO" diff --no-ext-diff --no-color -- "${allowlist[@]}" > "$out/tracked.diff"
+
+          for rel in "${allowlist[@]}"; do
+            src="$MANAGED_REPO/$rel"
+            if [[ -f "$src" ]] && ! git -C "$MANAGED_REPO" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+              mkdir -p "$out/files/$(dirname "$rel")"
+              cp "$src" "$out/files/$rel"
+            fi
+          done
+
+          WORKFLOW_SHA="$(git rev-parse HEAD)" SERVER_SHA="$(git -C "$MANAGED_REPO" rev-parse HEAD)" OUT="$out" python3 - <<'PY'
+          import os, pathlib, re
+          root = pathlib.Path(os.environ['OUT'])
+          secret_patterns = [
+              re.compile(r'(?i)(api[-_]?key\s*[=:]\s*)[^\s\"\']+'),
+              re.compile(r'(?i)(authorization\s*[=:]\s*(?:bearer\s+)?)\S+'),
+              re.compile(r'(?i)((?:token|secret|password)\s*[=:]\s*)[^\s\"\']+'),
+              re.compile(r'(?i)([?&](?:api[-_]?key|key|token)=)[^&\s\"\']+'),
+          ]
+          def sanitise(text: str) -> str:
+              for p in secret_patterns:
+                  text = p.sub(lambda m: m.group(1) + '<REDACTED>', text)
+              return text
+          for p in root.rglob('*'):
+              if p.is_file():
+                  text = p.read_text(encoding='utf-8', errors='replace')
+                  p.write_text(sanitise(text), encoding='utf-8')
+          (root/'metadata.txt').write_text(
+              f"workflow_sha={os.environ['WORKFLOW_SHA']}\nserver_sha={os.environ['SERVER_SHA']}\n"
+              "snapshot_scope=allowlisted_code_only\nserver_mutated=false\nservice_restarted=false\n",
+              encoding='utf-8',
+          )
+          PY
+
+          echo '--- snapshot status ---'
+          cat "$out/status.txt"
+          echo "tracked_diff_lines=$(wc -l < "$out/tracked.diff")"
+          echo "untracked_files=$(find "$out/files" -type f | wc -l)"
+
+      - name: Upload snapshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-google-hotfix-snapshot
+          path: ${{ runner.temp }}/google-hotfix-snapshot
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Safety boundary
+        if: always()
+        shell: bash
+        run: |
+          echo 'Google hotfix snapshot is read-only.'
+          echo 'No service restart, state mutation, wallet access, signing, broadcast, or server file writes.'
