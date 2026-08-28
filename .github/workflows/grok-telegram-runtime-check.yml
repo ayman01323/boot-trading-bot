@@ -1,0 +1,75 @@
+name: Grok Telegram Runtime Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/grok-telegram-runtime-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Grok runtime and Telegram alerts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          BASE=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          DB="$BASE/state.sqlite3"
+          echo "=== SERVICES ==="
+          sudo systemctl show grok-known-assets-bot.service -p ActiveState -p SubState -p MainPID --no-pager
+          sudo systemctl show grok-known-assets-telegram.service -p ActiveState -p SubState -p MainPID --no-pager
+          echo "=== TELEGRAM JOURNAL ==="
+          sudo journalctl -u grok-known-assets-telegram.service --since '10 minutes ago' -n 160 --no-pager \
+            | sed -E 's#[0-9]{6,}:[A-Za-z0-9_-]{20,}#<redacted-token>#g'
+          echo "=== GROK JOURNAL ==="
+          sudo journalctl -u grok-known-assets-bot.service --since '10 minutes ago' -n 120 --no-pager
+          echo "=== SQLITE DECISIONS ==="
+          python3 - "$DB" <<'PY'
+          import json, sqlite3, sys
+          path = sys.argv[1]
+          db = sqlite3.connect(path)
+          rows = db.execute("""
+            SELECT id, datetime(ts,'unixepoch'), kind, COALESCE(asset_key,''), payload
+            FROM events
+            WHERE kind IN ('REJECT','FEED_REJECT','DECISION','OPEN','CLOSE','TRADE_RESULT')
+            ORDER BY id DESC LIMIT 30
+          """).fetchall()
+          for event_id, ts, kind, asset, payload in rows:
+              try:
+                  data = json.loads(payload)
+              except Exception:
+                  data = {}
+              compact = {
+                  k: data.get(k)
+                  for k in ('action','reason','research_confidence','size_usd','entry_price','realised_pnl_usd','trade_id')
+                  if k in data
+              }
+              print(event_id, ts, kind, asset, json.dumps(compact, sort_keys=True))
+          opens = db.execute("SELECT payload FROM events WHERE kind='OPEN' ORDER BY id").fetchall()
+          closes = db.execute("SELECT payload FROM events WHERE kind='CLOSE' ORDER BY id").fetchall()
+          opened = []
+          for (payload,) in opens:
+              try:
+                  trade_id = str(json.loads(payload).get('trade_id') or '')
+              except Exception:
+                  trade_id = ''
+              if trade_id:
+                  opened.append(trade_id)
+          closed = set()
+          for (payload,) in closes:
+              try:
+                  trade_id = str(json.loads(payload).get('trade_id') or '')
+              except Exception:
+                  trade_id = ''
+              if trade_id:
+                  closed.add(trade_id)
+          unmatched = [trade_id for trade_id in opened if trade_id not in closed]
+          print('unmatched_open_trade_ids=', unmatched[-10:])
+          PY
