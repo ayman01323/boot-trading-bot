@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'learnerbot/ai_agent_health_4h_patch.py'
-      - '.github/workflows/claude-stop-auto-ai-health-report.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -59,6 +59,7 @@ jobs:
           sleep 20
           test "$(systemctl is-active "$SERVICE")" = active
           systemctl show "$SERVICE" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+          echo 'NOTE: claude_state.reset_on_startup intentionally resets ordinary operating state to OFF on service restart.'
 
       - name: Verify watcher is disabled
         shell: bash
@@ -72,5 +73,6 @@ jobs:
             exit 4
           fi
           echo 'CLAUDE_AUTO_AI_HEALTH_REPORT_DISABLED=PASS'
-          echo 'LIVE_ARMED_STATE_NOT_CHANGED_BY_WORKFLOW=true'
+          echo 'SERVICE_RESTART_MAY_FORCE_CLAUDE_OPERATING_STATE_OFF=true'
+          echo 'NO_AUTO_REARM=true'
           echo 'NO_SIGN_OR_BROADCAST=true'
