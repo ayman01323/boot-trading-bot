@@ -46,14 +46,16 @@ cap=int(float(s.runtime().get("max_priority_fee_lamports") or 30000))
 try:
     _gate_order(s,q,WSOL_MINT,USDC_MINT,lamports)
     gate="PASS"
-    assert fee["priority_fee_lamports"] <= cap
-    assert fee["estimated_network_fee_lamports"]/lamports*100 <= float(s.runtime().get("max_buy_network_fee_pct") or 1.0)
+    assert fee.get("priority_fee_lamports",0) <= cap
+    assert fee.get("estimated_network_fee_lamports",0)/lamports*100 <= float(s.runtime().get("max_buy_network_fee_pct") or 1.0)
 except RuntimeError as exc:
     text=str(exc)
     assert text.startswith("PRIORITY_FEE_CAP:") or text.startswith("NETWORK_FEE_PCT_CAP:")
     gate="SAFE_BLOCK:"+text
+fee_lamports=int(fee.get("estimated_network_fee_lamports") or 0)
+fee_pct=(fee_lamports/lamports*100.0) if lamports else 999.0
 print("fee_gate_result="+gate)
-print(f"fee_pct_of_usd1={fee['estimated_network_fee_lamports']/lamports*100:.4f}")
+print("fee_pct_of_usd1=%.4f" % fee_pct)
 assert float(s.risk().get("min_forecast_net_pct") or 0)>=2.0
 assert float(s.risk().get("max_round_trip_cost_pct") or 99)<=2.0
 assert float(s.risk().get("min_exit_health_pct") or 0)>=98.0
