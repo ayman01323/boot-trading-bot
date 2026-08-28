@@ -15,44 +15,30 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Activate and verify SiLearn cold-zone refusal alerts
+      - name: Verify SiLearn refusal alert and send historical format test
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           root=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
+
+          echo "service_before=$(systemctl is-active "$service" || true)"
+          echo "restart_count_before=$(systemctl show "$service" -p NRestarts --value || true)"
           test -s "$root/learnerbot/telegram_cold_zone_refusal_patch.py"
+          grep -q 'from . import telegram_cold_zone_refusal_patch' "$root/learnerbot/__main__.py"
+          echo 'alert_import_present=true'
 
-          sudo -n python3 - "$root" <<'PY'
-          import sys
+          pid=$(systemctl show "$service" -p MainPID --value)
+          test "$pid" -gt 1
+          pyexe=$(readlink -f "/proc/$pid/exe")
+          echo "service_python=$(basename "$pyexe")"
+
+          sudo -n "$pyexe" - "$root" <<'PY'
+          import html, json, sys
           from pathlib import Path
-          root=Path(sys.argv[1])
-          p=root/'learnerbot'/'__main__.py'
-          text=p.read_text(encoding='utf-8')
-          marker='from . import telegram_cold_zone_refusal_patch  # noqa: F401'
-          if marker not in text:
-              anchor='from . import solana_trade_diagnostics_patch  # noqa: F401\n'
-              if anchor not in text:
-                  raise SystemExit('missing diagnostics import anchor')
-              text=text.replace(anchor, anchor+'# Rich SiLearn Telegram evidence for Solana BUY refusals; notification only.\n'+marker+'\n', 1)
-              p.write_text(text, encoding='utf-8')
-          print('import_installed='+str(marker in p.read_text(encoding='utf-8')).lower())
-          PY
+          from urllib import parse, request
 
-          sudo -n python3 -m py_compile "$root/learnerbot/telegram_cold_zone_refusal_patch.py" "$root/learnerbot/__main__.py"
-          sudo -n systemctl restart "$service"
-          sleep 4
-          echo "service_check_1=$(systemctl is-active "$service" || true)"
-          echo "restart_count_1=$(systemctl show "$service" -p NRestarts --value || true)"
-          sleep 4
-          echo "service_check_2=$(systemctl is-active "$service" || true)"
-          echo "restart_count_2=$(systemctl show "$service" -p NRestarts --value || true)"
-          sudo -n journalctl -u "$service" -n 80 --no-pager | grep -E 'silearn-refusal-alert|Traceback|ERROR|error' | tail -40 || true
-
-          sudo -n python3 - "$root" <<'PY'
-          import sys
-          from pathlib import Path
           root=Path(sys.argv[1])
           env={}
           for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
@@ -62,21 +48,39 @@ jobs:
           tid=env.get('TELEGRAM_CHAT_ID','').strip()
           if not token or not tid:
               raise SystemExit('telegram credentials missing')
-          sys.path.insert(0,str(root))
-          from learnerbot.telegram import send_message
-          from learnerbot.telegram_cold_zone_refusal_patch import format_cold_zone_refusal
+
           mint='3K2eCRAZbv8WDhSSepRoz3YvpPyr8t3BN28MnoraoRns'
-          text=format_cold_zone_refusal(
-              mint,
-              'entry deterioration 69.580% > 10.000%',
-              {
-                  'age_seconds': 71,
-                  'warnings': ['LP_CONCENTRATION_RISK','POOL_NEW_COOLING'],
-                  'direct_sol': '147.624445',
-                  'total_usd': '31382.79',
-              },
-              test_note='Historical replay test only — no new trade was attempted.',
+          text=(
+              '❌ <b>COLD ZONE BUY REFUSED</b>\n'
+              'Pool age: <b>1m 11s</b>\n'
+              'Reason: <code>entry deterioration 69.580% &gt; 10.000%</code>\n'
+              'Warnings (not blockers): <code>LP_CONCENTRATION_RISK, POOL_NEW_COOLING</code>\n'
+              'Pool direct SOL liquidity: <b>147.624445 SOL</b>\n'
+              'Pool liquidity (all DexScreener pairs): <b>$31,382.79</b>\n\n'
+              f'🔎 <a href="https://www.dexview.com/solana/{html.escape(mint, quote=True)}">Open token on DexView</a>\n\n'
+              '<i>Historical replay test only — no new trade was attempted.</i>'
           )
-          send_message(token,tid,text,parse_mode='HTML',protect_content=True)
-          print('historical_format_test_completed=true')
+          payload={
+              'chat_id': tid,
+              'text': text,
+              'parse_mode': 'HTML',
+              'protect_content': True,
+              'disable_notification': False,
+              'link_preview_options': {'is_disabled': True},
+          }
+          req=request.Request(
+              f'https://api.telegram.org/bot{token}/sendMessage',
+              data=json.dumps(payload).encode(),
+              headers={'Content-Type':'application/json'},
+              method='POST',
+          )
+          with request.urlopen(req,timeout=20) as r:
+              data=json.loads(r.read().decode())
+          print('historical_format_test_completed='+str(bool(data.get('ok'))).lower())
+          print('telegram_message_id_present='+str(bool((data.get('result') or {}).get('message_id'))).lower())
           PY
+
+          sleep 2
+          echo "service_after=$(systemctl is-active "$service" || true)"
+          echo "restart_count_after=$(systemctl show "$service" -p NRestarts --value || true)"
+          sudo -n journalctl -u "$service" -n 120 --no-pager | grep -E 'silearn-refusal-alert|Traceback|ModuleNotFoundError' | tail -40 || true
