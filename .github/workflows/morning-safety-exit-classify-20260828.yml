@@ -1,0 +1,83 @@
+name: Morning Safety Exit Classify 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/morning-safety-exit-classify-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Verify zero token exposure and stored exit direction
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          export TARGET=/home/ayman01323/BOOT/testingbots/learn
+          echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "source_sha=$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
+          python3 - <<'PY'
+          import csv, json, os, sqlite3, urllib.request
+          from pathlib import Path
+          root=Path(os.environ['TARGET']); con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
+          positions=[dict(r) for r in con.execute("select * from positions where mode='LIVE' and status='RECONCILE_REQUIRED' order by entry_ts")]
+          wallets={r['position_id']:dict(r) for r in con.execute('select * from live_position_wallets')}
+          print('reconcile_positions='+str(len(positions)))
+          if 'live_execution_attempts' in {r[0] for r in con.execute("select name from sqlite_master where type='table'")}:
+              for i,row in enumerate(con.execute("select action,status,mint,tx_signature,input_raw,output_raw,error,created_at from live_execution_attempts order by rowid desc limit 20")):
+                  print('attempt_%d='%i+repr(dict(row))[:1600])
+          con.close()
+          endpoints=[]
+          def add(v):
+              v=(v or '').strip().strip('"').strip("'")
+              if v.startswith(('http://','https://')) and v not in endpoints: endpoints.append(v)
+          for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              if '=' in line and not line.lstrip().startswith('#'):
+                  k,v=line.split('=',1)
+                  if 'RPC' in k.upper() and ('SOL' in k.upper() or 'HELIUS' in k.upper()): add(v)
+          for p in (root/'CSVbot').glob('*rpc*.csv'):
+              try:
+                  for row in csv.reader(p.open(encoding='utf-8',errors='ignore')):
+                      for cell in row: add(cell)
+              except Exception: pass
+          print('rpc_endpoint_count='+str(len(endpoints)))
+          def rpc(method,params):
+              for idx,url in enumerate(endpoints):
+                  try:
+                      req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(),headers={'content-type':'application/json'})
+                      with urllib.request.urlopen(req,timeout=12) as r: data=json.loads(r.read().decode())
+                      if 'error' not in data: return data.get('result'),idx,''
+                  except Exception as e: last=type(e).__name__
+              return None,None,locals().get('last','no endpoint')
+          def amt(meta,owner,mint,field):
+              n=0
+              for r in (meta or {}).get(field) or []:
+                  if str(r.get('owner') or '')==owner and str(r.get('mint') or '')==mint:
+                      try:n+=int((r.get('uiTokenAmount') or {}).get('amount') or 0)
+                      except Exception:pass
+              return n
+          all_zero=bool(positions)
+          for p in positions:
+              pid=str(p['position_id']); mint=str(p['mint']); sig=str(p['exit_signature'] or ''); owner=str((wallets.get(pid) or {}).get('wallet_address') or '')
+              print('position_id='+pid); print('mint='+mint)
+              tx,_,err=rpc('getTransaction',[sig,{'encoding':'jsonParsed','maxSupportedTransactionVersion':0,'commitment':'confirmed'}]) if sig else (None,None,'missing signature')
+              meta=tx.get('meta') if isinstance(tx,dict) else None
+              pre=amt(meta,owner,mint,'preTokenBalances'); post=amt(meta,owner,mint,'postTokenBalances'); delta=post-pre
+              print('stored_signature_tx_error='+str(err)); print('stored_signature_token_delta_raw='+str(delta)); print('stored_signature_is_sell='+str(delta<0).lower())
+              bal,_,berr=rpc('getTokenAccountsByOwner',[owner,{'mint':mint},{'encoding':'jsonParsed','commitment':'confirmed'}])
+              current=0
+              if isinstance(bal,dict):
+                  for a in bal.get('value') or []:
+                      try:current+=int(a['account']['data']['parsed']['info']['tokenAmount']['amount'])
+                      except Exception:pass
+              print('current_balance_rpc_error='+str(berr)); print('current_token_balance_raw='+str(current))
+              all_zero=all_zero and current==0
+          print('all_reconcile_wallet_balances_zero='+str(all_zero).lower())
+          PY
