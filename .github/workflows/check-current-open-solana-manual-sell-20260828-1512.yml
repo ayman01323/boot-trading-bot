@@ -1,0 +1,161 @@
+name: Check Current Open Solana Manual Sell 20260828 1512
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-current-open-solana-manual-sell-20260828-1512.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only current position, quote, and Telegram chat check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo "service=$(systemctl is-active "$service")"
+          echo "pid=$(systemctl show -p MainPID --value "$service")"
+          sudo -n TARGET="$target" SERVICE="$service" python3 - <<'PY'
+          import os, re, json, sqlite3, urllib.request, urllib.parse, urllib.error
+          from pathlib import Path
+
+          target=Path(os.environ['TARGET']); service=os.environ['SERVICE']
+          db=target/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(str(db)); con.row_factory=sqlite3.Row
+          pos=con.execute("SELECT * FROM positions WHERE status='OPEN' AND mode='LIVE' ORDER BY updated_at DESC LIMIT 1").fetchone()
+          if not pos:
+              print('open_live_position=NONE'); raise SystemExit(0)
+          p=dict(pos); pid=str(p.get('position_id') or ''); mint=str(p.get('mint') or ''); tid=str(p.get('telegram_id') or '')
+          print('position_id=',pid)
+          print('mint=',mint)
+          print('db_token_amount_raw=',p.get('token_amount_raw'))
+          print('unrealised_pct=',p.get('unrealised_pct'))
+          print('entry_cost_sol=',p.get('entry_cost_sol'))
+          print('status=',p.get('status'))
+          row=con.execute("SELECT wallet_address,wallet_id,source FROM live_position_wallets WHERE position_id=? ORDER BY updated_at DESC LIMIT 1",(pid,)).fetchone()
+          wallet=str(row['wallet_address']) if row else ''
+          print('wallet_address=',wallet or 'UNKNOWN')
+          print('wallet_id=',str(row['wallet_id']) if row else 'UNKNOWN')
+          con.close()
+
+          # Load private RPCs from .env without printing them.
+          env={}; ep=target/'.env'
+          if ep.is_file():
+              for line in ep.read_text(errors='ignore').splitlines():
+                  line=line.strip()
+                  if not line or line.startswith('#') or '=' not in line: continue
+                  k,v=line.split('=',1); env[k.strip()]=v.strip().strip('\"\'')
+          urls=[]
+          for key in ('SOLANA_RPC_URLS','SOLANA_RPC_FALLBACK_URLS'):
+              for u in re.split(r'[;,\s]+',env.get(key,'') or ''):
+                  u=u.strip()
+                  if u and u not in urls: urls.append(u)
+          def rpc(method,params):
+              last=None
+              for idx,u in enumerate(urls,1):
+                  try:
+                      data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+                      req=urllib.request.Request(u,data=data,headers={'Content-Type':'application/json','User-Agent':'BOOT-MANUAL-SELL-DIAG/1.0'})
+                      with urllib.request.urlopen(req,timeout=8) as rr: obj=json.loads(rr.read(262144).decode('utf-8','replace'))
+                      if obj.get('error'): raise RuntimeError(str(obj['error']))
+                      print(f'rpc_{method}_endpoint={idx}_PASS')
+                      return obj.get('result')
+                  except Exception as e:
+                      last=e
+              raise last or RuntimeError('no RPC')
+          if wallet and urls:
+              try:
+                  res=rpc('getTokenAccountsByOwner',[wallet,{'mint':mint},{'encoding':'jsonParsed'}])
+                  total_raw=0; decimals=None; ui=0.0; accounts=0
+                  for item in (res or {}).get('value',[]):
+                      accounts += 1
+                      info=item.get('account',{}).get('data',{}).get('parsed',{}).get('info',{})
+                      ta=info.get('tokenAmount',{})
+                      total_raw += int(ta.get('amount') or 0)
+                      if decimals is None: decimals=int(ta.get('decimals') or 0)
+                      ui += float(ta.get('uiAmount') or 0)
+                  print('onchain_token_accounts=',accounts)
+                  print('onchain_raw_balance=',total_raw)
+                  print('onchain_decimals=',decimals if decimals is not None else 'UNKNOWN')
+                  print('onchain_ui_balance=',format(ui,'.12f'))
+                  bal=rpc('getBalance',[wallet,{'commitment':'confirmed'}])
+                  print('wallet_sol_balance=',format(int((bal or {}).get('value') or 0)/1_000_000_000,'.9f'))
+                  if total_raw>0:
+                      wsol='So11111111111111111111111111111111111111112'
+                      q=urllib.parse.urlencode({'inputMint':mint,'outputMint':wsol,'amount':str(total_raw),'slippageBps':'50','swapMode':'ExactIn'})
+                      quote_url='https://lite-api.jup.ag/swap/v1/quote?'+q
+                      try:
+                          req=urllib.request.Request(quote_url,headers={'User-Agent':'BOOT-MANUAL-SELL-DIAG/1.0'})
+                          with urllib.request.urlopen(req,timeout=12) as rr: qo=json.loads(rr.read(524288).decode('utf-8','replace'))
+                          out=int(qo.get('outAmount') or 0)
+                          print('jupiter_full_quote=PASS')
+                          print('jupiter_out_sol=',format(out/1_000_000_000,'.9f'))
+                          print('jupiter_price_impact_pct=',qo.get('priceImpactPct'))
+                          labels=[]
+                          for step in qo.get('routePlan') or []:
+                              label=((step.get('swapInfo') or {}).get('label') or '').strip()
+                              if label and label not in labels: labels.append(label)
+                          print('jupiter_route_labels=',','.join(labels) if labels else 'UNKNOWN')
+                      except urllib.error.HTTPError as e:
+                          print('jupiter_full_quote=HTTP_'+str(e.code))
+                      except Exception as e:
+                          print('jupiter_full_quote=FAIL_'+type(e).__name__)
+              except Exception as e:
+                  print('onchain_check=FAIL_'+type(e).__name__)
+
+          # Read-only Telegram checks from the live process token; never print token.
+          pid=os.popen("systemctl show -p MainPID --value %s"%service).read().strip()
+          tenv={}
+          try:
+              for item in Path('/proc/'+pid+'/environ').read_bytes().split(b'\0'):
+                  if b'=' in item:
+                      k,v=item.split(b'=',1); tenv[k.decode(errors='ignore')]=v.decode(errors='ignore')
+          except Exception:
+              try:
+                  import subprocess
+                  raw=subprocess.check_output(['sudo','-n','cat','/proc/'+pid+'/environ'])
+                  for item in raw.split(b'\0'):
+                      if b'=' in item:
+                          k,v=item.split(b'=',1); tenv[k.decode(errors='ignore')]=v.decode(errors='ignore')
+              except Exception: pass
+          token=tenv.get('TELEGRAM_BOT_TOKEN','')
+          print('telegram_token_present=', 'YES' if token else 'NO')
+          if token:
+              def tg(method,payload=None):
+                  url='https://api.telegram.org/bot'+token+'/'+method
+                  if payload is None:
+                      req=urllib.request.Request(url)
+                  else:
+                      data=json.dumps(payload).encode(); req=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json'})
+                  try:
+                      with urllib.request.urlopen(req,timeout=10) as rr: obj=json.loads(rr.read(131072).decode('utf-8','replace'))
+                      return obj
+                  except urllib.error.HTTPError as e:
+                      try: return json.loads(e.read(131072).decode('utf-8','replace'))
+                      except: return {'ok':False,'error_code':e.code,'description':'HTTP error'}
+              me=tg('getMe')
+              print('telegram_getMe=', 'PASS' if me.get('ok') else 'FAIL')
+              if me.get('ok'):
+                  print('telegram_bot_username=',(me.get('result') or {}).get('username') or 'UNKNOWN')
+              if tid:
+                  chat=tg('getChat',{'chat_id':tid})
+                  print('telegram_getChat=', 'PASS' if chat.get('ok') else 'FAIL')
+                  if not chat.get('ok'):
+                      print('telegram_getChat_error_code=',chat.get('error_code'))
+                      desc=str(chat.get('description') or '')
+                      # Description is safe; it contains no token.
+                      print('telegram_getChat_error=',desc[:200])
+          print('urls_or_private_keys_or_bot_token_printed=NO')
+          print('trading_action=NONE')
+          print('service_restart=NO')
+          print('telegram_message_sent=NO')
+          PY
