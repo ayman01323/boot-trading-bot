@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-"""Presentation-only learner Telegram format completion.
+"""Complete learner NewPoll45 presentation for OPEN and reconciliation positions.
 
-NewPoll45 is emitted as one self-contained Telegram message per open position so
-rich HTML never gets split across Telegram's entity boundary. Every position is
-labelled Open Position X of Y and receives the complete token/pool/SOL/USD
-context. Confirmed SELL notices get an explicit sale-result block and the same
-market context. No trading decisions or execution paths are changed.
+One bounded Telegram message is emitted per tracked LIVE position. OPEN positions
+retain the full NewPoll45 market context. RECONCILE_REQUIRED positions are shown
+as reconciliation/manual-exit records and are never described as current open
+unrealised positions. Confirmed SELL notices receive a full sale-result block.
+Presentation only: no trading decision, execution, safety gate or DB accounting
+state is changed here.
 """
 
 import html as _html
@@ -32,7 +33,6 @@ def _d(value, default="0") -> Decimal:
 
 
 def _plain_from_html(text: str) -> str:
-    """Telegram-safe fallback preserving DEX links when HTML parsing is rejected."""
     value = str(text or "")
     value = re.sub(
         r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>',
@@ -63,6 +63,22 @@ def _position_for_sale(app, tid: str, message: str) -> dict:
         return {}
 
 
+def _report_positions(app) -> list[dict]:
+    """Report active LIVE positions plus quarantined rows awaiting reconciliation."""
+    try:
+        with _sol._DB_LOCK, closing(_sol.connect(app)) as conn:
+            rows = conn.execute(
+                """SELECT * FROM positions
+                   WHERE mode='LIVE' AND status IN ('OPEN','RECONCILE_REQUIRED')
+                   ORDER BY telegram_id,
+                            CASE status WHEN 'OPEN' THEN 0 ELSE 1 END,
+                            entry_ts,position_id"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
+
+
 def _open_count(app, tid: str) -> int:
     try:
         with closing(_sol.connect(app)) as conn:
@@ -86,11 +102,22 @@ def _sol_usd_pair(app, value: Decimal, *, signed: bool = False) -> str:
 
 def position_section_newpoll_full(app, position: dict, index: int, total: int, cfg: dict, sol_price: Decimal):
     section, pid, snapshot = _PREV_POSITION_SECTION(app, position, index, total, cfg, sol_price)
+    status = str(position.get("status") or "UNKNOWN").upper()
     old = f"<b>Open Position {index} of {total}</b>"
-    new = (
-        f"📡 <b>NewPoll45 • Open Position {index} of {total}</b>\n"
-        f"📚 Total open positions: <b>{total}</b>"
-    )
+
+    if status == "RECONCILE_REQUIRED":
+        new = (
+            f"🧾 <b>NewPoll45 • Reconciliation Position {index} of {total}</b>\n"
+            f"⚠️ Status: <b>RECONCILE_REQUIRED</b>\n"
+            "✅ This row is <b>not counted as an OPEN LIVE position</b>.\n"
+            "🔄 On-chain wallet state no longer matches the stored position row; manual/external sale reconciliation is required.\n"
+            "📌 Values labelled current/unrealised below are <b>last stored valuation only</b> — not final realised P&L."
+        )
+    else:
+        new = (
+            f"📡 <b>NewPoll45 • Open Position {index} of {total}</b>\n"
+            f"📚 Total tracked LIVE reports: <b>{total}</b>"
+        )
     if old in section:
         section = section.replace(old, new, 1)
     else:
@@ -99,11 +126,11 @@ def position_section_newpoll_full(app, position: dict, index: int, total: int, c
 
 
 def emit_newpoll_per_position(app) -> None:
-    """Emit one bounded message per open position; fall back to plain text safely."""
-    positions = _position._open_positions(app)
-    live_ids = {str(p.get("position_id") or "") for p in positions}
+    """Emit one bounded message per OPEN/reconciliation position with plain fallback."""
+    positions = _report_positions(app)
+    tracked_ids = {str(p.get("position_id") or "") for p in positions}
     for stale in list(_position._PREVIOUS):
-        if stale not in live_ids:
+        if stale not in tracked_ids:
             _position._PREVIOUS.pop(stale, None)
     if not positions:
         return
@@ -119,11 +146,15 @@ def emit_newpoll_per_position(app) -> None:
     for tid, rows in grouped.items():
         total = len(rows)
         for index, position in enumerate(rows, start=1):
-            section, pid, snapshot = _position._position_section(
-                app, position, index, total, cfg, sol_price
+            section, pid, snapshot = _position._position_section(app, position, index, total, cfg, sol_price)
+            status = str(position.get("status") or "UNKNOWN").upper()
+            title = (
+                "🧾 <b>LEARNER POSITION RECONCILIATION — NewPoll45</b>"
+                if status == "RECONCILE_REQUIRED"
+                else "📡 <b>LEARNER POSITION UPDATE — NewPoll45</b>"
             )
             text = "\n".join([
-                "📡 <b>LEARNER POSITION UPDATE — NewPoll45</b>",
+                title,
                 "🔒 <b>LEARNER ONLY • GOOGLE TEST</b>",
                 f"⏱ Report: <b>45s</b> • safety/exit monitor remains <b>{_html.escape(str(cfg.get('position_poll_seconds', '10')))}s</b>",
                 "━━━━━━━━━━━━",
@@ -143,9 +174,6 @@ def emit_newpoll_per_position(app) -> None:
                 )
                 delivered = True
             except Exception as exc:
-                # The complete report is more important than rich formatting. A
-                # plain-text retry cannot suffer an HTML entity split/parse fault
-                # and keeps the DEX Viewer URL visible and clickable.
                 try:
                     _position._tg.send_message(
                         app.telegram_bot_token,
@@ -209,8 +237,6 @@ def notify_with_full_sale_result(app, tid, text):
         lines.append(f"✅ Total realised P&L: <b>{_sol_usd_pair(app, realised, signed=True)}</b>")
         message = message.rstrip() + "\n" + "\n".join(lines)
 
-    # _PREV_NOTIFY is the existing pool-context wrapper. It appends the complete
-    # token name/symbol, pool/Dex Viewer, pool open/current/change and SOL/USD data.
     return _PREV_NOTIFY(app, tid, message)
 
 
@@ -222,9 +248,9 @@ def install() -> None:
     _live._notify = notify_with_full_sale_result
     _position._learner_newpoll_full_format_installed = True
     print(
-        "[learner-newpoll-full-format] active=true newpoll45=true open_position_x_of_y=true "
-        "per_position_delivery=true html_fallback=plain sale_full_result=true "
-        "complete_context=true trading_logic=unchanged",
+        "[learner-newpoll-full-format] active=true newpoll45=true open_and_reconcile=true "
+        "reconcile_not_unrealised=true per_position_delivery=true html_fallback=plain "
+        "sale_full_result=true complete_context=true trading_logic=unchanged",
         flush=True,
     )
 
