@@ -131,7 +131,7 @@ jobs:
             fi
           done
           printf 'server_sha=%s\ntrusted_main_sha=%s\n' "$old_sha" "$(git rev-parse HEAD)" > "$backup/metadata.txt"
-          find "$backup" -type f -print0 | sort -z | xargs -0 sha256sum > "$backup/SHA256SUMS"
+          find "$backup" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$backup/SHA256SUMS"
           echo "backup_path=$backup" >> "$GITHUB_OUTPUT"
           echo "private_backup_path=$backup"
           echo 'hotfix_backup=PASS'
@@ -143,7 +143,7 @@ jobs:
           trusted_sha="$(git rev-parse HEAD)"
           git -C "$MANAGED_REPO" fetch --prune origin main
           git -C "$MANAGED_REPO" checkout main
-          git -C "$MANAGED_REPO" reset --hard origin/main
+          git -C "$MANAGED_REPO" reset --hard "$trusted_sha"
           git -C "$MANAGED_REPO" clean -f -- \
             claude-trading-bot/claude_runtime_health_patch.py \
             learnerbot/rejected_opportunity_publisher.py
@@ -157,7 +157,10 @@ jobs:
         run: |
           set -euo pipefail
           cd "$MANAGED_REPO"
-          PYTHONPATH=. .venv/bin/python -m pytest -q \
+          testdeps="$RUNNER_TEMP/claude-reconcile-testdeps"
+          rm -rf "$testdeps"
+          python3 -m pip install --disable-pip-version-check --no-input --target "$testdeps" 'pytest>=8,<9'
+          PYTHONPATH="$testdeps:$MANAGED_REPO" .venv/bin/python -m pytest -q \
             tests/test_solana_rpc_failover.py \
             claude-trading-bot/tests/test_claude_risk_and_state.py \
             claude-trading-bot/tests/test_claude_execution_and_telegram.py
@@ -166,6 +169,7 @@ jobs:
             learnerbot/ai_agent_health_4h_patch.py \
             claude-trading-bot/claude_runtime_health_patch.py
           echo 'targeted_regression=PASS'
+          echo 'runtime_venv_modified=false'
 
       - name: Restart only isolated Claude service
         id: restart
@@ -239,10 +243,11 @@ jobs:
         shell: bash
         run: |
           echo 'Claude Google reconcile boundary:'
-          echo '- exact allowlisted dirty code backed up privately before replacement'
-          echo '- managed repo reconciled only to trusted repository main'
-          echo '- targeted regression tests required before restart'
-          echo '- restarted only claude-trading-bot.service'
+          echo '- allowlisted server code is backed up before any replacement'
+          echo '- managed repo reconciles only to the exact trusted checkout SHA'
+          echo '- tests use ephemeral dependencies; runtime venv is not modified'
+          echo '- restart is allowed only after targeted tests pass'
+          echo '- restarted only claude-trading-bot.service when validation passes'
           echo '- Claude remains OFF after restart by design'
           echo '- no ARM command issued'
           echo '- no wallet/signing material read or modified'
