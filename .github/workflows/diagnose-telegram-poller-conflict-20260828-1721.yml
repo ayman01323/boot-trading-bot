@@ -15,44 +15,14 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Stop learner and stage audited invariant fix only
+      - name: Read-only learner Telegram and service status
         shell: bash
         run: |
           set -euo pipefail
-          LEARN=/home/ayman01323/BOOT/testingbots/learn
-          ROOTBOT=/root/multichain-learning-bot-v2.2-fast-direct-market
-          SRC=/tmp/trading_runtime_invariant_patch.py
-
-          echo '=== SIRISKY BEFORE (OBSERVE ONLY) ==='
-          SIRISKY_PID_BEFORE=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
-          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=${SIRISKY_PID_BEFORE}"
-
-          echo '=== STOP LEARNER ONLY ==='
-          sudo -n systemctl stop learnerbot-learn.service
           echo "learner_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
           echo "learner_pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
-
-          echo '=== FETCH EXACT AUDITED SOURCE ==='
-          curl -fsSL 'https://raw.githubusercontent.com/ayman01323/boot-trading-bot/f7b27e8f265ac209a4e55075154ab2d8daf3720b/learnerbot/trading_runtime_invariant_patch.py' -o "$SRC"
-          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$SRC"
-          grep -q 'solana_monitor_loss_containment_outer' "$SRC"
-          grep -q 'solana_close_rpc_priority_outer' "$SRC"
-          grep -q 'loss_containment_settings_active' "$SRC"
-
-          echo '=== DEPLOY LEARNER FILE ONLY ==='
-          sudo -n install -m 0644 "$SRC" "$LEARN/learnerbot/trading_runtime_invariant_patch.py"
-          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$LEARN/learnerbot/trading_runtime_invariant_patch.py"
-          echo 'invariant_source_staged=YES'
-
-          echo '=== VERIFY LEARNER REMAINS STOPPED ==='
-          test "$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)" != active
-          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
-          echo 'learner_stopped=YES'
-
-          echo '=== SIRISKY AFTER (OBSERVE ONLY) ==='
-          SIRISKY_PID_AFTER=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
-          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=${SIRISKY_PID_AFTER}"
-          test "$SIRISKY_PID_AFTER" = "$SIRISKY_PID_BEFORE"
-          echo 'sirisky_untouched=YES'
+          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
+          echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
+          echo 'service_change=NO'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
