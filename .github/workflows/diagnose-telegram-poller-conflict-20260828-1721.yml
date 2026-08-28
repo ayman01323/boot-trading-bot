@@ -15,33 +15,71 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Stage learner startup fix only while stopped
+      - name: Read-only Telegram relay ownership diagnostic
         shell: bash
         run: |
-          set -euo pipefail
-          LEARN=/home/ayman01323/BOOT/testingbots/learn
-          ROOTBOT=/root/multichain-learning-bot-v2.2-fast-direct-market
-          SRC=/tmp/trading_runtime_invariant_patch.fixed.py
+          set -u
+          echo '=== SERVICE STATE READ ONLY ==='
+          systemctl show learnerbot-learn.service -p ActiveState -p SubState -p MainPID --no-pager 2>/dev/null || true
+          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
+          echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
 
-          BEFORE=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
-          echo "sirisky_before=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$BEFORE"
+          echo '=== TELEGRAM-RELATED PROCESSES ==='
+          pgrep -af 'learnerbot|google_learner_telegram_relay|telegram' || true
 
-          sudo -n systemctl stop learnerbot-learn.service
-          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
+          echo '=== RELAY SOURCE READ ONLY ==='
+          RELAY=/home/ayman01323/.local/libexec/google_learner_telegram_relay.py
+          if [ -f "$RELAY" ]; then
+            grep -nE 'getUpdates|get_updates|api.telegram.org|TELEGRAM|BOT_TOKEN|\.env|learnerarm|subprocess|systemctl' "$RELAY" | head -160 || true
+          else
+            echo 'relay_source_missing=true'
+          fi
 
-          curl -fsSL 'https://raw.githubusercontent.com/ayman01323/boot-trading-bot/f962fa6611f1de36ad5a336927465259c9f3753b/learnerbot/trading_runtime_invariant_patch.py' -o "$SRC"
-          grep -q '^from \. import solana_live_patch as _live$' "$SRC"
-          grep -q 'solana_close_rpc_priority_outer' "$SRC"
-          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$SRC"
-          sudo -n install -m 0644 "$SRC" "$LEARN/learnerbot/trading_runtime_invariant_patch.py"
-          sudo -n "$ROOTBOT/.venv/bin/python" -m py_compile "$LEARN/learnerbot/trading_runtime_invariant_patch.py"
+          echo '=== PROCESS TOKEN FINGERPRINTS ONLY ==='
+          sudo -n python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
 
-          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
-          AFTER=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
-          echo "sirisky_after=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$AFTER"
-          test "$BEFORE" = "$AFTER"
-          echo 'fixed_import_staged=YES'
-          echo 'learner_stopped=YES'
-          echo 'sirisky_untouched=YES'
+          def file_env(path):
+              out={}
+              p=Path(path)
+              if not p.exists(): return out
+              for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  s=line.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              return out
+          def token(d):
+              return d.get('TELEGRAM_BOT_TOKEN') or d.get('BOT_TOKEN') or d.get('TELEGRAM_TOKEN') or ''
+          def fp(t): return hashlib.sha256(t.encode()).hexdigest()[:12] if t else 'NONE'
+          learner_token=token(file_env('/home/ayman01323/BOOT/testingbots/learn/.env'))
+          print('learner_file_fp='+fp(learner_token))
+          for proc in Path('/proc').iterdir():
+              if not proc.name.isdigit(): continue
+              try:
+                  cmd=(proc/'cmdline').read_bytes().replace(b'\0',b' ').decode(errors='ignore')
+              except Exception:
+                  continue
+              if 'learnerbot' not in cmd and 'google_learner_telegram_relay' not in cmd:
+                  continue
+              try:
+                  raw=(proc/'environ').read_bytes().split(b'\0')
+                  env={}
+                  for item in raw:
+                      if b'=' in item:
+                          k,v=item.split(b'=',1); env[k.decode(errors='ignore')]=v.decode(errors='ignore')
+                  t=token(env)
+                  print(f'pid={proc.name} role=' + ('relay' if 'google_learner_telegram_relay' in cmd else 'learnerbot') + ' token_fp='+fp(t)+' matches_new_learner='+str(bool(t and learner_token and t==learner_token)))
+              except Exception as e:
+                  print(f'pid={proc.name} environ_read={type(e).__name__}')
+          PY
+
+          echo '=== RELAY UNIT READ ONLY ==='
+          systemctl show google-learner-telegram-relay.service -p ActiveState -p SubState -p MainPID -p ExecStart --no-pager 2>/dev/null || true
+          systemctl show google_learner_telegram_relay.service -p ActiveState -p SubState -p MainPID -p ExecStart --no-pager 2>/dev/null || true
+
+          echo '=== NO CHANGES ==='
+          echo 'service_change=NO'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
+          echo 'sirisky_change=NO'
