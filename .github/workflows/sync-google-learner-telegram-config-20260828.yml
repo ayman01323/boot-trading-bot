@@ -1,0 +1,64 @@
+name: Sync Google Learner Telegram Config 20260828
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/sync-google-learner-telegram-config-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Sync Telegram credentials only — no restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n python3 - <<'PY'
+          from pathlib import Path
+          import os, pwd, tempfile
+          src=Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')
+          dst=Path('/home/ayman01323/BOOT/testingbots/learn/.env')
+          keys=('TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS')
+          def parse(path):
+              out={}
+              for line in path.read_text(errors='ignore').splitlines() if path.exists() else []:
+                  s=line.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); out[k.strip()]=v.strip()
+              return out
+          source=parse(src)
+          if not source.get('TELEGRAM_BOT_TOKEN'):
+              raise SystemExit('source Telegram token missing')
+          if not (source.get('TELEGRAM_CHAT_ID') or source.get('TELEGRAM_CHAT_IDS')):
+              raise SystemExit('source Telegram chat configuration missing')
+          old=dst.read_text(errors='ignore').splitlines() if dst.exists() else []
+          kept=[]
+          for line in old:
+              s=line.strip()
+              if '=' in s and not s.startswith('#') and s.split('=',1)[0].strip() in keys:
+                  continue
+              kept.append(line)
+          kept.append('')
+          kept.append('# Telegram delivery for isolated Google learner; synced from existing SiBot runtime.')
+          for key in keys:
+              if source.get(key): kept.append(f'{key}={source[key]}')
+          text='\n'.join(kept).rstrip()+'\n'
+          tmp=dst.with_name(dst.name+'.telegram-sync.tmp')
+          tmp.write_text(text)
+          os.chmod(tmp,0o600)
+          acct=pwd.getpwnam('ayman01323')
+          os.chown(tmp,acct.pw_uid,acct.pw_gid)
+          os.replace(tmp,dst)
+          print('telegram_token_synced=YES')
+          print('telegram_chat_synced=YES')
+          print('secret_values_printed=NO')
+          PY
+          echo "service_restart=NO"
+          echo "trading_action=NONE"
