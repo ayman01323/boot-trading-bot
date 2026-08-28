@@ -7,7 +7,7 @@ from pathlib import Path
 from .auto_trader import execute_best_live_opportunity
 from .config import AppSettings, load_kv_scoped
 from .market_scanner import _atomic_rows, _rows, merge_live_opportunities
-from .full_power_scanner import scan_full_power_hot_routes
+from . import full_power_scanner as _full_power_scanner
 from . import full_power_candidate_rotation_patch as _rotation
 from .multichain import close_contexts, contexts
 from .telegram import send_to_chats
@@ -19,6 +19,11 @@ _base_started=False
 _lock=threading.Lock()
 _base_lock=threading.Lock()
 _base_pressure_streak=0
+
+
+def scan_full_power_hot_routes(app,ctxs):
+    """Resolve the scanner dynamically so installed patches stay authoritative."""
+    return _full_power_scanner.scan_full_power_hot_routes(app,ctxs)
 
 
 def _bool(v,default=False):
@@ -81,6 +86,8 @@ def run_fast_market_pass(app):
     ctxs=[];started=time.monotonic()
     try:
         ctxs=contexts(app,enabled_only=True,with_rpc=False)
+        # This wrapper resolves through the module at call time, so the installed
+        # candidate-rotation patch is honoured instead of a stale imported function.
         market_path,market_rows,_power_rejections=scan_full_power_hot_routes(app,ctxs)
         learned_rows=_rows(Path(app.csv_dir)/"auto"/"learned_route_opportunities.csv")
         opp_path,live_rows=merge_live_opportunities(app,learned_rows,market_rows)
