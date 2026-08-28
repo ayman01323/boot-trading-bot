@@ -1,0 +1,249 @@
+name: Deploy Learner Easy Exit and Pool Context
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/deploy-learner-easy-exit-pool-context.yml'
+      - 'learnerbot/solana_easy_exit_policy_patch.py'
+      - 'learnerbot/trading_runtime_invariant_patch.py'
+      - 'learnerbot/telegram_learner_position_update_patch.py'
+      - 'learnerbot/telegram_learner_pool_context_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-learner-easy-exit-pool-context
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install scoped easy-exit and pool-context files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore \
+            https://github.com/ayman01323/boot-trading-bot.git "$tmp/repo"
+          source_sha="$(git -C "$tmp/repo" rev-parse HEAD)"
+
+          # Copy only the four files involved in this change. Never rsync/delete
+          # the isolated LIVE runtime and never touch .env, CSV, wallet or data.
+          for f in \
+            learnerbot/solana_easy_exit_policy_patch.py \
+            learnerbot/trading_runtime_invariant_patch.py \
+            learnerbot/telegram_learner_position_update_patch.py \
+            learnerbot/telegram_learner_pool_context_patch.py; do
+            install -m 0644 "$tmp/repo/$f" "$target/$f"
+          done
+
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          target=Path(os.environ['TARGET'])
+
+          # Learner-only presentation modules load after the audited final runtime
+          # check. The easy-exit policy itself is pinned inside trading_runtime.
+          final=target/'learnerbot'/'final_runtime_integrity_patch.py'
+          text=final.read_text(encoding='utf-8').rstrip()
+          markers=[
+              'from . import telegram_learner_only_menu_patch  # noqa: E402,F401',
+              'from . import telegram_learner_identity_patch  # noqa: E402,F401',
+              'from . import telegram_learner_position_update_patch  # noqa: E402,F401',
+              'from . import telegram_learner_pool_context_patch  # noqa: E402,F401',
+          ]
+          for marker in markers:
+              if marker not in text:
+                  text += '\n' + marker
+          final.write_text(text + '\n', encoding='utf-8')
+
+          # The isolated Google learner has no Polygon configuration. A historical
+          # broad copy can restore this production-only startup migration, so keep
+          # it disabled locally without changing the repository's production path.
+          main=target/'learnerbot'/'__main__.py'
+          source=main.read_text(encoding='utf-8')
+          active='from . import polygon_live_enable_migration  # noqa: F401'
+          disabled='# ISOLATED GOOGLE LEARNER: production-only Polygon LIVE migration disabled; Solana positions/exits remain active.'
+          if active in source:
+              source=source.replace(active,disabled,1)
+              main.write_text(source,encoding='utf-8')
+              print('polygon_live_enable_migration_disabled=YES')
+          elif disabled in source:
+              print('polygon_live_enable_migration_disabled=ALREADY')
+          else:
+              raise SystemExit('Expected isolated Polygon migration state not found')
+
+          # Compile source in memory only: legacy root-owned __pycache__ must not
+          # become a deployment dependency.
+          paths=[
+              target/'learnerbot'/'solana_easy_exit_policy_patch.py',
+              target/'learnerbot'/'trading_runtime_invariant_patch.py',
+              target/'learnerbot'/'telegram_learner_position_update_patch.py',
+              target/'learnerbot'/'telegram_learner_pool_context_patch.py',
+              target/'learnerbot'/'final_runtime_integrity_patch.py',
+              target/'learnerbot'/'__main__.py',
+          ]
+          for path in paths:
+              compile(path.read_text(encoding='utf-8'),str(path),'exec')
+          print('source_compile_in_memory=PASS')
+          PY
+
+          grep -Fq 'stop_loss_pct": "5"' "$target/learnerbot/solana_easy_exit_policy_patch.py"
+          grep -Fq 'take_profit_pct": "10"' "$target/learnerbot/solana_easy_exit_policy_patch.py"
+          grep -Fq 'leader_exit_pending=retry_any_pnl' "$target/learnerbot/solana_easy_exit_policy_patch.py"
+          grep -Fq 'Pool at open' "$target/learnerbot/telegram_learner_position_update_patch.py"
+          grep -Fq 'Pool current' "$target/learnerbot/telegram_learner_position_update_patch.py"
+          grep -Fq 'Pool change since open' "$target/learnerbot/telegram_learner_position_update_patch.py"
+          grep -Fq 'DEX Viewer' "$target/learnerbot/telegram_learner_position_update_patch.py"
+          grep -Fq 'telegram_learner_pool_context_patch' "$target/learnerbot/final_runtime_integrity_patch.py"
+
+          echo "source_commit=$source_sha"
+          echo "easy_exit_source_installed=YES"
+          echo "pool_context_source_installed=YES"
+          echo "wallet_files_touched=NO"
+          echo "csv_settings_touched=NO"
+          echo "production_service_touched=NO"
+
+      - name: Snapshot open LIVE positions before restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          TARGET="$target" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2)
+          rows=con.execute(
+              "SELECT position_id,mint,unrealised_pct,leader_exit_pending FROM positions "
+              "WHERE status='OPEN' AND mode='LIVE' ORDER BY entry_ts,position_id"
+          ).fetchall()
+          con.close()
+          print('open_live_before='+str(len(rows)))
+          for i,row in enumerate(rows,1):
+              print(f'before_{i}_of_{len(rows)} position={row[0]} mint={row[1]} pnl_pct={row[2]} leader_exit_pending={row[3]}')
+          PY
+
+      - name: Guarded restart and prove runtime composition
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+
+          if ! systemctl is-active --quiet "$service"; then
+            echo 'learner_service_active=NO'
+            echo 'restart=REFUSED_NOT_STARTING_STOPPED_LIVE_LEARNER'
+            exit 1
+          fi
+
+          safe=0
+          for _ in $(seq 1 12); do
+            inflight="$(TARGET="$target" python3 - <<'PY'
+          import os,sqlite3,time
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          try:
+              con=sqlite3.connect(db,timeout=2)
+              exists=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_execution_attempts'").fetchone()
+              n=0 if not exists else con.execute(
+                  "SELECT COUNT(*) FROM live_execution_attempts WHERE status='CLAIMED' AND updated_at>=?",
+                  (int(time.time())-120,),
+              ).fetchone()[0]
+              con.close(); print(int(n or 0))
+          except Exception:
+              print(1)
+          PY
+          )"
+            if [[ "$inflight" = 0 ]]; then safe=1; break; fi
+            echo "fresh_execution_attempt_inflight=$inflight"
+            sleep 5
+          done
+          [[ "$safe" = 1 ]]
+
+          restart_epoch="$(date +%s)"
+          sudo -n systemctl restart "$service"
+          sleep 12
+          test "$(systemctl is-active "$service")" = active
+          pid1="$(systemctl show "$service" -p MainPID --value)"
+          test -n "$pid1"; test "$pid1" != 0
+          sleep 15
+          test "$(systemctl is-active "$service")" = active
+          pid2="$(systemctl show "$service" -p MainPID --value)"
+          test "$pid2" = "$pid1"
+
+          log="$(sudo -n journalctl -u "$service" --since "@${restart_epoch}" --no-pager)"
+          printf '%s\n' "$log" | grep -F '[solana-easy-exit] active=true'
+          printf '%s\n' "$log" | grep -F '[trading-runtime-invariant] OK'
+          printf '%s\n' "$log" | grep -F '[final-runtime-integrity] OK'
+          printf '%s\n' "$log" | grep -F '[learner-newpoll45] reporting=45s'
+          printf '%s\n' "$log" | grep -F '[learner-pool-context] active=true'
+          if printf '%s\n' "$log" | grep -Eq 'Traceback \(most recent call last\)|Main process exited|Failed with result'; then
+            echo 'fatal_restart_marker=YES' >&2
+            exit 7
+          fi
+
+          echo "stable_main_pid=$pid2"
+          echo 'learner_runtime=HEALTHY'
+          echo 'production_service_touched=NO'
+
+      - name: Prove effective easy-exit settings and current positions
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          cd "$target"
+          PYTHONDONTWRITEBYTECODE=1 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python - <<'PY'
+          from learnerbot.config import AppSettings
+          from learnerbot import solana_sibot as sol
+          app=AppSettings.load()
+          cfg=sol.settings(app)
+          keys=(
+              'stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct',
+              'break_even_trigger_pct','break_even_floor_pct',
+              'trailing_trigger_pct','trailing_gap_pct','position_poll_seconds',
+          )
+          for key in keys:
+              print(f'effective_{key}={cfg.get(key)}')
+          assert float(cfg['stop_loss_pct']) <= 5
+          assert float(cfg['take_profit_pct']) <= 10
+          assert float(cfg['leader_exit_loss_cap_pct']) == 0
+          assert float(cfg['break_even_trigger_pct']) <= 3
+          assert float(cfg['trailing_trigger_pct']) <= 5
+          assert float(cfg['trailing_gap_pct']) <= 2
+          assert int(float(cfg['position_poll_seconds'])) <= 10
+          print('effective_easy_exit=PASS')
+          PY
+
+          TARGET="$target" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2)
+          rows=con.execute(
+              "SELECT position_id,mint,status,unrealised_pct,leader_exit_pending,exit_reason FROM positions "
+              "WHERE mode='LIVE' ORDER BY updated_at DESC LIMIT 10"
+          ).fetchall()
+          con.close()
+          print('recent_live_rows='+str(len(rows)))
+          for i,row in enumerate(rows,1):
+              print(f'live_{i} position={row[0]} mint={row[1]} status={row[2]} pnl_pct={row[3]} leader_exit_pending={row[4]} exit_reason={row[5]}')
+          PY
+
+          echo 'pool_open_historical_backfill=NO_FABRICATION'
+          echo 'future_pool_open_capture=ON'
+          echo 'telegram_position_pool_context=OPEN_CURRENT_CHANGE_DEXVIEW'
+          echo 'production_service_touched=NO'
