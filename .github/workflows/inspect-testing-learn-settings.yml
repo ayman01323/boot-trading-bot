@@ -1,4 +1,3 @@
-# one-shot inspection trigger 2026-08-28 learner restore switches
 name: Inspect Testing Learner Settings
 
 on:
@@ -16,23 +15,60 @@ permissions:
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 15
+    env:
+      TARGET: /home/ayman01323/BOOT/testingbots/learn
+      SOURCE_SHA: 894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+      SERVICE: learnerbot-learn.service
     steps:
-      - name: Inspect isolated learner switches safely
+      - name: Checkout exact morning source
+        uses: actions/checkout@v4
+        with:
+          ref: 894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Restore morning Learner code and restart isolated service
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          root=/home/ayman01323/BOOT/testingbots/learn
-          test -d "$root"
-          echo "service_load=$(systemctl show learnerbot-learn.service -p LoadState --value 2>/dev/null || true)"
-          echo "service_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          echo "service_enabled=$(systemctl is-enabled learnerbot-learn.service 2>/dev/null || true)"
-          echo '--- unit ---'
-          systemctl cat learnerbot-learn.service 2>/dev/null | sed -E 's/(Environment=.*(TOKEN|KEY|SECRET|PASSWORD)=).*/\1[redacted]/Ig' || true
-          echo '--- active settings ---'
-          ROOT="$root" python3 - <<'PY'
+          test -d "$TARGET/learnerbot"
+          test -d "$TARGET/CSVbot"
+          test -d "$TARGET/data"
+          test -d "$GITHUB_WORKSPACE/learnerbot"
+
+          before_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          ts="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$TARGET/backups/morning-restore-$ts"
+          mkdir -p "$backup"
+          cp -a "$TARGET/learnerbot" "$backup/learnerbot.before"
+          cp -a "$TARGET/CSVbot/solana_settings.csv" "$backup/solana_settings.csv.before" 2>/dev/null || true
+          cp -a "$TARGET/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv.before" 2>/dev/null || true
+
+          rm -rf "$TARGET/learnerbot.restore-tmp"
+          mkdir -p "$TARGET/learnerbot.restore-tmp"
+          cp -a "$GITHUB_WORKSPACE/learnerbot/." "$TARGET/learnerbot.restore-tmp/"
+          python3 -m compileall -q "$TARGET/learnerbot.restore-tmp"
+          rm -rf "$TARGET/learnerbot"
+          mv "$TARGET/learnerbot.restore-tmp" "$TARGET/learnerbot"
+          printf '%s\n' "$SOURCE_SHA" > "$TARGET/RESTORED_SOURCE_SHA.txt"
+
+          systemctl restart "$SERVICE"
+          sleep 8
+          after_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+
+          echo "source_sha=$SOURCE_SHA"
+          echo "service_before=$before_active"
+          echo "service_after=$after_active"
+          echo "backup=$backup"
+          echo "wallet_data_modified=NO"
+          echo "csv_settings_modified=NO"
+          echo "database_replaced=NO"
+          echo
+          echo '--- saved controls ---'
+          ROOT="$TARGET" python3 - <<'PY'
           import csv, os
           from pathlib import Path
           root=Path(os.environ['ROOT'])/'CSVbot'
@@ -42,28 +78,31 @@ jobs:
                   for r in csv.DictReader(f):
                       if r.get('setting') in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct'}:
                           print(f"platform {r.get('setting')}={r.get('value','')}")
-          up=root/'user_trading_settings.csv'
-          rows=[]
-          if up.exists():
-              with up.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          wanted={'learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}
-          for r in rows:
-              if str(r.get('setting') or '') in wanted:
-                  print(f"user=[redacted] chain={r.get('chain_id','')} {r.get('setting')}={r.get('value','')}")
-          users=root/'users.csv'
-          if users.exists():
-              with users.open(encoding='utf-8-sig',newline='') as f: us=list(csv.DictReader(f))
-              for r in us:
-                  print('account=[redacted] status='+str(r.get('status') or '')+' can_auto_trade='+str(r.get('can_auto_trade') or '')+' allowed_chains='+str(r.get('allowed_chains') or ''))
+          p=root/'user_trading_settings.csv'
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      if r.get('setting') in {'learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}:
+                          print(f"user=[redacted] chain={r.get('chain_id','')} {r.get('setting')}={r.get('value','')}")
           PY
+          echo
           echo '--- live positions ---'
-          ROOT="$root" python3 - <<'PY'
+          ROOT="$TARGET" python3 - <<'PY'
           import os, sqlite3
           from pathlib import Path
           db=Path(os.environ['ROOT'])/'data/solana_sibot.sqlite3'
-          if not db.exists(): raise SystemExit
+          if not db.exists():
+              print('db=missing'); raise SystemExit
           c=sqlite3.connect(f'file:{db}?mode=ro',uri=True); c.row_factory=sqlite3.Row
-          for r in c.execute("select position_id,mode,status,entry_cost_sol,realised_net_sol,updated_at,strategy_version,git_sha from positions where mode='LIVE' order by updated_at desc limit 20"):
-              print(dict(r))
+          rows=c.execute("select position_id,status,mode,entry_cost_sol,realised_net_sol,strategy_version,git_sha from positions where mode='LIVE' order by updated_at desc limit 20").fetchall()
+          print('live_positions='+str(len(rows)))
+          for r in rows: print(dict(r))
           c.close()
           PY
+          echo
+          echo '--- service tail ---'
+          journalctl -u "$SERVICE" -n 100 --no-pager 2>/dev/null \
+            | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|BUY|SELL|LIVE|entry|position|route|ERROR|REJECT' \
+            | tail -n 100 || true
+
+          test "$after_active" = active
