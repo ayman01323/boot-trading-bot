@@ -1,4 +1,4 @@
-name: Apply SiRisky Automatic LIVE Google Only
+name: Deploy SiRisky Google Only
 
 on:
   workflow_dispatch:
@@ -12,54 +12,60 @@ permissions:
   contents: read
 
 concurrency:
-  group: sirisky-google-only-auto-live
+  group: sirisky-google-only-deploy
   cancel-in-progress: false
 
 jobs:
-  apply:
+  deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Install and arm SiRisky automatic LIVE on botgoogle only
+      - name: Rebuild trusted main checkout on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/install_sirisky_governed_live_ops.sh \
-            -o "$tmp"
-          grep -q 'manual_approval_enabled,0' "$tmp"
-          grep -q 'manual_approval_require_external_signature,0' "$tmp"
-          sudo -n true
-          sudo -n env ARM_NOW=1 bash "$tmp"
+          SRC=/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot
+          cd /home/ayman01323
+          rm -rf "$SRC"
+          mkdir -p "$(dirname "$SRC")"
+          git clone --depth 1 --branch main \
+            https://github.com/ayman01323/boot-trading-bot.git "$SRC"
+          test -d "$SRC/.git"
+          test -f "$SRC/SiRisky/overrides/run.py"
+          git -C "$SRC" status --short --branch
+          echo "TARGET_SHA=$(git -C "$SRC" rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Verify automatic LIVE root runtime
+      - name: Deploy current main SiRisky files safely in SHADOW
         shell: bash
         run: |
           set -Eeuo pipefail
-          sudo -n bash -lc '
-            set -Eeuo pipefail
-            R=/root/SiRisky/CSV/runtime.csv
-            value() { awk -F, -v key="$1" '\''$1==key {gsub(/\r/,"",$2); print $2}'\'' "$R"; }
-            test "$(value trading_mode)" = LIVE
-            test "$(value live_enabled)" = 1
-            test "$(value broadcast_enabled)" = 1
-            test "$(value manual_approval_enabled)" = 0
-            test "$(value armed_manual_approval)" = 0
-            test "$(value manual_approval_require_external_signature)" = 0
-            test "$(value telegram_manual_run_enabled)" = 0
-            systemctl is-active --quiet sirisky.service
-            echo "=== VERIFIED SIRISKY GOOGLE-ONLY AUTO LIVE ==="
-            echo "host=$(hostname)"
-            echo "service=$(systemctl is-active sirisky.service)"
-            echo "trading_mode=$(value trading_mode)"
-            echo "live_enabled=$(value live_enabled)"
-            echo "broadcast_enabled=$(value broadcast_enabled)"
-            echo "manual_approval_enabled=$(value manual_approval_enabled)"
-            echo "armed_manual_approval=$(value armed_manual_approval)"
-            echo "manual_approval_require_external_signature=$(value manual_approval_require_external_signature)"
-            echo "telegram_manual_run_enabled=$(value telegram_manual_run_enabled)"
-          '
+          sudo -n -l /usr/local/sbin/sirisky-shadow-deploy >/dev/null
+          OUT="$(sudo -n /usr/local/sbin/sirisky-shadow-deploy "$TARGET_SHA")"
+          printf '%s\n' "$OUT"
+          grep -q '=== SIRISKY SHADOW DEPLOY OK ===' <<<"$OUT"
+          grep -q "sha=$TARGET_SHA" <<<"$OUT"
+          grep -q 'trading_mode=SHADOW' <<<"$OUT"
+          grep -q 'broadcast_enabled=0' <<<"$OUT"
+
+      - name: Re-arm governed automatic LIVE
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo -n -l /root/SiRisky/ops/sirisky-governed-live-arm >/dev/null
+          OUT="$(sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$TARGET_SHA")"
+          printf '%s\n' "$OUT"
+          grep -q '=== SIRISKY GOVERNED LIVE AUTO EXECUTION ARMED ===' <<<"$OUT"
+          grep -q "sha=$TARGET_SHA" <<<"$OUT"
+          grep -q 'service=active' <<<"$OUT"
+          grep -q 'trading_mode=LIVE' <<<"$OUT"
+          grep -q 'live_enabled=1' <<<"$OUT"
+          grep -q 'broadcast_enabled=1' <<<"$OUT"
+          grep -q 'manual_approval_enabled=0' <<<"$OUT"
+          grep -q 'manual_approval_require_external_signature=0' <<<"$OUT"
+          grep -q 'telegram_manual_run_enabled=0' <<<"$OUT"
+          test "$(systemctl is-active sirisky.service)" = active
+          echo 'google_only_deploy=SUCCESS'
+          echo "deployed_sha=$TARGET_SHA"
+          echo 'host=botgoogle'
