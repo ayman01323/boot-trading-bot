@@ -1,4 +1,4 @@
-# one-shot inspection trigger 2026-08-28 learner restore provenance
+# one-shot inspection trigger 2026-08-28 learner restore switches
 name: Inspect Testing Learner Settings
 
 on:
@@ -18,7 +18,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect isolated learner trade provenance safely
+      - name: Inspect isolated learner switches safely
         shell: bash
         run: |
           set -euo pipefail
@@ -28,62 +28,42 @@ jobs:
           test -d "$root"
           echo "service_load=$(systemctl show learnerbot-learn.service -p LoadState --value 2>/dev/null || true)"
           echo "service_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
-          echo '--- git/source identity ---'
-          if [[ -d "$root/.git" ]]; then
-            echo "head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
-            git -C "$root" log -n 8 --date=iso --pretty='commit=%H time=%ad subject=%s' 2>/dev/null || true
-          else
-            echo "isolated_git_repo=no"
-          fi
-          head -n 8 "$root/KNOWN_GOOD_SNAPSHOT.txt" 2>/dev/null || true
+          echo "service_enabled=$(systemctl is-enabled learnerbot-learn.service 2>/dev/null || true)"
+          echo '--- unit ---'
+          systemctl cat learnerbot-learn.service 2>/dev/null | sed -E 's/(Environment=.*(TOKEN|KEY|SECRET|PASSWORD)=).*/\1[redacted]/Ig' || true
           echo '--- active settings ---'
-          python3 - <<'PY'
-          import csv
+          ROOT="$root" python3 - <<'PY'
+          import csv, os
           from pathlib import Path
-          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          root=Path(os.environ['ROOT'])/'CSVbot'
+          p=root/'solana_settings.csv'
           if p.exists():
               with p.open(encoding='utf-8-sig',newline='') as f:
                   for r in csv.DictReader(f):
                       if r.get('setting') in {'live_trade_sol','live_min_sol_reserve','live_max_positions','live_require_simulation','max_signal_age_seconds','max_roundtrip_loss_pct'}:
-                          print(f"{r.get('setting')}={r.get('value','')}")
+                          print(f"platform {r.get('setting')}={r.get('value','')}")
+          up=root/'user_trading_settings.csv'
+          rows=[]
+          if up.exists():
+              with up.open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+          wanted={'learner_new_entries_enabled','solana_live_enabled','sibot_enabled','sibot_auto_trade_enabled','solana_live_trade_sol','solana_live_min_reserve_sol'}
+          for r in rows:
+              if str(r.get('setting') or '') in wanted:
+                  print(f"user=[redacted] chain={r.get('chain_id','')} {r.get('setting')}={r.get('value','')}")
+          users=root/'users.csv'
+          if users.exists():
+              with users.open(encoding='utf-8-sig',newline='') as f: us=list(csv.DictReader(f))
+              for r in us:
+                  print('account=[redacted] status='+str(r.get('status') or '')+' can_auto_trade='+str(r.get('can_auto_trade') or '')+' allowed_chains='+str(r.get('allowed_chains') or ''))
           PY
-          echo '--- current poolcheck composition ---'
-          grep -nE 'poolcheck_rug_hardening_patch|poolcheck_solana_stress|poolcheck_evm_(holder|lp|stress)' "$root/learnerbot/final_runtime_integrity_patch.py" 2>/dev/null || true
-          echo '--- today LIVE DB provenance ---'
+          echo '--- live positions ---'
           ROOT="$root" python3 - <<'PY'
-          import os, sqlite3, datetime
+          import os, sqlite3
           from pathlib import Path
-          root=Path(os.environ['ROOT'])
-          dbs=[root/'data/solana_sibot.sqlite3', root/'data/sibot1_solana_live_bridge.sqlite3']
-          start=int(datetime.datetime(2026,8,28,0,0,tzinfo=datetime.timezone.utc).timestamp())
-          for db in dbs:
-              print('DB='+str(db)+' exists='+str(db.exists()))
-              if not db.exists(): continue
-              conn=sqlite3.connect(f'file:{db}?mode=ro',uri=True); conn.row_factory=sqlite3.Row
-              tables=[r['name'] for r in conn.execute("select name from sqlite_master where type='table' order by name")]
-              print('tables='+','.join(tables))
-              for table in ('positions','live_execution_attempts','attempts'):
-                  if table not in tables: continue
-                  cols=[r['name'] for r in conn.execute(f'pragma table_info({table})')]
-                  print(f'{table}_cols='+','.join(cols))
-                  timecol=next((c for c in ('created_at','entry_epoch','opened_at','updated_at','epoch') if c in cols),None)
-                  order=timecol or 'rowid'
-                  rows=conn.execute(f'select * from {table} order by {order} desc limit 40').fetchall()
-                  for r in rows:
-                      d=dict(r)
-                      # redact wallet/mint/signature identifiers; retain strategy/version/status/provenance and economics
-                      for k in list(d):
-                          kl=k.lower()
-                          if any(x in kl for x in ('wallet','mint','signature','address','private','secret')):
-                              d[k]='[redacted]' if d[k] not in (None,'') else d[k]
-                      keep={k:d[k] for k in d if k in {
-                          'id','position_id','status','mode','action','side','created_at','updated_at','entry_epoch','exit_epoch','opened_at','closed_at',
-                          'strategy_id','strategy_version','strategy_git_sha','opening_git_sha','git_sha','source_git_sha','entry_sol','input_sol','trade_sol',
-                          'realized_pnl_sol','realised_pnl_sol','net_pnl_sol','pnl_sol','entry_amount_sol','input_amount_sol','reason','error'
-                      }}
-                      if keep: print(table+' '+repr(keep))
-              conn.close()
+          db=Path(os.environ['ROOT'])/'data/solana_sibot.sqlite3'
+          if not db.exists(): raise SystemExit
+          c=sqlite3.connect(f'file:{db}?mode=ro',uri=True); c.row_factory=sqlite3.Row
+          for r in c.execute("select position_id,mode,status,entry_cost_sol,realised_net_sol,updated_at,strategy_version,git_sha from positions where mode='LIVE' order by updated_at desc limit 20"):
+              print(dict(r))
+          c.close()
           PY
-          echo '--- morning service journal ---'
-          journalctl -u learnerbot-learn.service --since '2026-08-28 06:00:00' --until '2026-08-28 14:00:00' --no-pager 2>/dev/null \
-            | grep -Ei 'BUY|SELL|LIVE|execut|trade|position|git|sha|poolcheck' | tail -n 160 || true
