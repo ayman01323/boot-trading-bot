@@ -1,0 +1,79 @@
+name: SiRisky Buy Sell Compare 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-buy-sell-compare-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Compare morning and current executed BUY SELL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          root=/root/SiRisky
+          sudo -n "$root/.venv/bin/python" - <<'PY'
+          import csv, json
+          from pathlib import Path
+          from datetime import datetime, time, timezone
+          from zoneinfo import ZoneInfo
+
+          p=Path('/root/SiRisky/CSV/executions.csv')
+          rows=[]
+          if p.exists():
+              with p.open(encoding='utf-8-sig', newline='') as f:
+                  rows=list(csv.DictReader(f))
+
+          london=ZoneInfo('Europe/London')
+          now=datetime.now(timezone.utc).astimezone(london)
+          day_start=datetime.combine(now.date(), time.min, tzinfo=london)
+          noon=datetime.combine(now.date(), time(12,0), tzinfo=london)
+
+          def in_window(r, end):
+              try:
+                  ts=int(float(r.get('timestamp') or 0))
+                  d=datetime.fromtimestamp(ts, timezone.utc).astimezone(london)
+              except Exception:
+                  return False
+              return day_start <= d < end
+
+          def counts(end):
+              out={
+                  'BUY_total':0,'SELL_total':0,
+                  'BUY_live_success':0,'SELL_live_success':0,
+                  'BUY_shadow_ok':0,'SELL_shadow_ok':0,
+                  'BUY_failed':0,'SELL_failed':0,
+              }
+              for r in rows:
+                  if not in_window(r,end):
+                      continue
+                  a=str(r.get('action') or '').upper()
+                  if a not in {'BUY','SELL'}:
+                      continue
+                  status=str(r.get('status') or '').upper()
+                  mode=str(r.get('mode') or '').upper()
+                  out[f'{a}_total']+=1
+                  if status=='SUCCESS' and mode=='LIVE': out[f'{a}_live_success']+=1
+                  elif status=='SHADOW_OK': out[f'{a}_shadow_ok']+=1
+                  elif status=='FAILED': out[f'{a}_failed']+=1
+              return out
+
+          morning=counts(noon)
+          current=counts(now)
+          change={k:current[k]-morning[k] for k in current}
+          print('local_now='+now.isoformat())
+          print('morning_cutoff='+noon.isoformat())
+          print('morning='+json.dumps(morning,sort_keys=True))
+          print('current='+json.dumps(current,sort_keys=True))
+          print('since_morning='+json.dumps(change,sort_keys=True))
+          print('rows_total='+str(len(rows)))
+          PY
