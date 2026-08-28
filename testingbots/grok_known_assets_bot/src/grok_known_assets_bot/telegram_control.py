@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 from urllib import error, request
 
 from .control import load_state, save_state
@@ -22,19 +22,19 @@ ALERT_KINDS = ("REJECT", "FEED_REJECT", "DECISION", "OPEN", "CLOSE")
 class TelegramSettings:
     token: str
     chat_ids: frozenset[str]
-    poll_timeout_seconds: int = 25
+    poll_timeout_seconds: int = 8
 
     @classmethod
     def from_env(cls) -> "TelegramSettings":
-        # Deliberately do NOT fall back to TELEGRAM_BOT_TOKEN.  Grok must use a
+        # Deliberately do NOT fall back to TELEGRAM_BOT_TOKEN. Grok must use a
         # dedicated token so it can never compete with SiRisky/Claude polling.
         token = str(os.environ.get("GROK_TELEGRAM_BOT_TOKEN") or "").strip()
         raw_ids = str(os.environ.get("GROK_TELEGRAM_CHAT_IDS") or "").strip()
         chat_ids = frozenset(x.strip() for x in raw_ids.replace(";", ",").split(",") if x.strip())
         try:
-            timeout = max(5, min(50, int(os.environ.get("GROK_TELEGRAM_POLL_TIMEOUT", "25"))))
+            timeout = max(5, min(20, int(os.environ.get("GROK_TELEGRAM_POLL_TIMEOUT", "8"))))
         except ValueError:
-            timeout = 25
+            timeout = 8
         if not token:
             raise SystemExit("GROK_TELEGRAM_BOT_TOKEN is required for the dedicated Grok receiver")
         if not chat_ids:
@@ -58,7 +58,7 @@ def _api_call(token: str, method: str, payload: dict[str, Any]) -> dict[str, Any
         method="POST",
     )
     try:
-        with request.urlopen(req, timeout=max(35, int(payload.get("timeout") or 0) + 10)) as response:
+        with request.urlopen(req, timeout=max(20, int(payload.get("timeout") or 0) + 8)) as response:
             data = json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         # Never include exc/URL in logs because the Telegram token is embedded in it.
@@ -74,11 +74,7 @@ def _send_message(settings: TelegramSettings, chat_id: str, text: str) -> None:
     _api_call(
         settings.token,
         "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": text[:3900],
-            "disable_web_page_preview": True,
-        },
+        {"chat_id": chat_id, "text": text[:3900], "disable_web_page_preview": True},
     )
 
 
@@ -123,6 +119,17 @@ def _read_alert_events(path: Path, after_id: int, *, limit: int = 200) -> list[t
     return out
 
 
+def _position_count(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        with sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True, timeout=2.0) as db:
+            row = db.execute("SELECT COUNT(*) FROM state WHERE key LIKE 'paper_position:%'").fetchone()
+            return int(row[0] if row else 0)
+    except (sqlite3.Error, OSError, ValueError):
+        return 0
+
+
 def _latest_decision_text(path: Path) -> str:
     if not path.exists():
         return "Latest decision: no journal data yet"
@@ -145,21 +152,22 @@ def _latest_decision_text(path: Path) -> str:
         data = {}
     reason = str(data.get("reason") or data.get("action") or kind)
     age = max(0, int(time.time() - float(ts)))
-    asset_text = str(asset or "system")
-    return f"Latest decision: {kind} {asset_text} — {reason} ({age}s ago)"
+    return f"Latest decision: {kind} {asset or 'system'} — {reason} ({age}s ago)"
 
 
 def _status_text() -> str:
     state = load_state()
+    path = _journal_db_path()
     return "\n".join(
         [
             "🤖 GROK KNOWN-ASSETS BOT",
             f"PAPER arm: {'🟢 ARMED' if state.get('armed') else '⚪ OFF'}",
+            f"Persisted PAPER positions: {_position_count(path)}",
             "Market feed: REAL PUBLIC DATA",
             "Execution: PAPER ONLY",
             "Real-money signing: DISABLED",
             "Transaction broadcast: DISABLED",
-            _latest_decision_text(_journal_db_path()),
+            _latest_decision_text(path),
         ]
     )
 
@@ -168,19 +176,14 @@ def _normalise_command(text: str) -> tuple[str, list[str]]:
     parts = str(text or "").strip().split()
     if not parts:
         return "", []
-    command = parts[0].lower().split("@", 1)[0]
-    return command, parts[1:]
+    return parts[0].lower().split("@", 1)[0], parts[1:]
 
 
 def handle_command(text: str, chat_id: str) -> str | None:
     command, args = _normalise_command(text)
     if command in {"/start", "/help"}:
         return (
-            "Grok PAPER controls:\n"
-            "/grokstatus\n"
-            "/grokarm on CONFIRM\n"
-            "/grokarm off\n"
-            "/grokstop\n\n"
+            "Grok PAPER controls:\n/grokstatus\n/grokarm on CONFIRM\n/grokarm off\n/grokstop\n\n"
             "Automatic Telegram alerts: PAPER entries, exits/P&L, feed rejects, and strategy/research rejects.\n"
             "These commands control Grok only. LIVE money execution is not exposed."
         )
@@ -201,8 +204,6 @@ def handle_command(text: str, chat_id: str) -> str | None:
                 "🔒 Real-money signing and transaction broadcast remain disabled."
             )
         return "❌ Use exactly: /grokarm on CONFIRM  or  /grokarm off"
-    # Dedicated receiver ignores all non-Grok commands rather than impersonating
-    # another bot or producing a catch-all response.
     return None
 
 
@@ -210,11 +211,7 @@ def _iter_updates(settings: TelegramSettings, offset: int) -> tuple[list[dict[st
     data = _api_call(
         settings.token,
         "getUpdates",
-        {
-            "offset": offset,
-            "timeout": settings.poll_timeout_seconds,
-            "allowed_updates": ["message"],
-        },
+        {"offset": offset, "timeout": settings.poll_timeout_seconds, "allowed_updates": ["message"]},
     )
     result = data.get("result") or []
     if not isinstance(result, list):
@@ -243,9 +240,7 @@ def _event_alert_text(kind: str, asset: str, payload: dict[str, Any]) -> str | N
     if kind == "FEED_REJECT":
         return f"🟠 GROK FEED REFUSED\nAsset: {asset_text}\nReason: {reason}"
     if kind == "DECISION":
-        action = str(payload.get("action") or "")
-        # ENTER is followed by canonical OPEN; avoid duplicate entry alerts.
-        if action != "REJECT":
+        if str(payload.get("action") or "") != "REJECT":
             return None
         confidence = payload.get("research_confidence")
         confidence_text = f"\nResearch confidence: {float(confidence):.3f}" if isinstance(confidence, (int, float)) else ""
@@ -253,49 +248,46 @@ def _event_alert_text(kind: str, asset: str, payload: dict[str, Any]) -> str | N
     if kind == "OPEN":
         size = float(payload.get("size_usd") or 0.0)
         price = float(payload.get("entry_price") or 0.0)
-        return (
-            "🟢 GROK PAPER TRADE OPENED\n"
-            f"Asset: {asset_text}\n"
-            f"Size: ${size:.2f}\n"
-            f"Entry: ${price:.6f}\n"
-            "Mode: PAPER"
-        )
+        return f"🟢 GROK PAPER TRADE OPENED\nAsset: {asset_text}\nSize: ${size:.2f}\nEntry: ${price:.6f}\nMode: PAPER"
     if kind == "CLOSE":
         pnl = float(payload.get("realised_pnl_usd") or 0.0)
         icon = "🟢" if pnl >= 0 else "🔴"
-        return (
-            f"{icon} GROK PAPER TRADE EXIT\n"
-            f"Asset: {asset_text}\n"
-            f"Reason: {reason}\n"
-            f"Realised P&L: ${pnl:.4f}\n"
-            "Mode: PAPER"
-        )
+        return f"{icon} GROK PAPER TRADE EXIT\nAsset: {asset_text}\nReason: {reason}\nRealised P&L: ${pnl:.4f}\nMode: PAPER"
     return None
 
 
 def _alert_fingerprint(kind: str, asset: str, payload: dict[str, Any]) -> str:
-    if kind in {"REJECT", "FEED_REJECT", "DECISION"}:
-        return f"{kind}|{asset}|{payload.get('action', '')}|{payload.get('reason', '')}"
-    return f"{kind}|{asset}|{payload.get('trade_id', '')}|{time.time_ns()}"
+    return f"{kind}|{asset}|{payload.get('action', '')}|{payload.get('reason', '')}"
 
 
-def _should_send_alert(
-    kind: str,
-    asset: str,
-    payload: dict[str, Any],
-    sent_at: dict[str, float],
-    *,
-    now: float,
-    repeat_seconds: float,
-) -> bool:
+def _should_send_alert(kind: str, asset: str, payload: dict[str, Any], sent_at: dict[str, float], *, now: float, repeat_seconds: float) -> bool:
     if kind in {"OPEN", "CLOSE"}:
         return True
-    key = _alert_fingerprint(kind, asset, payload)
-    previous = float(sent_at.get(key, 0.0))
-    if previous and now - previous < repeat_seconds:
-        return False
-    sent_at[key] = now
-    return True
+    previous = float(sent_at.get(_alert_fingerprint(kind, asset, payload), 0.0))
+    return not previous or now - previous >= repeat_seconds
+
+
+def _mark_alert_sent(kind: str, asset: str, payload: dict[str, Any], sent_at: dict[str, float], *, now: float) -> None:
+    if kind not in {"OPEN", "CLOSE"}:
+        sent_at[_alert_fingerprint(kind, asset, payload)] = now
+
+
+def _deliver_alert(settings: TelegramSettings, chat_ids: Iterable[str], text: str) -> tuple[int, int]:
+    """Try each destination independently; one bad chat must never block another."""
+    delivered = 0
+    failed = 0
+    for chat_id in sorted(set(chat_ids)):
+        try:
+            _send_message(settings, chat_id, text)
+            delivered += 1
+        except TelegramApiError as exc:
+            failed += 1
+            print(
+                json.dumps({"status": "ALERT_CHAT_ERROR", "http_status": exc.status, "method": exc.method}, separators=(",", ":")),
+                file=sys.stderr,
+                flush=True,
+            )
+    return delivered, failed
 
 
 def run() -> int:
@@ -308,9 +300,6 @@ def run() -> int:
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-
-    # Validate that this token belongs to an accessible Telegram bot without
-    # printing any token-bearing URL or response payload.
     _api_call(settings.token, "getMe", {})
     journal_path = _journal_db_path()
     journal_cursor = _latest_event_id(journal_path)
@@ -319,16 +308,10 @@ def run() -> int:
     except ValueError:
         repeat_seconds = 300.0
     sent_at: dict[str, float] = {}
+    verified_chat_ids: set[str] = set()
     print(
         json.dumps(
-            {
-                "status": "STARTED",
-                "receiver": "GROK_DEDICATED_TELEGRAM",
-                "paper_only": True,
-                "decision_alerts": True,
-                "journal_cursor": journal_cursor,
-                "authorised_chat_count": len(settings.chat_ids),
-            },
+            {"status": "STARTED", "receiver": "GROK_DEDICATED_TELEGRAM", "paper_only": True, "decision_alerts": True, "journal_cursor": journal_cursor, "authorised_chat_count": len(settings.chat_ids)},
             separators=(",", ":"),
         ),
         flush=True,
@@ -340,59 +323,67 @@ def run() -> int:
         try:
             updates, offset = _iter_updates(settings, offset)
             consecutive_errors = 0
-            for update in updates:
-                message = update.get("message")
-                if not isinstance(message, dict):
-                    continue
-                chat = message.get("chat")
-                if not isinstance(chat, dict):
-                    continue
-                chat_id = str(chat.get("id") or "").strip()
-                if not chat_id or chat_id not in settings.chat_ids:
-                    continue
-                text = message.get("text")
-                if not isinstance(text, str):
-                    continue
-                reply = handle_command(text, chat_id)
-                if reply:
-                    _send_message(settings, chat_id, reply)
-
-            for event_id, _ts, kind, asset, payload in _read_alert_events(journal_path, journal_cursor):
-                journal_cursor = max(journal_cursor, event_id)
-                alert = _event_alert_text(kind, asset, payload)
-                if not alert:
-                    continue
-                now = time.time()
-                if not _should_send_alert(kind, asset, payload, sent_at, now=now, repeat_seconds=repeat_seconds):
-                    continue
-                for chat_id in settings.chat_ids:
-                    _send_message(settings, chat_id, alert)
-                print(
-                    json.dumps(
-                        {"status": "ALERT_SENT", "event_id": event_id, "kind": kind, "asset": asset},
-                        separators=(",", ":"),
-                    ),
-                    flush=True,
-                )
         except TelegramApiError as exc:
             consecutive_errors += 1
-            # Status 409 normally means another poller is using the same token.
-            # With a dedicated token this is an operational misconfiguration,
-            # never a reason to fall back to the shared SiRisky token.
             print(
-                json.dumps(
-                    {
-                        "status": "TELEGRAM_ERROR",
-                        "http_status": exc.status,
-                        "method": exc.method,
-                        "consecutive_errors": consecutive_errors,
-                    },
-                    separators=(",", ":"),
-                ),
+                json.dumps({"status": "TELEGRAM_ERROR", "http_status": exc.status, "method": exc.method, "consecutive_errors": consecutive_errors}, separators=(",", ":")),
                 file=sys.stderr,
                 flush=True,
             )
             time.sleep(min(30.0, 2.0 * consecutive_errors))
+            continue
+
+        for update in updates:
+            message = update.get("message")
+            if not isinstance(message, dict):
+                continue
+            chat = message.get("chat")
+            if not isinstance(chat, dict):
+                continue
+            chat_id = str(chat.get("id") or "").strip()
+            if not chat_id or chat_id not in settings.chat_ids:
+                continue
+            text = message.get("text")
+            if not isinstance(text, str):
+                continue
+            reply = handle_command(text, chat_id)
+            if reply:
+                try:
+                    _send_message(settings, chat_id, reply)
+                    verified_chat_ids.add(chat_id)
+                except TelegramApiError as exc:
+                    print(
+                        json.dumps({"status": "COMMAND_REPLY_ERROR", "http_status": exc.status, "method": exc.method}, separators=(",", ":")),
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+        for event_id, _ts, kind, asset, payload in _read_alert_events(journal_path, journal_cursor):
+            alert = _event_alert_text(kind, asset, payload)
+            if not alert:
+                journal_cursor = event_id
+                continue
+            now = time.time()
+            if not _should_send_alert(kind, asset, payload, sent_at, now=now, repeat_seconds=repeat_seconds):
+                journal_cursor = event_id
+                continue
+            targets = verified_chat_ids or set(settings.chat_ids)
+            delivered, failed = _deliver_alert(settings, targets, alert)
+            if delivered <= 0:
+                # Keep this event pending. Once the user opens/starts the dedicated
+                # bot and a chat becomes reachable, the alert is retried.
+                print(
+                    json.dumps({"status": "ALERT_DELIVERY_FAILED", "event_id": event_id, "kind": kind, "asset": asset, "failed": failed}, separators=(",", ":")),
+                    file=sys.stderr,
+                    flush=True,
+                )
+                break
+            journal_cursor = event_id
+            _mark_alert_sent(kind, asset, payload, sent_at, now=now)
+            print(
+                json.dumps({"status": "ALERT_SENT", "event_id": event_id, "kind": kind, "asset": asset, "delivered": delivered, "failed": failed}, separators=(",", ":")),
+                flush=True,
+            )
 
     print('{"status":"STOPPED","receiver":"GROK_DEDICATED_TELEGRAM"}', flush=True)
     return 0
