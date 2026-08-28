@@ -1,0 +1,157 @@
+name: Deploy Learner Full Exit Only
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/deploy-learner-full-exit-only.yml'
+      - 'learnerbot/solana_learner_full_exit_only_patch.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-learner-full-exit-only
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Install isolated full-exit-only policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore \
+            https://github.com/ayman01323/boot-trading-bot.git "$tmp/repo"
+          install -m 0644 \
+            "$tmp/repo/learnerbot/solana_learner_full_exit_only_patch.py" \
+            "$target/learnerbot/solana_learner_full_exit_only_patch.py"
+
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          p=root/'learnerbot'/'final_runtime_integrity_patch.py'
+          text=p.read_text(encoding='utf-8').rstrip()
+          marker='from . import solana_learner_full_exit_only_patch  # noqa: E402,F401'
+          if marker not in text:
+              text += '\n' + marker
+          p.write_text(text+'\n',encoding='utf-8')
+          for path in (root/'learnerbot'/'solana_learner_full_exit_only_patch.py',p):
+              compile(path.read_text(encoding='utf-8'),str(path),'exec')
+          print('source_compile=PASS')
+          PY
+
+          grep -Fq 'leader_sell_any_pct=follower_sell_100pct' \
+            "$target/learnerbot/solana_learner_full_exit_only_patch.py"
+          grep -Fq 'solana_learner_full_exit_only_patch' \
+            "$target/learnerbot/final_runtime_integrity_patch.py"
+          echo 'strategy_partial_sales=DISABLED'
+          echo 'intended_exit_fraction=100_PERCENT'
+          echo 'production_service_touched=NO'
+
+      - name: Snapshot positions before activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          TARGET="$target" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2)
+          rows=con.execute(
+              "SELECT position_id,mint,status,token_amount_raw,realised_net_sol,leader_exit_pending,exit_reason "
+              "FROM positions WHERE status='OPEN' AND mode='LIVE' ORDER BY entry_ts,position_id"
+          ).fetchall()
+          con.close()
+          print('open_live_before='+str(len(rows)))
+          for i,r in enumerate(rows,1):
+              print(f'before_{i}_of_{len(rows)} position={r[0]} mint={r[1]} token_raw={r[3]} realised_net_sol={r[4]} pending={r[5]} reason={r[6]}')
+          PY
+
+      - name: Guarded restart and runtime proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          systemctl is-active --quiet "$service"
+
+          safe=0
+          for _ in $(seq 1 12); do
+            inflight="$(TARGET="$target" python3 - <<'PY'
+          import os,sqlite3,time
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          try:
+              con=sqlite3.connect(db,timeout=2)
+              exists=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_execution_attempts'").fetchone()
+              n=0 if not exists else con.execute(
+                  "SELECT COUNT(*) FROM live_execution_attempts WHERE status='CLAIMED' AND updated_at>=?",
+                  (int(time.time())-120,),
+              ).fetchone()[0]
+              con.close(); print(int(n or 0))
+          except Exception:
+              print(1)
+          PY
+          )"
+            if [[ "$inflight" = 0 ]]; then safe=1; break; fi
+            sleep 5
+          done
+          [[ "$safe" = 1 ]]
+
+          epoch="$(date +%s)"
+          sudo -n systemctl restart "$service"
+          sleep 12
+          systemctl is-active --quiet "$service"
+          pid1="$(systemctl show "$service" -p MainPID --value)"
+          sleep 12
+          systemctl is-active --quiet "$service"
+          pid2="$(systemctl show "$service" -p MainPID --value)"
+          test "$pid1" = "$pid2"
+
+          log="$(sudo -n journalctl -u "$service" --since "@${epoch}" --no-pager -o cat)"
+          printf '%s\n' "$log" | grep -F '[trading-runtime-invariant] OK'
+          printf '%s\n' "$log" | grep -F '[final-runtime-integrity] OK'
+          printf '%s\n' "$log" | grep -F '[learner-full-exit-only] active=true'
+          if printf '%s\n' "$log" | grep -Eq 'Traceback \(most recent call last\)|Main process exited|Failed with result'; then
+            exit 7
+          fi
+          echo "stable_main_pid=$pid2"
+          echo 'full_exit_only_runtime=ACTIVE'
+
+      - name: Check remaining BvKg exposure after activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 8
+          target=/home/ayman01323/BOOT/testingbots/learn
+          TARGET="$target" python3 - <<'PY'
+          import os,sqlite3,json
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2); con.row_factory=sqlite3.Row
+          row=con.execute(
+              "SELECT position_id,mint,status,token_amount_raw,entry_cost_sol,realised_net_sol,unrealised_pct,leader_exit_pending,exit_signature,exit_reason,closed_at,updated_at "
+              "FROM positions WHERE position_id=?",
+              ('714f26073ebc1928896ac985c96371f7',),
+          ).fetchone()
+          if row: print('bvkg_after='+json.dumps(dict(row),separators=(',',':'),default=str))
+          con.close()
+          PY
+          sudo -n journalctl -u learnerbot-learn.service --since '-5 min' --no-pager -o cat \
+            | grep -E '714f2607|BvKgVjs|learner-full-exit-only|LEADER_EXIT|LIVE SELL confirmed|SolanaRpcEndpointError' \
+            | tail -80 || true
+          echo 'production_service_touched=NO'
