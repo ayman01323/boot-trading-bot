@@ -1,4 +1,4 @@
-name: SiRisky Wallet Balance Study Google Only
+name: SiRisky Onchain Capital Study Google Only
 
 on:
   workflow_dispatch:
@@ -15,56 +15,16 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read exact on-chain wallet balances and fees
+      - name: Run pinned read-only capital study on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n bash -lc '
-            set -Eeuo pipefail
-            cd /root/SiRisky
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv, json, requests
-from pathlib import Path
-from sirisky.config import Settings
-from sirisky.wallet import WalletStore
-D=Path("CSV")
-s=Settings.load(); wallet=WalletStore(s).address(); rpc=s.resolve_rpc("http")
-rows=list(csv.DictReader((D/"executions.csv").open(encoding="utf-8-sig",newline="")))
-succ=[r for r in rows if (r.get("mode") or "").upper()=="LIVE" and (r.get("status") or "").upper()=="SUCCESS" and r.get("signature")]
-succ.sort(key=lambda r:int(float(r.get("timestamp") or 0)))
-
-def gettx(sig):
-    q={"jsonrpc":"2.0","id":1,"method":"getTransaction","params":[sig,{"encoding":"jsonParsed","commitment":"confirmed","maxSupportedTransactionVersion":0}]}
-    x=requests.post(rpc,json=q,timeout=20); x.raise_for_status(); j=x.json()
-    if j.get("error"): raise RuntimeError(j["error"])
-    return j.get("result") or {}
-
-def vals(j):
-    msg=((j.get("transaction") or {}).get("message") or {})
-    keys=msg.get("accountKeys") or []
-    pubs=[(k.get("pubkey") if isinstance(k,dict) else str(k)) for k in keys]
-    if wallet not in pubs: raise RuntimeError("wallet not in tx")
-    i=pubs.index(wallet); m=j.get("meta") or {}
-    return int(m["preBalances"][i]),int(m["postBalances"][i]),int(m.get("fee") or 0)
-
-print("wallet="+wallet)
-print("successful_live_transactions="+str(len(succ)))
-fees=0
-records=[]
-for r in succ:
-    pre,post,fee=vals(gettx(r["signature"])); fees+=fee
-    records.append((r,pre,post,fee))
-    print("TX "+json.dumps({"timestamp":r.get("timestamp"),"action":r.get("action"),"mint":r.get("mint"),"pre_sol":pre/1e9,"post_sol":post/1e9,"fee_sol":fee/1e9,"signature":r.get("signature")},sort_keys=True))
-first,pre0,post0,fee0=records[0]
-last,preN,postN,feeN=records[-1]
-print(f"wallet_start_sol={pre0/1e9:.9f}")
-print(f"wallet_end_sol={postN/1e9:.9f}")
-print(f"wallet_delta_sol={(postN-pre0)/1e9:.9f}")
-print(f"successful_tx_network_fees_sol={fees/1e9:.9f}")
-print("first_timestamp="+first["timestamp"])
-print("last_timestamp="+last["timestamp"])
-print("read_only=true")
-PY
-          '
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/de039cba96a4bd7ef03ee4766a75bf3d1bd4e8a3/scripts/sirisky_google_jupiter_governor_apply.sh \
+            -o "$tmp"
+          grep -q 'SIRISKY ON-CHAIN CAPITAL STUDY' "$tmp"
+          bash "$tmp"
