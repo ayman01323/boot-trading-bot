@@ -7,7 +7,7 @@ from pathlib import Path
 from .auto_trader import execute_best_live_opportunity
 from .config import AppSettings, load_kv_scoped
 from .market_scanner import _atomic_rows, _rows, merge_live_opportunities
-from .full_power_scanner import scan_full_power_hot_routes
+from . import full_power_scanner as _full_power_scanner
 from . import full_power_candidate_rotation_patch as _rotation
 from .multichain import close_contexts, contexts
 from .telegram import send_to_chats
@@ -81,7 +81,9 @@ def run_fast_market_pass(app):
     ctxs=[];started=time.monotonic()
     try:
         ctxs=contexts(app,enabled_only=True,with_rpc=False)
-        market_path,market_rows,_power_rejections=scan_full_power_hot_routes(app,ctxs)
+        # Resolve through the module at call time so the installed candidate-rotation
+        # patch is honoured instead of a stale function object captured at import.
+        market_path,market_rows,_power_rejections=_full_power_scanner.scan_full_power_hot_routes(app,ctxs)
         learned_rows=_rows(Path(app.csv_dir)/"auto"/"learned_route_opportunities.csv")
         opp_path,live_rows=merge_live_opportunities(app,learned_rows,market_rows)
         eligible=sum(1 for r in live_rows if str(r.get("enabled") or "").lower()=="true")
