@@ -11,7 +11,6 @@ service=sirisky.service
 [[ -f "$snap/stage3_risk.csv" ]] || { echo 'REFUSE: preserved Stage-3 risk snapshot missing'; exit 42; }
 [[ -f "$csv/runtime.csv" && -f "$csv/stage3_risk.csv" ]] || { echo 'REFUSE: current SiRisky CSV files missing'; exit 43; }
 
-# Freeze SiRisky before checking exposure so a new entry cannot race this restore.
 was_active=0
 if systemctl is-active --quiet "$service"; then was_active=1; fi
 systemctl stop "$service"
@@ -49,12 +48,10 @@ rollback() {
 }
 trap rollback EXIT
 
-# Exact preserved five-trade settings.
 cp -a "$snap/runtime.csv" "$csv/runtime.csv"
 cp -a "$snap/stage3_risk.csv" "$csv/stage3_risk.csv"
 changed=1
 
-# Owner-requested sole sizing change: force all entry sizing bounds to 0.009 SOL.
 ROOT="$root" python3 - <<'PY'
 import csv
 import os
@@ -62,11 +59,9 @@ from pathlib import Path
 
 p = Path(os.environ['ROOT']) / 'CSV' / 'runtime.csv'
 with p.open('r', encoding='utf-8-sig', newline='') as f:
-    rd = csv.DictReader(f)
-    fields = list(rd.fieldnames or [])
-    rows = list(rd)
-if 'key' not in fields or 'value' not in fields:
-    raise SystemExit('REFUSE: runtime.csv is not key,value format')
+    rows = list(csv.reader(f))
+if not rows or any(len(r) < 2 for r in rows if r):
+    raise SystemExit('REFUSE: runtime.csv rows do not have at least two columns')
 
 wanted = {
     'auto_probe_sol': '0.009',
@@ -74,31 +69,32 @@ wanted = {
     'auto_entry_max_sol': '0.009',
 }
 seen = set()
+width = max(len(r) for r in rows if r)
 for row in rows:
-    key = str(row.get('key') or '').strip()
+    if not row:
+        continue
+    key = str(row[0]).strip()
     if key in wanted:
-        row['value'] = wanted[key]
+        row[1] = wanted[key]
         seen.add(key)
 for key, value in wanted.items():
     if key not in seen:
-        row = {name: '' for name in fields}
-        row['key'] = key
-        row['value'] = value
-        if 'notes' in fields:
-            row['notes'] = 'Owner-approved SiRisky entry size 0.009 SOL'
+        row = [''] * width
+        row[0] = key
+        row[1] = value
+        if width >= 3:
+            row[2] = 'Owner-approved SiRisky entry size 0.009 SOL'
         rows.append(row)
 
 tmp = p.with_suffix('.csv.tmp')
 with tmp.open('w', encoding='utf-8', newline='') as f:
-    w = csv.DictWriter(f, fieldnames=fields)
-    w.writeheader()
+    w = csv.writer(f)
     w.writerows(rows)
     f.flush()
     os.fsync(f.fileno())
 os.replace(tmp, p)
 PY
 
-# Verify runtime matches the preserved five-trade snapshot except the three size keys.
 ROOT="$root" SNAP="$snap" python3 - <<'PY'
 import csv
 import os
@@ -107,8 +103,12 @@ from pathlib import Path
 size_keys = {'auto_probe_sol', 'auto_entry_min_sol', 'auto_entry_max_sol'}
 
 def read(path):
+    out = {}
     with Path(path).open('r', encoding='utf-8-sig', newline='') as f:
-        return {str(r.get('key') or '').strip(): str(r.get('value') or '').strip() for r in csv.DictReader(f)}
+        for row in csv.reader(f):
+            if len(row) >= 2 and str(row[0]).strip():
+                out[str(row[0]).strip()] = str(row[1]).strip()
+    return out
 
 snap = read(Path(os.environ['SNAP']) / 'runtime.csv')
 cur = read(Path(os.environ['ROOT']) / 'CSV' / 'runtime.csv')
