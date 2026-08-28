@@ -1,6 +1,15 @@
 from decimal import Decimal
+import importlib.util
+from pathlib import Path
 
-from learnerbot.trade_pnl_accounting import entry_cash_cost, exit_accounting
+
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "learnerbot" / "trade_pnl_accounting.py"
+_SPEC = importlib.util.spec_from_file_location("trade_pnl_accounting_unit", _MODULE_PATH)
+assert _SPEC and _SPEC.loader
+_MOD = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MOD)
+entry_cash_cost = _MOD.entry_cash_cost
+exit_accounting = _MOD.exit_accounting
 
 
 def test_entry_cash_cost_uses_actual_wallet_delta():
