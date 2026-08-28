@@ -1,0 +1,106 @@
+name: Deploy Cold Zone 5x Sell Depth Liquidity Now
+
+on:
+  push:
+    branches:
+      - ops/google-master-menu-cutover-20260827
+    paths:
+      - .github/workflows/deploy-cold-zone-depth5x-liquidity-now-20260828.yml
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Deploy 5x sell-depth gate and pool liquidity Telegram telemetry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          TARGET="$LEARN/learnerbot/solana_cold_zone_entry_relaxation_patch.py"
+          SRC_COMMIT=a3cc135bdb651a82a4504e923c9d61af1390fef9
+          BACKUP="$HOME/.cache/cold-zone-depth5x-${GITHUB_RUN_ID}"
+          mkdir -p "$BACKUP"
+          cp -a "$TARGET" "$BACKUP/entry.py"
+
+          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+
+          rollback() {
+            rc=$?
+            echo "rollback=YES rc=$rc"
+            cp -a "$BACKUP/entry.py" "$TARGET" || true
+            chown ayman01323:ayman01323 "$TARGET" || true
+            sudo -n systemctl restart learnerbot-learn.service || true
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_cold_zone_entry_relaxation_patch.py" \
+            -o "$TARGET"
+          chmod 0644 "$TARGET"
+          chown ayman01323:ayman01323 "$TARGET"
+
+          python3 - "$TARGET" <<'PY'
+          import pathlib,sys
+          p=pathlib.Path(sys.argv[1]); s=p.read_text(encoding='utf-8'); compile(s,str(p),'exec')
+          assert 'MAX_SIGNAL_AGE_SECONDS = 60' in s
+          assert 'MAX_ENTRY_DETERIORATION_PCT = Decimal("10")' in s
+          assert 'LIVE_TRADE_SOL = Decimal("0.001")' in s
+          assert 'SELL_DEPTH_MULTIPLIER = 5' in s
+          assert 'MAX_SELL_DEPTH_ROUNDTRIP_LOSS_PCT = Decimal("3")' in s
+          assert 'COLD_ZONE_17AUG_V6_ENTRY_60S_10PCT_001SOL_DEPTH5X' in s
+          assert 'Pool direct SOL liquidity:' in s
+          assert 'Pool liquidity (all DexScreener pairs):' in s
+          assert '_cz._cold_preflight = cold_preflight_with_5x_sell_depth' in s
+          assert '_cz._queue_notice = queue_notice_with_pool_liquidity' in s
+          print('depth5x_liquidity_source=OK')
+          PY
+
+          START_EPOCH="$(date +%s)"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 25
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          LOG="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 1500)"
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-entry] installed=true' \
+            | grep -F 'signal_age<=60s' \
+            | grep -F 'entry_deterioration<=10%' \
+            | grep -F 'live_trade=0.001SOL' \
+            | grep -F 'sell_depth=5x<=3%' \
+            | grep -F 'pool_liquidity_telegram=SOL+USD'
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-leaders] installed=true' | grep -F 'leaders_per_user=5'
+
+          python3 - "$LEARN/CSVbot/solana_settings.csv" <<'PY'
+          import csv,sys
+          d={}
+          with open(sys.argv[1],encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f): d[str(r.get('setting') or '').strip()]=str(r.get('value') or '').strip()
+          print('discovery_blocks_per_cycle='+d.get('discovery_blocks_per_cycle','MISSING'))
+          print('discovery_interval_seconds='+d.get('discovery_interval_seconds','MISSING'))
+          assert d.get('discovery_blocks_per_cycle')=='6'
+          assert d.get('discovery_interval_seconds')=='15'
+          PY
+
+          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER"
+          test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
+
+          trap - ERR
+          echo 'cold_zone_depth5x_liquidity_deploy=SUCCESS'
+          echo 'sell_depth_multiplier=5'
+          echo 'sell_depth_hard_loss_cap_pct=3'
+          echo 'live_trade_sol=0.001'
+          echo 'signal_age_seconds=60'
+          echo 'entry_deterioration_pct=10'
+          echo 'telegram_pool_liquidity=SOL+USD'
+          echo 'leaders_per_user=5'
+          echo 'discovery=6_blocks_per_15s'
+          echo 'cold_zone_relay=active'
+          echo 'production_files_changed=NO'
