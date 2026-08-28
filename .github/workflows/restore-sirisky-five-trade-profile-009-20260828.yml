@@ -64,23 +64,17 @@ jobs:
             }
             trap rollback EXIT
 
-            # Freeze autonomous execution while the two settings files are changed atomically.
             systemctl stop "$service"
-
-            # Restore the exact preserved settings from the five-trade period.
             cp -a "$snap/runtime.csv" "$csv/runtime.csv"
             cp -a "$snap/stage3_risk.csv" "$csv/stage3_risk.csv"
             changed=1
 
-            # Sole logical change requested by the owner: entry/probe size 0.0005 -> 0.009 SOL.
             ROOT="$root" python3 - <<"PY"
 import csv, os
 from pathlib import Path
 p=Path(os.environ["ROOT"])/"CSV"/"runtime.csv"
 with p.open("r",encoding="utf-8-sig",newline="") as f:
-    rd=csv.DictReader(f)
-    fields=list(rd.fieldnames or [])
-    rows=list(rd)
+    rd=csv.DictReader(f); fields=list(rd.fieldnames or []); rows=list(rd)
 if "key" not in fields or "value" not in fields:
     raise SystemExit("REFUSE_RESTORE: runtime.csv is not key,value format")
 wanted={"auto_probe_sol":"0.009","auto_entry_min_sol":"0.009","auto_entry_max_sol":"0.009"}
@@ -88,8 +82,7 @@ seen=set()
 for r in rows:
     k=str(r.get("key") or "").strip()
     if k in wanted:
-        r["value"]=wanted[k]
-        seen.add(k)
+        r["value"]=wanted[k]; seen.add(k)
 for k,v in wanted.items():
     if k not in seen:
         row={name:"" for name in fields}; row["key"]=k; row["value"]=v; rows.append(row)
@@ -99,7 +92,6 @@ with tmp.open("w",encoding="utf-8",newline="") as f:
 os.replace(tmp,p)
 PY
 
-            # Prove every non-size runtime value is identical to the five-trade snapshot.
             ROOT="$root" SNAP="$snap" python3 - <<"PY"
 import csv, os
 from pathlib import Path
@@ -111,10 +103,11 @@ snap=read(Path(os.environ["SNAP"])/"runtime.csv")
 cur=read(Path(os.environ["ROOT"])/"CSV"/"runtime.csv")
 for k,v in snap.items():
     if k in size_keys: continue
-    if cur.get(k)!=v: raise SystemExit(f"REFUSE_VERIFY: non-size runtime changed {k}: {cur.get(k)!r} != {v!r}
-")
+    if cur.get(k)!=v:
+        raise SystemExit(f"REFUSE_VERIFY: non-size runtime changed {k}: {cur.get(k)!r} != {v!r}")
 extra=set(cur)-set(snap)-size_keys
-if extra: raise SystemExit(f"REFUSE_VERIFY: unexpected runtime keys after restore: {sorted(extra)}")
+if extra:
+    raise SystemExit(f"REFUSE_VERIFY: unexpected runtime keys after restore: {sorted(extra)}")
 for k in size_keys:
     if cur.get(k)!="0.009": raise SystemExit(f"REFUSE_VERIFY: {k}={cur.get(k)!r}")
 required={
@@ -139,8 +132,7 @@ PY
 from decimal import Decimal
 from sirisky.config import Settings
 from sirisky.safety_v2 import entry_sol
-s=Settings.load()
-rt=s.runtime(); rk=s.risk()
+s=Settings.load(); rt=s.runtime(); rk=s.risk()
 size=Decimal(str(entry_sol(s)))
 if size != Decimal("0.009"):
     raise SystemExit(f"REFUSE_VERIFY: effective entry size is {size}, not 0.009")
@@ -153,7 +145,6 @@ checks={
 for k,v in checks.items():
     got=str(rk.get(k))
     if got != v:
-        # tolerate numeric normalisation such as 1 vs 1.0
         try:
             if Decimal(got) == Decimal(v): continue
         except Exception: pass
@@ -168,7 +159,6 @@ for k in checks: print(f"{k}={rk.get(k)}")
 print("only_logical_change=trade_size_0.0005_to_0.009")
 print("forced_trade=NO")
 PY
-
             echo "service_active=true"
             trap - EXIT
           '
