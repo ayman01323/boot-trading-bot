@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import threading
-from decimal import Decimal
 
 from . import sibot as _sibot
 from . import sibot_leader_quality_hard_floor_patch as _quality_floor
@@ -16,7 +15,8 @@ from .user_registry import all_users, get_user, require_user, set_user_setting, 
 SOURCE_KEY = "sibot_settings_source"
 SOURCE_SELF = "SELF"
 SOURCE_PRIMARY_MASTER = "PRIMARY_MASTER"
-MAX_FEE_EFFICIENT_SOLANA_LIVE_TRADE_SOL = Decimal("0.009")
+# Single source of truth for the fixed LIVE Solana trade size.
+FIXED_SOLANA_LIVE_TRADE_SOL = _sol_live.LIVE_TRADE_SOL_FIXED  # 0.009 SOL
 # Existing account-role migration identifies this as the platform's original/main
 # MASTER. Pinning it here avoids a CSV reorder ever promoting a later-added MASTER
 # into the inherited settings source. The first MASTER row remains a fallback only
@@ -78,28 +78,18 @@ def user_settings_with_source_base(app, telegram_id, chain_id=0) -> dict:
 
 
 def solana_live_limits_with_source(app, telegram_id, cfg=None):
-    """Use the selected SiBot settings source for Solana size/reserve only.
+    """Route only the Solana reserve through the selected SiBot settings source.
 
-    solana_live_enabled is intentionally not inherited. The account still needs its
-    own LIVE approval/signing wallet. The selected account may request up to 0.009
-    SOL per guarded LIVE BUY to reduce fixed execution overhead as a percentage of
-    trade value. This changes size only: reserve, simulation, liquidity/impact,
-    signing, reconciliation and position-count gates remain authoritative.
+    Trade size is fixed at ``FIXED_SOLANA_LIVE_TRADE_SOL`` (0.009 SOL) for every
+    account; ``live_trade_sol`` and any per-user ``solana_live_trade_sol`` override
+    no longer change it. solana_live_enabled is intentionally not inherited - the
+    account still needs its own LIVE approval/signing wallet. Reserve, simulation,
+    liquidity/impact, signing, reconciliation and position-count gates remain
+    authoritative and per-user.
     """
     source_tid = source_telegram_id(app, telegram_id)
     _legacy_trade, reserve = _PREV_SOLANA_LIVE_LIMITS(app, source_tid, cfg)
-    effective_cfg = dict(cfg or _sol_live._sol.settings(app))
-    base_trade = _sol_live._sol._dec(effective_cfg.get("live_trade_sol"), ".005")
-    trade_override = user_setting(
-        app.csv_dir,
-        source_tid,
-        _sol_live._sol.SOLANA_CHAIN_ID,
-        "solana_live_trade_sol",
-        None,
-    )
-    requested = _sol_live._sol._dec(trade_override, base_trade) if trade_override is not None else base_trade
-    trade = min(MAX_FEE_EFFICIENT_SOLANA_LIVE_TRADE_SOL, max(Decimal("0.0005"), requested))
-    return trade, reserve
+    return FIXED_SOLANA_LIVE_TRADE_SOL, reserve
 
 
 def _source_label(app, tid) -> str:
@@ -226,7 +216,7 @@ def install():
     _ui._sibot_settings_source_patch_installed = True
     print(
         "[sibot-settings-source] self-or-primary-master tuning enabled; "
-        "solana_size_reserve_source_enabled=true max_live_trade_sol=0.009 execution_gates_remain_per_user=true"
+        "solana_reserve_source_enabled=true fixed_live_trade_sol=0.009 execution_gates_remain_per_user=true"
     )
 
 

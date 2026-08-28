@@ -114,7 +114,9 @@ def _dec(value, default="0") -> Decimal:
 
 def _trade_limits() -> tuple[Decimal, Decimal]:
     cfg = _learner_settings()
-    trade = max(Decimal("0.0005"), min(Decimal("0.005"), _dec(cfg.get("live_trade_sol"), "0.005")))
+    # LIVE Solana trade size is fixed at 0.009 SOL (see solana_live_patch.live_limits);
+    # live_trade_sol is not used to size trades any more.
+    trade = Decimal("0.009")
     reserve = max(Decimal("0.005"), _dec(cfg.get("live_min_sol_reserve"), "0.02"))
     return trade, reserve
 

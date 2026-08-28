@@ -212,7 +212,7 @@ def _solana_balance(app, rows: list[dict]) -> dict:
             )
             trade = max(
                 Decimal(0),
-                _dec(user_setting(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "solana_live_trade_sol", "0.0005"), "0.0005"),
+                _dec(user_setting(app.csv_dir, tid, _sol.SOLANA_CHAIN_ID, "solana_live_trade_sol", "0.009"), "0.009"),
             )
             balances.append(balance)
             reserves.append(reserve)

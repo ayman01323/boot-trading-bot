@@ -156,7 +156,9 @@ def test_main_master_source_undoes_stale_solana_size_reserve_without_inheriting_
         "333",
         {"live_trade_sol": "0.005", "live_min_sol_reserve": "0.02"},
     )
-    assert str(trade) == "0.004"
+    # Trade size is now fixed at 0.009 SOL regardless of settings source; only the
+    # reserve is routed through the selected Main Master source.
+    assert str(trade) == "0.009"
     assert str(reserve) == "0.015"
     assert sol_live.live_enabled(app, "333") is False
 

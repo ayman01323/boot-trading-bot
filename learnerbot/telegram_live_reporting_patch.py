@@ -163,7 +163,8 @@ def build_hourly_capital_alert(app, tid) -> str:
     else:
         cfg = sol.get("cfg") or {}
         reserve = max(Decimal("0.01"), _dec(cfg.get("live_min_sol_reserve"), ".02"))
-        trade = min(Decimal("0.005"), max(Decimal("0.0005"), _dec(cfg.get("live_trade_sol"), ".005")))
+        # Fixed LIVE Solana trade size (see solana_live_patch.live_limits).
+        trade = Decimal("0.009")
         native = _dec(sol.get("native"), 0)
         usable = max(Decimal(0), native - reserve)
         sol_live = bool(sol.get("live"))

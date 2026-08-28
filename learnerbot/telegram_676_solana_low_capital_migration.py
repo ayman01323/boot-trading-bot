@@ -15,7 +15,7 @@ from . import solana_final_runtime_guard_patch  # noqa: F401
 from .user_registry import set_user_setting
 
 TARGET_TELEGRAM_ID = "6760898817"
-MARKER = ".telegram_6760898817_solana_low_capital_20260818_v1"
+MARKER = ".telegram_6760898817_solana_low_capital_20260828_v2"
 LEGACY_REAPPLY_ENV = "ALLOW_LEGACY_676_SOLANA_LOW_CAPITAL_MIGRATION"
 _PREV_APP = _cli._app
 
@@ -31,13 +31,15 @@ def _apply(app) -> None:
     if marker.exists():
         return
 
+    # Trade size is fixed at 0.009 SOL in live_limits; this per-user value is kept
+    # only for display/audit consistency and no longer sizes trades.
     set_user_setting(
         app.csv_dir,
         TARGET_TELEGRAM_ID,
         "solana_live_trade_sol",
-        "0.0005",
+        "0.009",
         chain_id=-101,
-        description="Per-user low-capital Solana LIVE trade size",
+        description="Per-user Solana LIVE trade size (superseded by fixed 0.009 in live_limits)",
     )
     set_user_setting(
         app.csv_dir,
@@ -53,9 +55,9 @@ def _apply(app) -> None:
         "\n".join([
             f"applied_epoch={int(time.time())}",
             f"telegram_id={TARGET_TELEGRAM_ID}",
-            "solana_live_trade_sol=0.0005",
+            "solana_live_trade_sol=0.009",
             "solana_live_min_reserve_sol=0.005",
-            "minimum_wallet_funding_sol=0.0055",
+            "minimum_wallet_funding_sol=0.014",
             "simulation_required=true",
             "economic_overhead_gate_unchanged=true",
             "landed_fault_circuit_breaker_unchanged=true",
@@ -64,7 +66,7 @@ def _apply(app) -> None:
     )
     print(
         "[telegram-676-solana-low-capital] tid=6760898817 "
-        "trade=0.0005 reserve=0.005 minimum_funding=0.0055"
+        "trade=0.009 reserve=0.005 minimum_funding=0.014"
     )
 
 

@@ -13,14 +13,14 @@ from .user_registry import all_users, set_user_setting, user_bool, user_setting
 # LIVE execution defaults. These controls deliberately fail closed around landed
 # transactions whose economic result cannot be proved.
 _sol.DEFAULTS.update({
-    "live_trade_sol": ("0.005", "Real SOL amount per guarded Solana LIVE copied BUY"),
+    "live_trade_sol": ("0.009", "Real SOL amount per guarded Solana LIVE copied BUY (fixed; see live_limits)"),
     "live_min_sol_reserve": ("0.02", "SOL that must remain untouched for fees and emergency exits"),
     "live_max_positions": ("1", "Maximum simultaneous Solana LIVE positions per Telegram user"),
     "live_require_simulation": ("true", "Require successful Solana simulation before Jupiter execute"),
     "live_require_execute_output": ("true", "Require positive Jupiter executed input and output after LIVE submission"),
     "live_require_swap_events": ("true", "Require Jupiter swapEvents after a successful LIVE execution"),
     "live_no_output_disable_after": ("2", "Disable Solana LIVE after this many landed-but-invalid executions"),
-    "live_min_economic_trade_sol": ("0.0005", "Reject configured LIVE buys below this economic minimum instead of silently upsizing"),
+    "live_min_economic_trade_sol": ("0.009", "Reject configured LIVE buys below this economic minimum instead of silently upsizing"),
     "live_max_observed_overhead_pct": ("35", "Reject new LIVE buys when recent actual SOL overhead exceeds this percentage of trade size"),
 })
 
@@ -52,24 +52,28 @@ def live_enabled(app, telegram_id) -> bool:
     return user_bool(app.csv_dir, telegram_id, _sol.SOLANA_CHAIN_ID, "solana_live_enabled", False)
 
 
-def live_limits(app, telegram_id, cfg=None):
-    """Return the effective per-user LIVE trade amount and untouched SOL reserve.
+# Fixed LIVE Solana trade size. Every guarded LIVE copied BUY spends exactly this
+# amount of SOL. It is deliberately not configurable and not reducible by a
+# per-user override: a smaller size cannot reliably cover Solana execution
+# overhead, and a larger size is a separate risk decision that must go through
+# review rather than a settings edit.
+LIVE_TRADE_SOL_FIXED = Decimal("0.009")
 
-    Platform defaults remain authoritative unless a user-specific override exists.
-    A user override may reduce the reserve for low-capital canary trading, but never
-    below 0.005 SOL. Trade size remains bounded to 0.0005-0.005 SOL.
+
+def live_limits(app, telegram_id, cfg=None):
+    """Return the fixed LIVE trade amount and the effective untouched SOL reserve.
+
+    Trade size is fixed at ``LIVE_TRADE_SOL_FIXED`` (0.009 SOL) for every user.
+    ``live_trade_sol`` and any per-user ``solana_live_trade_sol`` override no
+    longer change it. The reserve still honours a per-user override, floored at
+    0.005 SOL.
     """
     cfg = dict(cfg or _sol.settings(app))
-    base_trade = _sol._dec(cfg.get("live_trade_sol"), ".005")
     base_reserve = _sol._dec(cfg.get("live_min_sol_reserve"), ".02")
-    trade_override = user_setting(
-        app.csv_dir, telegram_id, _sol.SOLANA_CHAIN_ID, "solana_live_trade_sol", None
-    )
     reserve_override = user_setting(
         app.csv_dir, telegram_id, _sol.SOLANA_CHAIN_ID, "solana_live_min_reserve_sol", None
     )
-    requested_trade = _sol._dec(trade_override, base_trade) if trade_override is not None else base_trade
-    trade = min(Decimal("0.005"), max(Decimal("0.0005"), requested_trade))
+    trade = LIVE_TRADE_SOL_FIXED
     if reserve_override is None:
         reserve = max(Decimal("0.01"), base_reserve)
     else:
@@ -210,7 +214,7 @@ def _recent_buy_overhead_sol(app, tid):
 
 
 def _economic_entry_gate(app, tid, allocation, cfg):
-    minimum = max(Decimal("0.0001"), _sol._dec(cfg.get("live_min_economic_trade_sol"), "0.0005"))
+    minimum = max(Decimal("0.0001"), _sol._dec(cfg.get("live_min_economic_trade_sol"), "0.009"))
     if Decimal(allocation) < minimum:
         return False, f"LIVE allocation {allocation} SOL is below economic minimum {minimum} SOL"
     overhead = _recent_buy_overhead_sol(app, tid)

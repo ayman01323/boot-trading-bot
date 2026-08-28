@@ -191,7 +191,7 @@ def auto_page(app, chat_id):
         f"Engine: <b>{'ACTIVE' if s['enabled'] else 'INACTIVE'}</b>",
         f"LIVE auto: <b>{'🟢 ARMED' if s['live'] else '🔴 OFF'}</b>",
         f"Signing wallet: <b>{'READY' if s['signing'] else 'NOT READY'}</b> <code>{html.escape(_short(wallet.get('address')))}</code>",
-        f"Trade size: <b>{html.escape(str(cfg.get('live_trade_sol', '0.005')))} SOL</b>",
+        f"Trade size: <b>{html.escape(str(cfg.get('live_trade_sol', '0.009')))} SOL</b>",
         f"Untouched SOL reserve: <b>{html.escape(str(cfg.get('live_min_sol_reserve', '0.02')))} SOL</b>",
         f"Max LIVE positions: <b>{html.escape(str(cfg.get('live_max_positions', '1')))}</b>",
         f"Selected leaders: <b>{len(s['leaders_user'])}</b> | Open LIVE positions: <b>{len(s['live_positions'])}</b>",
@@ -210,7 +210,7 @@ def trading_page(app, chat_id):
         "<b>🟣 SOLANA LIVE TRADING</b>", DIV,
         f"Solana: <b>{'ACTIVE' if s['enabled'] else 'INACTIVE'}</b> | LIVE: <b>{'🟢 ARMED' if s['live'] else '🔴 OFF'}</b>",
         f"Active Solana wallet: <code>{html.escape(_short(wallet.get('address')))}</code> | <b>{'SIGNING READY' if s['signing'] else 'PUBLIC ONLY / MISSING'}</b>",
-        f"Automatic LIVE size: <b>{html.escape(str(cfg.get('live_trade_sol', '0.005')))} SOL</b> | reserve: <b>{html.escape(str(cfg.get('live_min_sol_reserve', '0.02')))} SOL</b>",
+        f"Automatic LIVE size: <b>{html.escape(str(cfg.get('live_trade_sol', '0.009')))} SOL</b> | reserve: <b>{html.escape(str(cfg.get('live_min_sol_reserve', '0.02')))} SOL</b>",
         "Venue: <b>Jupiter Swap V2</b>; every automatic LIVE transaction must pass signed Solana simulation before execution.",
         "Solana manual EVM-style <code>/buy</code>/<code>/sell</code> commands are not reused; Solana LIVE is controlled from the dedicated Solana SiBot page.",
     ]
@@ -397,7 +397,7 @@ def control_page(app):
     cfg = s["cfg"]
     return _append(base, [
         "<b>🟣 Solana controls</b>",
-        f"Research engine: <b>{'ON' if s['enabled'] else 'OFF'}</b> | trade size <b>{html.escape(str(cfg.get('live_trade_sol','0.005')))} SOL</b> | reserve <b>{html.escape(str(cfg.get('live_min_sol_reserve','0.02')))} SOL</b>",
+        f"Research engine: <b>{'ON' if s['enabled'] else 'OFF'}</b> | trade size <b>{html.escape(str(cfg.get('live_trade_sol','0.009')))} SOL</b> | reserve <b>{html.escape(str(cfg.get('live_min_sol_reserve','0.02')))} SOL</b>",
         "Solana per-user LIVE arming is intentionally controlled on the dedicated Solana page rather than by the EVM chain-toggle buttons.",
     ])
 

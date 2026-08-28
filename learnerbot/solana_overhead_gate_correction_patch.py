@@ -17,7 +17,7 @@ def effective_minimum_trade(app, tid, cfg=None) -> Decimal:
     cfg = dict(cfg or _sol.settings(app))
     platform_minimum = max(
         Decimal("0.0001"),
-        _sol._dec(cfg.get("live_min_economic_trade_sol"), "0.0005"),
+        _sol._dec(cfg.get("live_min_economic_trade_sol"), "0.009"),
     )
     csv_dir = getattr(app, "csv_dir", None)
     if csv_dir is None:

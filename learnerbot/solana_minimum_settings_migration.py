@@ -6,10 +6,10 @@ from pathlib import Path
 
 
 TARGETS = {
-    "live_trade_sol": ("0.0005", "Real SOL amount per guarded Solana LIVE copied BUY"),
+    "live_trade_sol": ("0.009", "Real SOL amount per guarded Solana LIVE copied BUY (fixed at 0.009 in live_limits)"),
     "live_min_sol_reserve": ("0.01", "SOL that must remain untouched for fees and emergency exits"),
 }
-MARKER_NAME = ".solana_minimum_settings_20260817_applied"
+MARKER_NAME = ".solana_minimum_settings_20260828_fixed009_applied"
 
 
 def apply() -> None:
@@ -69,7 +69,7 @@ def apply() -> None:
 
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(
-        "live_trade_sol=0.0005\nlive_min_sol_reserve=0.01\n",
+        "live_trade_sol=0.009\nlive_min_sol_reserve=0.01\n",
         encoding="utf-8",
     )
 

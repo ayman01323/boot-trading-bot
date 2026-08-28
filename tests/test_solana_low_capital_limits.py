@@ -9,18 +9,19 @@ def _app(tmp_path):
     return SimpleNamespace(csv_dir=tmp_path / "CSVbot", data_dir=tmp_path / "data")
 
 
-def test_default_user_keeps_platform_reserve(tmp_path):
+def test_trade_size_is_fixed_at_0009_for_default_user(tmp_path):
     app = _app(tmp_path)
     trade, reserve = live.live_limits(
         app,
         "123",
         {"live_trade_sol": "0.0005", "live_min_sol_reserve": "0.02"},
     )
-    assert str(trade) == "0.0005"
+    assert str(trade) == "0.009"
+    assert trade == live.LIVE_TRADE_SOL_FIXED
     assert str(reserve) == "0.02"
 
 
-def test_user_specific_low_capital_reserve_is_allowed_but_not_below_floor(tmp_path):
+def test_per_user_trade_override_cannot_shrink_below_fixed_size(tmp_path):
     app = _app(tmp_path)
     tid = "6760898817"
     set_user_setting(app.csv_dir, tid, "solana_live_trade_sol", "0.0005", chain_id=sol.SOLANA_CHAIN_ID)
@@ -30,14 +31,18 @@ def test_user_specific_low_capital_reserve_is_allowed_but_not_below_floor(tmp_pa
         tid,
         {"live_trade_sol": "0.005", "live_min_sol_reserve": "0.02"},
     )
-    assert str(trade) == "0.0005"
+    assert str(trade) == "0.009"
     assert str(reserve) == "0.005"
-    assert trade + reserve == live.Decimal("0.0055")
 
+
+def test_reserve_override_is_still_honoured_but_not_below_floor(tmp_path):
+    app = _app(tmp_path)
+    tid = "6760898817"
     set_user_setting(app.csv_dir, tid, "solana_live_min_reserve_sol", "0.001", chain_id=sol.SOLANA_CHAIN_ID)
-    _, floored = live.live_limits(
+    trade, floored = live.live_limits(
         app,
         tid,
         {"live_trade_sol": "0.005", "live_min_sol_reserve": "0.02"},
     )
+    assert str(trade) == "0.009"
     assert str(floored) == "0.005"
