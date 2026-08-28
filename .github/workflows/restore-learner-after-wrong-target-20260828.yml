@@ -1,0 +1,34 @@
+name: Restore Learner After Wrong Target 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-learner-after-wrong-target-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Restore Learner CSVs from automatic pre-change backup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          backup="$target/private/pre-five-transaction-profile-20260828T213034Z"
+          test -f "$backup/solana_settings.csv"
+          test -f "$backup/user_trading_settings.csv"
+          cp -a "$backup/solana_settings.csv" "$target/CSVbot/solana_settings.csv"
+          cp -a "$backup/user_trading_settings.csv" "$target/CSVbot/user_trading_settings.csv"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 8
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          cmp -s "$backup/solana_settings.csv" "$target/CSVbot/solana_settings.csv"
+          cmp -s "$backup/user_trading_settings.csv" "$target/CSVbot/user_trading_settings.csv"
+          echo learner_restore=VERIFIED
