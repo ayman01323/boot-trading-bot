@@ -15,21 +15,27 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Stop crash-looping learner only
+      - name: Trace wrapper import order read only
         shell: bash
         run: |
           set -euo pipefail
-          BEFORE=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
-          echo "sirisky_before=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$BEFORE"
-          sudo -n systemctl stop learnerbot-learn.service
-          sleep 1
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
+          echo '=== TARGET IMPORT REFERENCES ==='
+          grep -RniE 'solana_(loss_containment|easy_exit_policy|position_liquidity_health|leader_quality_restore)_patch' "$LEARN/learnerbot" \
+            --include='*.py' | sort || true
+          echo '=== MAIN ORDER AROUND INVARIANT ==='
+          grep -nE 'solana_(loss_containment|easy_exit_policy|position_liquidity_health|leader_quality_restore)_patch|trading_runtime_invariant_patch|final_runtime_integrity_patch' "$LEARN/learnerbot/__main__.py" || true
+          echo '=== INVARIANT IMPORT ORDER ==='
+          grep -nE 'solana_(loss_containment|easy_exit_policy|position_liquidity_health|leader_quality_restore|exit_circuit_breaker)_patch' "$LEARN/learnerbot/trading_runtime_invariant_patch.py" || true
+          echo '=== RELATED IMPORTS IN EARLY MODULES ==='
+          grep -RniE 'from \. import solana_(loss_containment|easy_exit_policy|position_liquidity_health|leader_quality_restore)_patch|import solana_(loss_containment|easy_exit_policy|position_liquidity_health|leader_quality_restore)_patch' "$LEARN/learnerbot" \
+            --include='*.py' | sort || true
+          echo '=== STATE ==='
           echo "learner_active=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
           echo "learner_pid=$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)"
-          test "$(systemctl show -p MainPID --value learnerbot-learn.service 2>/dev/null || true)" = 0
-          AFTER=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)
-          echo "sirisky_after=$(systemctl is-active sirisky.service 2>/dev/null || true) pid=$AFTER"
-          test "$BEFORE" = "$AFTER"
-          echo 'learner_stopped=YES'
-          echo 'sirisky_untouched=YES'
+          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
+          echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
+          echo 'service_change=NO'
           echo 'telegram_send=NO'
           echo 'trading_action=NONE'
