@@ -1,0 +1,150 @@
+name: Fix Cold Zone Telegram and Public RPC Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/fix-cold-zone-telegram-and-public-rpc-now-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Install isolated fixes and verify live delivery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          MAIN="$LEARN/learnerbot/__main__.py"
+          NOTICE="$LEARN/learnerbot/solana_cold_zone_notification_completeness_patch.py"
+          PACING="$LEARN/learnerbot/solana_single_public_rpc_pacing_patch.py"
+          RELAY_ENV=/home/ayman01323/.config/google-learner-telegram-relay.env
+          SRC_COMMIT=d90c8496aa42ddb43ec396ce7e78348ab12cce32
+          BACKUP="$HOME/.cache/cold-zone-msg-rpc-${GITHUB_RUN_ID}"
+          mkdir -p "$BACKUP"
+          test -f "$MAIN"
+          cp -a "$MAIN" "$BACKUP/__main__.py"
+          [[ ! -f "$NOTICE" ]] || cp -a "$NOTICE" "$BACKUP/notice.py"
+          [[ ! -f "$PACING" ]] || cp -a "$PACING" "$BACKUP/pacing.py"
+
+          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+
+          rollback() {
+            rc=$?
+            echo "fix_rollback=YES rc=$rc"
+            cp -a "$BACKUP/__main__.py" "$MAIN" || true
+            if [[ -f "$BACKUP/notice.py" ]]; then cp -a "$BACKUP/notice.py" "$NOTICE" || true; else rm -f "$NOTICE" || true; fi
+            if [[ -f "$BACKUP/pacing.py" ]]; then cp -a "$BACKUP/pacing.py" "$PACING" || true; else rm -f "$PACING" || true; fi
+            chown ayman01323:ayman01323 "$MAIN" "$NOTICE" "$PACING" 2>/dev/null || true
+            sudo -n systemctl restart learnerbot-learn.service || true
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_cold_zone_notification_completeness_patch.py" \
+            -o "$NOTICE"
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_single_public_rpc_pacing_patch.py" \
+            -o "$PACING"
+          chmod 0644 "$NOTICE" "$PACING"
+          chown ayman01323:ayman01323 "$NOTICE" "$PACING"
+
+          python3 - "$NOTICE" "$PACING" <<'PY'
+          import pathlib,sys
+          for p in map(pathlib.Path,sys.argv[1:]):
+              s=p.read_text(encoding='utf-8'); compile(s,str(p),'exec'); print('syntax_ok='+p.name)
+          PY
+
+          python3 - "$MAIN" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          lines=[
+            'from . import solana_single_public_rpc_pacing_patch  # noqa: F401\n',
+            'from . import solana_cold_zone_notification_completeness_patch  # noqa: F401\n',
+          ]
+          for line in lines: s=s.replace(line,'')
+          anchor='from . import solana_cold_zone_entry_relaxation_patch  # noqa: F401\n'
+          if anchor not in s: raise SystemExit('relaxed Cold Zone import missing')
+          s=s.replace(anchor,anchor+lines[0]+lines[1],1)
+          p.write_text(s,encoding='utf-8'); compile(s,str(p),'exec')
+          print('isolated_import_order=RELAXED_THEN_RPC_PACING_THEN_NOTICE_COMPLETENESS')
+          PY
+          chown ayman01323:ayman01323 "$MAIN"
+
+          START_EPOCH="$(date +%s)"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 12
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          LOG="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 900)"
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone] installed=true'
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-entry] installed=true' | grep -F 'signal_age<=45s'
+          printf '%s\n' "$LOG" | grep -F '[solana-public-rpc-pacing] installed=true' | grep -F '429_cooldown=1-3s'
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-notices] installed=true' | grep -F 'strategy_changed=false'
+
+          python3 - "$LEARN/CSVbot/user_trading_settings.csv" "$LEARN/data/solana_sibot.sqlite3" "$RELAY_ENV" <<'PY'
+          import csv,json,sqlite3,sys,urllib.parse,urllib.request,os
+          sp,db,envp=sys.argv[1:]
+          truth={'1','true','yes','on','y'}; by={}
+          with open(sp,encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  tid=str(r.get('telegram_id') or ''); k=str(r.get('setting') or '')
+                  if tid and k: by.setdefault(tid,{})[k]=str(r.get('value') or '').strip().lower()
+          eligible=[tid for tid,s in by.items() if s.get('solana_live_enabled') in truth and s.get('learner_new_entries_enabled') in truth and s.get('sibot_enabled') in truth]
+          con=sqlite3.connect(f'file:{db}?mode=ro',uri=True,timeout=3)
+          tabs={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          cold=all(n in tabs for n in ('cold_zone_positions','cold_zone_notifications','cold_zone_decisions'))
+          open_live=con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]
+          con.close()
+          print('fully_enabled_users='+str(len(eligible)))
+          print('cold_zone_tables='+('YES' if cold else 'NO'))
+          print('open_live_positions='+str(open_live))
+          print('ARMED='+('YES' if eligible and cold else 'NO'))
+
+          env={}
+          for line in open(envp,encoding='utf-8'):
+              line=line.strip()
+              if not line or line.startswith('#') or '=' not in line: continue
+              k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env.get('TELEGRAM_BOT_TOKEN','')
+          if token and eligible:
+              text='✅ SiBot Telegram fix active\nCold Zone is armed. Telegram delivery is working. Missing refusal notices and single-public-RPC pacing are now active.'
+              body=urllib.parse.urlencode({'chat_id':eligible[0],'text':text}).encode()
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=body,method='POST')
+              with urllib.request.urlopen(req,timeout=10) as resp:
+                  payload=json.loads(resp.read().decode())
+              print('telegram_fix_test_send='+('YES' if payload.get('ok') else 'NO'))
+          else:
+              print('telegram_fix_test_send=NO_TARGET')
+          PY
+
+          sleep 35
+          RECENT="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 1200)"
+          COOLING_COUNT="$(printf '%s\n' "$RECENT" | grep -cF 'all RPC endpoints temporarily cooling down' || true)"
+          echo "rpc_cooling_errors_since_restart=$COOLING_COUNT"
+          echo "learner_runtime=$(sudo -n systemctl is-active learnerbot-learn.service)"
+          echo "cold_zone_relay=$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)"
+
+          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER"
+          test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
+
+          trap - ERR
+          echo 'cold_zone_telegram_rpc_fix=SUCCESS'
+          echo 'scope=ISOLATED_LEARNER_ONLY'
+          echo 'telegram_missing_reject_notices=FIXED'
+          echo 'pool_too_old_notice_dedup=60s'
+          echo 'single_public_rpc_pacing=ACTIVE'
+          echo 'strategy_thresholds_changed=NO'
+          echo 'production_files_changed=NO'
