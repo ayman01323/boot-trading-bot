@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect restored morning Solana LIVE safety state
+      - name: Verify morning Solana exits on chain before rearm
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,31 +24,80 @@ jobs:
           service=learnerbot-learn.service
           echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
           echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
-          echo '=== SOLANA SETTINGS ==='
-          grep -E '^(live_trade_sol|live_min_sol_reserve|live_max_positions|live_require_simulation),' "$target/CSVbot/solana_settings.csv" || true
-          echo '=== USER LIVE CONTROLS ==='
-          grep -E ',(learner_new_entries_enabled|solana_live_enabled|sibot_enabled|sibot_auto_trade_enabled|solana_live_trade_sol|solana_live_min_reserve_sol),' "$target/CSVbot/user_trading_settings.csv" | sed -E 's/^[^,]+,/[redacted],/' || true
-          echo '=== SQLITE STATE ==='
+          echo '=== RECONCILE CODE LOCATIONS ==='
+          sudo -n grep -Rsn --binary-files=without-match -F 'RECONCILE_REQUIRED' "$target/learnerbot" 2>/dev/null | head -40 || true
+          echo '=== ON-CHAIN EXIT VERIFICATION ==='
           TARGET="$target" python3 - <<'PY'
-          import sqlite3
+          import csv, json, os, sqlite3, urllib.request, urllib.error
           from pathlib import Path
-          root=Path(__import__('os').environ['TARGET'])
+          root=Path(os.environ['TARGET'])
           db=root/'data'/'solana_sibot.sqlite3'
-          print('db_exists='+str(db.exists()).lower())
-          if db.exists():
-              con=sqlite3.connect(db)
-              con.row_factory=sqlite3.Row
-              tables=[r[0] for r in con.execute("select name from sqlite_master where type='table' order by name")]
-              print('tables='+','.join(tables))
-              for table in ('positions','live_execution_attempts'):
-                  if table not in tables: continue
-                  cols=[r[1] for r in con.execute(f'pragma table_info("{table}")')]
-                  print(f'{table}_columns='+','.join(cols))
-                  rows=con.execute(f'SELECT * FROM "{table}" ORDER BY rowid DESC LIMIT 12').fetchall()
-                  for i,row in enumerate(rows):
-                      safe={k:row[k] for k in row.keys() if k.lower() not in {'private_key','secret','signature','signed_tx','raw_tx','transaction'}}
-                      print(f'{table}_row_{i}='+repr(safe)[:1800])
-              con.close()
+          con=sqlite3.connect(db); con.row_factory=sqlite3.Row
+          positions=con.execute("select * from positions where mode='LIVE' and status='RECONCILE_REQUIRED' order by entry_ts").fetchall()
+          print('reconcile_positions='+str(len(positions)))
+          if 'live_position_wallets' in [r[0] for r in con.execute("select name from sqlite_master where type='table'")]:
+              cols=[r[1] for r in con.execute('pragma table_info("live_position_wallets")')]
+              print('live_position_wallets_columns='+','.join(cols))
+              for i,row in enumerate(con.execute('select * from live_position_wallets order by rowid desc limit 12')):
+                  d={k:row[k] for k in row.keys() if not any(x in k.lower() for x in ('secret','private','keypair','seed'))}
+                  print(f'wallet_row_{i}='+repr(d)[:1200])
+          con.close()
+
+          endpoints=[]
+          def add(v):
+              v=(v or '').strip().strip('"').strip("'")
+              if v.startswith(('http://','https://')) and v not in endpoints: endpoints.append(v)
+          envp=root/'.env'
+          if envp.exists():
+              for line in envp.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  if '=' not in line or line.lstrip().startswith('#'): continue
+                  k,v=line.split('=',1)
+                  if 'RPC' in k.upper() and ('SOL' in k.upper() or 'HELIUS' in k.upper()): add(v)
+          for p in (root/'CSVbot').glob('*rpc*.csv'):
+              try:
+                  for row in csv.reader(p.open(encoding='utf-8',errors='ignore')):
+                      for cell in row: add(cell)
+              except Exception: pass
+          print('rpc_endpoint_count='+str(len(endpoints)))
+
+          def rpc(method, params):
+              last='no endpoints'
+              for idx,url in enumerate(endpoints):
+                  try:
+                      body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+                      req=urllib.request.Request(url,data=body,headers={'content-type':'application/json'})
+                      with urllib.request.urlopen(req,timeout=12) as r:
+                          data=json.loads(r.read().decode())
+                      if 'error' in data:
+                          last=f'endpoint{idx}:{data["error"].get("code","rpc_error")}'
+                          continue
+                      return data.get('result'), idx, None
+                  except Exception as e:
+                      last=f'endpoint{idx}:{type(e).__name__}'
+              return None, None, last
+
+          all_confirmed=True
+          for p in positions:
+              sig=str(p['exit_signature'] or '').strip()
+              mint=str(p['mint'] or '').strip()
+              print('position_id='+str(p['position_id']))
+              print('mint='+mint)
+              print('exit_signature_present='+str(bool(sig)).lower())
+              if not sig:
+                  all_confirmed=False; continue
+              result,idx,err=rpc('getSignatureStatuses',[[sig],{'searchTransactionHistory':True}])
+              st=(result or {}).get('value',[None])[0] if isinstance(result,dict) else None
+              print('signature_endpoint_index='+str(idx))
+              print('signature_rpc_error='+str(err or ''))
+              print('signature_status='+repr(st))
+              ok=bool(st and st.get('err') is None and st.get('confirmationStatus') in ('confirmed','finalized'))
+              tx,txidx,txerr=rpc('getTransaction',[sig,{'encoding':'json','maxSupportedTransactionVersion':0,'commitment':'confirmed'}])
+              meta=tx.get('meta') if isinstance(tx,dict) else None
+              txok=bool(meta is not None and meta.get('err') is None)
+              print('transaction_endpoint_index='+str(txidx))
+              print('transaction_rpc_error='+str(txerr or ''))
+              print('transaction_meta_success='+str(txok).lower())
+              print('exit_confirmed='+str(ok and txok).lower())
+              all_confirmed = all_confirmed and ok and txok
+          print('all_reconcile_exit_signatures_confirmed='+str(all_confirmed and bool(positions)).lower())
           PY
-          echo '=== RECENT RECONCILIATION / EXECUTION LOGS ==='
-          journalctl -u "$service" -n 500 --no-pager -o cat 2>/dev/null | grep -Ei 'reconcil|jupiter|LIVE|BUY|SELL|entry|exit|halt|reserve|simulation|broadcast|position' | tail -n 220 || true
