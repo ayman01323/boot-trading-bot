@@ -1,4 +1,4 @@
-name: SiRisky Wallet Trade Trace
+name: SiRisky Current Live Activity Inspect
 
 on:
   push:
@@ -14,65 +14,36 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Trace wallet ownership and SiRisky executions
+      - name: Inspect current SiRisky loop on botgoogle
         shell: bash
-        env:
-          TARGET: 6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n env TARGET="$TARGET" bash -lc '
+          sudo -n bash -lc '
             set -Eeuo pipefail
             cd /root/SiRisky
-            echo "=== WALLET ATTRIBUTION ==="
-            PYTHONPATH=. TARGET="$TARGET" .venv/bin/python - <<"PY"
-import os
-from sirisky.config import Settings
-from sirisky.wallet import WalletStore
-s=Settings.load(); target=os.environ["TARGET"]; wallet=WalletStore(s).address()
-print("target="+target)
-print("sirisky_wallet="+wallet)
-print("sirisky_wallet_match="+str(wallet==target).lower())
-print("service=sirisky.service")
-PY
-            echo "=== CSV REFERENCES TO TARGET ==="
-            grep -R -n -F "$TARGET" CSV 2>/dev/null | tail -n 80 || true
-            echo "=== EXECUTIONS HEADER ==="
-            head -n 1 CSV/executions.csv 2>/dev/null || true
-            echo "=== RECENT SUCCESSFUL LIVE EXECUTIONS ==="
-            awk -F, '\''NR==1 || ($5=="LIVE" && $6=="SUCCESS")'\'' CSV/executions.csv 2>/dev/null | tail -n 25 || true
-            echo "=== OPEN POSITIONS HEADER/RECENT ==="
-            head -n 1 CSV/open_positions.csv 2>/dev/null || true
-            tail -n 15 CSV/open_positions.csv 2>/dev/null || true
-            echo "=== STRATEGY/OPPORTUNITY RECORDS FOR RECENT EXECUTION MINTS ==="
+            echo "=== CURRENT STATE ==="
+            date -u +"utc=%Y-%m-%dT%H:%M:%SZ"
+            echo "host=$(hostname)"
+            echo "service=$(systemctl is-active sirisky.service || true)"
             PYTHONPATH=. .venv/bin/python - <<"PY"
 import csv
 from pathlib import Path
-csvdir=Path("CSV")
-execp=csvdir/"executions.csv"
-if not execp.exists():
-    raise SystemExit
-rows=list(csv.DictReader(execp.open(encoding="utf-8-sig",newline="")))
-recent=[r for r in rows if (r.get("mode") or "").upper()=="LIVE" and (r.get("status") or "").upper()=="SUCCESS"][-12:]
-mints={r.get("mint") for r in recent if r.get("mint")}
-print("recent_mints="+",".join(sorted(mints)))
-for p in sorted(csvdir.glob("*.csv")):
-    if p.name in {"executions.csv"}:
-        continue
-    try:
-        rr=list(csv.DictReader(p.open(encoding="utf-8-sig",newline="")))
-    except Exception:
-        continue
-    hits=[]
-    for r in rr:
-        text="|".join(str(v) for v in r.values())
-        if any(m in text for m in mints):
-            hits.append(r)
-    if hits:
-        print("FILE="+p.name)
-        for r in hits[-8:]:
-            keep={k:v for k,v in r.items() if v and k in {"timestamp","opportunity_id","pool_id","mint","strategy_id","action","status","reason","mode","position_id","order_id","source","leader_wallet","wallet","temperature","risk_reasons","forecast_net_pct"}}
-            print(keep)
+p=Path("CSV/runtime.csv")
+want=["trading_mode","live_enabled","broadcast_enabled","manual_approval_enabled","auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol","auto_evaluate_candidate_limit","jupiter_min_interval_seconds"]
+with p.open(encoding="utf-8-sig",newline="") as f:
+    rd=csv.DictReader(f); fs=rd.fieldnames or []; k="key" if "key" in fs else fs[0]; v="value" if "value" in fs else fs[1]; vals={r.get(k):r.get(v) for r in rd}
+for x in want: print(f"{x}={vals.get(x,'')}")
+p=Path("CSV/open_positions.csv")
+rows=[]
+if p.exists():
+    with p.open(encoding="utf-8-sig",newline="") as f: rows=list(csv.DictReader(f))
+live=[r for r in rows if str(r.get("status") or "").upper()=="OPEN" and str(r.get("mode") or "").upper()=="LIVE"]
+print("open_live="+str(len(live)))
 PY
+            echo "=== RECENT FILTERED JOURNAL ==="
+            journalctl -u sirisky.service --since "15 minutes ago" --no-pager -o cat 2>/dev/null | grep -Ei "discover|candidate|NO_TRIGGER|QUOTE_REJECT|HTTPError|stage[0-9]|OPENED|CLOSED|BUY|SELL|JUPITER|fee|risk|reject|opportun|armed|LIVE" | tail -n 500 || true
+            echo "=== LAST 120 LINES ==="
+            journalctl -u sirisky.service -n 120 --no-pager -o cat 2>/dev/null || true
           '
