@@ -1,4 +1,4 @@
-name: Deploy Cold Zone Five Leaders Now
+name: Apply SiRisky Automatic LIVE Now
 
 on:
   workflow_dispatch:
@@ -7,90 +7,58 @@ on:
     paths:
       - '.github/workflows/deploy-cold-zone-five-leaders-now-20260828.yml'
 
+permissions:
+  contents: read
+
+concurrency:
+  group: sirisky-auto-live-now
+  cancel-in-progress: false
+
 jobs:
-  deploy:
+  apply:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Install leader-5 overlay and verify
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Reinstall SiRisky governed LIVE wrapper and apply automatic execution
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          LEARN=/home/ayman01323/BOOT/testingbots/learn
-          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
-          MAIN="$LEARN/learnerbot/__main__.py"
-          TARGET="$LEARN/learnerbot/solana_cold_zone_leader5_patch.py"
-          SRC_COMMIT=95ddaaf388152fddb238cc8a87b6456d037973a9
-          BACKUP="$HOME/.cache/cold-zone-leader5-${GITHUB_RUN_ID}"
-          mkdir -p "$BACKUP"
-          cp -a "$MAIN" "$BACKUP/__main__.py"
-          [[ ! -f "$TARGET" ]] || cp -a "$TARGET" "$BACKUP/leader5.py"
-          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
-          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$(id -un)" = ayman01323
+          test -f scripts/install_sirisky_governed_live_ops.sh
+          sudo -n true
+          sudo -n env ARM_NOW=1 bash "$GITHUB_WORKSPACE/scripts/install_sirisky_governed_live_ops.sh"
 
-          rollback() {
-            rc=$?
-            echo "rollback=YES rc=$rc"
-            cp -a "$BACKUP/__main__.py" "$MAIN" || true
-            if [[ -f "$BACKUP/leader5.py" ]]; then cp -a "$BACKUP/leader5.py" "$TARGET" || true; else rm -f "$TARGET" || true; fi
-            chown ayman01323:ayman01323 "$MAIN" "$TARGET" 2>/dev/null || true
-            sudo -n systemctl restart learnerbot-learn.service || true
-            exit "$rc"
-          }
-          trap rollback ERR
-
-          curl -fsSL --retry 3 --connect-timeout 10 \
-            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_cold_zone_leader5_patch.py" \
-            -o "$TARGET"
-          chmod 0644 "$TARGET"
-          chown ayman01323:ayman01323 "$TARGET"
-          python3 - "$TARGET" <<'PY'
-          import pathlib,sys
-          p=pathlib.Path(sys.argv[1]); s=p.read_text(encoding='utf-8'); compile(s,str(p),'exec')
-          assert 'LEADERS_PER_USER = 5' in s
-          print('leader5_source=OK')
-          PY
-
-          python3 - "$MAIN" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
-          line='from . import solana_cold_zone_leader5_patch  # noqa: F401\n'
-          s=s.replace(line,'')
-          anchor='from . import solana_cold_zone_entry_relaxation_patch  # noqa: F401\n'
-          if anchor not in s: raise SystemExit('relaxed-entry import missing')
-          s=s.replace(anchor,anchor+line,1)
-          p.write_text(s,encoding='utf-8'); compile(s,str(p),'exec')
-          print('leader5_import=AFTER_RELAXED_ENTRY')
-          PY
-          chown ayman01323:ayman01323 "$MAIN"
-
-          START_EPOCH="$(date +%s)"
-          sudo -n systemctl restart learnerbot-learn.service
-          sleep 30
-          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
-          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
-          LOG="$(sudo -n journalctl -u learnerbot-learn.service --since "@$START_EPOCH" --no-pager -n 1200)"
-          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-leaders] installed=true' | grep -F 'leaders_per_user=5'
-          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-entry] installed=true' | grep -F 'signal_age<=45s'
-
-          python3 - "$LEARN/data/solana_sibot.sqlite3" <<'PY'
-          import sqlite3,sys
-          con=sqlite3.connect(f'file:{sys.argv[1]}?mode=ro',uri=True,timeout=3)
-          rows=con.execute("select telegram_id,count(*) from leaders group by telegram_id").fetchall()
-          con.close()
-          print('leader_rows_by_user='+repr(rows))
-          print('configured_leaders_per_user=5')
-          print('selected_leaders_max='+str(max([r[1] for r in rows],default=0)))
-          PY
-
-          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
-          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
-          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER"
-          test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
-          trap - ERR
-          echo 'cold_zone_leader5_deploy=SUCCESS'
-          echo 'leaders_per_user=5'
-          echo 'other_strategy_thresholds_changed=NO'
-          echo 'production_files_changed=NO'
+      - name: Verify live root runtime
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            R=/root/SiRisky/CSV/runtime.csv
+            value() { awk -F, -v key="$1" '\''$1==key {gsub(/\r/,"",$2); print $2}'\'' "$R"; }
+            test "$(value trading_mode)" = LIVE
+            test "$(value live_enabled)" = 1
+            test "$(value broadcast_enabled)" = 1
+            test "$(value manual_approval_enabled)" = 0
+            test "$(value armed_manual_approval)" = 0
+            test "$(value manual_approval_require_external_signature)" = 0
+            test "$(value telegram_manual_run_enabled)" = 0
+            systemctl is-active --quiet sirisky.service
+            echo "=== VERIFIED SIRISKY AUTO LIVE ==="
+            echo "service=$(systemctl is-active sirisky.service)"
+            echo "trading_mode=$(value trading_mode)"
+            echo "live_enabled=$(value live_enabled)"
+            echo "broadcast_enabled=$(value broadcast_enabled)"
+            echo "manual_approval_enabled=$(value manual_approval_enabled)"
+            echo "armed_manual_approval=$(value armed_manual_approval)"
+            echo "manual_approval_require_external_signature=$(value manual_approval_require_external_signature)"
+            echo "telegram_manual_run_enabled=$(value telegram_manual_run_enabled)"
+          '
