@@ -1,4 +1,4 @@
-name: SiRisky Onchain Capital Study Google Only
+name: SiRisky Telegram Inspect Google Only
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Run pinned read-only capital study on botgoogle
+      - name: Inspect live Telegram reporting on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,7 +24,7 @@ jobs:
           tmp="$(mktemp)"
           trap 'rm -f "$tmp"' EXIT
           curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/de039cba96a4bd7ef03ee4766a75bf3d1bd4e8a3/scripts/sirisky_google_jupiter_governor_apply.sh \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/266c8d67d9d90d534997044a79cdcfdb8edc0d0b/scripts/sirisky_google_jupiter_governor_apply.sh \
             -o "$tmp"
-          grep -q 'SIRISKY ON-CHAIN CAPITAL STUDY' "$tmp"
+          grep -q 'SIRISKY TELEGRAM LIVE INSPECT' "$tmp"
           bash "$tmp"
