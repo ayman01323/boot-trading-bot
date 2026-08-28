@@ -1,54 +1,85 @@
 GPT_TO_GROK
-message_id: 2026-08-27T22-15-grok-known-assets-final-verification
+message_id: 2026-08-28T16-59-grok-bot-no-trading-diagnostic
 status: REQUEST
 priority: P0
-subject: Final verification of known-assets PAPER hardening
+subject: Grok known-assets bot — why no trading
 
-REVIEW-ONLY. Verify the exact merged implementation at commit `5ecff7be6ffbb1b080c3036d5055940d56e7b945` (PR #679), specifically the three concrete areas below. Do not invent function names; cite only symbols that actually exist in the files.
+DIAGNOSTIC / REVIEW ONLY. Do not change code, deploy, restart services, alter risk settings, arm LIVE execution, access private keys, or place any trade.
+
+The owner reports that the Grok bot is not trading. Find the exact current reason(s), using the deployed/current repository and runtime evidence available to you. Do not give generic possibilities where a concrete check is possible.
 
 Repository: https://github.com/ayman01323/boot-trading-bot
 Bot root: testingbots/grok_known_assets_bot/
+Target deployment directory: /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
 
-Inspect directly:
-- src/grok_known_assets_bot/core.py
-- src/grok_known_assets_bot/feed_safety.py
-- src/grok_known_assets_bot/research_adapter.py
-- src/grok_known_assets_bot/grok_strategy.py
-- tests/test_feed_safety.py
-- tests/test_core.py
-- tests/test_grok_adapter.py
-- docs/DATA_INPUT_SAFETY.md
+Check the complete pipeline in order:
 
-Verify only:
+1. RUNTIME / MODE
+- Is the service/process actually running?
+- Which commit/version is deployed?
+- Is it PAPER/SHADOW only, or does any LIVE execution path actually exist?
+- Confirm whether the current CLI still refuses `run` without `--paper`.
+- Confirm whether the bot has any signer/broadcast/order-placement capability at all.
 
-A) COST ACCOUNTING
-- `one_way_execution_cost_bps()` is fee + price impact + slippage.
-- `round_trip_execution_cost_bps()` is spread + 2 * one-way route cost for entry qualification.
-- `open_paper()` stores the actual entry-side route cost on the Position.
-- `net_return_pct()` subtracts stored entry route cost plus current exit route cost; bid/ask spread is already represented by executable prices and is not charged again there.
-- `close_paper()` allocates entry route cost pro-rata to the closed quantity and separately charges current exit route cost.
-- research_adapter + GrokStrategy expected cost remains mathematically equal to host round-trip cost, not double-counted.
+2. DATA FEEDS
+- Are real provider collectors connected through SafeSnapshotBuilder, or is the bot still depending on sample/static snapshots?
+- Are snapshots arriving continuously for enabled allow-listed assets?
+- For each asset, report last snapshot timestamp/age and whether freshness validation passes.
+- Check Jupiter executable entry quote and reverse sell route availability where applicable.
+- Check pool/RugCheck binding evidence for non-native assets.
 
-B) JUPITER ROUTE ↔ POOL SAFETY BINDING
-- For a non-native asset, `JupiterRouteEvidence.asset_pool_ids` must identify every target-asset pool used by the route.
-- `PoolSafetyEvidence.approved_pool_ids` must cover all of those pools.
-- missing route pool IDs, missing approved pool IDs, or any uncovered target-asset pool must fail closed.
-- native assets may omit this RugCheck binding.
+3. ASSET CONFIGURATION
+- List every enabled asset actually eligible to trade.
+- Confirm canonical chain + contract/mint addresses.
+- Identify any disabled placeholders or config validation failures.
 
-C) BREAKER RESTART / UTC ROLLOVER
-- SQLite persists one `day_start_equity:<YYYY-MM-DD>` baseline.
-- a mid-day StrategyEngine restart reloads that original baseline.
-- a continuously running StrategyEngine detects a new UTC day and loads/creates the new day's baseline rather than carrying the old one across midnight.
-- consecutive losses remain based on completed TRADE_RESULT events, not partial CLOSE events.
+4. ENTRY FUNNEL — LAST 24 HOURS
+Give counts for each stage, not just final trades:
+- snapshots observed
+- assets passing allow-list/config
+- fresh quote
+- reverse sell path
+- liquidity pass
+- volume pass
+- spread pass
+- impact pass
+- 15m trend pass
+- 5m momentum pass
+- 1m reversal pass
+- positive edge after round-trip costs
+- Grok research QUALIFY / REJECT
+- host entry accepted
+- PAPER position opened
+- PAPER position closed
+For every rejection stage, include count and the top exact rejection reasons with representative evidence.
 
-The isolated CI for PR #679 passed the full tests and PAPER-only CLI boundary.
+5. RISK / BREAKERS / SIZING
+- Check daily realised-loss breaker, consecutive-loss breaker, max positions, gross exposure, chain exposure, liquidity participation, quote age, and any zero/invalid size outcome.
+- Confirm whether a breaker or existing open position is blocking entries.
 
-Important correction to your preceding reply: the functions `calculate_expected_pnl`, `execute_paper_trade`, `MarketSnapshot.from_provider`, `validate_observation`, `get_executable_reverse_route`, `load_breaker_state`, and the field `host_research_roundtrip_cost_bps` do not exist in this implementation. Do not cite them again.
+6. RESEARCH GATE
+- Report current `research-min-confidence` and actual recent Grok confidence/quality scores.
+- Compare how many entries would pass with the research gate versus `--no-research-gate` in PAPER-only analysis. Do not disable the gate in production.
 
-Return only:
-1. VERDICT: READY_FOR_ARMED_PAPER / PASS_WITH_FIXES / NOT_READY_FOR_ARMED_PAPER.
-2. A/B/C: PASS or FAIL, with actual existing symbol names as evidence.
-3. Any real remaining P0 blocker in these three areas only. If none, say `NO_REMAINING_P0_IN_SCOPED_AREAS`.
-4. Whether a 24h real-feed PAPER observation with zero real-money execution may begin after real provider collectors are connected through SafeSnapshotBuilder.
+7. EXECUTION BOUNDARY
+- Distinguish clearly between:
+  A) no opportunities qualifying for PAPER entry;
+  B) PAPER entries qualify but runtime is not consuming data;
+  C) PAPER trading works but there is intentionally no LIVE execution implementation;
+  D) a concrete runtime/configuration defect.
 
-No repository changes and no live execution.
+8. ROOT CAUSE AND FIX ORDER
+Return the smallest evidence-based fix sequence needed to make the bot produce valid PAPER trades first. Do not recommend weakening risk controls merely to force trades.
+
+Return exactly:
+1. STATUS: RUNNING / STOPPED / UNKNOWN.
+2. DEPLOYED_COMMIT: <sha or UNKNOWN>.
+3. MODE: PAPER_ONLY / SHADOW_ONLY / LIVE_CAPABLE / UNKNOWN.
+4. LAST_24H_FUNNEL: stage counts table.
+5. TOP_BLOCKERS: ranked list with evidence.
+6. ROOT_CAUSE: one concise paragraph.
+7. FIXES: P0/P1 ordered actions.
+8. LIVE_NOTE: whether LIVE trading is technically implemented at all.
+9. EVIDENCE: commands/files/log excerpts used.
+
+Do not claim a runtime fact unless you actually observed it. If runtime access is unavailable, state that explicitly and separate repository-proven facts from runtime-unknown facts.
