@@ -103,12 +103,15 @@ def _sol_usd_pair(app, value: Decimal, *, signed: bool = False) -> str:
 def position_section_newpoll_full(app, position: dict, index: int, total: int, cfg: dict, sol_price: Decimal):
     section, pid, snapshot = _PREV_POSITION_SECTION(app, position, index, total, cfg, sol_price)
     status = str(position.get("status") or "UNKNOWN").upper()
+    tid = str(position.get("telegram_id") or "")
+    open_count = _open_count(app, tid)
     old = f"<b>Open Position {index} of {total}</b>"
 
     if status == "RECONCILE_REQUIRED":
         new = (
             f"🧾 <b>NewPoll45 • Reconciliation Position {index} of {total}</b>\n"
             f"⚠️ Status: <b>RECONCILE_REQUIRED</b>\n"
+            f"📚 Total open positions: <b>{open_count}</b> • Total tracked LIVE reports: <b>{total}</b>\n"
             "✅ This row is <b>not counted as an OPEN LIVE position</b>.\n"
             "🔄 On-chain wallet state no longer matches the stored position row; manual/external sale reconciliation is required.\n"
             "📌 Values labelled current/unrealised below are <b>last stored valuation only</b> — not final realised P&L."
@@ -116,7 +119,7 @@ def position_section_newpoll_full(app, position: dict, index: int, total: int, c
     else:
         new = (
             f"📡 <b>NewPoll45 • Open Position {index} of {total}</b>\n"
-            f"📚 Total tracked LIVE reports: <b>{total}</b>"
+            f"📚 Total open positions: <b>{open_count}</b> • Total tracked LIVE reports: <b>{total}</b>"
         )
     if old in section:
         section = section.replace(old, new, 1)
