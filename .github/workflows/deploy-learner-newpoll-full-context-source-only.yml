@@ -1,0 +1,84 @@
+name: Deploy Learner NewPoll45 Full Context Source Only
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - 'learnerbot/telegram_learner_pool_context_patch.py'
+      - 'learnerbot/telegram_learner_complete_market_context_patch.py'
+      - 'learnerbot/telegram_learner_newpoll_full_format_patch.py'
+      - '.github/workflows/deploy-learner-newpoll-full-context-source-only.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-source-only:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/solana-aug17-canary-restore
+          clean: false
+
+      - name: Copy and validate presentation modules without runtime restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          before_pid="$(systemctl show -p MainPID --value "$service")"
+          test -n "$before_pid"
+          test "$before_pid" != 0
+
+          install -m 0644 learnerbot/telegram_learner_pool_context_patch.py "$target/learnerbot/telegram_learner_pool_context_patch.py"
+          install -m 0644 learnerbot/telegram_learner_complete_market_context_patch.py "$target/learnerbot/telegram_learner_complete_market_context_patch.py"
+          install -m 0644 learnerbot/telegram_learner_newpoll_full_format_patch.py "$target/learnerbot/telegram_learner_newpoll_full_format_patch.py"
+
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])/'learnerbot'
+          names=[
+              'telegram_learner_pool_context_patch.py',
+              'telegram_learner_complete_market_context_patch.py',
+              'telegram_learner_newpoll_full_format_patch.py',
+          ]
+          for name in names:
+              source=(root/name).read_text(encoding='utf-8')
+              compile(source, str(root/name), 'exec')
+              print('compile=PASS', name)
+          checks={
+              'newpoll45_header':'NewPoll45 • Open Position',
+              'open_position_total':'Total open positions',
+              'token_name':'Token:',
+              'dex_viewer':'DEX Viewer',
+              'pool_open':'Pool at open',
+              'pool_current':'Pool current',
+              'pool_change':'Pool change since open',
+              'previous_poll':'Since previous NewPoll45',
+              'sale_full':'FULL SALE RESULT',
+              'sale_usd':'Sale received',
+              'realised_usd':'Total realised P&L',
+          }
+          joined='\n'.join((root/name).read_text(encoding='utf-8') for name in names)
+          for label, needle in checks.items():
+              if needle not in joined:
+                  raise SystemExit(f'missing={label}')
+              print(label+'=PASS')
+          PY
+
+          cmp learnerbot/telegram_learner_pool_context_patch.py "$target/learnerbot/telegram_learner_pool_context_patch.py"
+          cmp learnerbot/telegram_learner_complete_market_context_patch.py "$target/learnerbot/telegram_learner_complete_market_context_patch.py"
+          cmp learnerbot/telegram_learner_newpoll_full_format_patch.py "$target/learnerbot/telegram_learner_newpoll_full_format_patch.py"
+
+          after_pid="$(systemctl show -p MainPID --value "$service")"
+          test "$after_pid" = "$before_pid"
+          echo "runtime_restart=NO"
+          echo "runtime_pid_unchanged=$after_pid"
+          echo "production_service_touched=NO"
+          echo "wallet_env_csv_data_touched=NO"
+          echo "activation=NEXT_NORMAL_LEARNER_RESTART"
