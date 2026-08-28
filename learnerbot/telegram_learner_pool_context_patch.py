@@ -150,3 +150,8 @@ def install() -> None:
 
 
 install()
+
+# These presentation overlays must load after the pool wrapper so confirmed BUY,
+# SELL and reconciliation messages keep using one complete context pipeline.
+from . import telegram_learner_complete_market_context_patch  # noqa: E402,F401
+from . import telegram_learner_newpoll_full_format_patch  # noqa: E402,F401
