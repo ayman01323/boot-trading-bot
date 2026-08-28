@@ -51,6 +51,12 @@ jobs:
               source=(root/name).read_text(encoding='utf-8')
               compile(source, str(root/name), 'exec')
               print('compile=PASS', name)
+
+          # Pool-at-open/current/change and prior-poll deltas are implemented in
+          # the already-active NewPoll45 base module. Validate the complete runtime
+          # presentation contract, not only the three copied overlay files.
+          contract_names=names+['telegram_learner_position_update_patch.py']
+          joined='\n'.join((root/name).read_text(encoding='utf-8') for name in contract_names)
           checks={
               'newpoll45_header':'NewPoll45 • Open Position',
               'open_position_total':'Total open positions',
@@ -62,9 +68,9 @@ jobs:
               'previous_poll':'Since previous NewPoll45',
               'sale_full':'FULL SALE RESULT',
               'sale_usd':'Sale received',
+              'sale_net':'Net on this sale',
               'realised_usd':'Total realised P&L',
           }
-          joined='\n'.join((root/name).read_text(encoding='utf-8') for name in names)
           for label, needle in checks.items():
               if needle not in joined:
                   raise SystemExit(f'missing={label}')
