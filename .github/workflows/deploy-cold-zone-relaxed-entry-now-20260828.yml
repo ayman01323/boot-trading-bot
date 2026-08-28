@@ -1,0 +1,147 @@
+name: Deploy Cold Zone Relaxed Entry Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/deploy-cold-zone-relaxed-entry-now-20260828.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-isolated-learner-cold-zone
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install relaxed Cold Zone entry profile and verify
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          LEARN=/home/ayman01323/BOOT/testingbots/learn
+          PROD=/root/multichain-learning-bot-v2.2-fast-direct-market
+          MOD="$LEARN/learnerbot/solana_cold_zone_entry_relaxation_patch.py"
+          MAIN="$LEARN/learnerbot/__main__.py"
+          BACKUP="$HOME/.cache/cold-zone-entry-${GITHUB_RUN_ID}"
+          SRC_COMMIT=858180c81b452fe77301a560015670485adf96cb
+          mkdir -p "$BACKUP"
+
+          test -f "$MAIN"
+          test -f "$LEARN/learnerbot/solana_cold_zone_strategy_patch.py"
+          cp -a "$MAIN" "$BACKUP/__main__.py"
+          [[ ! -f "$MOD" ]] || cp -a "$MOD" "$BACKUP/overlay.py"
+
+          PROD_MAIN_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_BEFORE="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+
+          rollback() {
+            rc=$?
+            echo "relaxed_entry_rollback=YES rc=$rc"
+            cp -a "$BACKUP/__main__.py" "$MAIN" || true
+            if [[ -f "$BACKUP/overlay.py" ]]; then cp -a "$BACKUP/overlay.py" "$MOD" || true; else rm -f "$MOD" || true; fi
+            chown ayman01323:ayman01323 "$MAIN" "$MOD" 2>/dev/null || true
+            sudo -n systemctl restart learnerbot-learn.service || true
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/solana_cold_zone_entry_relaxation_patch.py" \
+            -o "$MOD"
+          chmod 0644 "$MOD"
+          chown ayman01323:ayman01323 "$MOD"
+          python3 - "$MOD" <<'PY'
+          import pathlib,sys
+          p=pathlib.Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          compile(s,str(p),'exec')
+          checks=[
+              'MAX_SIGNAL_AGE_SECONDS = 45',
+              'MAX_ENTRY_DETERIORATION_PCT = Decimal("3")',
+              'MAX_ESTIMATED_COST_PCT = Decimal("5")',
+              'MAX_REQUIRED_GROSS_PCT = Decimal("10")',
+              'leader_gross_is_score_only',
+          ]
+          for c in checks: assert c in s, c
+          print('overlay_syntax=OK')
+          print('approved_entry_values=YES')
+          PY
+
+          python3 - "$MAIN" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1]); s=p.read_text(encoding='utf-8')
+          overlay='from . import solana_cold_zone_entry_relaxation_patch  # noqa: F401\n'
+          s=s.replace(overlay,'')
+          base='from . import solana_cold_zone_strategy_patch  # noqa: F401\n'
+          if base not in s:
+              raise SystemExit('Cold Zone base import is missing from isolated __main__.py')
+          s=s.replace(base,base+overlay,1)
+          p.write_text(s,encoding='utf-8')
+          compile(s,str(p),'exec')
+          print('isolated_import_order=BASE_THEN_RELAXED_OVERLAY')
+          PY
+          chown ayman01323:ayman01323 "$MAIN"
+
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 10
+          test "$(sudo -n systemctl is-active learnerbot-learn.service)" = active
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          LOG="$(sudo -n journalctl -u learnerbot-learn.service --since '3 minutes ago' --no-pager -n 800)"
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone] installed=true'
+          printf '%s\n' "$LOG" | grep -F '[solana-cold-zone-entry] installed=true' \
+            | grep -F 'profile=COLD_ZONE_17AUG_V2_RELAXED_ENTRY' \
+            | grep -F 'signal_age<=45s' \
+            | grep -F 'entry_deterioration<=3%' \
+            | grep -F 'leader_gross=score_only' \
+            | grep -F 'cost_cap<=5%' \
+            | grep -F 'required_gross_cap<=10%'
+
+          python3 - "$LEARN/CSVbot/user_trading_settings.csv" "$LEARN/data/solana_sibot.sqlite3" <<'PY'
+          import csv,sqlite3,sys
+          settings={}
+          with open(sys.argv[1],encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  tid=str(r.get('telegram_id') or '')
+                  key=str(r.get('setting') or '')
+                  val=str(r.get('value') or '').strip().lower()
+                  if tid and key: settings.setdefault(tid,{})[key]=val
+          truth={'1','true','yes','on','y'}
+          armed=[tid for tid,s in settings.items()
+                 if s.get('solana_live_enabled') in truth
+                 and s.get('learner_new_entries_enabled') in truth
+                 and s.get('sibot_enabled') in truth]
+          con=sqlite3.connect(f'file:{sys.argv[2]}?mode=ro',uri=True,timeout=3)
+          tables={r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+          cold=all(n in tables for n in ('cold_zone_positions','cold_zone_notifications','cold_zone_decisions'))
+          open_live=con.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]
+          con.close()
+          print('fully_enabled_users='+str(len(armed)))
+          print('cold_zone_tables='+('YES' if cold else 'NO'))
+          print('open_live_positions='+str(open_live))
+          print('ENTRY_ARMED='+('YES' if armed and cold else 'NO'))
+          PY
+
+          PROD_MAIN_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/__main__.py" | awk '{print $1}')"
+          PROD_LIVE_AFTER="$(sudo -n sha256sum "$PROD/learnerbot/solana_live_patch.py" | awk '{print $1}')"
+          test "$PROD_MAIN_BEFORE" = "$PROD_MAIN_AFTER"
+          test "$PROD_LIVE_BEFORE" = "$PROD_LIVE_AFTER"
+
+          trap - ERR
+          echo 'relaxed_entry_deploy=SUCCESS'
+          echo 'scope=ISOLATED_LEARNER_ONLY'
+          echo 'signal_age_hard=45s'
+          echo 'entry_deterioration_hard=3pct'
+          echo 'actual_roundtrip_hard=3pct_UNCHANGED'
+          echo 'leader_historical_gross=SCORE_ONLY'
+          echo 'estimated_cost_hard_cap=5pct'
+          echo 'required_gross_hard_cap=10pct'
+          echo 'net_target=5pct_UNCHANGED'
+          echo 'exit_strategy=UNCHANGED'
+          echo 'dexview_links=UNCHANGED_ACTIVE'
+          echo 'production_files_changed=NO'
