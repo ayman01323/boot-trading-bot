@@ -14,29 +14,54 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect execution path without broadcast
+      - name: Diagnose isolated Learner Telegram delivery
         shell: bash
         run: |
-          set -euo pipefail
-          test "$(hostname)" = 'botgoogle'
-          sudo -n true
-          for f in sirisky/engine.py sirisky/stage1_data.py sirisky/stage2_strategy.py sirisky/stage3_risk.py sirisky/stage4_dispatch.py sirisky/stage5_trade.py sirisky/stage6_monitor.py sirisky/telegram.py sirisky/models.py sirisky/config.py sirisky/wallet.py run.py; do
-            echo "=== $f ==="
-            sudo -n sed -n '1,380p' "/root/SiRisky/$f"
-          done
-          echo '=== RUNTIME GATES ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' /root/SiRisky/CSV/runtime.csv
-          echo '=== CSV FILES ==='
-          sudo -n find /root/SiRisky/CSV -maxdepth 1 -type f -printf '%f\n' | sort
-          echo '=== BALANCE ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
-from sirisky.config import Settings
-from sirisky.wallet import WalletStore
-from sirisky.jupiter import wallet_balance_lamports
-s=Settings.load(); a=WalletStore(s).address(); b=wallet_balance_lamports(s,a)
-print("wallet_balance_lamports="+str(b))
-print("wallet_balance_sol="+format(b/1_000_000_000,".9f"))
-PY'
-          echo 'real_transaction_broadcast=NO'
-
-# trigger: HR-CWH pre-deploy source inspection 2026-08-27
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "pid=$(systemctl show "$service" -p MainPID --value 2>/dev/null || true)"
+          echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
+          test -x "$target/.venv/bin/python"
+          cd "$target"
+          PYTHONPATH=. .venv/bin/python - <<'PY'
+          import csv
+          from pathlib import Path
+          from learnerbot.config import AppSettings
+          from learnerbot.telegram import get_me
+          app=AppSettings.load()
+          print('token_present='+str(bool(app.telegram_bot_token)).lower())
+          print('configured_chat_ids='+str(len(app.telegram_chat_ids)))
+          try:
+              me=get_me(app.telegram_bot_token)
+              print('telegram_getme_ok=true')
+              print('bot_username='+str(me.get('username') or ''))
+          except Exception as e:
+              print('telegram_getme_ok=false')
+              print('telegram_getme_error='+type(e).__name__+': '+str(e)[:220])
+          users=[]
+          p=Path('CSVbot/users.csv')
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f: users=list(csv.DictReader(f))
+          active=[r for r in users if str(r.get('status') or '').upper()=='ACTIVE']
+          print('active_users='+str(len(active)))
+          print('master_users='+str(sum(1 for r in active if str(r.get('role') or '').upper()=='MASTER')))
+          settings=[]
+          p=Path('CSVbot/user_trading_settings.csv')
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f: settings=list(csv.DictReader(f))
+          for key in ('sibot_enabled','sibot_auto_trade_enabled','solana_live_enabled','learner_new_entries_enabled'):
+              vals=[str(r.get('value') or '').lower() for r in settings if str(r.get('setting') or '')==key]
+              print(key+'_true='+str(sum(v in {'1','true','yes','on'} for v in vals)))
+              print(key+'_false='+str(sum(v in {'0','false','no','off'} for v in vals)))
+          PY
+          echo '=== TELEGRAM-RELATED SERVICE LOGS ==='
+          journalctl -u "$service" --since '2 hours ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram|sendMessage|chat|bot token|HTTPError|401|403|429|notify|alert' \
+            | tail -n 220 || true
+          echo '=== RECENT LIVE/ALERT EVENTS ==='
+          journalctl -u "$service" --since '2 hours ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'LIVE BUY|LIVE SELL|execution fault|automatically disabled|RECONCILE|exit|entry' \
+            | tail -n 220 || true
