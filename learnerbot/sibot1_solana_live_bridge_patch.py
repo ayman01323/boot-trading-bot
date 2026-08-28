@@ -30,8 +30,10 @@ _DB_LOCK = threading.RLock()
 CONTROL_HEADERS = [
     "telegram_id", "armed", "live_enabled", "auto_enabled", "max_sol_per_trade", "updated_epoch"
 ]
-DEFAULT_ENTRY_SOL = Decimal("0.0005")
-HARD_MAX_ENTRY_SOL = Decimal("0.001")
+# Fixed SiBot 1 Solana entry size: DEFAULT and HARD_MAX are equal, so _entry_size
+# always returns exactly this amount regardless of the per-user max_sol_per_trade.
+DEFAULT_ENTRY_SOL = Decimal("0.009")
+HARD_MAX_ENTRY_SOL = Decimal("0.009")
 MIN_RESERVE_SOL = Decimal("0.005")
 MAX_SIGNAL_AGE_SECONDS = 20
 MAX_OPEN_POSITIONS = 1
@@ -640,7 +642,7 @@ def _start(app):
         _STARTED = True
         print(
             "[sibot1-solana-live-bridge] installed=true default=OFF max_open=1 "
-            "canary_sol=0.0005 hard_max_sol=0.001 reserve_sol=0.005 poolcheck=fail-closed "
+            "fixed_entry_sol=0.009 reserve_sol=0.005 poolcheck=fail-closed "
             "reverse=full stress=3x signed_simulation=required"
         )
 
@@ -669,7 +671,7 @@ def status_text(app, tid) -> str:
         f"{icon(r.get('account_ready'))} Account AUTO permission",
         f"{icon(r.get('funded'))} Funding check: <b>{r.get('balance_sol', Decimal(0)):.9f} SOL</b>",
         "",
-        f"Canary size: <b>{r.get('entry_size_sol')} SOL</b> (hard maximum {HARD_MAX_ENTRY_SOL} SOL)",
+        f"Fixed entry size: <b>{r.get('entry_size_sol')} SOL</b>",
         f"Untouched reserve: <b>{MIN_RESERVE_SOL} SOL</b>",
         f"Maximum LIVE positions: <b>{MAX_OPEN_POSITIONS}</b>",
         f"Maximum signal age: <b>{MAX_SIGNAL_AGE_SECONDS}s</b>",

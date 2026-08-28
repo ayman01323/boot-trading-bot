@@ -21,7 +21,7 @@ def test_gemini_arm_live_sets_only_gemini_control(tmp_path, monkeypatch):
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text(
         "telegram_id,armed,live_enabled,auto_enabled,max_sol_per_trade,updated_epoch\n"
-        "123,false,false,false,0.0005,1\n",
+        "123,false,false,false,0.009,1\n",
         encoding="utf-8",
     )
     before = legacy.read_text(encoding="utf-8")
@@ -85,7 +85,7 @@ def test_gemini_status_labels_dedicated_engine(tmp_path, monkeypatch):
             "account_ready": True,
             "funded": True,
             "balance_sol": Decimal("0.050000000"),
-            "entry_size_sol": Decimal("0.0005"),
+            "entry_size_sol": Decimal("0.009"),
             "reserve_sol": Decimal("0.005"),
         },
     )

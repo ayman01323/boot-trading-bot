@@ -44,7 +44,7 @@ def test_gpt_specific_control_does_not_change_legacy_control_file(tmp_path, monk
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_text(
         "telegram_id,armed,live_enabled,auto_enabled,max_sol_per_trade,updated_epoch\n"
-        "123,false,true,true,0.0005,1\n",
+        "123,false,true,true,0.009,1\n",
         encoding="utf-8",
     )
 
@@ -95,7 +95,7 @@ def test_gpt_status_separates_signer_and_rpc_health(tmp_path, monkeypatch):
             "account_ready": True,
             "funded": False,
             "balance_sol": Decimal("0"),
-            "entry_size_sol": Decimal("0.0005"),
+            "entry_size_sol": Decimal("0.009"),
             "reserve_sol": Decimal("0.005"),
         },
     )

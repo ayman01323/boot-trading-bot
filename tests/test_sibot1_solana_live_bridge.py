@@ -14,12 +14,12 @@ def test_control_defaults_fail_closed(tmp_path):
     assert ctl["armed"] == "false"
     assert ctl["live_enabled"] == "false"
     assert ctl["auto_enabled"] == "false"
-    assert bridge._entry_size(ctl) == Decimal("0.0005")
+    assert bridge._entry_size(ctl) == Decimal("0.009")
 
 
-def test_entry_size_hard_max():
-    assert bridge._entry_size({"max_sol_per_trade": "0.5"}) == Decimal("0.001")
-    assert bridge._entry_size({"max_sol_per_trade": "0.00001"}) == Decimal("0.0005")
+def test_entry_size_is_fixed_regardless_of_requested():
+    assert bridge._entry_size({"max_sol_per_trade": "0.5"}) == Decimal("0.009")
+    assert bridge._entry_size({"max_sol_per_trade": "0.00001"}) == Decimal("0.009")
 
 
 def test_live_revalidation_fails_closed_on_poolcheck(monkeypatch):
