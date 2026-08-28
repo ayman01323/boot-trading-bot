@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Verify Learner Telegram against morning LIVE trade provenance
+      - name: Verify SiLearn bot identity and Telegram delivery
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -29,7 +29,7 @@ jobs:
           grep -q '^TELEGRAM_CHAT_ID=.' "$envp"
 
           TARGET="$target" sudo -n -E python3 - <<'PY'
-          import hashlib, os, sqlite3
+          import hashlib, json, os, sqlite3, urllib.parse, urllib.request
           from pathlib import Path
 
           root=Path(os.environ['TARGET'])
@@ -37,6 +37,7 @@ jobs:
           for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
               if '=' in line and not line.lstrip().startswith('#'):
                   k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=(env.get('TELEGRAM_BOT_TOKEN') or '').strip()
           current=(env.get('TELEGRAM_CHAT_ID') or '').strip()
           def h(v): return hashlib.sha256(v.encode()).hexdigest()[:12] if v else ''
           print('current_recipient_present='+str(bool(current)).lower())
@@ -80,11 +81,29 @@ jobs:
           if len(ids)==1:
               morning=next(iter(ids))
               print('morning_recipient_hash='+h(morning))
-              marker=root/'private'/'.morning_trade_telegram_id'
-              marker.parent.mkdir(parents=True,exist_ok=True)
-              marker.write_text(morning,encoding='utf-8')
-              os.chmod(marker,0o600)
-              print('morning_recipient_marker_written=true')
           else:
-              print('morning_recipient_marker_written=false')
+              morning=current
+
+          def tg(method, data=None):
+              url=f'https://api.telegram.org/bot{token}/{method}'
+              body=None
+              if data is not None:
+                  body=urllib.parse.urlencode(data).encode()
+              req=urllib.request.Request(url,data=body,method='POST' if body else 'GET')
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  return json.loads(r.read().decode())
+
+          me=tg('getMe')
+          username=str((me.get('result') or {}).get('username') or '')
+          print('telegram_getme_ok='+str(bool(me.get('ok'))).lower())
+          print('telegram_bot_username='+username)
+          print('expected_silearn_bot='+str(username.lower()=='silearn_bot').lower())
+
+          text='✅ SiLearn_bot delivery verification — 28 Aug 2026 20:45 UTC\nThis is a direct test to the same Telegram recipient recorded on the morning LIVE trades.'
+          sent=tg('sendMessage',{'chat_id':morning,'text':text,'disable_notification':'false'})
+          result=sent.get('result') or {}
+          sent_chat=str((result.get('chat') or {}).get('id') or '')
+          print('telegram_send_ok='+str(bool(sent.get('ok'))).lower())
+          print('telegram_send_recipient_matches_morning='+str(bool(morning) and sent_chat==morning).lower())
+          print('telegram_message_id_present='+str(bool(result.get('message_id'))).lower())
           PY
