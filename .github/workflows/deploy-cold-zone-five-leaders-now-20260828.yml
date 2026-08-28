@@ -1,4 +1,4 @@
-name: Trace Solana Wallet Google Only
+name: SiRisky Wallet Balance Study Google Only
 
 on:
   workflow_dispatch:
@@ -10,70 +10,61 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: sirisky-google-wallet-trace
-  cancel-in-progress: false
-
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Trace target wallet in SiRisky live records
+      - name: Read exact on-chain wallet balances and fees
         shell: bash
-        env:
-          TARGET: 6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
-          sudo -n env TARGET="$TARGET" bash -lc '
+          sudo -n bash -lc '
             set -Eeuo pipefail
             cd /root/SiRisky
-            echo "=== WALLET ATTRIBUTION ==="
             PYTHONPATH=. .venv/bin/python - <<"PY"
-import os
+import csv, json, requests
+from pathlib import Path
 from sirisky.config import Settings
 from sirisky.wallet import WalletStore
-s=Settings.load(); target=os.environ["TARGET"]; wallet=WalletStore(s).address()
-print("target="+target)
-print("sirisky_wallet="+wallet)
-print("sirisky_wallet_match="+str(wallet==target).lower())
-PY
-            echo "=== REFERENCES TO TARGET IN SIRISKY CSV ==="
-            grep -R -n -F "$TARGET" CSV 2>/dev/null | tail -n 80 || true
-            echo "=== EXECUTIONS ==="
-            cat CSV/executions.csv 2>/dev/null | tail -n 40 || true
-            echo "=== OPEN/CLOSED POSITIONS ==="
-            head -n 1 CSV/open_positions.csv 2>/dev/null || true
-            tail -n 20 CSV/open_positions.csv 2>/dev/null || true
-            [ -f CSV/closed_positions.csv ] && { head -n 1 CSV/closed_positions.csv; tail -n 20 CSV/closed_positions.csv; } || true
-            echo "=== RECENT STRATEGY LINKS ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv
-from pathlib import Path
 D=Path("CSV")
-ep=D/"executions.csv"
-if not ep.exists(): raise SystemExit
-rows=list(csv.DictReader(ep.open(encoding="utf-8-sig",newline="")))
-recent=[r for r in rows if (r.get("mode") or "").upper()=="LIVE"][-20:]
-mints={r.get("mint") for r in recent if r.get("mint")}
-print("live_execution_count="+str(len([r for r in rows if (r.get("mode") or "").upper()=="LIVE"])))
-for r in recent:
-    print("EXEC",{k:r.get(k) for k in r if r.get(k) and k in {"timestamp","order_id","action","mint","mode","status","signature","amount_in_raw","amount_out_raw","reason","error"}})
-for p in sorted(D.glob("*.csv")):
-    if p.name=="executions.csv": continue
-    try: rr=list(csv.DictReader(p.open(encoding="utf-8-sig",newline="")))
-    except Exception: continue
-    hits=[]
-    for r in rr:
-        txt="|".join(str(v) for v in r.values())
-        if any(m and m in txt for m in mints): hits.append(r)
-    if hits:
-        print("FILE",p.name)
-        for r in hits[-12:]:
-            keep={k:v for k,v in r.items() if v and k in {"timestamp","opportunity_id","pool_id","mint","strategy_id","action","status","reason","mode","position_id","order_id","source","leader_wallet","wallet","temperature","risk_reasons","forecast_net_pct"}}
-            if keep: print(keep)
+s=Settings.load(); wallet=WalletStore(s).address(); rpc=s.resolve_rpc("http")
+rows=list(csv.DictReader((D/"executions.csv").open(encoding="utf-8-sig",newline="")))
+succ=[r for r in rows if (r.get("mode") or "").upper()=="LIVE" and (r.get("status") or "").upper()=="SUCCESS" and r.get("signature")]
+succ.sort(key=lambda r:int(float(r.get("timestamp") or 0)))
+
+def gettx(sig):
+    q={"jsonrpc":"2.0","id":1,"method":"getTransaction","params":[sig,{"encoding":"jsonParsed","commitment":"confirmed","maxSupportedTransactionVersion":0}]}
+    x=requests.post(rpc,json=q,timeout=20); x.raise_for_status(); j=x.json()
+    if j.get("error"): raise RuntimeError(j["error"])
+    return j.get("result") or {}
+
+def vals(j):
+    msg=((j.get("transaction") or {}).get("message") or {})
+    keys=msg.get("accountKeys") or []
+    pubs=[(k.get("pubkey") if isinstance(k,dict) else str(k)) for k in keys]
+    if wallet not in pubs: raise RuntimeError("wallet not in tx")
+    i=pubs.index(wallet); m=j.get("meta") or {}
+    return int(m["preBalances"][i]),int(m["postBalances"][i]),int(m.get("fee") or 0)
+
+print("wallet="+wallet)
+print("successful_live_transactions="+str(len(succ)))
+fees=0
+records=[]
+for r in succ:
+    pre,post,fee=vals(gettx(r["signature"])); fees+=fee
+    records.append((r,pre,post,fee))
+    print("TX "+json.dumps({"timestamp":r.get("timestamp"),"action":r.get("action"),"mint":r.get("mint"),"pre_sol":pre/1e9,"post_sol":post/1e9,"fee_sol":fee/1e9,"signature":r.get("signature")},sort_keys=True))
+first,pre0,post0,fee0=records[0]
+last,preN,postN,feeN=records[-1]
+print(f"wallet_start_sol={pre0/1e9:.9f}")
+print(f"wallet_end_sol={postN/1e9:.9f}")
+print(f"wallet_delta_sol={(postN-pre0)/1e9:.9f}")
+print(f"successful_tx_network_fees_sol={fees/1e9:.9f}")
+print("first_timestamp="+first["timestamp"])
+print("last_timestamp="+last["timestamp"])
+print("read_only=true")
 PY
-            echo "service=$(systemctl is-active sirisky.service)"
           '
