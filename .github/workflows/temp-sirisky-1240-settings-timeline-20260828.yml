@@ -1,0 +1,40 @@
+name: Temporary SiRisky 1240 Settings Timeline 20260828
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/temp-sirisky-1240-settings-timeline-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read SiRisky backup timeline around 12:40 BST
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            root=/root/SiRisky
+            echo "=== TARGET ==="
+            echo "target_london=2026-08-28T12:40:17+01:00"
+            echo "target_utc=2026-08-28T11:40:17Z"
+            echo "=== RUNTIME-LIKE FILE TIMELINE ==="
+            find "$root/data" -maxdepth 3 -type f \( -name "runtime.csv" -o -name "*runtime*backup*.csv" -o -name "runtime*.csv" \) -printf "%T@|%TY-%Tm-%TdT%TH:%TM:%TSZ|%p\n" 2>/dev/null | sort -n | tail -80
+            echo "=== SETTINGS FOR RELEVANT SNAPSHOTS ==="
+            while IFS= read -r f; do
+              echo "--- $f"
+              stat -c "mtime=%y" "$f" || true
+              grep -E "^(trading_mode|paper_auto_trade_enabled|live_enabled|broadcast_enabled|auto_discovery_enabled|auto_promote_to_selected|auto_evaluate_candidate_limit|manual_approval_enabled|armed_manual_approval|manual_approval_ttl_seconds|manual_approval_require_external_signature|telegram_manual_run_enabled|poll_seconds|auto_probe_sol)," "$f" 2>/dev/null || true
+            done < <(find "$root/data" -maxdepth 3 -type f \( -name "runtime.csv" -o -name "*runtime*backup*.csv" -o -name "runtime*.csv" \) 2>/dev/null | sort)
+            echo "=== CURRENT STAGE3 AND MTIME ==="
+            stat -c "mtime=%y %n" "$root/CSV/stage3_risk.csv" || true
+            grep -E "^(max_open_positions|min_exit_health_pct|max_round_trip_cost_pct|fast_take_profit_floor_pct|fast_take_profit_cap_pct|fast_stop_net_pct|warm_reversal_pct|hot_reversal_pct|fast_max_hold_cap_seconds|lp_recent_sell_sim_max_age_sec)," "$root/CSV/stage3_risk.csv" || true
+          '
