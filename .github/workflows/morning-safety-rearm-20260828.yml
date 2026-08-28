@@ -11,13 +11,13 @@ permissions:
   contents: read
 
 jobs:
-  rearm:
+  verify:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify zero exposure then apply 0.009 SOL fee-efficient profile
+      - name: Verify effective 0.009 SOL profile read-only
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -25,171 +25,108 @@ jobs:
           export TARGET=/home/ayman01323/BOOT/testingbots/learn
           export EXPECTED_SHA=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
           service=learnerbot-learn.service
+
           test "$(cat "$TARGET/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$EXPECTED_SHA"
+          test "$(systemctl is-active "$service")" = active
 
-          python3 - <<'PY'
-          import csv, json, os, sqlite3, urllib.request
-          from pathlib import Path
-          root=Path(os.environ['TARGET']); db=root/'data'/'solana_sibot.sqlite3'
-          con=sqlite3.connect(db); con.row_factory=sqlite3.Row
-          positions=[dict(r) for r in con.execute("select * from positions where mode='LIVE' and status='RECONCILE_REQUIRED'")]
-          open_live=int(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n'])
-          wallets={r['position_id']:dict(r) for r in con.execute('select * from live_position_wallets')}
-          con.close()
-          print('reconcile_positions='+str(len(positions))); print('open_live_positions='+str(open_live))
-          if open_live != 0: raise SystemExit('REFUSE_REARM: OPEN LIVE position exists')
-          endpoints=[]
-          def add(v):
-              v=(v or '').strip().strip('"').strip("'")
-              if v.startswith(('http://','https://')) and v not in endpoints:endpoints.append(v)
-          for line in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
-              if '=' in line and not line.lstrip().startswith('#'):
-                  k,v=line.split('=',1)
-                  if 'RPC' in k.upper() and ('SOL' in k.upper() or 'HELIUS' in k.upper()):add(v)
-          for p in (root/'CSVbot').glob('*rpc*.csv'):
-              try:
-                  for row in csv.reader(p.open(encoding='utf-8',errors='ignore')):
-                      for cell in row:add(cell)
-              except Exception:pass
-          print('rpc_endpoint_count='+str(len(endpoints)))
-          def rpc(method,params):
-              for url in endpoints:
-                  try:
-                      req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(),headers={'content-type':'application/json'})
-                      with urllib.request.urlopen(req,timeout=12) as r:data=json.loads(r.read().decode())
-                      if 'error' not in data:return data.get('result')
-                  except Exception:pass
-              raise RuntimeError('all configured Solana RPC endpoints failed')
-          tids=set(); wallet_addresses=set()
-          for p in positions:
-              w=wallets.get(str(p['position_id'])) or {}; owner=str(w.get('wallet_address') or '')
-              if not owner: raise SystemExit('REFUSE_REARM: missing bound wallet')
-              tids.add(str(p['telegram_id'])); wallet_addresses.add(owner)
-              result=rpc('getTokenAccountsByOwner',[owner,{'mint':str(p['mint'])},{'encoding':'jsonParsed','commitment':'confirmed'}])
-              current=0
-              for a in (result or {}).get('value') or []:
-                  current += int(a['account']['data']['parsed']['info']['tokenAmount']['amount'])
-              print('verified_zero_position='+str(p['position_id'])[:16]+' value='+str(current))
-              if current != 0: raise SystemExit('REFUSE_REARM: reconciled mint still has token balance')
-          if len(tids) != 1: raise SystemExit('REFUSE_REARM: expected exactly one morning trading account')
-          if len(wallet_addresses) != 1: raise SystemExit('REFUSE_REARM: expected one bound morning wallet')
-          owner=next(iter(wallet_addresses)); bal=rpc('getBalance',[owner,{'commitment':'confirmed'}]); lamports=int((bal or {}).get('value') or 0)
-          print('wallet_balance_sol='+format(lamports/1_000_000_000,'.9f'))
-          # 0.009 SOL trade + 0.005 SOL untouched reserve + a small execution-fee buffer.
-          if lamports < 15_000_000: raise SystemExit('REFUSE_REARM: wallet below 0.009 trade + reserve + fee buffer')
-          (root/'private').mkdir(exist_ok=True)
-          marker=root/'private'/'.verified_morning_rearm_tid'
-          marker.write_text(next(iter(tids)),encoding='utf-8'); os.chmod(marker,0o600)
-          PY
-
-          # Overlay only the settings-source size wrapper. Core signing, simulation,
-          # liquidity/impact, execution and reconciliation modules remain untouched.
           patch_src="$GITHUB_WORKSPACE/learnerbot/telegram_sibot_settings_source_patch.py"
           patch_dst="$TARGET/learnerbot/telegram_sibot_settings_source_patch.py"
-          test -f "$patch_src"
-          grep -F 'MAX_FEE_EFFICIENT_SOLANA_LIVE_TRADE_SOL = Decimal("0.009")' "$patch_src"
-          owner=$(stat -c '%U' "$patch_dst")
-          group=$(stat -c '%G' "$patch_dst")
-          sudo -n install -o "$owner" -g "$group" -m 0644 "$patch_src" "$patch_dst"
-          echo 'runtime_size_wrapper_installed=true'
-
-          sudo -n -u ayman01323 env TARGET="$TARGET" python3 - <<'PY'
-          import csv, os
-          from pathlib import Path
-          root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
-          path=root/'CSVbot'/'user_trading_settings.csv'
-          headers=['telegram_id','chain_id','setting','value','description']
-          with path.open('r',encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          wanted={
-            ('-101','solana_live_trade_sol'):('0.009','Fee-efficient guarded Solana LIVE size; execution safety gates unchanged'),
-            ('-101','solana_live_min_reserve_sol'):('0.005','Morning isolated Learner reserve retained'),
-            ('-101','learner_new_entries_enabled'):('true','Learner new-entry gate enabled after verified zero exposure'),
-            ('-101','solana_live_enabled'):('true','Explicit owner LIVE authorization after verified zero exposure'),
-            ('*','sibot_enabled'):('true','SiBot monitoring enabled'),
-            ('*','sibot_auto_trade_enabled'):('true','Automated routing enabled; all execution safety remains authoritative'),
-          }
-          out=[]; seen=set()
-          for row in rows:
-              if str(row.get('telegram_id','')).strip()!=tid:
-                  out.append(row); continue
-              key=(str(row.get('chain_id','*')).strip(),str(row.get('setting','')).strip())
-              if key not in wanted:
-                  out.append(row); continue
-              if key in seen:
-                  continue
-              value,desc=wanted[key]
-              out.append({'telegram_id':tid,'chain_id':key[0],'setting':key[1],'value':value,'description':desc}); seen.add(key)
-          for key,(value,desc) in wanted.items():
-              if key not in seen:
-                  out.append({'telegram_id':tid,'chain_id':key[0],'setting':key[1],'value':value,'description':desc})
-          tmp=path.with_suffix('.csv.tmp')
-          with tmp.open('w',encoding='utf-8',newline='') as f:
-              w=csv.DictWriter(f,fieldnames=headers); w.writeheader(); w.writerows([{h:r.get(h,'') for h in headers} for r in out]); f.flush(); os.fsync(f.fileno())
-          os.replace(tmp,path)
-          print('settings_written=true')
-          PY
-
-          sudo -n systemctl restart "$service"
-          sleep 15
-          test "$(systemctl is-active "$service")" = active
+          test -f "$patch_src" -a -f "$patch_dst"
+          cmp -s "$patch_src" "$patch_dst"
+          grep -F 'MAX_FEE_EFFICIENT_SOLANA_LIVE_TRADE_SOL = Decimal("0.009")' "$patch_dst"
+          echo 'runtime_wrapper_matches_repo=true'
 
           TARGET="$TARGET" python3 - <<'PY'
           import csv, os, sqlite3
+          from decimal import Decimal
           from pathlib import Path
-          root=Path(os.environ['TARGET']); tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip(); path=root/'CSVbot'/'user_trading_settings.csv'
-          with path.open('r',encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          def setting(name,target,default=''):
-              value=default
-              for r in rows:
-                  if r.get('telegram_id','').strip()==tid and r.get('chain_id','*').strip() in ('','0') and r.get('setting','').strip()==name:value=r.get('value',default)
-              for r in rows:
-                  if r.get('telegram_id','').strip()==tid and r.get('chain_id','*').strip()=='*' and r.get('setting','').strip()==name:value=r.get('value',default)
-              if str(target) not in ('','*','0'):
-                  for r in rows:
-                      if r.get('telegram_id','').strip()==tid and r.get('chain_id','').strip()==str(target) and r.get('setting','').strip()==name:value=r.get('value',default)
-              return str(value).strip()
-          print('configured_live_enabled='+setting('solana_live_enabled',-101,'false').lower())
-          print('configured_trade_sol='+setting('solana_live_trade_sol',-101,'0.005'))
-          print('configured_reserve_sol='+setting('solana_live_min_reserve_sol',-101,'0.02'))
-          print('configured_new_entries='+setting('learner_new_entries_enabled',-101,'false').lower())
-          print('configured_sibot_enabled='+setting('sibot_enabled',0,'false').lower())
-          print('configured_sibot_auto='+setting('sibot_auto_trade_enabled',0,'false').lower())
-          con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
-          print('open_live_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n']))
-          print('reconcile_required_positions='+str(con.execute("select count(*) n from positions where mode='LIVE' and status='RECONCILE_REQUIRED'").fetchone()['n']))
-          con.close()
-          assert setting('solana_live_enabled',-101,'false').lower()=='true'
-          assert setting('solana_live_trade_sol',-101,'')=='0.009'
-          assert float(setting('solana_live_min_reserve_sol',-101,'0'))>=0.005
-          assert setting('learner_new_entries_enabled',-101,'false').lower()=='true'
-          assert setting('sibot_enabled',0,'false').lower()=='true'
-          assert setting('sibot_auto_trade_enabled',0,'false').lower()=='true'
-          PY
 
-          echo '=== EFFECTIVE RUNTIME SIZE ==='
-          pid=$(systemctl show -p MainPID --value "$service")
-          test "${pid:-0}" -gt 1
-          py=$(readlink -f "/proc/$pid/exe")
-          echo "runtime_python=$py"
-          sudo -n -u ayman01323 env PYTHONPATH="$TARGET" TARGET="$TARGET" "$py" - <<'PY'
-          import os
-          from pathlib import Path
-          from learnerbot import solana_live_patch as live
-          class A: pass
-          root=Path(os.environ['TARGET']); a=A(); a.csv_dir=root/'CSVbot'; a.data_dir=root/'data'
+          root=Path(os.environ['TARGET'])
           tid=(root/'private'/'.verified_morning_rearm_tid').read_text().strip()
-          trade,reserve=live.live_limits(a,tid)
-          print('effective_trade_sol='+str(trade))
-          print('effective_reserve_sol='+str(reserve))
-          print('live_limits_module='+str(getattr(live.live_limits,'__module__','')))
-          if str(trade) != '0.009': raise SystemExit('REFUSE_PROFILE: runtime effective trade size is not 0.009 SOL')
-          if reserve < live.Decimal('0.005'): raise SystemExit('REFUSE_PROFILE: reserve below morning floor')
+          settings_path=root/'CSVbot'/'user_trading_settings.csv'
+          users_path=root/'CSVbot'/'users.csv'
+          sol_settings_path=root/'CSVbot'/'solana_settings.csv'
+
+          def rows(path):
+              with path.open('r',encoding='utf-8-sig',newline='') as f:
+                  return list(csv.DictReader(f))
+
+          settings=rows(settings_path)
+          users=rows(users_path)
+          sol_settings={str(r.get('setting') or '').strip():str(r.get('value') or '').strip() for r in rows(sol_settings_path)}
+
+          def user_setting(who, chain_id, name, default=None):
+              value=default
+              target=str(chain_id).strip()
+              for r in settings:
+                  if str(r.get('telegram_id') or '').strip()!=str(who): continue
+                  scope=str(r.get('chain_id','*')).strip()
+                  if scope in ('','0') and str(r.get('setting') or '').strip()==name:
+                      value=r.get('value',default)
+              for r in settings:
+                  if str(r.get('telegram_id') or '').strip()!=str(who): continue
+                  if str(r.get('chain_id','*')).strip()=='*' and str(r.get('setting') or '').strip()==name:
+                      value=r.get('value',default)
+              if target not in ('','*','0'):
+                  for r in settings:
+                      if str(r.get('telegram_id') or '').strip()!=str(who): continue
+                      if str(r.get('chain_id','')).strip()==target and str(r.get('setting') or '').strip()==name:
+                          value=r.get('value',default)
+              return value
+
+          source=str(user_setting(tid,0,'sibot_settings_source','SELF') or 'SELF').strip().upper()
+          source_tid=tid
+          if source=='PRIMARY_MASTER':
+              original=next((r for r in users if str(r.get('telegram_id') or '').strip()=='5923828381' and str(r.get('role') or '').strip().upper()=='MASTER'),None)
+              if original:
+                  source_tid='5923828381'
+              else:
+                  first=next((r for r in users if str(r.get('role') or '').strip().upper()=='MASTER' and str(r.get('telegram_id') or '').strip()),None)
+                  if first: source_tid=str(first.get('telegram_id') or '').strip()
+
+          base_trade=Decimal(sol_settings.get('live_trade_sol') or '0.005')
+          raw_trade=user_setting(source_tid,-101,'solana_live_trade_sol',None)
+          requested=Decimal(str(raw_trade)) if raw_trade is not None else base_trade
+          effective_trade=min(Decimal('0.009'),max(Decimal('0.0005'),requested))
+
+          base_reserve=Decimal(sol_settings.get('live_min_sol_reserve') or '0.02')
+          raw_reserve=user_setting(source_tid,-101,'solana_live_min_reserve_sol',None)
+          effective_reserve=max(Decimal('0.005'),Decimal(str(raw_reserve))) if raw_reserve is not None else max(Decimal('0.01'),base_reserve)
+
+          live=str(user_setting(tid,-101,'solana_live_enabled','false')).strip().lower() in ('1','true','yes','on','y')
+          entries=str(user_setting(tid,-101,'learner_new_entries_enabled','false')).strip().lower() in ('1','true','yes','on','y')
+          sibot=str(user_setting(tid,0,'sibot_enabled','false')).strip().lower() in ('1','true','yes','on','y')
+          auto=str(user_setting(tid,0,'sibot_auto_trade_enabled','false')).strip().lower() in ('1','true','yes','on','y')
+
+          con=sqlite3.connect(root/'data'/'solana_sibot.sqlite3'); con.row_factory=sqlite3.Row
+          open_live=int(con.execute("select count(*) n from positions where mode='LIVE' and status='OPEN'").fetchone()['n'])
+          reconcile=int(con.execute("select count(*) n from positions where mode='LIVE' and status='RECONCILE_REQUIRED'").fetchone()['n'])
+          con.close()
+
+          print('settings_source='+source)
+          print('effective_trade_sol='+str(effective_trade))
+          print('effective_reserve_sol='+str(effective_reserve))
+          print('effective_live_enabled='+str(live).lower())
+          print('effective_new_entries='+str(entries).lower())
+          print('effective_sibot_enabled='+str(sibot).lower())
+          print('effective_sibot_auto='+str(auto).lower())
+          print('open_live_positions='+str(open_live))
+          print('reconcile_required_positions='+str(reconcile))
+          print('live_max_positions='+str(sol_settings.get('live_max_positions','')))
+          print('live_require_simulation='+str(sol_settings.get('live_require_simulation','')).lower())
+
+          assert effective_trade==Decimal('0.009')
+          assert effective_reserve>=Decimal('0.005')
+          assert live and entries and sibot and auto
+          assert str(sol_settings.get('live_max_positions','')).strip()=='1'
+          assert str(sol_settings.get('live_require_simulation','')).strip().lower()=='true'
           PY
 
-          echo '=== SAFETY CORE UNCHANGED ==='
-          grep -E '^(live_max_positions|live_require_simulation|live_max_combined_impact_slippage_bps|live_max_rent_exposure_lamports),' "$TARGET/CSVbot/solana_settings.csv" || true
-          journalctl -u "$service" -n 260 --no-pager -o cat 2>/dev/null | grep -F 'max_live_trade_sol=0.009' | tail -2
-          echo 'fee_efficient_profile=SUCCESS'
+          echo '=== STARTUP WRAPPER EVIDENCE ==='
+          journalctl -u "$service" --since '2026-08-28 21:20:00' --no-pager -o cat 2>/dev/null \
+            | grep -F 'max_live_trade_sol=0.009' | tail -3
+
+          echo 'fee_efficient_profile=VERIFIED'
           echo 'trade_size_sol=0.009'
           echo 'manual_forced_trade=NO'
           echo 'next_trade=ONLY_WHEN_EXISTING_SAFETY_GATES_PASS'
