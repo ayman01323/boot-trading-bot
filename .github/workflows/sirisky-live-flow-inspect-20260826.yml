@@ -48,7 +48,7 @@ def parse(p):
 s=parse(src); d=parse(dst)
 changed=[]
 for k in keys:
-    if s.get(k,"`).strip():
+    if s.get(k,"").strip():
         d[k]=s[k]; changed.append(k)
 if not d.get("TELEGRAM_BOT_TOKEN","").strip():
     raise SystemExit("production TELEGRAM_BOT_TOKEN is missing")
@@ -88,7 +88,6 @@ print('configured_chat_ids='+str(len(app.telegram_chat_ids)))
 me=get_me(app.telegram_bot_token)
 print('telegram_getme_ok=true')
 print('bot_username='+str(me.get('username') or ''))
-# Pick the active Solana user that has signing enabled; do not print the id.
 users=[]
 p=Path('CSVbot/users.csv')
 if p.exists():
