@@ -14,6 +14,7 @@ from sirisky.csvio import as_bool
 from sirisky.engine import SiRiskyEngine
 from sirisky.jupiter import quote_only, WSOL_MINT, USDC_MINT, wallet_balance_lamports
 from sirisky.manual_approval import ManualApprovalGate
+from sirisky.position_telegram import PositionTelegramReporter
 from sirisky.rpc import rpc_call
 from sirisky.telegram import TelegramClient
 from sirisky.wallet import WalletStore
@@ -181,6 +182,22 @@ def _runtime_interval(settings,key,default,minimum=60.0):
 
 def start(settings):
     engine=SiRiskyEngine(settings); tg=TelegramClient(settings); stop=threading.Event(); tg.run_thread(lambda c,ch:telegram_handler(engine,settings,c,ch),stop)
+    position_reporter=PositionTelegramReporter(settings)
+    position_notice_lock=threading.Lock()
+    def _dispatch_position_notices(result):
+        snapshot=dict(result or {})
+        def worker():
+            if not position_notice_lock.acquire(blocking=False):
+                return
+            try:
+                for message in position_reporter.messages(snapshot,engine):
+                    if message:
+                        tg.send(message)
+            except Exception as exc:
+                print(f"SiRisky Telegram position notice error: {type(exc).__name__}",file=sys.stderr,flush=True)
+            finally:
+                position_notice_lock.release()
+        threading.Thread(target=worker,name="sirisky-position-telegram",daemon=True).start()
     tg.send("SiRisky started. Manual per-trade approval is supported; server-side transaction broadcast remains CSV-gated and external/manual signing is required when the approval gate is enabled.")
     def sig(*_): stop.set()
     signal.signal(signal.SIGTERM,sig); signal.signal(signal.SIGINT,sig)
@@ -191,12 +208,14 @@ def start(settings):
     while not stop.is_set():
         try:
             result=engine.run_once(); status=str(result.get("status") or "")
+            _dispatch_position_notices(result)
             if status=="WAITING_FOR_MANUAL_APPROVAL":
                 if result.get("new_proposal") and result.get("proposal"):
                     tg.send(ManualApprovalGate(settings).format_for_user(result["proposal"]))
-            elif status in {"OPENED","CLOSED"}:
-                # Position state changes remain immediate and are never rate-limited.
-                tg.send(_format_result_notice(result,settings))
+            elif status in {"OPENED","CLOSED","HOLD"}:
+                # Rich BUY/SELL/NewPoll45 messages are emitted asynchronously by
+                # PositionTelegramReporter so reporting can never delay trading.
+                pass
             elif status=="CANDIDATE_BATCH_NO_OPEN":
                 # Candidate sets and statuses can change every few seconds, which made
                 # key-based de-duplication ineffective. Send at most one routine batch
