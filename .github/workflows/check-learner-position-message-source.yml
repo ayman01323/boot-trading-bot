@@ -19,11 +19,33 @@ jobs:
         run: |
           set -euo pipefail
           target=/home/ayman01323/BOOT/testingbots/learn
-          echo '=== MATCHED FILES ==='
-          grep -RIl --exclude='*.pyc' --exclude-dir='__pycache__' 'LEARNER POSITION UPDATE' "$target/learnerbot" || true
-          echo '=== MATCHED LINES ==='
-          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -C 8 'LEARNER POSITION UPDATE' "$target/learnerbot" || true
-          echo '=== NEWPOLL IMPORTS ==='
-          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'telegram_learner_position_update|telegram_learner_pool_context|telegram_learner_complete_market_context|google_learner_launcher' "$target/learnerbot/final_runtime_integrity_patch.py" "$target/learnerbot/__main__.py" || true
-          echo 'runtime_service='$(systemctl is-active learnerbot-learn.service)
-          echo 'runtime_pid='$(systemctl show -p MainPID --value learnerbot-learn.service)
+          service=learnerbot-learn.service
+          echo '=== SOURCE CONTRACT ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'NewPoll45 • Open Position|Total open positions|FULL SALE RESULT|Pool change since open|DEX Viewer' \
+            "$target/learnerbot/telegram_learner_position_update_patch.py" \
+            "$target/learnerbot/telegram_learner_pool_context_patch.py" \
+            "$target/learnerbot/telegram_learner_complete_market_context_patch.py" \
+            "$target/learnerbot/telegram_learner_newpoll_full_format_patch.py" || true
+          echo '=== IMPORT CHAIN ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'telegram_learner_position_update|telegram_learner_pool_context|telegram_learner_complete_market_context|telegram_learner_newpoll_full_format' \
+            "$target/learnerbot/final_runtime_integrity_patch.py" \
+            "$target/learnerbot/telegram_learner_pool_context_patch.py" || true
+          pid="$(systemctl show -p MainPID --value "$service")"
+          started="$(systemctl show -p ActiveEnterTimestamp --value "$service")"
+          echo "runtime_service=$(systemctl is-active "$service")"
+          echo "runtime_pid=$pid"
+          echo "runtime_started=$started"
+          echo '=== CURRENT INVOCATION MARKERS ==='
+          sudo -n journalctl -u "$service" --since "$started" --no-pager -o cat \
+            | grep -E '\[learner-newpoll45\]|\[learner-pool-context\]|\[learner-complete-market-context\]|\[learner-newpoll-full-format\]' \
+            | tail -40 || true
+          if sudo -n journalctl -u "$service" --since "$started" --no-pager -o cat | grep -q '\[learner-complete-market-context\].*active=true'; then
+            echo 'complete_market_context_runtime=ACTIVE'
+          else
+            echo 'complete_market_context_runtime=NOT_LOADED_IN_CURRENT_PROCESS'
+          fi
+          if sudo -n journalctl -u "$service" --since "$started" --no-pager -o cat | grep -q '\[learner-newpoll-full-format\].*active=true'; then
+            echo 'newpoll_full_format_runtime=ACTIVE'
+          else
+            echo 'newpoll_full_format_runtime=NOT_LOADED_IN_CURRENT_PROCESS'
+          fi
