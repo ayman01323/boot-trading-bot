@@ -6,6 +6,7 @@ import signal
 import time
 from typing import Any
 
+from .control import is_armed, load_state
 from .core import Journal, StrategyEngine, load_config
 from .feed_safety import FeedSafetyError
 from .live_feed import FeedWarmupError, SolanaNativeLiveFeed
@@ -24,30 +25,45 @@ def _research_payload(assessment: Any) -> dict[str, Any]:
     }
 
 
-def _process_snapshot(engine: StrategyEngine, journal: Journal, snap, *, equity: float, min_confidence: float) -> float:
+def _process_snapshot(
+    engine: StrategyEngine,
+    journal: Journal,
+    snap,
+    *,
+    equity: float,
+    min_confidence: float,
+    armed: bool,
+) -> float:
     position = engine.positions.get(snap.asset_key)
     if position:
+        # Existing PAPER positions remain exitable even after disarm.
         decision = engine.evaluate_exit(position, snap, now=snap.ts)
         if decision.action in {"EXIT", "EMERGENCY"}:
             pnl = engine.close_paper(position, snap, decision)
             equity += pnl
-            print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": decision.action, "reason": decision.reason, "pnl_usd": pnl, "equity": equity, "paper": True, "feed": "real"}), flush=True)
+            print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": decision.action, "reason": decision.reason, "pnl_usd": pnl, "equity": equity, "armed": armed, "paper": True, "feed": "real"}), flush=True)
         else:
-            print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": "HOLD", "reason": decision.reason, "paper": True, "feed": "real"}), flush=True)
+            print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": "HOLD", "reason": decision.reason, "armed": armed, "paper": True, "feed": "real"}), flush=True)
         return equity
 
     assessment = assess_snapshot(snap, engine.risk, now=snap.ts, min_confidence=min_confidence)
     journal.event("RESEARCH", snap.asset_key, _research_payload(assessment))
     if assessment.label == "REJECT":
         reason = "GROK_RESEARCH_REJECT:" + "|".join(assessment.reasons or ("LOW_COMPOSITE_CONFIDENCE",))
-        journal.event("REJECT", snap.asset_key, {"reason": reason, "research_confidence": assessment.confidence, "paper": True, "feed": "real"})
-        print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": "REJECT", "reason": reason, "research_confidence": assessment.confidence, "paper": True, "feed": "real"}), flush=True)
+        journal.event("REJECT", snap.asset_key, {"reason": reason, "research_confidence": assessment.confidence, "armed": armed, "paper": True, "feed": "real"})
+        print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": "REJECT", "reason": reason, "research_confidence": assessment.confidence, "armed": armed, "paper": True, "feed": "real"}), flush=True)
+        return equity
+
+    if not armed:
+        reason = "GROK_PAPER_DISARMED"
+        journal.event("REJECT", snap.asset_key, {"reason": reason, "research_confidence": assessment.confidence, "armed": False, "paper": True, "feed": "real"})
+        print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, "action": "DISARMED", "reason": reason, "research_label": assessment.label, "research_confidence": assessment.confidence, "armed": False, "paper": True, "feed": "real"}), flush=True)
         return equity
 
     decision = engine.evaluate_entry(snap, equity, now=snap.ts)
     if decision.action == "ENTER":
         engine.open_paper(snap, decision)
-    print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, **decision.__dict__, "research_label": assessment.label, "research_confidence": assessment.confidence, "paper": True, "feed": "real"}), flush=True)
+    print(json.dumps({"ts": snap.ts, "asset": snap.asset_key, **decision.__dict__, "research_label": assessment.label, "research_confidence": assessment.confidence, "armed": armed, "paper": True, "feed": "real"}), flush=True)
     return equity
 
 
@@ -73,36 +89,45 @@ def main(argv: list[str] | None = None) -> int:
     unsupported = [asset.key for asset in assets.values() if asset.enabled and not feed.supported(asset)]
     if not supported:
         raise SystemExit("No supported enabled real-feed assets; enable native Solana SOL")
-    journal.event("PAPER_RUNNER_START", None, {"supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds, "paper": True, "feed": "real"})
-    print(json.dumps({"status": "STARTED", "mode": "PAPER", "feed": "REAL_PUBLIC", "supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds}), flush=True)
+    state = load_state()
+    journal.event("PAPER_RUNNER_START", None, {"supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds, "armed": bool(state.get("armed")), "paper": True, "feed": "real"})
+    print(json.dumps({"status": "STARTED", "mode": "PAPER", "feed": "REAL_PUBLIC", "armed": bool(state.get("armed")), "live_money_enabled": False, "supported_assets": [a.key for a in supported], "unsupported_enabled_assets": unsupported, "poll_seconds": feed.settings.poll_seconds}), flush=True)
     running = True
+
     def stop(_signum, _frame) -> None:
         nonlocal running
         running = False
+
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     equity = float(args.equity)
+    last_armed = bool(state.get("armed"))
     while running:
         cycle_started = time.time()
+        armed = is_armed()
+        if armed != last_armed:
+            journal.event("ARM_STATE_CHANGED", None, {"armed": armed, "mode": "PAPER_ONLY", "live_money_enabled": False})
+            print(json.dumps({"status": "ARM_STATE_CHANGED", "armed": armed, "mode": "PAPER_ONLY", "live_money_enabled": False}), flush=True)
+            last_armed = armed
         for asset in supported:
             try:
                 envelope = feed.collect(asset, now=time.time())
                 snap = envelope.snapshot
-                journal.event("REAL_FEED_SNAPSHOT", asset.key, {"market_data_max_age_ms": envelope.market_data_max_age_ms, "provider_disagreement_pct": envelope.provider_disagreement_pct, "field_sources": dict(envelope.field_sources), "paper": True})
-                equity = _process_snapshot(engine, journal, snap, equity=equity, min_confidence=float(args.research_min_confidence))
+                journal.event("REAL_FEED_SNAPSHOT", asset.key, {"market_data_max_age_ms": envelope.market_data_max_age_ms, "provider_disagreement_pct": envelope.provider_disagreement_pct, "field_sources": dict(envelope.field_sources), "armed": armed, "paper": True})
+                equity = _process_snapshot(engine, journal, snap, equity=equity, min_confidence=float(args.research_min_confidence), armed=armed)
             except FeedWarmupError as exc:
-                journal.event("FEED_WARMUP", asset.key, {"reason": str(exc), "paper": True})
-                print(json.dumps({"ts": time.time(), "asset": asset.key, "action": "WARMUP", "reason": str(exc), "paper": True, "feed": "real"}), flush=True)
+                journal.event("FEED_WARMUP", asset.key, {"reason": str(exc), "armed": armed, "paper": True})
+                print(json.dumps({"ts": time.time(), "asset": asset.key, "action": "WARMUP", "reason": str(exc), "armed": armed, "paper": True, "feed": "real"}), flush=True)
             except (FeedSafetyError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-                journal.event("FEED_REJECT", asset.key, {"reason": f"{type(exc).__name__}:{exc}", "paper": True})
-                print(json.dumps({"ts": time.time(), "asset": asset.key, "action": "FEED_REJECT", "reason": f"{type(exc).__name__}:{exc}", "paper": True, "feed": "real"}), flush=True)
+                journal.event("FEED_REJECT", asset.key, {"reason": f"{type(exc).__name__}:{exc}", "armed": armed, "paper": True})
+                print(json.dumps({"ts": time.time(), "asset": asset.key, "action": "FEED_REJECT", "reason": f"{type(exc).__name__}:{exc}", "armed": armed, "paper": True, "feed": "real"}), flush=True)
         if args.once:
             break
         sleep_for = max(0.0, feed.settings.poll_seconds - (time.time() - cycle_started))
         if sleep_for > 0:
             time.sleep(sleep_for)
-    journal.event("PAPER_RUNNER_STOP", None, {"equity": equity, "paper": True, "feed": "real"})
-    print(json.dumps({"status": "STOPPED", "equity": equity, "paper": True, "feed": "real"}), flush=True)
+    journal.event("PAPER_RUNNER_STOP", None, {"equity": equity, "armed": is_armed(), "paper": True, "feed": "real"})
+    print(json.dumps({"status": "STOPPED", "equity": equity, "armed": is_armed(), "paper": True, "feed": "real"}), flush=True)
     return 0
 
 

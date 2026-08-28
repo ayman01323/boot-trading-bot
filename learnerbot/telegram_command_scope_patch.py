@@ -8,12 +8,13 @@ from .user_registry import all_users
 
 _PREV_SET_COMMANDS = _ui.set_commands
 
-# Commands whose handlers are MASTER-only in telegram_ui.py, plus /autodeploy.
+# Commands whose handlers are MASTER-only in telegram_ui.py, plus bounded
+# operator controls installed by later patches.
 MASTER_ONLY = {
     "control", "platformlive", "platformauto", "adminusers", "admincode", "engine",
     "setmax", "setprofit", "setcopy", "setedge", "setage", "setcanary", "setscore",
     "alerts", "copy20", "signals", "wallets", "profit", "behaviours", "rankings",
-    "strategies", "report", "autodeploy",
+    "strategies", "report", "autodeploy", "grokstatus", "grokarm", "grokstop",
 }
 
 # The blue Telegram command sheet is navigation, not the feature surface.
@@ -63,8 +64,16 @@ def set_commands(token: str):
     # smaller than the command handlers available to the user.
     _PREV_SET_COMMANDS(token)
     current = _dedupe(_tg._json("getMyCommands", token, payload={}, timeout=15) or [])
-    if not any(x["command"] == "autodeploy" for x in current):
-        current.append({"command": "autodeploy", "description": "MASTER deployment status"})
+    additions = {
+        "autodeploy": "MASTER deployment status",
+        "grokstatus": "MASTER Grok PAPER status",
+        "grokarm": "MASTER Grok PAPER arm control",
+        "grokstop": "MASTER Grok PAPER stop",
+    }
+    present = {x["command"] for x in current}
+    for command, description in additions.items():
+        if command not in present:
+            current.append({"command": command, "description": description})
 
     non_master_commands = [
         x for x in current
@@ -148,5 +157,8 @@ from . import telegram_kimi_seventh_review_patch  # noqa: E402,F401
 from . import ai_recovery_health_patch  # noqa: E402,F401
 # MASTER Telegram can dispatch the already-bounded DeepSeek GitHub/VPS workflows.
 from . import telegram_deepseek_control_patch  # noqa: E402,F401
+# Grok known-assets has a completely separate PAPER arm state. These commands do
+# not touch Claude/SiBot ARM/LIVE controls and cannot enable transaction broadcast.
+from . import telegram_grok_known_assets_control_patch  # noqa: E402,F401
 # Make the Auto Updates category control state-aware: ON can be tapped OFF, OFF can be tapped ON.
 from . import telegram_auto_updates_category_toggle_patch  # noqa: E402,F401
