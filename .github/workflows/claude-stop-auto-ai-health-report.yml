@@ -1,0 +1,76 @@
+name: Claude Stop Automatic AI Health Report
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/ai_agent_health_4h_patch.py'
+      - '.github/workflows/claude-stop-auto-ai-health-report.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-stop-auto-ai-health-report
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      SERVICE: claude-trading-bot.service
+    steps:
+      - name: Check out trusted current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify bounded Google target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(whoami)" = ayman01323
+          test -d "$MANAGED_REPO/.git"
+          test -f learnerbot/ai_agent_health_4h_patch.py
+          grep -q 'AUTOMATIC_TELEGRAM_HEALTH_ALERTS_ENABLED = False' learnerbot/ai_agent_health_4h_patch.py
+          grep -q 'automatic Telegram warnings disabled by owner' learnerbot/ai_agent_health_4h_patch.py
+          echo 'bounded_target=PASS'
+
+      - name: Deploy only automatic-health-alert stop patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 0644 learnerbot/ai_agent_health_4h_patch.py \
+            "$MANAGED_REPO/learnerbot/ai_agent_health_4h_patch.py"
+          "$MANAGED_REPO/.venv/bin/python" -m py_compile \
+            "$MANAGED_REPO/learnerbot/ai_agent_health_4h_patch.py"
+          echo 'health_alert_stop_patch_compile=PASS'
+
+      - name: Restart only isolated Claude service
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemctl restart "$SERVICE"
+          sleep 20
+          test "$(systemctl is-active "$SERVICE")" = active
+          systemctl show "$SERVICE" -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
+
+      - name: Verify watcher is disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$(sudo -n journalctl -u "$SERVICE" --since '3 minutes ago' --no-pager)"
+          printf '%s\n' "$log" | grep '\[ai-agent-health\] automatic Telegram warnings disabled by owner'
+          if printf '%s\n' "$log" | grep -Eq 'Traceback|Main process exited|Failed with result'; then
+            echo 'Fatal runtime error detected after bounded restart' >&2
+            printf '%s\n' "$log" | tail -160
+            exit 4
+          fi
+          echo 'CLAUDE_AUTO_AI_HEALTH_REPORT_DISABLED=PASS'
+          echo 'LIVE_ARMED_STATE_NOT_CHANGED_BY_WORKFLOW=true'
+          echo 'NO_SIGN_OR_BROADCAST=true'
