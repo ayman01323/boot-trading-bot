@@ -2,6 +2,7 @@ name: SiRisky Live Flow Inspect 20260826
 
 on:
   push:
+    branches: [main]
     paths:
       - '.github/workflows/sirisky-live-flow-inspect-20260826.yml'
   workflow_dispatch:
@@ -22,50 +23,40 @@ jobs:
           target=/home/ayman01323/BOOT/testingbots/learn
           echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
           echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
-          sudo -n TARGET="$target" python3 - <<'PY'
-          import os
-          from pathlib import Path
-          root=Path(os.environ['TARGET'])
-          candidates=[]
-          for base in [root, root/'backups', Path('/root/SiRisky'), Path('/var/tmp')]:
-              if not base.exists(): continue
-              try:
-                  it=base.rglob('*') if base.is_dir() else [base]
-                  for p in it:
-                      try:
-                          if not p.is_file() or p.stat().st_size>2_000_000: continue
-                          name=p.name.lower()
-                          if not (name.startswith('.env') or 'env' in name or 'config' in name or 'backup' in str(p).lower()): continue
-                          text=p.read_text(encoding='utf-8',errors='ignore')
-                          for line in text.splitlines():
-                              if line.startswith('TELEGRAM_BOT_TOKEN=') and line.split('=',1)[1].strip():
-                                  candidates.append(str(p)); break
-                      except Exception:
-                          pass
-              except Exception:
-                  pass
-          # Never print token values or full private paths; only coarse source classification.
-          print('telegram_token_sources='+str(len(set(candidates))))
-          print('source_in_learner_tree='+str(any(str(root) in p for p in candidates)).lower())
-          print('source_in_learner_backups='+str(any(str(root/'backups') in p for p in candidates)).lower())
-          print('source_in_sirisky='+str(any('/root/SiRisky/' in p for p in candidates)).lower())
-          print('source_in_vartmp='+str(any('/var/tmp/' in p for p in candidates)).lower())
-          # Store the best matching path only in a root-only marker for the next step; no secret copied yet.
-          priority=[]
-          for p in candidates:
-              score=0
-              if str(root/'backups') in p: score=40
-              elif str(root) in p: score=30
-              elif '/root/SiRisky/' in p: score=20
-              elif '/var/tmp/' in p: score=10
-              priority.append((score,p))
-          if priority:
-              chosen=max(priority)[1]
-              marker=root/'private'/'.telegram_source_path'
-              marker.parent.mkdir(parents=True,exist_ok=True)
-              marker.write_text(chosen,encoding='utf-8')
-              os.chmod(marker,0o600)
-              print('usable_prior_token_source=true')
-          else:
-              print('usable_prior_token_source=false')
-          PY
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            target=/home/ayman01323/BOOT/testingbots/learn
+            marker="$target/private/.telegram_source_path"
+            rm -f "$marker"
+            mkdir -p "$target/private"
+            count=0
+            in_backups=false
+            in_tree=false
+            in_sirisky=false
+            in_vartmp=false
+            chosen=""
+            while IFS= read -r f; do
+              if grep -q "^TELEGRAM_BOT_TOKEN=." "$f" 2>/dev/null; then
+                count=$((count+1))
+                case "$f" in
+                  "$target"/backups/*) in_backups=true; [[ -n "$chosen" ]] || chosen="$f" ;;
+                  "$target"/*) in_tree=true; [[ -n "$chosen" ]] || chosen="$f" ;;
+                  /root/SiRisky/*) in_sirisky=true; [[ -n "$chosen" ]] || chosen="$f" ;;
+                  /var/tmp/*) in_vartmp=true; [[ -n "$chosen" ]] || chosen="$f" ;;
+                esac
+              fi
+            done < <(find "$target" /root/SiRisky /var/tmp -maxdepth 5 -type f -size -2M \( -name ".env*" -o -iname "*env*" -o -iname "*config*" -o -path "*/backups/*" \) 2>/dev/null | sort -u)
+            echo "telegram_token_sources=$count"
+            echo "source_in_learner_backups=$in_backups"
+            echo "source_in_learner_tree=$in_tree"
+            echo "source_in_sirisky=$in_sirisky"
+            echo "source_in_vartmp=$in_vartmp"
+            if [[ -n "$chosen" ]]; then
+              printf "%s" "$chosen" > "$marker"
+              chmod 600 "$marker"
+              chown ayman01323:ayman01323 "$marker"
+              echo "usable_prior_token_source=true"
+            else
+              echo "usable_prior_token_source=false"
+            fi
+          '
