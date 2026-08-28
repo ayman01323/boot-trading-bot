@@ -13,7 +13,7 @@ permissions:
 jobs:
   hotfix:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - name: Verify direct Min SOL Trade button in isolated Learner menu
         shell: bash
@@ -31,89 +31,102 @@ jobs:
           echo direct_min_sol_menu=installed
           echo service=active
 
-      - name: Compare Telegram polling ownership safely
+      - name: Prove isolated bot identity differs from main Learner
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
           TARGET="$target" sudo -n -E python3 - <<'PY'
-          import hashlib, json, os, subprocess, urllib.request
+          import json, os, subprocess, urllib.request
           from pathlib import Path
 
           target=Path(os.environ['TARGET'])
-
           def env_file_token(path):
               try:
                   for line in Path(path).read_text(encoding='utf-8',errors='ignore').splitlines():
-                      if '=' not in line or line.lstrip().startswith('#'):
-                          continue
+                      if '=' not in line or line.lstrip().startswith('#'): continue
                       k,v=line.split('=',1)
-                      if k.strip()=='TELEGRAM_BOT_TOKEN' and v.strip():
-                          return v.strip().strip('"').strip("'")
-              except Exception:
-                  pass
+                      if k.strip()=='TELEGRAM_BOT_TOKEN' and v.strip(): return v.strip().strip('"').strip("'")
+              except Exception: pass
               return ''
-
-          def proc_env(pid, key):
+          def pid(service):
+              try: return int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
+              except Exception: return 0
+          def proc_env(p,key):
               try:
-                  raw=Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
-                  prefix=(key+'=').encode()
-                  for item in raw:
-                      if item.startswith(prefix):
-                          return item[len(prefix):].decode(errors='ignore')
-              except Exception:
-                  pass
+                  for item in Path(f'/proc/{p}/environ').read_bytes().split(b'\0'):
+                      prefix=(key+'=').encode()
+                      if item.startswith(prefix): return item[len(prefix):].decode(errors='ignore')
+              except Exception: pass
               return ''
-
-          def mainpid(service):
-              try:
-                  return int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
-              except Exception:
-                  return 0
-
-          def cwd(pid):
-              try: return Path(os.readlink(f'/proc/{pid}/cwd'))
+          def cwd(p):
+              try: return Path(os.readlink(f'/proc/{p}/cwd'))
               except Exception: return None
-
-          def token_for(service, fallback_dir=None):
-              pid=mainpid(service)
-              tok=proc_env(pid,'TELEGRAM_BOT_TOKEN') if pid else ''
-              base=cwd(pid) if pid else None
-              if not tok and base:
-                  tok=env_file_token(base/'.env')
-              if not tok and fallback_dir:
-                  tok=env_file_token(Path(fallback_dir)/'.env')
-              return tok,pid,base
-
-          iso,ip,icwd=token_for('learnerbot-learn.service',target)
-          main,mp,mcwd=token_for('learnerbot.service')
-          print('isolated_service_active='+str(bool(ip)).lower())
-          print('main_service_active='+str(bool(mp)).lower())
-          print('isolated_token_present='+str(bool(iso)).lower())
-          print('main_token_present='+str(bool(main)).lower())
-          print('same_bot_token='+str(bool(iso and main and iso==main)).lower())
-          print('isolated_outbound_only='+str((env_file_token(target/'.env')!='' and any(line.strip().lower()=='learner_telegram_outbound_only=true' for line in (target/'.env').read_text(encoding='utf-8',errors='ignore').splitlines()))).lower())
-
-          for label,tok in [('isolated',iso),('main',main)]:
-              if not tok:
-                  continue
-              try:
-                  with urllib.request.urlopen(f'https://api.telegram.org/bot{tok}/getMe',timeout=8) as r:
-                      data=json.loads(r.read().decode())
-                  username=str((data.get('result') or {}).get('username') or '')
-                  print(label+'_getme_ok='+str(bool(data.get('ok'))).lower())
-                  print(label+'_is_silearn='+str(username.lower()=='silearn_bot').lower())
-              except Exception as exc:
-                  print(label+'_getme_error='+type(exc).__name__)
+          def token(service,fallback=None):
+              p=pid(service); t=proc_env(p,'TELEGRAM_BOT_TOKEN') if p else ''; c=cwd(p) if p else None
+              if not t and c: t=env_file_token(c/'.env')
+              if not t and fallback: t=env_file_token(Path(fallback)/'.env')
+              return t
+          iso=token('learnerbot-learn.service',target)
+          main=token('learnerbot.service')
+          if not iso: raise SystemExit('isolated Telegram token unavailable')
+          print('same_bot_token='+str(bool(main and iso==main)).lower())
+          with urllib.request.urlopen(f'https://api.telegram.org/bot{iso}/getMe',timeout=8) as r:
+              data=json.loads(r.read().decode())
+          username=str((data.get('result') or {}).get('username') or '')
+          print('isolated_is_silearn='+str(bool(data.get('ok')) and username.lower()=='silearn_bot').lower())
+          if main and iso==main: raise SystemExit('refusing duplicate Telegram polling: bot token shared with main Learner')
+          if username.lower()!='silearn_bot': raise SystemExit('isolated token is not SiLearn_bot')
           PY
-          echo '--- main learner telegram journal ---'
-          sudo -n journalctl -u learnerbot.service --since '12 hours ago' --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'telegram-menu|outbound-only|getupdates|409|conflict|webhook' \
-            | tail -80 \
-            | sed -E 's/[0-9]{7,}/<id>/g' || true
-          echo '--- isolated learner telegram journal ---'
-          sudo -n journalctl -u learnerbot-learn.service --since '12 hours ago' --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'telegram-menu|outbound-only|getupdates|409|conflict|webhook' \
-            | tail -80 \
+
+      - name: Enable SiLearn inbound polling with automatic conflict rollback
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          envfile="$target/.env"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$target/private/.env.before-silearn-inbound-$stamp"
+          sudo -n cp -a "$envfile" "$backup"
+          start="$(date -u '+%Y-%m-%d %H:%M:%S')"
+          ENVFILE="$envfile" sudo -n -E python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ENVFILE'])
+          lines=p.read_text(encoding='utf-8',errors='ignore').splitlines()
+          out=[]; found=False
+          for line in lines:
+              if '=' in line and line.split('=',1)[0].strip()=='LEARNER_TELEGRAM_OUTBOUND_ONLY':
+                  if not found: out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false'); found=True
+              else: out.append(line)
+          if not found: out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
+          p.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          os.chmod(p,0o600)
+          PY
+          sudo -n chown ayman01323:ayman01323 "$envfile"
+          sudo -n systemctl restart "$service"
+          sleep 30
+          state="$(systemctl is-active "$service" 2>/dev/null || true)"
+          conflicts="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          if [ "$state" != active ] || [ "$conflicts" -gt 0 ]; then
+            echo telegram_inbound_conflict=true
+            sudo -n cp -a "$backup" "$envfile"
+            sudo -n chown ayman01323:ayman01323 "$envfile"
+            sudo -n systemctl restart "$service"
+            sleep 8
+            test "$(systemctl is-active "$service")" = active
+            echo rollback_outbound_only=true
+            exit 1
+          fi
+          grep -q '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile"
+          echo telegram_inbound_enabled=true
+          echo telegram_409_conflicts=0
+          echo service=active
+          echo '--- recent safe telegram menu status ---'
+          sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram-menu|poll error|outbound-only' \
+            | tail -40 \
             | sed -E 's/[0-9]{7,}/<id>/g' || true
