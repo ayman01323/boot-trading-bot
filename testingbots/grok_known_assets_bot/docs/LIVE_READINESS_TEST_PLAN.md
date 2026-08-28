@@ -1,0 +1,1 @@
+CI should verify: fail-closed control defaults; `/groklivecheck on CONFIRM` enables readiness but not money execution; fresh entry/reverse/stress routes can produce `LIVE_READY`; stale signals and excessive reverse impact produce rejection; all readiness outputs keep signing and broadcast disabled.
