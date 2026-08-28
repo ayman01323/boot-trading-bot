@@ -1,0 +1,30 @@
+name: SiRisky Google Owner Profile 10pct 3pos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-google-owner-profile-10pct-3pos-20260828.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Apply owner-selected SiRisky profile
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/ef0b1425991d65b3e62b03314f0c05dfcf660b01/scripts/sirisky_google_owner_profile_10pct_3pos_8round_3x.sh \
+            -o "$tmp"
+          grep -q 'SIRISKY OWNER PROFILE: 10PCT FEES / 10PCT TP / 3 POS / 8PCT ROUND / 3X DEPTH' "$tmp"
+          bash "$tmp"
