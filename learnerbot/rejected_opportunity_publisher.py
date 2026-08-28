@@ -79,8 +79,8 @@ def publish_rejection(
 ):
     """Publish one rejection without ever blocking the trading process.
 
-    This is a data side-effect only. Queue/file failures are logged and swallowed;
-    they never convert a trading rejection into an approval or vice versa.
+    Queue/file and Telegram failures are swallowed. Refusal reporting is an
+    observability side effect only and never changes a trading decision.
     """
     if not _enabled():
         return None
@@ -89,10 +89,12 @@ def publish_rejection(
     if not token or (require_market_reason and not market_rejection(reason)):
         return None
     try:
+        resolved_source = source_bot(source)
+        resolved_payload = dict(payload or {})
         result = _queue().publish(
             chain=str(chain or "").strip().lower(),
             token_address=token,
-            source_bot=source_bot(source),
+            source_bot=resolved_source,
             rejection_reason=reason,
             pool_address=str(pool_address or ""),
             dex=str(dex or ""),
@@ -101,15 +103,33 @@ def publish_rejection(
             rejection_class=str(rejection_class or "MARKET_RISK_REJECT"),
             priority=int(priority),
             observed_at=int(observed_at or time.time()),
-            payload=dict(payload or {}),
+            payload=resolved_payload,
         )
         print(
             "[rejected-opportunity] published=true source=%s chain=%s class=%s candidate=%s status=%s" % (
-                source_bot(source), str(chain or "").lower(), str(rejection_class or ""),
+                resolved_source, str(chain or "").lower(), str(rejection_class or ""),
                 result.candidate_id, result.status,
             ),
             flush=True,
         )
+        try:
+            from learnerbot.rejected_opportunity_telegram import notify_rejected_opportunity_async
+
+            notify_rejected_opportunity_async(
+                candidate_id=result.candidate_id,
+                inserted_observation=bool(result.inserted_observation),
+                chain=str(chain or "").strip().lower(),
+                token_address=token,
+                pool_address=str(pool_address or ""),
+                dex=str(dex or ""),
+                source_bot=resolved_source,
+                source_strategy_id=str(source_strategy_id or ""),
+                rejection_class=str(rejection_class or "MARKET_RISK_REJECT"),
+                rejection_reason=reason,
+                payload=resolved_payload,
+            )
+        except Exception:
+            pass
         return result
     except Exception as exc:  # data publication must never break trading safety logic
         print(
