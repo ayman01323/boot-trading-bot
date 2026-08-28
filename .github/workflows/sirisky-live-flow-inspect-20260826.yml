@@ -13,29 +13,127 @@ jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
     steps:
-      - name: Recover isolated Learner Telegram runtime credentials
+      - name: Enable outbound-only Telegram for isolated Learner
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
+          test -n "${TELEGRAM_BOT_TOKEN:-}"
           target=/home/ayman01323/BOOT/testingbots/learn
           prod=/root/multichain-learning-bot-v2.2-fast-direct-market
           service=learnerbot-learn.service
           py="$prod/.venv/bin/python"
           test -x "$py"
-          echo "source_sha=$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
-          sudo -n bash -lc "set -Eeuo pipefail; target='$target'; found=''; for p in /proc/[0-9]*/environ; do if tr '\\0' '\\n' < \"\$p\" 2>/dev/null | grep -q '^TELEGRAM_BOT_TOKEN=.'; then found=\"\$p\"; break; fi; done; test -n \"\$found\"; pid=\${found#/proc/}; pid=\${pid%/environ}; echo telegram_source_process_found=true; cg=\$(cat /proc/\$pid/cgroup 2>/dev/null | tail -n1 | cut -d: -f3-); echo telegram_source_cgroup_present=\$([ -n \"\$cg\" ] && echo true || echo false); cp -a \"\$target/.env\" \"\$target/backups/.env.before-runtime-telegram-sync\"; tmp=\$(mktemp); grep -v -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS)=' \"\$target/.env\" > \"\$tmp\"; tr '\\0' '\\n' < \"\$found\" | grep -E '^(TELEGRAM_BOT_TOKEN|TELEGRAM_CHAT_ID|TELEGRAM_CHAT_IDS)=' >> \"\$tmp\" || true; grep -q '^TELEGRAM_BOT_TOKEN=.' \"\$tmp\"; cat \"\$tmp\" > \"\$target/.env\"; rm -f \"\$tmp\"; chown ayman01323:ayman01323 \"\$target/.env\"; chmod 600 \"\$target/.env\""
-          echo telegram_runtime_credentials_synced=true
-          grep -q '^TELEGRAM_BOT_TOKEN=.' "$target/.env"
-          echo token_present_after=true
+          test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "894c5597c5cf0c695f1f75df39f26ebe64c2dce9"
+
+          TARGET="$target" TOKEN="$TELEGRAM_BOT_TOKEN" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          envp=root/'.env'
+          token=os.environ['TOKEN'].strip()
+          if not token:
+              raise SystemExit('telegram secret unavailable')
+          backup=root/'backups'/'.env.before-outbound-telegram'
+          if envp.exists() and not backup.exists():
+              backup.write_bytes(envp.read_bytes())
+          master=''
+          users=root/'CSVbot'/'users.csv'
+          if users.exists():
+              with users.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '').strip()
+                      if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
+                          master=tid; break
+          old=envp.read_text(encoding='utf-8').splitlines() if envp.exists() else []
+          replace={'TELEGRAM_BOT_TOKEN':token,'LEARNER_TELEGRAM_OUTBOUND_ONLY':'true'}
+          if master:
+              replace['TELEGRAM_CHAT_ID']=master
+          out=[]; seen=set()
+          for line in old:
+              if '=' in line and not line.lstrip().startswith('#'):
+                  k=line.split('=',1)[0].strip()
+                  if k in replace:
+                      if k not in seen:
+                          out.append(f'{k}={replace[k]}'); seen.add(k)
+                      continue
+              out.append(line)
+          for k,v in replace.items():
+              if k not in seen: out.append(f'{k}={v}')
+          envp.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          os.chmod(envp,0o600)
+          print('telegram_token_written=true')
+          print('outbound_only=true')
+          print('master_recipient_configured='+str(bool(master)).lower())
+          PY
+
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['TARGET'])/'learnerbot'/'telegram_ui.py'
+          text=p.read_text(encoding='utf-8')
+          marker="[telegram-menu] outbound-only mode: polling disabled"
+          if marker not in text:
+              old="def start_menu_thread(app):\n    if not app.telegram_bot_token:return None\n"
+              new=("def start_menu_thread(app):\n"
+                   "    if os.getenv('LEARNER_TELEGRAM_OUTBOUND_ONLY','').strip().lower() in {'1','true','yes','on'}:\n"
+                   "        print('[telegram-menu] outbound-only mode: polling disabled')\n"
+                   "        return None\n"
+                   "    if not app.telegram_bot_token:return None\n")
+              if old not in text:
+                  raise SystemExit('start_menu_thread signature not found')
+              backup=p.parent.parent/'backups'/'telegram_ui.py.before-outbound-only'
+              if not backup.exists(): backup.write_text(text,encoding='utf-8')
+              p.write_text(text.replace(old,new,1),encoding='utf-8')
+          print('polling_guard_installed=true')
+          PY
+          sudo -n chown ayman01323:ayman01323 "$target/.env" "$target/learnerbot/telegram_ui.py"
+          "$py" -m py_compile "$target/learnerbot/telegram_ui.py"
+
           sudo -n systemctl restart "$service"
-          sleep 8
-          echo "service=$(systemctl is-active "$service" 2>/dev/null || true)"
+          sleep 10
+          state1="$(systemctl is-active "$service" 2>/dev/null || true)"
+          n1="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
+          sleep 6
+          state2="$(systemctl is-active "$service" 2>/dev/null || true)"
+          n2="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
+          echo "service_state_1=$state1"
+          echo "service_state_2=$state2"
+          echo "restart_count_1=$n1"
+          echo "restart_count_2=$n2"
+
           cd "$target"
-          PYTHONPATH=. "$py" -c "from learnerbot.config import AppSettings; from learnerbot.telegram import get_me; a=AppSettings.load(); m=get_me(a.telegram_bot_token); print('telegram_getme_ok=true'); print('bot_username='+str(m.get('username') or '')); print('configured_chat_ids='+str(len(a.telegram_chat_ids)))"
-          recipient=$(awk -F, 'NR>1 && length($1)>=8 && tolower($5)=="true" && tolower($6)!="false" {print $1; exit}' "$target/CSVbot/auto/solana_user_wallets.csv")
-          test -n "$recipient"
-          RECIPIENT="$recipient" PYTHONPATH=. "$py" -c "import os; from learnerbot.config import AppSettings; from learnerbot.telegram import send_message; a=AppSettings.load(); r=send_message(a.telegram_bot_token,os.environ['RECIPIENT'],'🧠 Learner Bot Telegram connection restored. This is a delivery test only; no trade was placed.',protect_content=True); print('smoke_test_ok='+str(bool(r.get('message_id'))).lower())"
-          sleep 5
-          echo "service_after_test=$(systemctl is-active "$service" 2>/dev/null || true)"
+          PYTHONPATH=. "$py" - <<'PY'
+          import csv
+          from pathlib import Path
+          from learnerbot.config import AppSettings
+          from learnerbot.telegram import get_me,send_message
+          app=AppSettings.load()
+          if not app.telegram_bot_token: raise SystemExit('token not loaded')
+          me=get_me(app.telegram_bot_token)
+          print('telegram_getme_ok=true')
+          print('bot_username_present='+str(bool(me.get('username'))).lower())
+          recipients=[]
+          p=Path('CSVbot/users.csv')
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '').strip()
+                      if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
+                          recipients.append(tid)
+          if not recipients:
+              raise SystemExit('no active master Telegram recipient')
+          result=send_message(app.telegram_bot_token,recipients[0],'🧠 Learner Bot Telegram connection restored. Outbound alerts are active; Telegram command polling remains on the main bot only. No trade was placed by this test.',protect_content=True)
+          print('smoke_test_ok='+str(bool(result.get('message_id'))).lower())
+          PY
+
+          echo '=== TELEGRAM MODE ==='
+          journalctl -u "$service" -n 160 --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'outbound-only mode|TELEGRAM_BOT_TOKEN|telegram-menu|Main process exited|Failed with result' \
+            | tail -n 100 || true
+          test "$state1" = active
+          test "$state2" = active
+          test "$n1" = "$n2"
