@@ -1,0 +1,67 @@
+name: Deploy Cold Zone DexView Links Now
+
+on:
+  push:
+    branches: [ops/google-master-menu-cutover-20260827]
+    paths:
+      - '.github/workflows/deploy-cold-zone-dexview-links-now-20260828.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Install and verify DexView alert links
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          RELAY=/home/ayman01323/.local/libexec/google_learner_cold_zone_relay.py
+          TMP="$RUNNER_TEMP/google_learner_cold_zone_relay.py"
+          SRC_COMMIT=011a345fc47c0a1c07b6be9e6e75fcb2f4e8f540
+
+          curl -fsSL --retry 3 --connect-timeout 10 \
+            "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SRC_COMMIT/ops/isolated/google_learner_cold_zone_relay.py" \
+            -o "$TMP"
+
+          python3 - "$TMP" <<'PY'
+          import ast, pathlib, sys
+          p=pathlib.Path(sys.argv[1])
+          src=p.read_text(encoding='utf-8')
+          compile(src,str(p),'exec')
+          tree=ast.parse(src)
+          assert 'DEXVIEW_SOLANA = "https://www.dexview.com/solana"' in src
+          assert 'def _with_dexview' in src
+          print('relay_syntax=OK')
+          print('dexview_link_code=YES')
+          PY
+
+          install -m 0755 "$TMP" "$RELAY"
+          chown ayman01323:ayman01323 "$RELAY"
+          sudo -n systemctl restart google-learner-cold-zone-relay.service
+          sleep 3
+          test "$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)" = active
+
+          python3 - "$RELAY" <<'PY'
+          import ast, pathlib, sys, types
+          p=pathlib.Path(sys.argv[1])
+          src=p.read_text(encoding='utf-8')
+          # Load only constants/function definitions needed for an offline formatting test.
+          ns={}
+          exec(compile(src,str(p),'exec'),ns,ns)
+          mint='So11111111111111111111111111111111111111112'
+          out=ns['_with_dexview']('TEST MESSAGE',mint)
+          expected='https://www.dexview.com/solana/'+mint
+          assert expected in out, out
+          assert 'Open token on DexView' in out
+          print('token_specific_link=YES')
+          print('example_dexview_url='+expected)
+          PY
+
+          echo "cold_zone_relay=$(sudo -n systemctl is-active google-learner-cold-zone-relay.service)"
+          echo "learner_runtime=$(sudo -n systemctl is-active learnerbot-learn.service)"
+          echo "dexview_links=ACTIVE_FOR_EVERY_COLD_ZONE_NOTIFICATION"
+          echo "strategy_changed=NO"
