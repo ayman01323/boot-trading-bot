@@ -1,0 +1,56 @@
+name: Check Learner Telegram Direct 20260828 1527
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths: ['.github/workflows/check-learner-telegram-direct-20260828-1527.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Read-only direct Telegram check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n python3 - <<'PY'
+          import json, urllib.request, urllib.error
+          from pathlib import Path
+          env={}
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/.env')
+          for line in p.read_text(errors='ignore').splitlines() if p.exists() else []:
+              line=line.strip()
+              if not line or line.startswith('#') or '=' not in line: continue
+              k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"\'')
+          token=env.get('TELEGRAM_BOT_TOKEN','').strip()
+          target=(env.get('TELEGRAM_CHAT_ID','').strip() or '5923828381')
+          ids=[x.strip() for x in env.get('TELEGRAM_CHAT_IDS','').split(',') if x.strip()]
+          print('env_token_present=' + ('YES' if token else 'NO'))
+          print('env_target_chat_present=' + ('YES' if target=='5923828381' or '5923828381' in ids else 'NO'))
+          def call(method,payload=None):
+              if not token: return {'ok':False,'description':'token missing'}
+              url='https://api.telegram.org/bot'+token+'/'+method
+              data=None if payload is None else json.dumps(payload).encode()
+              req=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json'} if data else {})
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as r: return json.loads(r.read(131072).decode())
+              except urllib.error.HTTPError as e:
+                  try: return json.loads(e.read(131072).decode())
+                  except: return {'ok':False,'error_code':e.code,'description':'HTTP error'}
+              except Exception as e: return {'ok':False,'description':type(e).__name__}
+          me=call('getMe')
+          print('telegram_getMe=' + ('PASS' if me.get('ok') else 'FAIL'))
+          if not me.get('ok'): print('telegram_getMe_error=' + str(me.get('description') or '')[:160])
+          chat=call('getChat',{'chat_id':'5923828381'})
+          print('telegram_getChat=' + ('PASS' if chat.get('ok') else 'FAIL'))
+          if not chat.get('ok'):
+              print('telegram_getChat_error_code=' + str(chat.get('error_code') or ''))
+              print('telegram_getChat_error=' + str(chat.get('description') or '')[:160])
+          print('telegram_message_sent=NO')
+          print('token_printed=NO')
+          print('trading_action=NONE')
+          print('service_restart=NO')
+          PY
