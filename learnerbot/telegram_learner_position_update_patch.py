@@ -2,11 +2,12 @@ from __future__ import annotations
 
 """45-second presentation-only open-position reporting for the isolated learner.
 
-This patch does not alter the 15-second Solana safety/exit monitor.  It starts a
+This patch does not alter the 15-second Solana safety/exit monitor. It starts a
 separate reporting thread after the existing Telegram/Solana workers are started.
 """
 
 import html
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -24,7 +25,7 @@ _PREV_START_MENU = _ui.start_menu_thread
 _START_LOCK = threading.Lock()
 _STARTED = False
 
-# Last successfully delivered NewPoll45 snapshot per position.  Process-local on
+# Last successfully delivered NewPoll45 snapshot per position. Process-local on
 # purpose: no trading state or wallet data is mutated by this presentation layer.
 _PREVIOUS: dict[str, dict[str, Decimal]] = {}
 
@@ -260,7 +261,7 @@ def _emit(app) -> None:
                 disable_notification=True,
             )
         except Exception as exc:
-            print("[learner-newpoll45] send", type(exc).__name__, exc)
+            print("[learner-newpoll45] send", type(exc).__name__, exc, flush=True)
             continue
 
         # "Previous poll" means previous successfully delivered NewPoll45.
@@ -278,7 +279,7 @@ def _report_worker(app) -> None:
         try:
             _emit(app)
         except Exception as exc:
-            print("[learner-newpoll45]", type(exc).__name__, exc)
+            print("[learner-newpoll45]", type(exc).__name__, exc, flush=True)
         elapsed = time.monotonic() - started
         time.sleep(max(1.0, _REPORT_SECONDS - elapsed))
 
@@ -295,7 +296,10 @@ def _start_reporter(app) -> None:
         daemon=True,
         name="learner-newpoll45-position-reporter",
     ).start()
-    print("[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled")
+    print(
+        "[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled",
+        flush=True,
+    )
 
 
 def start_menu_thread(app):
@@ -308,6 +312,16 @@ def install() -> None:
     if getattr(_ui, "_learner_newpoll45_installed", False):
         return
     _ui.start_menu_thread = start_menu_thread
+
+    # cli imports start_menu_thread by value. On this heavily patched runtime the
+    # cli module may already have been imported before this final isolated-only
+    # presentation patch is installed, so update that cached symbol as well. This
+    # is presentation/thread startup only; no trading or Solana monitor hook is
+    # replaced.
+    cli_mod = sys.modules.get("learnerbot.cli")
+    if cli_mod is not None:
+        setattr(cli_mod, "start_menu_thread", start_menu_thread)
+
     _ui._learner_newpoll45_installed = True
 
 
