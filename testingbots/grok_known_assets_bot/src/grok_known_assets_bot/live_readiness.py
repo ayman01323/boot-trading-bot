@@ -8,8 +8,8 @@ from .core import MarketSnapshot
 from .feed_safety import FeedSafetyError
 from .live_feed import USDC_MINT, SOL_MINT, LiveFeedSettings, _price_impact_bps, _quote, _route_pool_ids
 
-CANARY_SOL = 0.0005
-HARD_MAX_CANARY_SOL = 0.001
+ENTRY_TARGET_SOL = 0.009
+HARD_MAX_ENTRY_SOL = 0.009
 MAX_SIGNAL_AGE_SECONDS = 20.0
 MAX_ENTRY_IMPACT_BPS = 100.0
 MAX_REVERSE_IMPACT_BPS = 200.0
@@ -23,7 +23,7 @@ class LiveReadinessResult:
     ready: bool
     reason: str
     asset_key: str
-    canary_target_sol: float
+    entry_target_sol: float
     estimated_spend_usdc: float
     quoted_sol_out: float
     reverse_recovery_usdc: float
@@ -61,7 +61,7 @@ def _result(
         ready=ready,
         reason=reason,
         asset_key=snap.asset_key,
-        canary_target_sol=CANARY_SOL,
+        entry_target_sol=ENTRY_TARGET_SOL,
         estimated_spend_usdc=spend_usdc,
         quoted_sol_out=sol_out,
         reverse_recovery_usdc=reverse_usdc,
@@ -83,7 +83,7 @@ def assess_live_readiness(
     *,
     now: float | None = None,
 ) -> LiveReadinessResult:
-    """Prove an unsigned USDC->SOL canary route plus reversible exits.
+    """Prove an unsigned USDC->SOL entry route plus reversible exits.
 
     This is intentionally a pre-signing boundary. It performs fresh public Jupiter
     route checks only and never accesses a wallet, private key, signer or broadcast
@@ -95,10 +95,10 @@ def assess_live_readiness(
         return _result(snap, settings, ready=False, reason="SIGNAL_TOO_OLD", now=now)
     if not snap.sellable:
         return _result(snap, settings, ready=False, reason="REVERSE_SELL_PATH_UNAVAILABLE", now=now)
-    if CANARY_SOL > HARD_MAX_CANARY_SOL:
-        return _result(snap, settings, ready=False, reason="CANARY_EXCEEDS_HARD_MAX", now=now)
+    if ENTRY_TARGET_SOL > HARD_MAX_ENTRY_SOL:
+        return _result(snap, settings, ready=False, reason="ENTRY_EXCEEDS_HARD_MAX", now=now)
 
-    estimated_spend = max(0.000001, float(snap.ask) * CANARY_SOL)
+    estimated_spend = max(0.000001, float(snap.ask) * ENTRY_TARGET_SOL)
     micro_usdc = max(1, int(round(estimated_spend * 1_000_000)))
 
     try:

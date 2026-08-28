@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from grok_known_assets_bot.telegram_control import _event_alert_text, handle_command
+from grok_known_assets_bot.telegram_control_runtime import _entry_wording
 
 
 def test_livecheck_command_arms_readiness_not_money(tmp_path: Path, monkeypatch):
@@ -26,6 +27,13 @@ def test_livecheck_command_arms_readiness_not_money(tmp_path: Path, monkeypatch)
     assert "Transaction broadcast: DISABLED" in status
 
 
+def test_runtime_wording_uses_normal_009_entry_not_canary():
+    status = _entry_wording("Canary target: 0.0005 SOL (hard max 0.001 SOL)")
+    assert status == "Entry target: 0.009 SOL (hard max 0.009 SOL)"
+    ticket = _entry_wording("USDC→SOL canary: $1.00 → 0.009000000 SOL")
+    assert ticket == "USDC→SOL entry: $1.00 → 0.009000000 SOL"
+
+
 def test_live_ready_alert_is_explicitly_non_broadcasting():
     text = _event_alert_text(
         "LIVE_READY",
@@ -33,9 +41,9 @@ def test_live_ready_alert_is_explicitly_non_broadcasting():
         {
             "reason": "LIVE_ROUTE_PREFLIGHT_PASS",
             "research_confidence": 0.693,
-            "estimated_spend_usdc": 0.05,
-            "quoted_sol_out": 0.0005,
-            "reverse_recovery_usdc": 0.049,
+            "estimated_spend_usdc": 0.9,
+            "quoted_sol_out": 0.009,
+            "reverse_recovery_usdc": 0.882,
             "roundtrip_loss_pct": 2.0,
             "entry_impact_bps": 10.0,
             "reverse_impact_bps": 15.0,
