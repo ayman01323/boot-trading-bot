@@ -37,11 +37,18 @@ jobs:
           # sudo grant instead of using a non-root test -x visibility check.
           sudo -n -l "$WRAPPER" >/dev/null
 
-      - name: Arm governed LIVE automatic execution
+      - name: Arm governed LIVE automatic execution and verify state
         shell: bash
         run: |
           set -euo pipefail
-          sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$GITHUB_SHA"
+          output="$(sudo -n /root/SiRisky/ops/sirisky-governed-live-arm "$GITHUB_SHA")"
+          printf '%s\n' "$output"
+          grep -qx 'trading_mode=LIVE' <<<"$output"
+          grep -qx 'live_enabled=1' <<<"$output"
+          grep -qx 'broadcast_enabled=1' <<<"$output"
+          grep -qx 'manual_approval_enabled=0' <<<"$output"
+          grep -qx 'manual_approval_require_external_signature=0' <<<"$output"
+          grep -qx 'telegram_manual_run_enabled=0' <<<"$output"
 
       - name: Successful deployment summary
         if: success()
@@ -70,6 +77,6 @@ jobs:
           {
             echo '## SiRisky governed LIVE automatic state NOT applied'
             echo
-            echo '- Do not treat this workflow run as proof that LIVE/broadcast is enabled.'
-            echo '- Inspect the failed step before changing trading state.'
+            echo '- The server wrapper may still be an older manual-approval version.'
+            echo '- Reinstall scripts/install_sirisky_governed_live_ops.sh once as root, then rerun this workflow.'
           } >> "$GITHUB_STEP_SUMMARY"
