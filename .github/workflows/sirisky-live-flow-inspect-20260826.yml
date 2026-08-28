@@ -14,53 +14,29 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Stabilise exact morning Learner runtime
+      - name: Inspect execution path without broadcast
         shell: bash
         run: |
-          set -Eeuo pipefail
-          test "$(hostname)" = botgoogle
-          target=/home/ayman01323/BOOT/testingbots/learn
-          expected=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
-          service=learnerbot-learn.service
-          test "$(cat "$target/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$expected"
-          sudo -n bash -lc '
-            set -Eeuo pipefail
-            target=/home/ayman01323/BOOT/testingbots/learn
-            service=learnerbot-learn.service
-            main="$target/learnerbot/__main__.py"
-            backup="$target/backups/__main__.py.before-isolated-polygon-skip"
-            [[ -f "$backup" ]] || cp -a "$main" "$backup"
-            systemctl stop "$service" || true
-            if grep -q "^from \. import polygon_live_enable_migration  # noqa: F401$" "$main"; then
-              sed -i "s|^from \. import polygon_live_enable_migration  # noqa: F401$|# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration.|" "$main"
-            fi
-            grep -q "^# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration\.$" "$main"
-            chown ayman01323:ayman01323 "$main"
-            python3 -m py_compile "$main"
-            systemctl start "$service"
-          '
-          sleep 12
-          state1="$(systemctl is-active "$service" 2>/dev/null || true)"
-          n1="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
-          sleep 6
-          state2="$(systemctl is-active "$service" 2>/dev/null || true)"
-          n2="$(systemctl show "$service" -p NRestarts --value 2>/dev/null || echo unknown)"
-          echo "source_sha=$expected"
-          echo "compatibility_change=skip_production_polygon_migration_only"
-          echo "service_state_1=$state1"
-          echo "service_state_2=$state2"
-          echo "restart_count_1=$n1"
-          echo "restart_count_2=$n2"
-          echo '=== CONTROLS ==='
-          grep -E '^(live_trade_sol|live_min_sol_reserve|live_max_positions|live_require_simulation),' "$target/CSVbot/solana_settings.csv" || true
-          grep -E ',(learner_new_entries_enabled|solana_live_enabled|sibot_enabled|sibot_auto_trade_enabled|solana_live_trade_sol|solana_live_min_reserve_sol),' "$target/CSVbot/user_trading_settings.csv" | sed -E 's/^[^,]+,/[redacted],/' || true
-          echo '=== LIVE POSITION COUNTS ==='
-          sqlite3 "$target/data/solana_sibot.sqlite3" "select status,count(*) from positions where mode='LIVE' group by status order by status;" || true
-          echo '=== RECENT LIVE ATTEMPTS ==='
-          cutoff="$(( $(date +%s) - 300 ))"
-          sqlite3 "$target/data/solana_sibot.sqlite3" "select action,status,substr(error,1,180),created_at from live_execution_attempts where created_at >= $cutoff order by created_at desc limit 20;" || true
-          echo '=== SERVICE TAIL ==='
-          journalctl -u "$service" -n 160 --no-pager -o cat 2>/dev/null | grep -Ei 'final-runtime-integrity|poolcheck-rug-hardening|Polygon|BUY|SELL|LIVE|entry|ERROR|REJECT' | tail -n 160 || true
-          test "$state1" = active
-          test "$state2" = active
-          test "$n1" = "$n2"
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          sudo -n true
+          for f in sirisky/engine.py sirisky/stage1_data.py sirisky/stage2_strategy.py sirisky/stage3_risk.py sirisky/stage4_dispatch.py sirisky/stage5_trade.py sirisky/stage6_monitor.py sirisky/telegram.py sirisky/models.py sirisky/config.py sirisky/wallet.py run.py; do
+            echo "=== $f ==="
+            sudo -n sed -n '1,380p' "/root/SiRisky/$f"
+          done
+          echo '=== RUNTIME GATES ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|telegram_manual_run_enabled|auto_discovery_enabled|auto_promote_to_selected|poll_seconds)$/' /root/SiRisky/CSV/runtime.csv
+          echo '=== CSV FILES ==='
+          sudo -n find /root/SiRisky/CSV -maxdepth 1 -type f -printf '%f\n' | sort
+          echo '=== BALANCE ==='
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
+from sirisky.config import Settings
+from sirisky.wallet import WalletStore
+from sirisky.jupiter import wallet_balance_lamports
+s=Settings.load(); a=WalletStore(s).address(); b=wallet_balance_lamports(s,a)
+print("wallet_balance_lamports="+str(b))
+print("wallet_balance_sol="+format(b/1_000_000_000,".9f"))
+PY'
+          echo 'real_transaction_broadcast=NO'
+
+# trigger: HR-CWH pre-deploy source inspection 2026-08-27
