@@ -15,7 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Add direct Min SOL Trade button to isolated Learner menu
+      - name: Verify direct Min SOL Trade button in isolated Learner menu
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -23,87 +23,97 @@ jobs:
           target=/home/ayman01323/BOOT/testingbots/learn
           file="$target/learnerbot/telegram_user_menu_compact_patch.py"
           test -f "$file"
-          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          backup="$target/private/pre-min-sol-menu-$stamp"
-          sudo -n mkdir -p "$backup"
-          sudo -n cp -a "$file" "$backup/"
-          TARGET_FILE="$file" sudo -n -E python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          p = Path(os.environ["TARGET_FILE"])
-          text = p.read_text(encoding="utf-8")
-
-          user_marker = '"callback_data": "sibot:solana:mintrade"'
-          if user_marker not in text:
-              needle = '''    [\n        {"text": "🔐 Wallets", "callback_data": "menu:wallet"},\n        {"text": "💱 Trading", "callback_data": "menu:trading"},\n    ],\n'''
-              insert = needle + '''    [\n        {"text": "📏 Min SOL Trade", "callback_data": "sibot:solana:mintrade"},\n    ],\n'''
-              if needle not in text:
-                  raise SystemExit("compact USER menu insertion point not found")
-              text = text.replace(needle, insert, 1)
-
-          master_marker = '# Direct Solana minimum-trade shortcut for MASTER menu.'
-          if master_marker not in text:
-              needle = '''    rows = list(kb.get("inline_keyboard") or [])\n    return {"inline_keyboard": _insert_reports_button(rows)}\n'''
-              insert = '''    rows = list(kb.get("inline_keyboard") or [])\n    # Direct Solana minimum-trade shortcut for MASTER menu.\n    if not any(any(b.get("callback_data") == "sibot:solana:mintrade" for b in row) for row in rows):\n        insert_at = len(rows)\n        for i, row in enumerate(rows):\n            if any(b.get("callback_data") in {"menu:status", "menu:help"} for b in row):\n                insert_at = i\n                break\n        rows.insert(insert_at, [{"text": "📏 Min SOL Trade", "callback_data": "sibot:solana:mintrade"}])\n    return {"inline_keyboard": _insert_reports_button(rows)}\n'''
-              if needle not in text:
-                  raise SystemExit("MASTER menu insertion point not found")
-              text = text.replace(needle, insert, 1)
-
-          p.write_text(text, encoding="utf-8")
-          PY
-          python3 -m py_compile "$file"
           grep -q '📏 Min SOL Trade' "$file"
           grep -q 'sibot:solana:mintrade' "$file"
-          sudo -n systemctl restart learnerbot-learn.service
-          sleep 8
+          python3 -m py_compile "$file" "$target/learnerbot/telegram_solana_live_patch.py"
           test "$(systemctl is-active learnerbot-learn.service)" = active
           echo learner_only=true
           echo direct_min_sol_menu=installed
           echo service=active
-          echo '--- telegram update transport markers ---'
-          grep -nE 'get_updates|outbound|start_menu_thread' "$target/learnerbot/telegram_ui.py" | tail -30 || true
 
-      - name: Diagnose Learner Telegram inbound ownership without consuming updates
+      - name: Compare Telegram polling ownership safely
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
-          echo '--- running learner services ---'
-          systemctl list-units --type=service --state=running --no-legend | awk '{print $1}' | grep -Ei '^learnerbot' || true
-          echo '--- learner processes ---'
-          pgrep -af 'python.*learnerbot' | sed -E 's#(/[A-Za-z0-9._-]+){3,}#<path>#g' || true
-          echo '--- recent telegram polling/conflict journal ---'
-          sudo -n journalctl -u learnerbot-learn.service --since '2 days ago' --no-pager 2>/dev/null | grep -Ei 'telegram-menu|outbound-only|getupdates|409|conflict|webhook' | tail -120 || true
-          echo '--- webhook state ---'
-          TARGET="$target" python3 - <<'PY'
-          import json, os, urllib.request
+          TARGET="$target" sudo -n -E python3 - <<'PY'
+          import hashlib, json, os, subprocess, urllib.request
           from pathlib import Path
-          root = Path(os.environ['TARGET'])
-          token = ''
-          for path in (root/'.env', root/'CSVbot'/'telegram_settings.csv'):
-              if not path.exists():
-                  continue
-              for line in path.read_text(encoding='utf-8', errors='ignore').splitlines():
-                  if '=' in line:
+
+          target=Path(os.environ['TARGET'])
+
+          def env_file_token(path):
+              try:
+                  for line in Path(path).read_text(encoding='utf-8',errors='ignore').splitlines():
+                      if '=' not in line or line.lstrip().startswith('#'):
+                          continue
                       k,v=line.split('=',1)
-                      if 'TELEGRAM' in k.upper() and 'TOKEN' in k.upper() and v.strip():
-                          token=v.strip().strip('"').strip("'")
-                          break
-              if token:
-                  break
-          if not token:
-              print('telegram_token_present=false')
-              raise SystemExit(0)
-          print('telegram_token_present=true')
-          try:
-              with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/getWebhookInfo', timeout=10) as r:
-                  data=json.loads(r.read().decode())
-              result=data.get('result') or {}
-              print('webhook_ok='+str(bool(data.get('ok'))).lower())
-              print('webhook_configured='+str(bool(result.get('url'))).lower())
-              print('pending_update_count='+str(int(result.get('pending_update_count') or 0)))
-          except Exception as exc:
-              print('webhook_check_error='+type(exc).__name__)
+                      if k.strip()=='TELEGRAM_BOT_TOKEN' and v.strip():
+                          return v.strip().strip('"').strip("'")
+              except Exception:
+                  pass
+              return ''
+
+          def proc_env(pid, key):
+              try:
+                  raw=Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+                  prefix=(key+'=').encode()
+                  for item in raw:
+                      if item.startswith(prefix):
+                          return item[len(prefix):].decode(errors='ignore')
+              except Exception:
+                  pass
+              return ''
+
+          def mainpid(service):
+              try:
+                  return int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
+              except Exception:
+                  return 0
+
+          def cwd(pid):
+              try: return Path(os.readlink(f'/proc/{pid}/cwd'))
+              except Exception: return None
+
+          def token_for(service, fallback_dir=None):
+              pid=mainpid(service)
+              tok=proc_env(pid,'TELEGRAM_BOT_TOKEN') if pid else ''
+              base=cwd(pid) if pid else None
+              if not tok and base:
+                  tok=env_file_token(base/'.env')
+              if not tok and fallback_dir:
+                  tok=env_file_token(Path(fallback_dir)/'.env')
+              return tok,pid,base
+
+          iso,ip,icwd=token_for('learnerbot-learn.service',target)
+          main,mp,mcwd=token_for('learnerbot.service')
+          print('isolated_service_active='+str(bool(ip)).lower())
+          print('main_service_active='+str(bool(mp)).lower())
+          print('isolated_token_present='+str(bool(iso)).lower())
+          print('main_token_present='+str(bool(main)).lower())
+          print('same_bot_token='+str(bool(iso and main and iso==main)).lower())
+          print('isolated_outbound_only='+str((env_file_token(target/'.env')!='' and any(line.strip().lower()=='learner_telegram_outbound_only=true' for line in (target/'.env').read_text(encoding='utf-8',errors='ignore').splitlines()))).lower())
+
+          for label,tok in [('isolated',iso),('main',main)]:
+              if not tok:
+                  continue
+              try:
+                  with urllib.request.urlopen(f'https://api.telegram.org/bot{tok}/getMe',timeout=8) as r:
+                      data=json.loads(r.read().decode())
+                  username=str((data.get('result') or {}).get('username') or '')
+                  print(label+'_getme_ok='+str(bool(data.get('ok'))).lower())
+                  print(label+'_is_silearn='+str(username.lower()=='silearn_bot').lower())
+              except Exception as exc:
+                  print(label+'_getme_error='+type(exc).__name__)
           PY
+          echo '--- main learner telegram journal ---'
+          sudo -n journalctl -u learnerbot.service --since '12 hours ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram-menu|outbound-only|getupdates|409|conflict|webhook' \
+            | tail -80 \
+            | sed -E 's/[0-9]{7,}/<id>/g' || true
+          echo '--- isolated learner telegram journal ---'
+          sudo -n journalctl -u learnerbot-learn.service --since '12 hours ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram-menu|outbound-only|getupdates|409|conflict|webhook' \
+            | tail -80 \
+            | sed -E 's/[0-9]{7,}/<id>/g' || true
