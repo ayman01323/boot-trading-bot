@@ -20,35 +20,229 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Install corrected governed LIVE wrapper and apply on botgoogle
+      - name: Patch and deploy Jupiter governor on botgoogle
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
+
           SRC=/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot
-          test -d "$SRC/.git"
+          sudo -n rm -rf "$SRC"
+          mkdir -p "$(dirname "$SRC")"
+          git clone --depth 1 --branch main https://github.com/ayman01323/boot-trading-bot.git "$SRC"
           TARGET_SHA="$(git -C "$SRC" rev-parse HEAD)"
-          test "$TARGET_SHA" = "$(git -C "$SRC" rev-parse --verify HEAD)"
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL --retry 3 --connect-timeout 10 \
-            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/install_sirisky_governed_live_ops.sh \
-            -o "$tmp"
-          grep -q "'manual_approval_enabled':('0'" "$tmp"
-          grep -q "'manual_approval_require_external_signature':('0'" "$tmp"
-          OUT="$(sudo -n env ARM_NOW=1 bash "$tmp")"
-          printf '%s\n' "$OUT"
-          grep -q '=== SIRISKY GOVERNED LIVE AUTO EXECUTION ARMED ===' <<<"$OUT"
-          grep -q "sha=$TARGET_SHA" <<<"$OUT"
-          grep -q 'service=active' <<<"$OUT"
-          grep -q 'trading_mode=LIVE' <<<"$OUT"
-          grep -q 'live_enabled=1' <<<"$OUT"
-          grep -q 'broadcast_enabled=1' <<<"$OUT"
-          grep -q 'manual_approval_enabled=0' <<<"$OUT"
-          grep -q 'manual_approval_require_external_signature=0' <<<"$OUT"
-          grep -q 'telegram_manual_run_enabled=0' <<<"$OUT"
-          test "$(systemctl is-active sirisky.service)" = active
-          echo 'google_only_deploy=SUCCESS'
-          echo "deployed_sha=$TARGET_SHA"
-          echo 'host=botgoogle'
+          echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
+
+          cat > "$SRC/SiRisky/overrides/sirisky/jupiter_governor.py" <<'PY'
+          from __future__ import annotations
+
+          import fcntl
+          import random
+          import time
+
+          import requests
+
+
+          def _runtime_float(settings, key: str, default: float) -> float:
+              try:
+                  return float(settings.runtime().get(key) or default)
+              except Exception:
+                  return float(default)
+
+
+          def _runtime_int(settings, key: str, default: int) -> int:
+              try:
+                  return int(float(settings.runtime().get(key) or default))
+              except Exception:
+                  return int(default)
+
+
+          def _retry_after_seconds(exc) -> float:
+              response = getattr(exc, "response", None)
+              if response is None:
+                  return 0.0
+              try:
+                  value = response.headers.get("Retry-After")
+                  return max(0.0, float(value)) if value else 0.0
+              except Exception:
+                  return 0.0
+
+
+          def jupiter_call(settings, fn, *args, retries=None, **kwargs):
+              """Serialize Jupiter calls across SiRisky processes and back off on HTTP 429."""
+              spacing = max(0.25, min(10.0, _runtime_float(settings, "jupiter_min_interval_seconds", 2.10)))
+              max_retries = _runtime_int(settings, "jupiter_max_retries", 4) if retries is None else int(retries)
+              max_retries = max(0, min(8, max_retries))
+              gate = settings.data_dir / ".jupiter-rate-gate"
+              gate.parent.mkdir(parents=True, exist_ok=True)
+
+              for attempt in range(max_retries + 1):
+                  with gate.open("a+", encoding="utf-8") as handle:
+                      fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                      handle.seek(0)
+                      try:
+                          last = float((handle.read() or "0").strip())
+                      except Exception:
+                          last = 0.0
+                      wait = spacing - (time.time() - last)
+                      if wait > 0:
+                          time.sleep(wait)
+                      started = time.time()
+                      handle.seek(0)
+                      handle.truncate()
+                      handle.write(f"{started:.6f}")
+                      handle.flush()
+                      fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+                  try:
+                      return fn(*args, **kwargs)
+                  except requests.exceptions.HTTPError as exc:
+                      response = getattr(exc, "response", None)
+                      code = getattr(response, "status_code", None)
+                      if code != 429:
+                          raise
+                      if attempt >= max_retries:
+                          raise RuntimeError("JUPITER_RATE_LIMITED") from None
+                      server_wait = _retry_after_seconds(exc)
+                      backoff = min(30.0, 2.0 * (2 ** attempt))
+                      time.sleep(max(server_wait, backoff) + random.uniform(0.05, 0.25))
+
+              raise RuntimeError("JUPITER_RATE_LIMITED")
+          PY
+
+          python3 - "$SRC" <<'PY'
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1]) / "SiRisky" / "overrides" / "sirisky"
+
+          p = root / "stage1_data.py"
+          s = p.read_text(encoding="utf-8")
+          needle = "from .jupiter import quote_only, WSOL_MINT, USDC_MINT\n"
+          assert needle in s
+          s = s.replace(needle, needle + "from .jupiter_governor import jupiter_call\n", 1)
+          old = "buy = quote_only(self.settings, taker, WSOL_MINT, mint, lamports)"
+          new = "buy = jupiter_call(self.settings, quote_only, self.settings, taker, WSOL_MINT, mint, lamports)"
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = "sell = quote_only(self.settings, taker, mint, WSOL_MINT, out)"
+          new = "sell = jupiter_call(self.settings, quote_only, self.settings, taker, mint, WSOL_MINT, out)"
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding="utf-8")
+
+          p = root / "stage5_trade.py"
+          s = p.read_text(encoding="utf-8")
+          needle = "from .jupiter import order as jup_order, execute_order, quote_only, WSOL_MINT\n"
+          assert needle in s
+          s = s.replace(needle, needle + "from .jupiter_governor import jupiter_call\n", 1)
+          old = "q=quote_only(self.settings,taker,input_mint,output_mint,order.amount_raw)"
+          new = "q=jupiter_call(self.settings,quote_only,self.settings,taker,input_mint,output_mint,order.amount_raw)"
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = "q=jup_order(self.settings,taker,input_mint,output_mint,order.amount_raw)"
+          new = "q=jupiter_call(self.settings,jup_order,self.settings,taker,input_mint,output_mint,order.amount_raw)"
+          assert old in s
+          s = s.replace(old, new, 1)
+          old = "res=execute_order(self.settings,q,wallet.keypair_bytes()); sig=str(res.get(\"signature\") or \"\"); status=\"SUCCESS\""
+          new = "res=jupiter_call(self.settings,execute_order,self.settings,q,wallet.keypair_bytes(),retries=0); sig=str(res.get(\"signature\") or \"\"); status=\"SUCCESS\""
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding="utf-8")
+
+          p = root / "engine.py"
+          s = p.read_text(encoding="utf-8")
+          old = '"stage3_passed":None,"error":type(exc).__name__,"discovery":discovery}'
+          new = '"stage3_passed":None,"error":("JUPITER_RATE_LIMITED" if str(exc).strip()=="JUPITER_RATE_LIMITED" else type(exc).__name__),"discovery":discovery}'
+          assert old in s
+          p.write_text(s.replace(old, new, 1), encoding="utf-8")
+          PY
+
+          python3 -m py_compile \
+            "$SRC/SiRisky/overrides/sirisky/jupiter_governor.py" \
+            "$SRC/SiRisky/overrides/sirisky/stage1_data.py" \
+            "$SRC/SiRisky/overrides/sirisky/stage5_trade.py" \
+            "$SRC/SiRisky/overrides/sirisky/engine.py"
+
+          sudo -n bash -lc '
+            set -Eeuo pipefail
+            DST=/root/SiRisky
+            SRC=/home/ayman01323/gh-runner/botgoogle/boot-trading-bot/boot-trading-bot/SiRisky/overrides/sirisky
+            stamp=$(date -u +%Y%m%dT%H%M%SZ)
+            backup="$DST/data/jupiter-governor-backup-$stamp"
+            mkdir -p "$backup"
+            cp -a "$DST/sirisky/stage1_data.py" "$backup/"
+            cp -a "$DST/sirisky/stage5_trade.py" "$backup/"
+            cp -a "$DST/sirisky/engine.py" "$backup/"
+            test ! -f "$DST/sirisky/jupiter_governor.py" || cp -a "$DST/sirisky/jupiter_governor.py" "$backup/"
+            install -m 0644 "$SRC/jupiter_governor.py" "$DST/sirisky/jupiter_governor.py"
+            install -m 0644 "$SRC/stage1_data.py" "$DST/sirisky/stage1_data.py"
+            install -m 0644 "$SRC/stage5_trade.py" "$DST/sirisky/stage5_trade.py"
+            install -m 0644 "$SRC/engine.py" "$DST/sirisky/engine.py"
+
+            python3 - "$DST/CSV/runtime.csv" <<"PY"
+          import csv, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          rows=list(csv.DictReader(p.open(encoding="utf-8-sig",newline="")))
+          by={str(r.get("setting") or ""):r for r in rows}
+          updates={
+              "auto_evaluate_candidate_limit":("1","Rate-safe LIVE candidate evaluation: one candidate per cycle"),
+              "jupiter_min_interval_seconds":("2.10","Shared cross-process Jupiter call spacing"),
+              "jupiter_max_retries":("4","HTTP 429 Retry-After/exponential backoff retries"),
+          }
+          for k,(v,n) in updates.items():
+              if k in by:
+                  by[k]["value"]=v; by[k]["notes"]=n
+              else:
+                  row={"setting":k,"value":v,"notes":n}; rows.append(row); by[k]=row
+          tmp=p.with_suffix(".csv.tmp")
+          with tmp.open("w",encoding="utf-8",newline="") as f:
+              w=csv.DictWriter(f,fieldnames=["setting","value","notes"]); w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+          PY
+
+            cd "$DST"
+            PYTHONPATH=. .venv/bin/python -m compileall -q sirisky run.py tests
+            PYTHONPATH=. .venv/bin/python run.py selftest
+            systemctl restart sirisky.service
+            sleep 3
+            systemctl is-active --quiet sirisky.service
+
+            value() { awk -F, -v key="$1" '\''$1==key {gsub(/\r/,"",$2); print $2}'\'' "$DST/CSV/runtime.csv"; }
+            test "$(value trading_mode)" = LIVE
+            test "$(value live_enabled)" = 1
+            test "$(value broadcast_enabled)" = 1
+            test "$(value manual_approval_enabled)" = 0
+            test "$(value manual_approval_require_external_signature)" = 0
+            test "$(value auto_evaluate_candidate_limit)" = 1
+            test "$(value jupiter_min_interval_seconds)" = 2.10
+            test "$(value jupiter_max_retries)" = 4
+            grep -q jupiter_call "$DST/sirisky/stage1_data.py"
+            grep -q jupiter_call "$DST/sirisky/stage5_trade.py"
+            echo "=== SIRISKY JUPITER GOVERNOR DEPLOYED ==="
+            echo "host=$(hostname)"
+            echo "service=$(systemctl is-active sirisky.service)"
+            echo "trading_mode=$(value trading_mode)"
+            echo "broadcast_enabled=$(value broadcast_enabled)"
+            echo "manual_approval_enabled=$(value manual_approval_enabled)"
+            echo "auto_evaluate_candidate_limit=$(value auto_evaluate_candidate_limit)"
+            echo "jupiter_min_interval_seconds=$(value jupiter_min_interval_seconds)"
+            echo "jupiter_max_retries=$(value jupiter_max_retries)"
+            echo "backup=$backup"
+          '
+
+      - name: Observe post-restart execution status
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sleep 15
+          sudo -n bash -lc '
+            echo "=== latest executions ==="
+            tail -n 12 /root/SiRisky/CSV/executions.csv 2>/dev/null || true
+            echo "=== latest risk checks ==="
+            tail -n 8 /root/SiRisky/CSV/risk_checks.csv 2>/dev/null || true
+            echo "service=$(systemctl is-active sirisky.service)"
+          '
