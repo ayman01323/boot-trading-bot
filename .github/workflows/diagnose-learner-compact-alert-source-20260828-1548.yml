@@ -21,26 +21,34 @@ jobs:
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
           target=/home/ayman01323/BOOT/testingbots/learn
-          echo '=== EXACT STRINGS ==='
+          rootcopy=/root/multichain-learning-bot-v2.2-fast-direct-market
+          service=learnerbot-learn.service
+          pid=$(systemctl show -p MainPID --value "$service")
+          echo '=== SERVICE PATHS ==='
+          echo "pid=$pid"
+          echo "working_directory=$(systemctl show -p WorkingDirectory --value "$service")"
+          echo "root_directory=$(systemctl show -p RootDirectory --value "$service")"
+          echo "exec=$(systemctl show -p ExecStart --value "$service" | sed -E 's/(TOKEN|KEY|SECRET|PASSWORD)=[^ ;]+/\1=<redacted>/g' | head -c 1200)"
+          echo "proc_cwd=$(sudo -n readlink /proc/$pid/cwd 2>/dev/null || echo unavailable)"
+          echo '=== TARGET EXACT STRINGS ==='
           grep -R -n --include='*.py' -F 'LEARNER POSITION UPDATE' "$target/learnerbot" 2>/dev/null || true
           grep -R -n --include='*.py' -F 'Unrealised P&L' "$target/learnerbot" 2>/dev/null || true
-          echo '=== NOTIFY DEFINITIONS ==='
-          grep -R -n --include='*.py' -E '^def .*notify|LEARNER POSITION|Unrealised P&L' "$target/learnerbot" 2>/dev/null | head -250 || true
-          echo '=== IMPORT ORDER ==='
+          echo '=== ROOT COPY EXACT STRINGS ==='
+          sudo -n grep -R -n --include='*.py' -F 'LEARNER POSITION UPDATE' "$rootcopy/learnerbot" 2>/dev/null | head -100 || true
+          sudo -n grep -R -n --include='*.py' -F 'Unrealised P&L' "$rootcopy/learnerbot" 2>/dev/null | head -100 || true
+          echo '=== SOURCE HASH COMPARISON ==='
+          for f in telegram_learner_position_update_patch.py telegram_learner_newpoll_full_format_patch.py telegram_learner_complete_market_context_patch.py solana_live_patch.py __main__.py; do
+            printf '%s target=' "$f"
+            sha256sum "$target/learnerbot/$f" 2>/dev/null | awk '{print $1}' || echo MISSING
+            printf '%s root=' "$f"
+            sudo -n sha256sum "$rootcopy/learnerbot/$f" 2>/dev/null | awk '{print $1}' || echo MISSING
+          done
+          echo '=== IMPORT ORDER TARGET ==='
           grep -n -E 'telegram_learner|reconcile|position_update|full_format|complete_market' "$target/learnerbot/__main__.py" 2>/dev/null || true
+          echo '=== IMPORT ORDER ROOT ==='
+          sudo -n grep -n -E 'telegram_learner|reconcile|position_update|full_format|complete_market' "$rootcopy/learnerbot/__main__.py" 2>/dev/null || true
           echo '=== RECENT RELATED LOGS ==='
-          sudo -n journalctl -u learnerbot-learn.service --since '20 minutes ago' --no-pager -o cat | grep -Ei 'learner-newpoll45|position update|reconcile|required|telegram' | tail -300 || true
-          echo '=== DB POSITION ==='
-          python3 - <<'PY'
-          import sqlite3,json
-          db='/home/ayman01323/BOOT/testingbots/learn/data/solana_sibot.sqlite3'
-          c=sqlite3.connect(db); c.row_factory=sqlite3.Row
-          r=c.execute("select * from positions where position_id=?",('e30ca86e1878bd4e5f1648d3fbb7cbf2',)).fetchone()
-          if r:
-              keep=['position_id','mint','status','mode','token_amount_raw','entry_cost_sol','current_exit_sol','unrealised_net_sol','unrealised_pct','realised_net_sol','exit_signature','exit_reason','closed_at','updated_at']
-              print(json.dumps({k:r[k] for k in keep},sort_keys=True))
-          c.close()
-          PY
+          sudo -n journalctl -u "$service" --since '25 minutes ago' --no-pager -o cat | grep -Ei 'learner-newpoll45|position update|reconcile|required|telegram' | tail -320 || true
           echo 'trading_action=NONE'
           echo 'service_restart=NO'
           echo 'telegram_message_sent=NO'
