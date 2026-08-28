@@ -1,29 +1,19 @@
-requested_sha=57754307ba3ad794c88e329176776f00b835d3c9
+requested_sha=fb9036f80d8f3565ba68ae0ad36b3054d7202bca
 deploy_outcome=success
 deploy_exit=0
-run_id=33214052178
-utc=2026-08-28T21:50:33Z
+run_id=33214345805
+utc=2026-08-28T21:54:24Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-28T21:48:34Z BEGIN current=646a8351d8de06df3262aaf3f20c67c7f3e90866 requested=57754307ba3ad794c88e329176776f00b835d3c9
+2026-08-28T21:52:36Z BEGIN current=57754307ba3ad794c88e329176776f00b835d3c9 requested=fb9036f80d8f3565ba68ae0ad36b3054d7202bca
 From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
  * branch            main       -> FETCH_HEAD
-Updating 646a835..5775430
+Updating 5775430..fb9036f
 Fast-forward
- ...ore-sirisky-five-trade-profile-009-20260828.yml | 164 +++++++++++++++++++
- .../grok_known_assets_bot/docs/LIVE_READINESS.md   |  35 ++++
- .../src/grok_known_assets_bot/control.py           |  24 ++-
- .../src/grok_known_assets_bot/live_readiness.py    | 176 +++++++++++++++++++++
- .../src/grok_known_assets_bot/live_runner.py       |  90 +++++++----
- .../src/grok_known_assets_bot/telegram_control.py  | 131 +++++++++------
- .../tests/test_live_readiness.py                   |  81 ++++++++++
- .../tests/test_live_readiness_control.py           |  51 ++++++
- 8 files changed, 666 insertions(+), 86 deletions(-)
- create mode 100644 .github/workflows/restore-sirisky-five-trade-profile-009-20260828.yml
- create mode 100644 testingbots/grok_known_assets_bot/docs/LIVE_READINESS.md
- create mode 100644 testingbots/grok_known_assets_bot/src/grok_known_assets_bot/live_readiness.py
- create mode 100644 testingbots/grok_known_assets_bot/tests/test_live_readiness.py
- create mode 100644 testingbots/grok_known_assets_bot/tests/test_live_readiness_control.py
+ ...ore-sirisky-five-trade-profile-009-20260828.yml | 143 +-------------
+ scripts/restore_sirisky_five_trade_profile_009.sh  | 216 +++++++++++++++++++++
+ 2 files changed, 220 insertions(+), 139 deletions(-)
+ create mode 100644 scripts/restore_sirisky_five_trade_profile_009.sh
 
 [notice] A new release of pip available: 22.3.1 -> 26.2.1
 [notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
@@ -53,38 +43,38 @@ Fast-forward
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-1228 passed, 1 skipped, 1 warning in 74.19s (0:01:14)
-2026-08-28T21:49:56Z TESTS PASSED; restarting learnerbot
-2026-08-28T21:50:04Z SUCCESS sha=57754307ba3ad794c88e329176776f00b835d3c9 version=[full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
+1228 passed, 1 skipped, 1 warning in 66.03s (0:01:06)
+2026-08-28T21:53:50Z TESTS PASSED; restarting learnerbot
+2026-08-28T21:54:00Z SUCCESS sha=fb9036f80d8f3565ba68ae0ad36b3054d7202bca version=[full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
 [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
 [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
 [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
 [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
 2.3.10 service=active
-     Active: active (running) since Fri 2026-08-28 22:49:58 BST; 5s ago
-   Main PID: 2115640 (python)
+     Active: active (running) since Fri 2026-08-28 22:53:55 BST; 5s ago
+   Main PID: 2117130 (python)
       Tasks: 10 (limit: 5869)
-     Memory: 450.4M (peak: 450.4M)
-        CPU: 2.784s
+     Memory: 551.7M (peak: 606.2M)
+        CPU: 3.158s
      CGroup: /system.slice/learnerbot.service
-             └─2115640 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             └─2117130 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
 
-Aug 28 22:49:59 mint.yesgoodwill.com python[2115640]: [ai-agent-health] automatic Telegram warnings disabled by owner
-Aug 28 22:49:59 mint.yesgoodwill.com python[2115640]: [botbuc-telegram-alert] MASTER success alerts enabled; backup failure alerts temporarily disabled
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: [ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/grok/kimi/copilot workers
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: gpt worker connected; model=gpt-5-nano
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: claude worker connected; model=claude-haiku-4-5
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: gemini worker connected; model=gemini-3.5-flash-lite
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: deepseek worker connected; model=deepseek-v4-flash
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: grok worker connected; model=grok-4.20-non-reasoning
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: kimi worker connected; model=kimi-k2.6
-Aug 28 22:50:00 mint.yesgoodwill.com python[2115640]: copilot worker connected; model=provider-default
+Aug 28 22:53:55 mint.yesgoodwill.com python[2117130]: [ai-agent-health] automatic Telegram warnings disabled by owner
+Aug 28 22:53:55 mint.yesgoodwill.com python[2117130]: [botbuc-telegram-alert] MASTER success alerts enabled; backup failure alerts temporarily disabled
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: [ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/grok/kimi/copilot workers
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: gpt worker connected; model=gpt-5-nano
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: claude worker connected; model=claude-haiku-4-5
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: gemini worker connected; model=gemini-3.5-flash-lite
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: deepseek worker connected; model=deepseek-v4-flash
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: grok worker connected; model=grok-4.20-non-reasoning
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: kimi worker connected; model=kimi-k2.6
+Aug 28 22:53:56 mint.yesgoodwill.com python[2117130]: copilot worker connected; model=provider-default
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-28T21:50:30Z
+UTC: 2026-08-28T21:54:21Z
 branch: main
-sha:    57754307ba3ad794c88e329176776f00b835d3c9
+sha:    fb9036f80d8f3565ba68ae0ad36b3054d7202bca
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
 version: [full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
 [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
@@ -98,25 +88,25 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; disabled; preset: disabled)
-     Active: active (running) since Fri 2026-08-28 22:49:58 BST; 33s ago
-   Main PID: 2115640 (python)
-      Tasks: 42 (limit: 5869)
-     Memory: 557.4M (peak: 638.8M)
-        CPU: 21.906s
+     Active: active (running) since Fri 2026-08-28 22:53:55 BST; 28s ago
+   Main PID: 2117130 (python)
+      Tasks: 40 (limit: 5869)
+     Memory: 583.9M (peak: 654.4M)
+        CPU: 18.586s
      CGroup: /system.slice/learnerbot.service
-             ├─2115640 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             ├─2115741 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─2115742 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─2115743 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             └─2115744 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2117130 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             ├─2117248 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2117249 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2117250 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             └─2117251 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 28 22:50:27 mint.yesgoodwill.com python[2115743]: [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
-Aug 28 22:50:27 mint.yesgoodwill.com python[2115743]: [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
-Aug 28 22:50:27 mint.yesgoodwill.com python[2115743]: [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
-Aug 28 22:50:28 mint.yesgoodwill.com python[2115744]: [full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
-Aug 28 22:50:28 mint.yesgoodwill.com python[2115744]: [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
-Aug 28 22:50:28 mint.yesgoodwill.com python[2115744]: [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
-Aug 28 22:50:28 mint.yesgoodwill.com python[2115744]: [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
-Aug 28 22:50:28 mint.yesgoodwill.com python[2115744]: [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
-Aug 28 22:50:29 mint.yesgoodwill.com python[2115640]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
-Aug 28 22:50:30 mint.yesgoodwill.com python[2115640]: [evm-router-probe] ERROR RuntimeError: Alchemy alchemy_getAssetTransfers: HTTP 429; retries exhausted
+Aug 28 22:54:11 mint.yesgoodwill.com python[2117130]: [gemini-telegram] long-poll-mode=true webhook-cleared=false pending-preserved=true
+Aug 28 22:54:12 mint.yesgoodwill.com python[2117130]: [scan:bsc] 115386223..115386232 tx=733
+Aug 28 22:54:15 mint.yesgoodwill.com python[2117130]: [daily-botbuc-backup] backup failed: RuntimeError: backup preflight refused: insufficient disk headroom free_bytes=1312915456 required_bytes=4294967296; no temporary ZIP was started
+Aug 28 22:54:15 mint.yesgoodwill.com python[2117130]: [daily-botbuc-backup] retrying backup/upload in 1 hour
+Aug 28 22:54:19 mint.yesgoodwill.com python[2117248]: [full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
+Aug 28 22:54:19 mint.yesgoodwill.com python[2117248]: [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
+Aug 28 22:54:19 mint.yesgoodwill.com python[2117248]: [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
+Aug 28 22:54:19 mint.yesgoodwill.com python[2117248]: [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
+Aug 28 22:54:19 mint.yesgoodwill.com python[2117248]: [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
+Aug 28 22:54:20 mint.yesgoodwill.com python[2117130]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
