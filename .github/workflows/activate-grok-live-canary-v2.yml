@@ -1,0 +1,264 @@
+name: Activate Grok LIVE Canary v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/activate-grok-live-canary-v2.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-grok-known-assets-testing-bot
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Verify Google runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          clean: false
+
+      - name: Deploy current Grok code and LIVE dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x testingbots/grok_known_assets_bot/scripts/install.sh
+          testingbots/grok_known_assets_bot/scripts/install.sh "$GITHUB_WORKSPACE/testingbots/grok_known_assets_bot"
+          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          .venv/bin/pip install -q -e '.[live]'
+          .venv/bin/python -m pytest -q tests/test_live_canary.py tests/test_live_canary_exit_balance.py tests/test_live_canary_post715_hardening.py
+
+      - name: Prepare secret-safe canary runtime environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo python3 - <<'PY'
+          import os
+          import pwd
+          import re
+          from pathlib import Path
+
+          owner = pwd.getpwnam('ayman01323')
+          config_dir = Path('/home/ayman01323/.config/grok-known-assets-bot')
+          canary = config_dir / 'canary.env'
+          telegram = config_dir / 'telegram.env'
+          sources = [
+              canary,
+              telegram,
+              Path('/var/tmp/ai_council_runtime.env'),
+              Path('/var/tmp/boot/ai_council_runtime.env'),
+              Path('/home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env'),
+              Path('/root/SiRisky/.env'),
+          ]
+
+          def parse(path):
+              out = {}
+              try:
+                  raw = path.read_text(encoding='utf-8', errors='replace')
+              except Exception:
+                  return out
+              for line in raw.splitlines():
+                  line = line.strip()
+                  if not line or line.startswith('#') or '=' not in line:
+                      continue
+                  k, v = line.split('=', 1)
+                  out[k.strip()] = v.strip().strip('"').strip("'")
+              return out
+
+          parsed = [parse(p) for p in sources]
+          existing = dict(parsed[0])
+
+          def first(key):
+              for vals in parsed:
+                  value = str(vals.get(key) or '').strip()
+                  if value:
+                      return value
+              return ''
+
+          signer_id = str(existing.get('GROK_LIVE_CANARY_TELEGRAM_ID') or '').strip()
+          if not signer_id:
+              approvers = str(existing.get('GROK_LIVE_CANARY_APPROVER_USER_IDS') or '').strip()
+              ids = [x for x in re.split(r'[,;\s]+', approvers) if x]
+              if len(ids) == 1 and ids[0].isdigit() and int(ids[0]) > 0:
+                  signer_id = ids[0]
+          if not signer_id:
+              chat_ids = first('GROK_TELEGRAM_CHAT_IDS')
+              ids = [x for x in re.split(r'[,;\s]+', chat_ids) if x]
+              if len(ids) == 1 and ids[0].isdigit() and int(ids[0]) > 0:
+                  signer_id = ids[0]
+          if not signer_id:
+              raise SystemExit('GROK LIVE activation blocked: no unambiguous positive Telegram signer id')
+
+          approver_ids = str(existing.get('GROK_LIVE_CANARY_APPROVER_USER_IDS') or '').strip() or signer_id
+
+          rpc_keys = ('SOLANA_RPC_URLS', 'SOLANA_RPC_FALLBACK_URLS', 'SOLANA_RPC_URL', 'HELIUS_RPC_URL', 'HELIUS_API_KEY')
+          rpc_values = {k: first(k) for k in rpc_keys}
+          if not any(rpc_values.values()):
+              raise SystemExit('GROK LIVE activation blocked: no dedicated/failover Solana RPC configuration found')
+
+          values = dict(existing)
+          values['GROK_LIVE_CANARY_TELEGRAM_ID'] = signer_id
+          values['GROK_LIVE_CANARY_APPROVER_USER_IDS'] = approver_ids
+          values.setdefault('GROK_LIVE_CANARY_APPROVAL_TTL_SECONDS', '90')
+          for k, v in rpc_values.items():
+              if v and not str(values.get(k) or '').strip():
+                  values[k] = v
+
+          config_dir.mkdir(parents=True, exist_ok=True)
+          lines = [f'{k}={v}' for k, v in sorted(values.items()) if str(v).strip()]
+          canary.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          os.chmod(config_dir, 0o700)
+          os.chmod(canary, 0o600)
+          os.chown(config_dir, owner.pw_uid, owner.pw_gid)
+          os.chown(canary, owner.pw_uid, owner.pw_gid)
+          print('canary_env=READY')
+          print('signer_id=CONFIGURED_REDACTED')
+          print('approver_ids=CONFIGURED_REDACTED')
+          print('rpc_config=READY_REDACTED')
+          PY
+
+      - name: Verify signer, funding and reconciliation state read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          sudo -u ayman01323 .venv/bin/python - <<'PY'
+          import json
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          env_file = Path('/home/ayman01323/.config/grok-known-assets-bot/canary.env')
+          for raw in env_file.read_text(encoding='utf-8').splitlines():
+              line = raw.strip()
+              if not line or line.startswith('#') or '=' not in line:
+                  continue
+              k, v = line.split('=', 1)
+              os.environ[k.strip()] = v.strip().strip('"').strip("'")
+          os.environ['GROK_BOOT_REPO_ROOT'] = '/home/ayman01323/BOOT'
+          os.environ['GROK_LEARNERBOT_CSV_DIR'] = '/home/ayman01323/BOOT/CSVbot'
+          os.environ['GROK_LEARNERBOT_DATA_DIR'] = '/home/ayman01323/BOOT/data'
+
+          from grok_known_assets_bot import live_canary as lc
+          from grok_known_assets_bot import live_execution as lx
+
+          ok, reason = lx.signer_status()
+          if not ok:
+              raise SystemExit('GROK LIVE activation blocked: signer not ready: ' + reason)
+
+          db = sqlite3.connect('state.sqlite3', timeout=8)
+          lc.ensure_schema(db)
+          if lc.needs_reconciliation(db):
+              raise SystemExit('GROK LIVE activation blocked: reconciliation is required')
+
+          need = 950000
+          row = db.execute("SELECT payload FROM events WHERE kind='LIVE_READY' ORDER BY id DESC LIMIT 1").fetchone()
+          if row:
+              try:
+                  need = max(1, int(json.loads(row[0]).get('entry_input_micro_usdc') or need))
+              except Exception:
+                  pass
+          db.close()
+
+          ok, reason = lx.preflight_funding(need_input_micro_usdc=need)
+          if not ok:
+              raise SystemExit('GROK LIVE activation blocked: funding preflight failed: ' + reason)
+          print('signer_ready=true')
+          print('reconciliation_required=false')
+          print('funding_preflight=true')
+          print('required_entry_micro_usdc=' + str(need))
+          PY
+
+      - name: Install and start canary service while money path is OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example
+          sudo install -m 0644 "$SRC" /etc/systemd/system/grok-known-assets-canary.service
+          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          .venv/bin/python - <<'PY'
+          from grok_known_assets_bot.control import load_state, save_state
+          state = load_state()
+          save_state(
+              armed=bool(state.get('armed')),
+              live_readiness_enabled=bool(state.get('live_readiness_enabled')),
+              live_canary_enabled=False,
+              updated_by='github-live-activation-prestart',
+          )
+          print('prestart_live_canary=false')
+          PY
+          sudo systemctl daemon-reload
+          sudo systemctl enable grok-known-assets-canary.service
+          sudo systemctl restart grok-known-assets-canary.service
+          sleep 4
+          sudo systemctl is-active --quiet grok-known-assets-canary.service
+
+      - name: Arm LIVE readiness and LIVE canary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          .venv/bin/python - <<'PY'
+          import sqlite3
+          from grok_known_assets_bot import live_canary as lc
+          from grok_known_assets_bot.control import save_state
+
+          db = sqlite3.connect('state.sqlite3', timeout=8)
+          lc.ensure_schema(db)
+          if lc.needs_reconciliation(db):
+              raise SystemExit('refusing to arm: reconciliation became required at canary startup')
+          db.close()
+
+          state = save_state(
+              armed=True,
+              live_readiness_enabled=True,
+              live_canary_enabled=True,
+              updated_by='github-live-activation-owner-request',
+          )
+          if not state.get('live_money_enabled'):
+              raise SystemExit('refusing to continue: live money state did not become enabled')
+          print('armed=true')
+          print('live_readiness_enabled=true')
+          print('live_canary_enabled=true')
+          print('live_money_enabled=true')
+          PY
+
+      - name: Final LIVE attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo systemctl is-active --quiet grok-known-assets-bot.service
+          sudo systemctl is-active --quiet grok-known-assets-telegram.service
+          sudo systemctl is-active --quiet grok-known-assets-canary.service
+          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          .venv/bin/python - <<'PY'
+          from grok_known_assets_bot.control import load_state
+          state = load_state()
+          assert state['armed'] is True
+          assert state['live_readiness_enabled'] is True
+          assert state['live_canary_enabled'] is True
+          assert state['live_money_enabled'] is True
+          print('GROK_LIVE_CANARY=ACTIVE')
+          print('REAL_MONEY_SIGNING=ENABLED_APPROVAL_GATED')
+          print('TRANSACTION_BROADCAST=ENABLED_APPROVAL_GATED')
+          print('HARD_CAP_SOL=0.009')
+          print('MAX_OPEN_CANARY_POSITIONS=1')
+          print('ENTRY_APPROVAL=/grokapprove <id> CONFIRM')
+          print('EXIT_APPROVAL=/grokexit <position_id> CONFIRM')
+          PY
+          sudo systemctl show grok-known-assets-canary.service -p ActiveState -p SubState -p MainPID -p User -p WorkingDirectory --no-pager
+          sudo journalctl -u grok-known-assets-canary.service --since '3 minutes ago' -n 80 --no-pager \
+            | sed -E 's#[0-9]{6,}:[A-Za-z0-9_-]{20,}#<redacted-token>#g; s#api-key=[A-Za-z0-9_-]+#api-key=<redacted>#g'
