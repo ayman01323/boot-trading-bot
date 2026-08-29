@@ -1,0 +1,111 @@
+name: SiRisky public transaction fee diagnostic 2026-08-29
+
+on:
+  push:
+    branches:
+      - diag/sirisky-20260829-2042-tx-fees
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-public-solana-transactions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Query public Solana transaction metadata only
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, time, urllib.request, urllib.error
+
+          KNOWN_BUY = "4kubdTzJwEw7dns3cqgo4yLxGPxUCHx8L1k9uzEMVZuXuCwP4ivSfRz9ZzfXFoL7QJKuij4v7buWweeV7ti737Eo"
+          KNOWN_SELL = "4N4L4xgT8MTBPrJ6jpLeGFhenDnnhAVdCYj72JbL9vMU2C28hxHDgqLJWeLDNXmDLkXiPiPYzoVrnSdUFfkYhmQF"
+          MINT = "6DNiANPmV14rGRqDYLcoM9s9sHmNo8uFCDv9m6wR6R18"
+          CLOSED_EPOCH = 1788027543
+          WINDOW_START = CLOSED_EPOCH - 300
+          WINDOW_END = CLOSED_EPOCH + 60
+          RPCS = [
+              "https://api.mainnet-beta.solana.com",
+              "https://solana-rpc.publicnode.com",
+              "https://1rpc.io/solana",
+          ]
+
+          def rpc(method, params):
+              payload = json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+              last = None
+              for url in RPCS:
+                  try:
+                      req = urllib.request.Request(url, data=payload, headers={"Content-Type":"application/json","User-Agent":"SiRisky-public-readonly-diagnostic"})
+                      with urllib.request.urlopen(req, timeout=20) as resp:
+                          obj = json.loads(resp.read().decode())
+                      if obj.get("error"):
+                          last = RuntimeError(str(obj["error"]))
+                          continue
+                      return obj.get("result")
+                  except Exception as exc:
+                      last = exc
+              raise RuntimeError(f"all public RPCs failed: {type(last).__name__}")
+
+          def tx(sig):
+              return rpc("getTransaction", [sig, {"encoding":"jsonParsed","commitment":"confirmed","maxSupportedTransactionVersion":0}])
+
+          known = tx(KNOWN_BUY)
+          if not known:
+              raise SystemExit("known BUY not found")
+          keys = known["transaction"]["message"]["accountKeys"]
+          signer_index = next((i for i,k in enumerate(keys) if isinstance(k,dict) and k.get("signer")), 0)
+          signer = keys[signer_index]["pubkey"] if isinstance(keys[signer_index],dict) else keys[signer_index]
+
+          sig_rows = rpc("getSignaturesForAddress", [signer, {"limit":1000}]) or []
+          candidates=[]
+          for row in sig_rows:
+              bt = row.get("blockTime")
+              if bt is None or not (WINDOW_START <= int(bt) <= WINDOW_END):
+                  continue
+              sig=row.get("signature")
+              t=tx(sig)
+              if not t or not t.get("meta"):
+                  continue
+              meta=t["meta"]
+              token_mints={str(x.get("mint") or "") for x in (meta.get("preTokenBalances") or [])+(meta.get("postTokenBalances") or [])}
+              if MINT not in token_mints:
+                  continue
+              tkeys=t["transaction"]["message"]["accountKeys"]
+              idx=next((i for i,k in enumerate(tkeys) if (k.get("pubkey") if isinstance(k,dict) else k)==signer), None)
+              if idx is None:
+                  continue
+              pre=int(meta.get("preBalances",[])[idx]); post=int(meta.get("postBalances",[])[idx])
+              fee=int(meta.get("fee") or 0)
+              def token_total(rows):
+                  total=0
+                  for x in rows or []:
+                      if str(x.get("mint") or "") != MINT or str(x.get("owner") or "") != signer:
+                          continue
+                      ui=x.get("uiTokenAmount") or {}
+                      total += int(ui.get("amount") or 0)
+                  return total
+              token_pre=token_total(meta.get("preTokenBalances"))
+              token_post=token_total(meta.get("postTokenBalances"))
+              token_delta=token_post-token_pre
+              side="BUY" if token_delta>0 else ("SELL" if token_delta<0 else "OTHER")
+              candidates.append({
+                  "blockTime":int(t.get("blockTime") or bt),
+                  "signature":sig,
+                  "side":side,
+                  "fee_lamports":fee,
+                  "fee_sol":fee/1e9,
+                  "wallet_native_delta_lamports":post-pre,
+                  "wallet_native_delta_sol":(post-pre)/1e9,
+                  "token_delta_raw":token_delta,
+                  "known": sig in {KNOWN_BUY,KNOWN_SELL},
+              })
+
+          candidates.sort(key=lambda x:(x["blockTime"], x["signature"]))
+          print("SIRISKY_PUBLIC_TX_DIAGNOSTIC")
+          print(json.dumps({"window_start":WINDOW_START,"window_end":WINDOW_END,"transaction_count":len(candidates)},sort_keys=True))
+          for i,row in enumerate(candidates,1):
+              print(f"TX{i}="+json.dumps(row,sort_keys=True))
+          print("TOTAL_NETWORK_FEE_SOL="+f"{sum(x['fee_sol'] for x in candidates):.9f}")
+          print("TOTAL_WALLET_NATIVE_DELTA_SOL="+f"{sum(x['wallet_native_delta_sol'] for x in candidates):.9f}")
+          PY
