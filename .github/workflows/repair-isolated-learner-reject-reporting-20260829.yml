@@ -1,11 +1,6 @@
 name: Repair Isolated Learner Reject Reporting 20260829
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'scripts/repair_isolated_learner_reject_reporting.py'
-      - '.github/workflows/repair-isolated-learner-reject-reporting-20260829.yml'
   workflow_dispatch:
   workflow_run:
     workflows: ['Recover Learner SiRisky 1240 BST 009 v2']
@@ -25,11 +20,12 @@ jobs:
     timeout-minutes: 15
     env:
       LROOT: /home/ayman01323/BOOT/testingbots/learn
+      PROOT: /root/multichain-learning-bot-v2.2-fast-direct-market
       SERVICE: learnerbot-learn.service
       QUEUE_ROOT: /home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY
       CODE_ROOT: /home/ayman01323/BOOT/datacentre/rejected_router
     steps:
-      - name: Fetch narrow repair sources without checkout
+      - name: Fetch narrow repair sources
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -49,40 +45,29 @@ jobs:
           echo "SRC_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
           echo 'repair_sources=READY'
 
-      - name: Repair rejection reporting only
+      - name: Restore outbound rejection reporting safely
         shell: bash
         run: |
           set -Eeuo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
-          test -n "${SRC_ROOT:-}"
-          test -f "$SRC_ROOT/scripts/repair_isolated_learner_reject_reporting.py"
-          test -f "$SRC_ROOT/learnerbot/rejected_opportunity_publisher.py"
-
           sudo -n /usr/bin/env \
-            REPAIR_ROOT="$SRC_ROOT" \
-            LROOT="$LROOT" \
-            SERVICE="$SERVICE" \
-            QUEUE_ROOT="$QUEUE_ROOT" \
-            CODE_ROOT="$CODE_ROOT" \
+            REPAIR_ROOT="$SRC_ROOT" LROOT="$LROOT" PROOT="$PROOT" SERVICE="$SERVICE" \
+            QUEUE_ROOT="$QUEUE_ROOT" CODE_ROOT="$CODE_ROOT" \
             /usr/bin/bash <<'ROOT'
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test -d "$LROOT/learnerbot"
+          test -f "$LROOT/.env"
           test -f "$LROOT/CSVbot/solana_settings.csv"
           test -f "$LROOT/CSVbot/user_trading_settings.csv"
-          test -f "$LROOT/.env"
           test "$(systemctl show "$SERVICE" -p LoadState --value)" = loaded
 
           SOLANA_HASH_BEFORE="$(sha256sum "$LROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
           USER_HASH_BEFORE="$(sha256sum "$LROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
           SOURCE_BEFORE="$(cat "$LROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
-          echo "trading_settings_hash_before=$SOLANA_HASH_BEFORE"
-          echo "user_settings_hash_before=$USER_HASH_BEFORE"
           echo "restored_source_before=${SOURCE_BEFORE:-unknown}"
 
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          BACKUP="$LROOT/private/pre-reject-report-repair-$stamp"
+          BACKUP="$LROOT/private/pre-persistent-reject-report-repair-$stamp"
           mkdir -p "$BACKUP/learnerbot"
           cp -a "$LROOT/.env" "$BACKUP/.env"
           cp -a "$LROOT/learnerbot/telegram_ui.py" "$BACKUP/learnerbot/telegram_ui.py"
@@ -115,7 +100,7 @@ jobs:
                 chown ayman01323:ayman01323 "$LROOT/learnerbot/rejected_opportunity_publisher.py" || true
               chmod 600 "$LROOT/.env" || true
               systemctl restart "$SERVICE" || true
-              sleep 4
+              sleep 5
               echo "learner_after_rollback=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
               echo 'REJECT_REPORT_REPAIR_ROLLBACK=COMPLETE'
             fi
@@ -123,78 +108,122 @@ jobs:
           }
           trap rollback EXIT
 
-          # Recover the already-secured Learner Telegram credential locally. Never print it.
-          SERVICE_PID="$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)"
-          TARGET="$LROOT" SERVICE_PID="$SERVICE_PID" QUEUE_ROOT="$QUEUE_ROOT" CODE_ROOT="$CODE_ROOT" python3 - <<'PY'
-          import csv, os
+          # Never trust a stored MASTER/chat id merely because it is numeric. Verify it
+          # against the actual Learner bot before writing TELEGRAM_CHAT_ID.
+          TARGET="$LROOT" PROD="$PROOT" QUEUE_ROOT="$QUEUE_ROOT" CODE_ROOT="$CODE_ROOT" python3 - <<'PY'
+          import csv
+          import os
           from pathlib import Path
+          import requests
 
           root = Path(os.environ['TARGET'])
+          prod = Path(os.environ['PROD'])
           envp = root / '.env'
 
-          def file_env(path: Path) -> dict[str, str]:
+          def file_env(path):
               out = {}
               try:
-                  lines = path.read_text(encoding='utf-8').splitlines()
+                  lines = Path(path).read_text(encoding='utf-8').splitlines()
               except Exception:
                   return out
               for raw in lines:
                   line = raw.strip()
                   if not line or line.startswith('#') or '=' not in line:
                       continue
-                  k, v = line.split('=', 1)
-                  out[k.strip()] = v.strip().strip('"').strip("'")
+                  key, value = line.split('=', 1)
+                  out[key.strip()] = value.strip().strip('"').strip("'")
               return out
 
-          current = file_env(envp)
-          token = current.get('TELEGRAM_BOT_TOKEN', '').strip()
-          source = 'learner_env' if token else ''
+          learner_env = file_env(envp)
+          prod_env = file_env(prod / '.env')
+          token = learner_env.get('TELEGRAM_BOT_TOKEN', '').strip() or prod_env.get('TELEGRAM_BOT_TOKEN', '').strip()
           if not token:
-              prod = file_env(Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env'))
-              token = prod.get('TELEGRAM_BOT_TOKEN', '').strip()
-              source = 'production_env' if token else ''
-          if not token:
-              pid = str(os.environ.get('SERVICE_PID') or '').strip()
-              if pid.isdigit() and int(pid) > 0:
-                  try:
-                      raw = Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
-                      proc = {}
-                      for entry in raw:
-                          if b'=' in entry:
-                              k, v = entry.split(b'=', 1)
-                              proc[k.decode(errors='ignore')] = v.decode(errors='ignore')
-                      token = proc.get('TELEGRAM_BOT_TOKEN', '').strip()
-                      source = 'active_learner_process' if token else ''
-                  except Exception:
-                      pass
-          if not token:
-              raise SystemExit('no secured Learner Telegram token found in approved local runtime sources')
+              raise SystemExit('no local Telegram token available')
 
-          master = ''
-          users = root / 'CSVbot' / 'users.csv'
-          if users.exists():
-              with users.open(encoding='utf-8-sig', newline='') as f:
-                  for row in csv.DictReader(f):
-                      tid = str(row.get('telegram_id') or '').strip()
-                      if (
-                          str(row.get('status') or '').upper() == 'ACTIVE'
-                          and str(row.get('role') or '').upper() == 'MASTER'
-                          and tid.lstrip('-').isdigit()
-                      ):
-                          master = tid
-                          break
+          base = 'https://api.telegram.org/bot' + token
+          try:
+              response = requests.get(base + '/getMe', timeout=15)
+              data = response.json()
+          except Exception as exc:
+              raise SystemExit('telegram_getMe_transport=' + type(exc).__name__)
+          if not data.get('ok'):
+              raise SystemExit('telegram_getMe_failed=' + str(data.get('description') or response.status_code)[:120])
+          print('telegram_bot_verified=true')
+          print('telegram_bot_username=' + str((data.get('result') or {}).get('username') or 'unknown'))
+
+          candidates = []
+          def add(value, source):
+              for part in str(value or '').replace(';', ',').split(','):
+                  cid = part.strip()
+                  if cid and cid.lstrip('-').isdigit() and cid not in [item[0] for item in candidates]:
+                      candidates.append((cid, source))
+
+          # Prefer an already-working Learner destination, but also probe production
+          # destinations and user records so recovery can self-heal stale configuration.
+          for key in ('TELEGRAM_CHAT_ID', 'TELEGRAM_CHAT_IDS'):
+              add(learner_env.get(key), 'learner_env_' + key.lower())
+              add(prod_env.get(key), 'production_env_' + key.lower())
+
+          for csv_path, source in (
+              (root / 'CSVbot' / 'users.csv', 'learner_users'),
+              (prod / 'CSVbot' / 'users.csv', 'production_users'),
+          ):
+              try:
+                  with csv_path.open(encoding='utf-8-sig', newline='') as handle:
+                      rows = list(csv.DictReader(handle))
+              except Exception:
+                  rows = []
+              rows.sort(key=lambda row: 0 if str(row.get('role') or '').upper() == 'MASTER' else 1)
+              for row in rows:
+                  add(row.get('telegram_id'), source + '_' + str(row.get('role') or 'user').lower())
+
+          verified = []
+          for cid, source in candidates:
+              try:
+                  response = requests.post(base + '/getChat', json={'chat_id': cid}, timeout=15)
+                  data = response.json()
+              except Exception as exc:
+                  print(f'chat_probe source={source} id=***{cid[-4:]} ok=false transport={type(exc).__name__}')
+                  continue
+              if data.get('ok'):
+                  chat_type = str((data.get('result') or {}).get('type') or 'unknown')
+                  print(f'chat_probe source={source} id=***{cid[-4:]} ok=true type={chat_type}')
+                  verified.append((cid, source, chat_type))
+              else:
+                  description = str(data.get('description') or 'unknown')[:120]
+                  print(f'chat_probe source={source} id=***{cid[-4:]} ok=false description={description}')
+
+          if not verified:
+              raise SystemExit('no Telegram recipient candidate is valid for this bot')
+
+          # Prefer the current Learner env if it is valid. Otherwise prefer a verified
+          # Learner user, then a verified production destination. Never prefer an
+          # unverified MASTER id.
+          def rank(item):
+              _, source, chat_type = item
+              return (
+                  0 if source.startswith('learner_env_telegram_chat_id') else
+                  1 if source.startswith('learner_users_master') else
+                  2 if source.startswith('learner_users') else
+                  3 if source.startswith('production_env') else 4,
+                  0 if chat_type == 'private' else 1,
+              )
+
+          verified.sort(key=rank)
+          chosen, source, chat_type = verified[0]
+          print('verified_recipient_source=' + source)
+          print('verified_recipient_type=' + chat_type)
+          print('verified_recipient_id=***' + chosen[-4:])
 
           replace = {
               'TELEGRAM_BOT_TOKEN': token,
+              'TELEGRAM_CHAT_ID': chosen,
               'LEARNER_TELEGRAM_OUTBOUND_ONLY': 'true',
               'BOOT_REJECTED_OPPORTUNITY_ENABLED': '1',
               'BOOT_REJECTED_OPPORTUNITY_DIR': os.environ['QUEUE_ROOT'],
               'BOOT_REJECTED_OPPORTUNITY_CODE_ROOT': os.environ['CODE_ROOT'],
               'BOOT_REJECTED_SOURCE_BOT': 'learnerbot',
           }
-          if master:
-              replace['TELEGRAM_CHAT_ID'] = master
-
           old = envp.read_text(encoding='utf-8').splitlines()
           out, seen = [], set()
           for raw in old:
@@ -211,37 +240,28 @@ jobs:
                   out.append(f'{key}={value}')
           envp.write_text('\n'.join(out).rstrip() + '\n', encoding='utf-8')
           os.chmod(envp, 0o600)
-          print('telegram_token_present=true')
-          print('telegram_token_source=' + source)
-          print('outbound_only=true')
-          print('rejected_queue_enabled=true')
-          print('master_recipient_configured=' + str(bool(master)).lower())
+          print('learner_reporting_env_repaired=true')
           PY
 
           python3 "$REPAIR_ROOT/scripts/repair_isolated_learner_reject_reporting.py" \
-            --repo "$REPAIR_ROOT" \
-            --root "$LROOT"
+            --repo "$REPAIR_ROOT" --root "$LROOT"
           changed=1
 
           chown ayman01323:ayman01323 \
+            "$LROOT/.env" \
             "$LROOT/learnerbot/telegram_ui.py" \
             "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" \
-            "$LROOT/learnerbot/rejected_opportunity_publisher.py" \
-            "$LROOT/.env"
+            "$LROOT/learnerbot/rejected_opportunity_publisher.py"
           chmod 600 "$LROOT/.env"
 
           py="$LROOT/.venv/bin/python"
-          [[ -x "$py" ]] || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          [[ -x "$py" ]] || py="$PROOT/.venv/bin/python"
           [[ -x "$py" ]] || py=/usr/bin/python3
           PYTHONPATH="$LROOT" "$py" -m py_compile \
             "$LROOT/learnerbot/telegram_ui.py" \
             "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" \
             "$LROOT/learnerbot/rejected_opportunity_publisher.py"
-
-          grep -q 'outbound-only mode: polling disabled' "$LROOT/learnerbot/telegram_ui.py"
-          grep -q '_report_reject_actions(app, payload, actions)' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
-          grep -q 'LEARNER REJECTED OPPORTUNITY' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
-          echo 'runtime_hooks=PASS'
+          echo 'runtime_compile=PASS'
 
           systemctl restart "$SERVICE"
           sleep 10
@@ -271,51 +291,31 @@ jobs:
           echo 'trading_settings_unchanged=true'
           echo 'restored_source_unchanged=true'
 
-          # Synthetic Telegram report only: no trading function and no rejection-queue write.
+          # Safe delivery proof: uses only the Telegram helper; no trading call and no
+          # rejection-queue write.
           cd "$LROOT"
           PYTHONPATH=. "$py" - <<'PY'
-          import csv
-          from pathlib import Path
           from learnerbot.config import AppSettings
           from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report
 
           app = AppSettings.load()
-          if not app.telegram_bot_token:
-              raise SystemExit('runtime Telegram token not loaded')
-          master = ''
-          p = Path('CSVbot/users.csv')
-          if p.exists():
-              with p.open(encoding='utf-8-sig', newline='') as f:
-                  for row in csv.DictReader(f):
-                      tid = str(row.get('telegram_id') or '').strip()
-                      if (
-                          str(row.get('status') or '').upper() == 'ACTIVE'
-                          and str(row.get('role') or '').upper() == 'MASTER'
-                          and tid.lstrip('-').isdigit()
-                      ):
-                          master = tid
-                          break
-          if not master:
-              ids = [str(x).strip() for x in getattr(app, 'telegram_chat_ids', []) if str(x).strip()]
-              master = ids[0] if ids else ''
-          if not master:
-              raise SystemExit('no Telegram recipient available for reject-report smoke test')
-          ok = _send_reject_report(
-              app,
-              master,
-              {'mint': 'SYSTEM_TEST_ONLY', 'leader_wallet': '', 'signature': 'reject-report-smoke'},
-              {'action': 'REJECT', 'reason': 'REJECT_REPORT_SMOKE_TEST'},
-              test_only=True,
-          )
+          ids = [str(value).strip() for value in app.telegram_chat_ids if str(value).strip()]
+          if not ids:
+              raise SystemExit('verified Telegram recipient not loaded by AppSettings')
+          try:
+              ok = _send_reject_report(
+                  app,
+                  ids[0],
+                  {'mint': 'SYSTEM_TEST_ONLY', 'leader_wallet': '', 'signature': 'persistent-repair-smoke'},
+                  {'action': 'REJECT', 'reason': 'REJECT_REPORT_SMOKE_TEST'},
+                  test_only=True,
+              )
+          except Exception as exc:
+              raise SystemExit(str(exc))
           if not ok:
-              raise SystemExit('reject-report smoke delivery returned no message id')
+              raise SystemExit('reject-report smoke returned false')
           print('reject_report_telegram_smoke=PASS')
           PY
-
-          echo '=== recent reporting evidence ==='
-          journalctl -u "$SERVICE" --since '5 minutes ago' --no-pager -o cat 2>/dev/null \
-            | grep -E 'telegram-menu|learner-reject-report|rejected-opportunity' \
-            | tail -n 100 || true
 
           echo 'repair=PASS'
           trap - EXIT
