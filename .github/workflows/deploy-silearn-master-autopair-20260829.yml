@@ -32,7 +32,7 @@ jobs:
           TMP="$(mktemp)"
           trap 'rm -f "$TMP"' EXIT
           curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/telegram_learner_master_autopair_patch.py -o "$TMP"
-          python3 -m py_compile "$TMP"
+          python3 -c 'import pathlib,sys; compile(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), sys.argv[1], "exec")' "$TMP"
           sudo -n install -o ayman01323 -g ayman01323 -m 0644 "$TMP" "$ROOT/learnerbot/telegram_learner_master_autopair_patch.py"
 
           sudo -n python3 - "$ROOT/learnerbot/__main__.py" <<'PY'
