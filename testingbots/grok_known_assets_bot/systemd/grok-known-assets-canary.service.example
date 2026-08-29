@@ -1,13 +1,13 @@
 # Grok LIVE-canary orchestrator. DISABLED BY DEFAULT.
 #
-# Real money. Do not `systemctl enable` this unit until the owner has reviewed
-# the PR, the canary wallet is funded, and GROK_* canary env vars are set.
+# Real money. Deployment installs this unit disabled/inactive. Do not enable or
+# start it until the owner has reviewed signer/RPC readiness and explicitly
+# chooses to operate the manual-confirmation canary.
 # Even when running, nothing broadcasts without /grokapprove <id> CONFIRM.
 #
-#   cp grok-known-assets-canary.service.example /etc/systemd/system/grok-known-assets-canary.service
-#   # edit the env values, then:
-#   systemctl daemon-reload
-#   systemctl start grok-known-assets-canary      # NOT enable, until reviewed
+# Secret/runtime values belong in:
+#   /home/ayman01323/.config/grok-known-assets-bot/canary.env
+# with mode 0600. Never put keys, wallet secrets or RPC credentials in this unit.
 
 [Unit]
 Description=Grok Known Assets Bot - LIVE canary orchestrator (manual approval)
@@ -23,9 +23,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=GROK_BOOT_REPO_ROOT=/home/ayman01323/BOOT
 Environment=GROK_LEARNERBOT_CSV_DIR=/home/ayman01323/BOOT/CSVbot
 Environment=GROK_LEARNERBOT_DATA_DIR=/home/ayman01323/BOOT/data
-# Environment=GROK_LIVE_CANARY_TELEGRAM_ID=REPLACE_WITH_CANARY_WALLET_TID
-# Environment=GROK_LIVE_CANARY_APPROVER_USER_IDS=REPLACE_WITH_TELEGRAM_USER_ID
-# Environment=SOLANA_RPC_URL=REPLACE_WITH_DEDICATED_RPC
+EnvironmentFile=-/home/ayman01323/.config/grok-known-assets-bot/canary.env
 ExecStart=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/python -m grok_known_assets_bot.live_canary_runner --config config.json --db state.sqlite3 --enable-live-canary
 Restart=always
 RestartSec=15
