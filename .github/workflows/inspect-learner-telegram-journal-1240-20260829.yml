@@ -1,0 +1,46 @@
+name: Inspect Learner Telegram Journal 1240 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/inspect-learner-telegram-journal-1240-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read historical Learner Telegram startup evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          SERVICE=learnerbot-learn.service
+          echo '=== TELEGRAM 09:00-12:45 BST AUG 28 ==='
+          journalctl -u "$SERVICE" \
+            --since '2026-08-28 08:00:00 UTC' --until '2026-08-28 11:45:00 UTC' \
+            --no-pager -o short-iso 2>/dev/null \
+            | grep -Ei 'telegram-menu|telegram-command-scope|setMyCommands|getUpdates|409 Conflict|webhook|TELEGRAM_BOT_TOKEN|Starting multi-chain learning loop' \
+            | tail -n 500 || true
+          echo '=== START/STOP EVENTS ==='
+          journalctl -u "$SERVICE" \
+            --since '2026-08-28 08:00:00 UTC' --until '2026-08-28 11:45:00 UTC' \
+            --no-pager -o short-iso 2>/dev/null \
+            | grep -Ei 'Started|Stopping|Stopped|Main process exited|Failed with result' \
+            | tail -n 200 || true
+          echo '=== HISTORICAL LOG COUNTS ==='
+          nmenu=$(journalctl -u "$SERVICE" --since '2026-08-28 08:00:00 UTC' --until '2026-08-28 11:45:00 UTC' --no-pager -o cat 2>/dev/null | grep -c '\[telegram-menu\] interactive multi-chain menu started' || true)
+          nscope=$(journalctl -u "$SERVICE" --since '2026-08-28 08:00:00 UTC' --until '2026-08-28 11:45:00 UTC' --no-pager -o cat 2>/dev/null | grep -c '\[telegram-command-scope\]' || true)
+          n400=$(journalctl -u "$SERVICE" --since '2026-08-28 08:00:00 UTC' --until '2026-08-28 11:45:00 UTC' --no-pager -o cat 2>/dev/null | grep -Eic 'setMyCommands failed|HTTP 400|409 Conflict' || true)
+          echo "historical_interactive_menu_starts=$nmenu"
+          echo "historical_command_scope_successes=$nscope"
+          echo "historical_telegram_api_errors=$n400"
+          echo 'NO_STATE_CHANGED=true'
+          ROOT
