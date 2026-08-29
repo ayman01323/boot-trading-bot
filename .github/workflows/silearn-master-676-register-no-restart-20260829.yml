@@ -1,0 +1,118 @@
+name: SiLearn MASTER 676 register no restart
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1726BST-master-676-alerts'
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - name: Register MASTER without service restart
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n true
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          TID=6760898817
+          STAMP=20260829T1729BST
+          BACKUP="$ROOT/private/change-control/${STAMP}-master-676-registration"
+          echo 'SiLearn — 2026-08-29 17:29 BST — Subject: Register MASTER 6760898817 without restarting live position'
+          test "$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)" = active
+          sudo -n mkdir -p "$BACKUP"
+          sudo -n cp -a "$ROOT/CSVbot/users.csv" "$BACKUP/users.csv.pre"
+          printf '%s\n' 'SiLearn — 2026-08-29 17:29 BST — Subject: Register MASTER 6760898817 without restarting live position' | sudo -n tee "$BACKUP/subject.txt" >/dev/null
+
+          sudo -n env ROOT="$ROOT" TID="$TID" python3 - <<'PY'
+          import csv, os, time
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); tid=os.environ['TID']; p=root/'CSVbot'/'users.csv'
+          with p.open('r',encoding='utf-8-sig',newline='') as f:
+              reader=csv.DictReader(f); headers=list(reader.fieldnames or []); rows=list(reader)
+          required=['telegram_id','role','status','fee_plan_id','label','allowed_chains','max_wallets','can_transfer','can_manual_trade','can_auto_trade','activated_epoch','expires_epoch','joined_epoch','activation_code','notes']
+          if not headers:
+              headers=required[:]
+          for h in required:
+              if h not in headers: headers.append(h)
+          now=str(int(time.time())); found=False
+          for row in rows:
+              if str(row.get('telegram_id') or '').strip()!=tid: continue
+              found=True
+              row.update({
+                  'role':'MASTER','status':'ACTIVE','fee_plan_id':'MASTER','label':'Master 6760898817',
+                  'allowed_chains':'*','max_wallets':row.get('max_wallets') or '20',
+                  'activated_epoch':row.get('activated_epoch') or now,
+                  'joined_epoch':row.get('joined_epoch') or now,
+                  'notes':'SiLearn 2026-08-29 17:29 BST: owner-approved MASTER registration for Telegram reporting; trading settings unchanged',
+              })
+          if not found:
+              row={h:'' for h in headers}
+              row.update({
+                  'telegram_id':tid,'role':'MASTER','status':'ACTIVE','fee_plan_id':'MASTER','label':'Master 6760898817',
+                  'allowed_chains':'*','max_wallets':'20','can_transfer':'true','can_manual_trade':'true','can_auto_trade':'true',
+                  'activated_epoch':now,'expires_epoch':'','joined_epoch':now,'activation_code':'',
+                  'notes':'SiLearn 2026-08-29 17:29 BST: owner-approved MASTER registration for Telegram reporting; trading settings unchanged',
+              })
+              rows.append(row)
+          tmp=p.with_name('users.csv.master676-new')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              writer=csv.DictWriter(f,fieldnames=headers); writer.writeheader(); writer.writerows(rows)
+          os.chmod(tmp,p.stat().st_mode); os.replace(tmp,p)
+          print('registered_or_repaired=true')
+          PY
+          sudo -n chown --reference="$BACKUP/users.csv.pre" "$ROOT/CSVbot/users.csv"
+
+          ROOT="$ROOT" TID="$TID" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); tid=os.environ['TID']; row=None
+          with (root/'CSVbot'/'users.csv').open('r',encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  if str(r.get('telegram_id') or '').strip()==tid: row=r; break
+          assert row
+          assert str(row.get('role') or '').upper()=='MASTER'
+          assert str(row.get('status') or '').upper()=='ACTIVE'
+          print('target_role=MASTER target_status=ACTIVE')
+          settings=root/'CSVbot'/'user_trading_settings.csv'; count=0
+          if settings.exists():
+              with settings.open('r',encoding='utf-8-sig',newline='') as f:
+                  count=sum(1 for r in csv.DictReader(f) if str(r.get('telegram_id') or '').strip()==tid)
+          print('target_trading_setting_rows='+str(count))
+          PY
+
+          # Confirm direct delivery. No trading action and no service restart.
+          TOKEN="$(sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          value=''
+          for raw in (Path(os.environ['ROOT'])/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1)
+              if k.strip()=='TELEGRAM_BOT_TOKEN': value=v.strip().strip('"').strip("'"); break
+          print(value)
+          PY
+          )"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          TOKEN="$TOKEN" TID="$TID" python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          payload=urllib.parse.urlencode({
+              'chat_id':os.environ['TID'],
+              'text':'SiLearn — 2026-08-29 17:29 BST — Subject: MASTER registration repaired\n\nTelegram 6760898817 is now registered as ACTIVE MASTER in live Google SiLearn. No trading settings were changed. The service was not restarted because a LIVE position is open.',
+          }).encode()
+          req=urllib.request.Request('https://api.telegram.org/bot'+os.environ['TOKEN']+'/sendMessage',data=payload,method='POST')
+          with urllib.request.urlopen(req,timeout=20) as r: data=json.loads(r.read().decode())
+          assert data.get('ok') is True
+          print('confirmation_send_ok=true message_id='+str((data.get('result') or {}).get('message_id') or ''))
+          PY
+
+          echo "service=$(systemctl is-active learnerbot-learn.service) restart_performed=false"
+          echo "backup=$BACKUP"
+          echo 'REGISTRATION_VERIFIED=true'
