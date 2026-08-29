@@ -9,9 +9,9 @@ provides Jupiter order -> local single-signer signing -> mandatory
 ``simulateTransaction`` -> execute -> post-execution economic proof.
 
 Direction: the Grok known-asset is native SOL, so an ENTRY is USDC -> SOL and an
-EXIT is SOL -> USDC. This is off the executor's usual SOL->token path but
-``swap()`` is direction-generic and Jupiter handles wrap/unwrap. Flagged for GPT
-review in .github/ai-mailbox.
+EXIT is SOL -> USDC. ``swap()`` is direction-generic and Jupiter handles
+wrap/unwrap. Entry and exit funding checks are owned by this adapter because the
+executor's ``buy``/``sell`` helpers assume SOL->SPL-token direction.
 """
 from __future__ import annotations
 
@@ -22,11 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .live_canary import SOL_FEE_RESERVE_LAMPORTS
+
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 WSOL_MINT = "So11111111111111111111111111111111111111112"
-
-# SOL that must remain for fees / rent after any entry.
-SOL_FEE_RESERVE_LAMPORTS = 20_000_000
 
 
 class ExecConfigError(RuntimeError):
@@ -70,12 +69,19 @@ def _learnerbot():
     try:
         from learnerbot import solana_live_executor as _exec  # noqa: WPS433
         from learnerbot import solana_sibot as _sol  # noqa: WPS433
+        from learnerbot import solana_rpc_failover_patch as _rpc_failover  # noqa: WPS433
         from learnerbot.solana_wallet_store import SolanaWalletStore  # noqa: WPS433
     except Exception as exc:  # pragma: no cover - env-specific
         raise ExecConfigError(
             "learnerbot Solana executor is not importable; set GROK_BOOT_REPO_ROOT "
             f"and install the [live] extra ({type(exc).__name__}: {exc})"
         ) from exc
+
+    # The standalone Grok process does not run learnerbot's normal patch chain.
+    # Install the same secret-safe multi-endpoint RPC failover locally so signer,
+    # balance and simulation calls can fail over on 401/403/429/transient faults.
+    if _sol._rpc is not _rpc_failover.rpc_failover:
+        _rpc_failover.install()
     return _exec, _sol, SolanaWalletStore
 
 
@@ -193,7 +199,10 @@ def execute_swap(
 
 
 def preflight_funding(*, need_input_micro_usdc: int, executor=None) -> tuple[bool, str]:
-    """Confirm USDC to spend and SOL fee reserve are present for an entry."""
+    """Confirm USDC to spend and native SOL fee reserve are present for entry."""
+    need = int(need_input_micro_usdc)
+    if need <= 0:
+        return False, "entry input must be positive"
     try:
         executor = executor or build_executor()
         usdc = int(executor.token_balance_raw(USDC_MINT))
@@ -202,8 +211,36 @@ def preflight_funding(*, need_input_micro_usdc: int, executor=None) -> tuple[boo
         return False, str(exc)
     except Exception as exc:  # pragma: no cover - env-specific
         return False, f"balance check failed: {type(exc).__name__}: {exc}"
-    if usdc < int(need_input_micro_usdc):
-        return False, f"insufficient USDC: have {usdc} micro, need {int(need_input_micro_usdc)}"
+    if usdc < need:
+        return False, f"insufficient USDC: have {usdc} micro, need {need}"
     if sol < SOL_FEE_RESERVE_LAMPORTS:
         return False, f"insufficient SOL fee reserve: have {sol} lamports, need {SOL_FEE_RESERVE_LAMPORTS}"
+    return True, "ok"
+
+
+def preflight_exit_funding(*, approved_exit_input_lamports: int, executor=None) -> tuple[bool, str]:
+    """Confirm the approved native-SOL position is spendable without using fee reserve.
+
+    This is deliberately separate from the ledger check. The runner first proves
+    that the exact quantity belongs to a still-open CONFIRMED Grok entry, then this
+    function proves the wallet can currently spend that quantity plus the fixed
+    native-SOL fee/rent reserve. A larger unrelated wallet balance never enlarges
+    the approved exit amount.
+    """
+    need = int(approved_exit_input_lamports)
+    if need <= 0:
+        return False, "exit input must be positive"
+    try:
+        executor = executor or build_executor()
+        sol = int(executor.native_balance_lamports())
+    except ExecConfigError as exc:
+        return False, str(exc)
+    except Exception as exc:  # pragma: no cover - env-specific
+        return False, f"exit balance check failed: {type(exc).__name__}: {exc}"
+    required = need + SOL_FEE_RESERVE_LAMPORTS
+    if sol < required:
+        return False, (
+            f"insufficient spendable SOL for approved exit: have {sol} lamports, "
+            f"need position {need} + reserve {SOL_FEE_RESERVE_LAMPORTS}"
+        )
     return True, "ok"
