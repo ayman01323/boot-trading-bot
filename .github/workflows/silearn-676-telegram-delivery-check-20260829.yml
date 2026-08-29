@@ -21,7 +21,7 @@ jobs:
           sudo -n true
           ROOT=/home/ayman01323/BOOT/testingbots/learn
           TID=6760898817
-          echo 'SiLearn — 2026-08-29 17:17 BST — Subject: Diagnose Telegram delivery for MASTER 6760898817'
+          echo 'SiLearn — 2026-08-29 17:22 BST — Subject: Test MASTER 676 direct Telegram delivery from runtime env file'
           echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
           PID="$(systemctl show learnerbot-learn.service -p MainPID --value)"
           test "$PID" != 0
@@ -31,64 +31,63 @@ jobs:
           import csv, os
           from pathlib import Path
           root=Path(os.environ['ROOT']); tid=os.environ['TID']
-          user_files=list(root.rglob('users.csv'))
-          settings_files=list(root.rglob('user_trading_settings.csv'))
-          print('users_files='+','.join(str(p) for p in user_files))
+          users=root/'CSVbot'/'users.csv'
+          settings=root/'CSVbot'/'user_trading_settings.csv'
           found=False
-          for p in user_files:
-              try:
-                  with p.open('r',encoding='utf-8-sig',newline='') as f:
-                      for row in csv.DictReader(f):
-                          if str(row.get('telegram_id') or '').strip()!=tid:
-                              continue
-                          found=True
-                          keys=('role','status','fee_plan_id','label','allowed_chains','can_manual_trade','can_auto_trade')
-                          print('user_row file=%s %s' % (p, ' '.join('%s=%s'%(k,row.get(k,'')) for k in keys)))
-              except Exception as exc:
-                  print('user_read_error file=%s type=%s' % (p,type(exc).__name__))
+          if users.exists():
+              with users.open('r',encoding='utf-8-sig',newline='') as f:
+                  for row in csv.DictReader(f):
+                      if str(row.get('telegram_id') or '').strip()!=tid:
+                          continue
+                      found=True
+                      keys=('role','status','fee_plan_id','label','allowed_chains','can_manual_trade','can_auto_trade')
+                      print('user_row '+' '.join('%s=%s'%(k,row.get(k,'')) for k in keys))
           print('user_registered='+str(found).lower())
           wanted={'sibot_enabled','sibot_auto_trade_enabled','solana_live_enabled','learner_new_entries_enabled','auto_trading_enabled','live_trading_enabled','recommendation_mode'}
-          for p in settings_files:
-              try:
-                  with p.open('r',encoding='utf-8-sig',newline='') as f:
-                      for row in csv.DictReader(f):
-                          if str(row.get('telegram_id') or '').strip()!=tid:
-                              continue
-                          setting=str(row.get('setting') or '').strip()
-                          if setting in wanted:
-                              print('setting file=%s chain=%s %s=%s' % (p,row.get('chain_id',''),setting,row.get('value','')))
-              except Exception as exc:
-                  print('settings_read_error file=%s type=%s' % (p,type(exc).__name__))
+          if settings.exists():
+              with settings.open('r',encoding='utf-8-sig',newline='') as f:
+                  for row in csv.DictReader(f):
+                      if str(row.get('telegram_id') or '').strip()!=tid:
+                          continue
+                      setting=str(row.get('setting') or '').strip()
+                      if setting in wanted:
+                          print('setting chain=%s %s=%s' % (row.get('chain_id',''),setting,row.get('value','')))
           PY
 
-          # Read only non-secret routing values from the running process environment.
-          sudo -n env PID="$PID" python3 - <<'PY'
+          # Read token + legacy broadcast IDs from the learner .env without ever printing the token.
+          TOKEN="$(sudo -n env ROOT="$ROOT" python3 - <<'PY'
           import os
           from pathlib import Path
-          pid=os.environ['PID']
-          data=Path('/proc')/pid/'environ'
-          env={}
-          for item in data.read_bytes().split(b'\0'):
-              if b'=' not in item: continue
-              k,v=item.split(b'=',1)
-              env[k.decode('utf-8','ignore')]=v.decode('utf-8','ignore')
-          print('legacy_TELEGRAM_CHAT_IDS='+env.get('TELEGRAM_CHAT_IDS',''))
-          print('legacy_TELEGRAM_CHAT_ID='+env.get('TELEGRAM_CHAT_ID',''))
-          print('telegram_token_present='+str(bool(env.get('TELEGRAM_BOT_TOKEN'))).lower())
-          PY
-
-          TOKEN="$(sudo -n env PID="$PID" python3 - <<'PY'
-          import os
-          from pathlib import Path
-          pid=os.environ['PID']
-          for item in (Path('/proc')/pid/'environ').read_bytes().split(b'\0'):
-              if item.startswith(b'TELEGRAM_BOT_TOKEN='):
-                  print(item.split(b'=',1)[1].decode('utf-8','ignore'))
-                  break
+          p=Path(os.environ['ROOT'])/'.env'
+          value=''
+          if p.exists():
+              for raw in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1)
+                  if k.strip()=='TELEGRAM_BOT_TOKEN':
+                      value=v.strip().strip('"').strip("'")
+                      break
+          print(value)
           PY
           )"
           test -n "$TOKEN"
           echo "::add-mask::$TOKEN"
+          sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'.env'
+          vals={}
+          if p.exists():
+              for raw in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); k=k.strip()
+                  if k in {'TELEGRAM_CHAT_IDS','TELEGRAM_CHAT_ID'}:
+                      vals[k]=v.strip().strip('"').strip("'")
+          print('env_TELEGRAM_CHAT_IDS='+vals.get('TELEGRAM_CHAT_IDS',''))
+          print('env_TELEGRAM_CHAT_ID='+vals.get('TELEGRAM_CHAT_ID',''))
+          PY
 
           TOKEN="$TOKEN" TID="$TID" python3 - <<'PY'
           import json, os, urllib.parse, urllib.request, urllib.error
@@ -102,16 +101,15 @@ jobs:
                       return json.loads(r.read().decode())
               except urllib.error.HTTPError as e:
                   body=e.read().decode('utf-8','replace')
-                  try: obj=json.loads(body)
-                  except Exception: obj={'ok':False,'error_code':e.code,'description':body[:180]}
-                  return obj
+                  try: return json.loads(body)
+                  except Exception: return {'ok':False,'error_code':e.code,'description':body[:180]}
           me=call('getMe',{})
           result=me.get('result') or {}
           print('telegram_getme_ok='+str(bool(me.get('ok'))).lower())
           print('telegram_bot_username='+str(result.get('username') or ''))
           test=call('sendMessage',{
               'chat_id':tid,
-              'text':'SiLearn — 2026-08-29 17:17 BST — Subject: Telegram delivery test for MASTER 6760898817\n\nIf you receive this, direct Telegram delivery is working.',
+              'text':'SiLearn — 2026-08-29 17:22 BST — Subject: Telegram delivery test for MASTER 6760898817\n\nDirect delivery test only. No trading action.',
               'disable_notification':'false'
           })
           print('direct_send_ok='+str(bool(test.get('ok'))).lower())
