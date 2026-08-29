@@ -19,12 +19,33 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 15
     steps:
-      - name: Check out approved main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
+      - name: Rebuild approved main checkout
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          cd "$GITHUB_WORKSPACE"
+
+          # This self-hosted workspace is occasionally left without .git by
+          # other jobs. Rebuild it deterministically instead of relying on
+          # actions/checkout cleanup against a non-repository directory.
+          if [[ ! -d .git ]]; then
+            find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+            git init
+            git remote add origin https://github.com/ayman01323/boot-trading-bot.git
+          else
+            git remote set-url origin https://github.com/ayman01323/boot-trading-bot.git
+          fi
+
+          git fetch --force --no-tags --depth=50 origin main
+          if ! git cat-file -e "$GITHUB_SHA^{commit}" 2>/dev/null; then
+            git fetch --force --no-tags --depth=200 origin main
+          fi
+          git cat-file -e "$GITHUB_SHA^{commit}"
+          git reset --hard "$GITHUB_SHA"
+          git clean -ffd
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
       - name: Verify restricted governed-LIVE operation
         shell: bash
@@ -77,8 +98,9 @@ jobs:
           {
             echo '## SiRisky governed LIVE automatic state NOT applied'
             echo
-            echo '- The server wrapper may still be an older manual-approval version.'
-            echo '- Reinstall scripts/install_sirisky_governed_live_ops.sh once as root, then rerun this workflow.'
+            echo '- Inspect the failed step before changing any trading/risk gate.'
+            echo '- The governed wrapper rolls runtime.csv back if arming/selftest/service verification fails.'
           } >> "$GITHUB_STEP_SUMMARY"
 
 # Owner-requested LIVE re-arm trigger: 2026-08-29T17:14:56Z
+# Checkout recovery: self-hosted workspace may legitimately arrive without .git.
