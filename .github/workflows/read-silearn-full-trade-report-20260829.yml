@@ -1,0 +1,147 @@
+name: Read SiLearn Full Trade Report 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/read-silearn-full-trade-report-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Read current SiLearn runtime and trading state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          echo "REPORT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "REPORT_BST=$(TZ=Europe/London date +%Y-%m-%dT%H:%M:%S%z)"
+          echo "HOST=$(hostname) USER=$(id -un)"
+          SERVICE=learnerbot-learn.service
+          echo "=== SERVICE ==="
+          systemctl is-active "$SERVICE" || true
+          systemctl is-enabled "$SERVICE" || true
+          sudo -n systemctl show "$SERVICE" -p ActiveState -p SubState -p MainPID -p ExecMainStartTimestamp -p NRestarts -p WorkingDirectory -p FragmentPath --no-pager 2>/dev/null || true
+
+          echo "=== DATABASE DISCOVERY ==="
+          CANDIDATES=(
+            /home/ayman01323/BOOT/learnerbot/state/trading.db
+            /home/ayman01323/BOOT/testingbots/learn/state/trading.db
+            /home/ayman01323/BOOT/testingbots/learn/data/trading.db
+          )
+          DB=""
+          for p in "${CANDIDATES[@]}"; do
+            if [ -f "$p" ]; then
+              echo "DB_FOUND=$p bytes=$(stat -c%s "$p") mtime=$(stat -c%y "$p")"
+              [ -z "$DB" ] && DB="$p"
+            fi
+          done
+          if [ -z "$DB" ]; then
+            DB=$(find /home/ayman01323/BOOT/learnerbot /home/ayman01323/BOOT/testingbots/learn -maxdepth 5 -type f \( -name 'trading.db' -o -name '*.sqlite' -o -name '*.sqlite3' \) 2>/dev/null | head -1 || true)
+          fi
+          echo "DB_SELECTED=${DB:-NONE}"
+
+          if [ -n "$DB" ] && [ -f "$DB" ]; then
+            export DB
+            python3 - <<'PY'
+          import os, sqlite3, json, math, datetime
+          db=os.environ['DB']
+          con=sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+          con.row_factory=sqlite3.Row
+          cur=con.cursor()
+          tables=[r[0] for r in cur.execute("select name from sqlite_master where type='table' order by name")]
+          print('DB_TABLES='+','.join(tables))
+          sensitive=('secret','private','token','credential','api_key','mnemonic','seed')
+          def safe(v):
+              if v is None: return None
+              s=str(v)
+              if len(s)>500: s=s[:500]+'...'
+              return s
+          def emit_rows(table, where='', order='', limit=30):
+              cols=[r[1] for r in cur.execute(f'pragma table_info("{table}")')]
+              print(f'TABLE_SCHEMA {table}: '+','.join(cols))
+              sel=[c for c in cols if not any(x in c.lower() for x in sensitive)]
+              if not sel: return
+              q='select '+','.join('"'+c+'"' for c in sel)+f' from "{table}"'
+              if where: q+=' where '+where
+              if order: q+=' order by '+order
+              q+=f' limit {limit}'
+              try: rows=list(cur.execute(q))
+              except Exception as e:
+                  print(f'QUERY_ERROR {table}: {type(e).__name__}:{e}'); return
+              print(f'ROWS {table} count={len(rows)}')
+              for r in rows:
+                  print('ROW '+table+' '+json.dumps({k:safe(r[k]) for k in r.keys()},sort_keys=True))
+          # Open positions first.
+          if 'positions' in tables:
+              cols=[r[1] for r in cur.execute('pragma table_info("positions")')]
+              status_col=next((c for c in cols if c.lower()=='status'),None)
+              idcol=next((c for c in cols if c.lower() in ('id','position_id')),None)
+              if status_col:
+                  try:
+                      n=cur.execute(f'SELECT COUNT(*) FROM positions WHERE upper("{status_col}")=\'OPEN\'').fetchone()[0]
+                      print(f'OPEN_POSITION_COUNT={n}')
+                  except Exception as e: print('OPEN_POSITION_COUNT_ERROR='+repr(e))
+                  emit_rows('positions', f'upper("{status_col}")=\'OPEN\'', (f'"{idcol}" desc' if idcol else ''), 50)
+              emit_rows('positions','',(f'"{idcol}" desc' if idcol else ''),30)
+          else:
+              print('OPEN_POSITION_COUNT=UNKNOWN_NO_POSITIONS_TABLE')
+          # Recent trading records from likely tables.
+          for t in tables:
+              lo=t.lower()
+              if t=='positions': continue
+              if any(k in lo for k in ('trade','order','fill','execution','transaction','pnl','event')):
+                  cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+                  if len(cols)>80: continue
+                  ordercol=next((c for c in cols if c.lower() in ('id','created_at','timestamp','ts','time','updated_at','closed_at')),None)
+                  emit_rows(t,'',(f'"{ordercol}" desc' if ordercol else ''),20)
+          # Aggregate common P/L columns without assuming schema.
+          for t in tables:
+              cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+              pnlcols=[c for c in cols if c.lower() in ('realized_pnl','realised_pnl','pnl','profit_loss','net_pnl','realized_pnl_usd','realised_pnl_usd')]
+              for pc in pnlcols:
+                  try:
+                      x=cur.execute(f'SELECT COUNT("{pc}"), SUM(CAST("{pc}" AS REAL)), AVG(CAST("{pc}" AS REAL)), MIN(CAST("{pc}" AS REAL)), MAX(CAST("{pc}" AS REAL)) FROM "{t}" WHERE "{pc}" IS NOT NULL').fetchone()
+                      print(f'PNL_AGG table={t} column={pc} count={x[0]} sum={x[1]} avg={x[2]} min={x[3]} max={x[4]}')
+                  except Exception as e: print(f'PNL_AGG_ERROR table={t} column={pc} {e}')
+          con.close()
+          PY
+          fi
+
+          echo "=== NON-SENSITIVE CURRENT SETTINGS ==="
+          for f in \
+            /home/ayman01323/BOOT/learnerbot/config/runtime.json \
+            /home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv \
+            /home/ayman01323/BOOT/testingbots/learn/CSVbot/user_trading_settings.csv; do
+            [ -f "$f" ] || continue
+            echo "SETTINGS_FILE=$f mtime=$(stat -c%y "$f")"
+            if [[ "$f" == *.json ]]; then
+              python3 - "$f" <<'PY'
+          import json,sys
+          p=sys.argv[1]
+          try: d=json.load(open(p))
+          except Exception as e: print('SETTINGS_READ_ERROR',e); raise SystemExit
+          deny=('secret','private','token','credential','api_key','mnemonic','seed','wallet')
+          def clean(o):
+              if isinstance(o,dict): return {k:clean(v) for k,v in o.items() if not any(x in k.lower() for x in deny)}
+              if isinstance(o,list): return [clean(v) for v in o[:50]]
+              return o
+          print(json.dumps(clean(d),sort_keys=True)[:12000])
+          PY
+            else
+              grep -Eiv 'secret|private|token|credential|api[_-]?key|mnemonic|seed|wallet' "$f" | head -250 || true
+            fi
+          done
+
+          echo "=== RECENT LEARNER JOURNAL (filtered) ==="
+          sudo -n journalctl -u "$SERVICE" --since '3 hours ago' --no-pager 2>/dev/null \
+            | grep -Ei 'position|trade|buy|sell|entry|exit|pnl|profit|loss|reject|refus|signal|armed|live|balance|reserve|jupiter|quote|error|fail|block|cooldown|stop|take.profit' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|TOKEN|PRIVATE|API_KEY|CREDENTIAL)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
+            | tail -500 || true
+          echo "REPORT_COMPLETE=true"
