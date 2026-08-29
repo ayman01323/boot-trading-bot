@@ -111,6 +111,81 @@ def test_repeated_rejects_are_deduplicated_after_success():
     assert _should_send_alert("OPEN", "solana:SOL:NATIVE", {"trade_id": "x"}, sent_at, now=1302.0, repeat_seconds=300.0)
 
 
+def test_canary_enable_requires_arm_and_readiness(tmp_path: Path, monkeypatch):
+    cf = tmp_path / "grok_control.json"
+    monkeypatch.setenv("GROK_CONTROL_FILE", str(cf))
+    monkeypatch.setenv("GROK_JOURNAL_DB", str(tmp_path / "state.sqlite3"))
+
+    blocked = handle_command("/groklivecanary on CONFIRM", "123", "123")
+    assert blocked is not None and "Arm the bot" in blocked
+    state = json.loads(cf.read_text(encoding="utf-8")) if cf.exists() else {}
+    assert not state.get("live_canary_enabled")
+
+    handle_command("/groklivecheck on CONFIRM", "123", "123")
+    ok = handle_command("/groklivecanary on CONFIRM", "123", "123")
+    assert ok is not None and "LIVE CANARY ENABLED" in ok
+    state = json.loads(cf.read_text(encoding="utf-8"))
+    assert state["live_canary_enabled"] is True
+    assert state["live_money_enabled"] is True
+
+
+def test_grokstop_disables_canary_and_cancels_tickets(tmp_path: Path, monkeypatch):
+    from grok_known_assets_bot import live_canary as lc
+    from grok_known_assets_bot.core import Journal
+
+    cf = tmp_path / "grok_control.json"
+    db_path = tmp_path / "state.sqlite3"
+    monkeypatch.setenv("GROK_CONTROL_FILE", str(cf))
+    monkeypatch.setenv("GROK_JOURNAL_DB", str(db_path))
+    j = Journal(str(db_path))
+    lc.ensure_schema(j.db)
+    lc.create_pending_entry(
+        j.db, asset_key="a", mint="M", input_micro_usdc=10, target_lamports=lc.TARGET_LAMPORTS,
+        min_out_lamports=1, slippage_bps=50, evidence={},
+    )
+    j.db.close()
+    handle_command("/groklivecheck on CONFIRM", "123", "123")
+    handle_command("/groklivecanary on CONFIRM", "123", "123")
+    reply = handle_command("/grokstop", "123", "123")
+    assert reply is not None and "Cancelled 1" in reply
+    state = json.loads(cf.read_text(encoding="utf-8"))
+    assert state["live_canary_enabled"] is False and state["armed"] is False
+    j2 = Journal(str(db_path))
+    lc.ensure_schema(j2.db)
+    assert lc.list_pending(j2.db) == []
+    j2.db.close()
+
+
+def test_grokapprove_requires_authorised_user(tmp_path: Path, monkeypatch):
+    from grok_known_assets_bot import live_canary as lc
+    from grok_known_assets_bot.core import Journal
+
+    db_path = tmp_path / "state.sqlite3"
+    monkeypatch.setenv("GROK_CONTROL_FILE", str(tmp_path / "grok_control.json"))
+    monkeypatch.setenv("GROK_JOURNAL_DB", str(db_path))
+    monkeypatch.setenv("GROK_LIVE_CANARY_APPROVER_USER_IDS", "999")
+    j = Journal(str(db_path))
+    lc.ensure_schema(j.db)
+    aid = lc.create_pending_entry(
+        j.db, asset_key="a", mint="M", input_micro_usdc=10, target_lamports=lc.TARGET_LAMPORTS,
+        min_out_lamports=1, slippage_bps=50, evidence={},
+    )
+    j.db.close()
+    denied = handle_command(f"/grokapprove {aid} CONFIRM", "123", "123")
+    assert denied is not None and "Not authorised" in denied
+    j2 = Journal(str(db_path))
+    lc.ensure_schema(j2.db)
+    assert lc._row(j2.db, aid)["status"] == lc.STATUS_PENDING
+    j2.db.close()
+
+    ok = handle_command(f"/grokapprove {aid} CONFIRM", "123", "999")
+    assert ok is not None and "Approved" in ok
+    j3 = Journal(str(db_path))
+    lc.ensure_schema(j3.db)
+    assert lc._row(j3.db, aid)["status"] == lc.STATUS_APPROVED
+    j3.db.close()
+
+
 def test_bad_chat_does_not_block_good_chat(monkeypatch):
     settings = TelegramSettings(token="test-token", chat_ids=frozenset({"bad", "good"}), poll_timeout_seconds=8)
     delivered_to: list[str] = []

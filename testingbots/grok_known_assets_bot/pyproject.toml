@@ -11,9 +11,14 @@ dependencies = ["pydantic>=2,<3"]
 
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
+# Only needed to run the opt-in LIVE canary orchestrator. The PAPER runner never
+# imports these. The canary also needs the parent repo's `learnerbot` package on
+# PYTHONPATH (GROK_BOOT_REPO_ROOT) for the audited Solana executor.
+live = ["requests>=2.31", "solders>=0.21", "cryptography>=42", "base58>=2.1"]
 
 [project.scripts]
 grok-known-assets-bot = "grok_known_assets_bot.cli:main"
+grok-live-canary = "grok_known_assets_bot.live_canary_runner:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
