@@ -73,8 +73,6 @@ jobs:
           print('process_bot_username='+botname(proc_token))
           print('process_outbound_only='+str(proc.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','<unset>')))
 
-          # Show which configured environment-file paths exist and whether each contains
-          # a Telegram token matching the process or isolated file, without showing it.
           raw=subprocess.check_output(['systemctl','show',service,'-p','EnvironmentFiles','--value'],text=True).strip()
           paths=[]
           for part in raw.split():
@@ -88,7 +86,8 @@ jobs:
               print(f'envfile_{i}_bot_username={botname(tok)}')
               print(f'envfile_{i}_matches_process={str(bool(tok and proc_token and tok==proc_token)).lower()}')
               print(f'envfile_{i}_matches_isolated={str(bool(tok and file_token and tok==file_token)).lower()}')
-              print(f'envfile_{i}_outbound_only={vals.get("LEARNER_TELEGRAM_OUTBOUND_ONLY","<unset>")}')
+              outbound=vals.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','<unset>')
+              print(f'envfile_{i}_outbound_only={outbound}')
           PY
 
           echo '--- recent Telegram state ---'
