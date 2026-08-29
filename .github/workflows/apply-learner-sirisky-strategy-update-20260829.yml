@@ -1,0 +1,233 @@
+name: Apply Learner SiRisky Strategy Update 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/apply-learner-sirisky-strategy-update-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Apply requested trading settings safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          LSRV=learnerbot-learn.service
+          SROOT=/root/SiRisky
+          SSRV=sirisky.service
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          LB="$LROOT/private/pre-strategy-update-$stamp"
+          SB="$SROOT/data/pre-strategy-update-$stamp"
+          mkdir -p "$LB" "$SB"
+
+          # Do not restart either trading engine across an open LIVE position.
+          LROOT="$LROOT" SROOT="$SROOT" python3 - <<'PY'
+          import os, sqlite3, csv
+          from pathlib import Path
+          lr=Path(os.environ['LROOT']); sr=Path(os.environ['SROOT'])
+          ln=0
+          db=lr/'data'/'solana_sibot.sqlite3'
+          if db.exists():
+              c=sqlite3.connect(f'file:{db}?mode=ro',uri=True)
+              try: ln=c.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]
+              finally:c.close()
+          sn=0
+          p=sr/'CSV'/'open_positions.csv'
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  rd=csv.DictReader(f); rows=list(rd); fields=rd.fieldnames or []
+              state=next((x for x in fields if x.lower() in {'status','state','position_status'}),None)
+              if state: sn=sum(1 for r in rows if str(r.get(state) or '').strip().lower() in {'open','active','pending','closing','exit_pending'})
+              else: sn=sum(1 for r in rows if any(str(v or '').strip() for v in r.values()))
+          print(f'learner_open_live_positions={ln}')
+          print(f'sirisky_open_positions={sn}')
+          if ln or sn: raise SystemExit('REFUSE_UPDATE_WITH_OPEN_POSITION')
+          PY
+
+          cp -a "$LROOT/CSVbot/solana_settings.csv" "$LB/solana_settings.csv"
+          cp -a "$LROOT/learnerbot/solana_live_patch.py" "$LB/solana_live_patch.py"
+          cp -a "$LROOT/learnerbot/solana_entry_exit_liquidity_preflight_patch.py" "$LB/solana_entry_exit_liquidity_preflight_patch.py"
+          cp -a "$SROOT/CSV/stage2_strategy.csv" "$SB/stage2_strategy.csv"
+          cp -a "$SROOT/CSV/stage3_risk.csv" "$SB/stage3_risk.csv"
+
+          changed=0
+          rollback(){
+            rc=$?
+            if [[ $rc -ne 0 && $changed -eq 1 ]]; then
+              echo STRATEGY_UPDATE_ROLLBACK=START
+              cp -a "$LB/solana_settings.csv" "$LROOT/CSVbot/solana_settings.csv" || true
+              cp -a "$LB/solana_live_patch.py" "$LROOT/learnerbot/solana_live_patch.py" || true
+              cp -a "$LB/solana_entry_exit_liquidity_preflight_patch.py" "$LROOT/learnerbot/solana_entry_exit_liquidity_preflight_patch.py" || true
+              cp -a "$SB/stage2_strategy.csv" "$SROOT/CSV/stage2_strategy.csv" || true
+              cp -a "$SB/stage3_risk.csv" "$SROOT/CSV/stage3_risk.csv" || true
+              systemctl restart "$LSRV" || true
+              systemctl restart "$SSRV" || true
+              echo STRATEGY_UPDATE_ROLLBACK=COMPLETE
+            fi
+            exit $rc
+          }
+          trap rollback EXIT
+
+          # Learner: update only requested settings.
+          LROOT="$LROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          p=Path(os.environ['LROOT'])/'CSVbot'/'solana_settings.csv'
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              rd=csv.DictReader(f); fields=list(rd.fieldnames or []); rows=list(rd)
+          vals={
+              'take_profit_pct':'15',
+              'max_hold_hours':'0.5',
+              'max_signal_age_seconds':'300',
+              'mirror_partial_sells':'false',
+          }
+          seen=set()
+          for r in rows:
+              k=str(r.get('setting') or '').strip()
+              if k in vals: r['value']=vals[k]; seen.add(k)
+          missing=set(vals)-seen
+          if missing: raise SystemExit('Missing Learner settings: '+','.join(sorted(missing)))
+          tmp=p.with_suffix('.csv.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+          print('learner_take_profit_pct=15')
+          print('learner_max_hold_hours=0.5')
+          print('learner_max_signal_age_seconds=300')
+          print('learner_partial_sells=false')
+          PY
+
+          # Learner LIVE: any leader SELL, including a partial leader sale, exits 100%.
+          LFILE="$LROOT/learnerbot/solana_live_patch.py"
+          python3 - <<PY
+          from pathlib import Path
+          p=Path('$LFILE'); s=p.read_text()
+          old='''                full = _sol._float(event.get("sell_pct"), 100) >= 99\n                fraction = Decimal(1) if full else max(Decimal("0.0001"), min(Decimal(1), _sol._dec(event.get("sell_pct"), 100) / Decimal(100)))\n                if not full and not _sol._bool(cfg.get("mirror_partial_sells"), True):\n                    continue'''
+          new='''                # Owner policy: every SELL trigger closes 100% of the position.\n                # Partial leader sells are treated as full follower exits; no scaling out.\n                full = True\n                fraction = Decimal(1)'''
+          if new not in s:
+              if old not in s: raise SystemExit('Learner SELL block not found')
+              s=s.replace(old,new)
+          old_reason='''_close_live(app, tid, p, fraction, "SOLANA_LEADER_PARTIAL_SELL" if not full else "SOLANA_LEADER_SELL")'''
+          s=s.replace(old_reason, '_close_live(app, tid, p, Decimal(1), "SOLANA_LEADER_SELL_100PCT")')
+          p.write_text(s)
+          PY
+
+          # Learner pool-depth policy: route must survive a 3x entry-size stress check.
+          PFILE="$LROOT/learnerbot/solana_entry_exit_liquidity_preflight_patch.py"
+          python3 - <<PY
+          from pathlib import Path
+          p=Path('$PFILE'); s=p.read_text()
+          marker='''    detail["deterioration_pct"] = deterioration\n    return True, "PASS_EXIT_LIQUIDITY", detail'''
+          replacement='''    detail["deterioration_pct"] = deterioration\n\n    # Owner pool-depth rule: prove executable depth at 3x the intended entry.\n    # For a 0.009 SOL entry this stress-tests a 0.027 SOL route and its full reverse.\n    stress_multiple = Decimal("3")\n    stress_allocation = allocation * stress_multiple\n    stress_lamports = int(stress_allocation * Decimal(1_000_000_000))\n    stress_buy = _sol.jupiter_quote(app, _sol.WSOL_MINT, event["mint"], stress_lamports)\n    stress_out_raw = _sol._int(stress_buy.get("outAmount") or stress_buy.get("outputAmount"), 0)\n    if stress_out_raw <= 0:\n        return False, "3x pool-depth stress entry quote returned no token output", detail\n    stress_reverse = _sol.jupiter_quote(app, event["mint"], _sol.WSOL_MINT, stress_out_raw)\n    stress_reverse_raw = _sol._int(stress_reverse.get("outAmount") or stress_reverse.get("outputAmount"), 0)\n    stress_impact_bps = _quote_price_impact_bps(stress_reverse)\n    detail["pool_depth_multiple"] = stress_multiple\n    detail["pool_depth_stress_sol"] = stress_allocation\n    detail["pool_depth_reverse_impact_bps"] = stress_impact_bps\n    if stress_impact_bps is None:\n        return False, "3x pool-depth stress unavailable: Jupiter did not report reverse price impact", detail\n    stress_combined_bps = stress_impact_bps + slippage_bps\n    detail["pool_depth_combined_bps"] = stress_combined_bps\n    if stress_combined_bps > limit_bps:\n        return False, (\n            f"3x pool-depth stress rejected: reverse impact {stress_impact_bps:.2f} bps + "\n            f"slippage {slippage_bps:.0f} bps = {stress_combined_bps:.2f} bps exceeds {limit_bps:.0f} bps"\n        ), detail\n    stress_back_sol = Decimal(stress_reverse_raw) / Decimal(1_000_000_000)\n    stress_roundtrip = max(Decimal(0), (Decimal(1) - stress_back_sol / stress_allocation) * Decimal(100))\n    detail["pool_depth_roundtrip_loss_pct"] = stress_roundtrip\n    if stress_roundtrip > _sol._dec(cfg.get("max_roundtrip_loss_pct"), 3):\n        return False, f"3x pool-depth round-trip loss {stress_roundtrip:.3f}%", detail\n\n    return True, "PASS_EXIT_LIQUIDITY_3X_DEPTH", detail'''
+          if replacement not in s:
+              if marker not in s: raise SystemExit('Learner liquidity return marker not found')
+              s=s.replace(marker,replacement)
+          p.write_text(s)
+          PY
+          changed=1
+
+          # SiRisky requested target changes.
+          SROOT="$SROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['SROOT'])
+          p=root/'CSV'/'stage2_strategy.csv'
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              rd=csv.DictReader(f); fields=list(rd.fieldnames or []); rows=list(rd)
+          n=0
+          for r in rows:
+              if str(r.get('enabled') or '').strip() in {'1','true','TRUE','yes','YES'}:
+                  r['gross_target_pct']='15'; n+=1
+          if not n: raise SystemExit('No enabled SiRisky strategy')
+          tmp=p.with_suffix('.csv.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+
+          p=root/'CSV'/'stage3_risk.csv'
+          with p.open(encoding='utf-8-sig',newline='') as f:
+              rd=csv.DictReader(f); fields=list(rd.fieldnames or []); rows=list(rd)
+          wanted={'fast_take_profit_floor_pct':'5.0','fast_take_profit_cap_pct':'10.0'}; seen=set()
+          for r in rows:
+              k=str(r.get('setting') or '').strip()
+              if k in wanted: r['value']=wanted[k]; seen.add(k)
+          if seen != set(wanted): raise SystemExit('Missing SiRisky take-profit settings')
+          tmp=p.with_suffix('.csv.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          tmp.replace(p)
+          print('sirisky_enabled_gross_target_pct=15')
+          print('sirisky_fast_take_profit_floor_pct=5.0')
+          print('sirisky_fast_take_profit_cap_pct=10.0')
+          PY
+
+          py="$LROOT/.venv/bin/python"; [[ -x "$py" ]] || py=python3
+          PYTHONPATH="$LROOT" "$py" -m py_compile "$LFILE" "$PFILE"
+
+          systemctl restart "$LSRV"
+          systemctl restart "$SSRV"
+          sleep 18
+          test "$(systemctl is-active "$LSRV")" = active
+          test "$(systemctl is-active "$SSRV")" = active
+          lr1=$(systemctl show "$LSRV" -p NRestarts --value)
+          sr1=$(systemctl show "$SSRV" -p NRestarts --value)
+          sleep 8
+          test "$(systemctl is-active "$LSRV")" = active
+          test "$(systemctl is-active "$SSRV")" = active
+          lr2=$(systemctl show "$LSRV" -p NRestarts --value)
+          sr2=$(systemctl show "$SSRV" -p NRestarts --value)
+          test "$lr1" = "$lr2"
+          test "$sr1" = "$sr2"
+
+          # Final static/runtime settings verification; no trade is placed.
+          LROOT="$LROOT" SROOT="$SROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          lr=Path(os.environ['LROOT']); sr=Path(os.environ['SROOT'])
+          def kv(p):
+              with p.open(encoding='utf-8-sig',newline='') as f:return {r.get('setting'):r.get('value') for r in csv.DictReader(f)}
+          d=kv(lr/'CSVbot'/'solana_settings.csv')
+          assert d['live_trade_sol']=='0.009' and d['live_min_economic_trade_sol']=='0.009'
+          assert d['take_profit_pct']=='15'
+          assert d['max_hold_hours']=='0.5'
+          assert d['max_signal_age_seconds']=='300'
+          assert d['mirror_partial_sells']=='false'
+          live=(lr/'learnerbot'/'solana_live_patch.py').read_text()
+          liq=(lr/'learnerbot'/'solana_entry_exit_liquidity_preflight_patch.py').read_text()
+          assert 'trade = max(Decimal("0.009"), requested_trade)' in live
+          assert 'fraction = Decimal(1)' in live and 'SOLANA_LEADER_SELL_100PCT' in live
+          assert 'stress_multiple = Decimal("3")' in liq and 'PASS_EXIT_LIQUIDITY_3X_DEPTH' in liq
+          with (sr/'CSV'/'stage2_strategy.csv').open(encoding='utf-8-sig',newline='') as f:
+              er=[r for r in csv.DictReader(f) if str(r.get('enabled') or '').strip() in {'1','true','TRUE','yes','YES'}]
+          assert er and all(r.get('gross_target_pct')=='15' for r in er)
+          sd=kv(sr/'CSV'/'stage3_risk.csv')
+          assert sd['fast_take_profit_floor_pct']=='5.0' and sd['fast_take_profit_cap_pct']=='10.0'
+          print('learner_entry_sol=0.009')
+          print('learner_take_profit_pct=15')
+          print('learner_max_hold_minutes=30')
+          print('learner_signal_age_seconds=300')
+          print('learner_pool_depth_stress_multiple=3')
+          print('learner_pool_depth_stress_at_min_entry_sol=0.027')
+          print('learner_sell_fraction=100_percent')
+          print('sirisky_gross_target_pct=15')
+          print('sirisky_fast_take_profit_net_range=5_to_10_percent')
+          print('trade_placed_by_update=NO')
+          PY
+          echo learner_service_active=true
+          echo sirisky_service_active=true
+          echo learner_restarts=$lr2
+          echo sirisky_restarts=$sr2
+          echo STRATEGY_UPDATE=SUCCESS
+          trap - EXIT
+          ROOT
