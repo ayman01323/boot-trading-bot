@@ -86,3 +86,8 @@ install()
 # This reporting-only layer is intentionally composed only after Change Set 4's
 # trading integrity gate succeeds. It does not alter any trading hook verified above.
 from . import solana_reject_once_reporting_patch as _reject_once  # noqa: E402,F401
+
+# SiLearn — 2026-08-29 13:28 BST — Subject: Downgrade LP lock/provider warnings to Telegram reference only.
+# Loaded after the stamped Change Set 4 integrity proof. It changes only LP-specific
+# RugCheck lock/provider classifications; all other PoolCheck/execution gates remain.
+from . import solana_lp_warning_only_patch as _lp_warning_only  # noqa: E402,F401
