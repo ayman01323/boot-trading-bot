@@ -1,0 +1,61 @@
+name: Test Learner Base Commands 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/test-learner-base-commands-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Test exact base command payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n python3 - <<'PY'
+          import ast,json,pathlib,urllib.request,urllib.error
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env['TELEGRAM_BOT_TOKEN']
+          tree=ast.parse((root/'learnerbot/telegram.py').read_text(encoding='utf-8'))
+          commands=None
+          for node in tree.body:
+              if isinstance(node,ast.FunctionDef) and node.name=='set_commands':
+                  for stmt in node.body:
+                      if isinstance(stmt,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='commands' for t in stmt.targets):
+                          commands=ast.literal_eval(stmt.value); break
+          assert isinstance(commands,list) and commands
+          print('BASE_COMMAND_COUNT='+str(len(commands)))
+          bad=[]
+          for i,c in enumerate(commands):
+              name=str(c.get('command') or ''); desc=str(c.get('description') or '')
+              if not (1<=len(name)<=32) or not all(ch.islower() or ch.isdigit() or ch=='_' for ch in name): bad.append((i,'name'))
+              if not (1<=len(desc)<=256): bad.append((i,'description'))
+          print('LOCAL_SCHEMA_ERRORS='+str(len(bad)))
+          data=json.dumps({'commands':commands}).encode()
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/setMyCommands',data=data,headers={'Content-Type':'application/json','User-Agent':'learner-base-command-test/1'})
+          try:
+              with urllib.request.urlopen(req,timeout=15) as r:d=json.load(r)
+              print('BASE_SET_COMMANDS_OK='+str(bool(d.get('ok'))).lower())
+          except urllib.error.HTTPError as e:
+              body=e.read().decode('utf-8','replace')
+              try: desc=json.loads(body).get('description','')
+              except Exception: desc='unparsed Telegram HTTP error'
+              print('BASE_SET_COMMANDS_OK=false')
+              print('BASE_SET_COMMANDS_HTTP='+str(e.code))
+              print('BASE_SET_COMMANDS_DESCRIPTION='+desc)
+          print('NO_SECRET_PRINTED=true')
+          print('NO_TRADING_STATE_CHANGED=true')
+          PY
