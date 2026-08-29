@@ -3,39 +3,40 @@
     "bandwidth_plan_limit_known": false,
     "bandwidth_status": "MEASURED",
     "disk_status": "CRITICAL",
-    "disk_used_percent": 91.52,
+    "disk_used_percent": 92.08,
     "trade_latency_review_required": true
   },
   "disk": {
-    "free_bytes": 691646464,
+    "free_bytes": 573820928,
     "mount": "/",
-    "runner_workspace_bytes": 294983296,
-    "sanitised_bridge_bytes": 1265557,
+    "runner_workspace_bytes": 319075967,
+    "sanitised_bridge_bytes": 1265463,
     "total_bytes": 21004480512,
-    "used_bytes": 19223326720,
-    "used_percent": 91.52
+    "used_bytes": 19341152256,
+    "used_percent": 92.08
   },
-  "generated_epoch": 1788005765,
+  "generated_epoch": 1788027323,
   "infrastructure": {
     "candidate_prices_in_snapshot": false,
+    "comparison_rule": "Engineering must not recommend migration from latency alone. Compare measured chain-weighted latency, trade frequency and execution outcome evidence against current and alternative monthly cost. Any alternative price must identify a source/date or be marked unverified.",
     "current_server": {
       "known": false,
       "monthly_cost": null,
       "provider": null,
       "region": null,
-      "source": "not_configured_or_collector_unavailable"
+      "source": "not_configured"
     }
   },
   "network": {
     "interfaces": {
       "eth0": {
-        "rx_bytes": 210043850916,
-        "tx_bytes": 47046864231
+        "rx_bytes": 210889241819,
+        "tx_bytes": 47335289297
       }
     },
-    "rx_bytes_total": 210043850916,
+    "rx_bytes_total": 210889241819,
     "scope": "all_non_loopback_host_interfaces_not_bot_attributed",
-    "tx_bytes_total": 47046864231
+    "tx_bytes_total": 47335289297
   },
   "privacy": {
     "no_api_keys": true,
@@ -47,28 +48,79 @@
   "schema_version": 2,
   "scope": "HOST_RESOURCE_AND_TRADE_LATENCY_COUNTERS_NO_SECRETS",
   "trade_latency": {
-    "available": false,
-    "chains": [],
-    "reason": "self-hosted trade latency collector did not complete; do not invent latency values",
-    "report_requirements": [
-      "Report latency as INSUFFICIENT DATA until measured telemetry is available.",
-      "Never substitute estimated protocol latency for measured trade latency."
+    "chains": [
+      {
+        "baseline_sufficient": false,
+        "chain_id": -101,
+        "chain_name": "Solana",
+        "chain_slug": "solana",
+        "current_24h": {
+          "count": 0,
+          "max_ms": null,
+          "p50_ms": null,
+          "p95_ms": null
+        },
+        "measured_trades_7d": 0,
+        "measurement_coverage_pct": null,
+        "metric": "leader_signal_to_copy_entry_ms",
+        "metric_scope": "observed leader-event timestamp to local LIVE copied-position entry timestamp; this is not validator confirmation latency",
+        "normal_baseline": {
+          "count": 0,
+          "definition": "same-server measured trades from the preceding six days",
+          "max_ms": null,
+          "p50_ms": null,
+          "p95_ms": null
+        },
+        "p50_delta_pct": null,
+        "p95_delta_pct": null,
+        "per_trade": [],
+        "per_trade_truncated": false,
+        "rpc_round_trip": {
+          "available": true,
+          "count": 3,
+          "endpoint_index": 0,
+          "max_ms": 224.59,
+          "p50_ms": 203.22,
+          "p95_ms": 222.46,
+          "samples": 3
+        },
+        "trade_share_pct_7d": null,
+        "trades_7d": 0
+      }
     ],
-    "required_engineering_review": true
+    "measurement_limits": [
+      "EVM inclusion timestamps are second-resolution and do not measure sub-second local signing time.",
+      "Solana currently measures leader-signal-to-copy-entry latency, not validator confirmation latency.",
+      "Only configured RPC endpoints are probed and endpoint URLs/credentials are never published."
+    ],
+    "normal_definition": "historical same-server baseline, never an invented protocol-wide number",
+    "report_requirements": [
+      "Report every blockchain with observed trades separately.",
+      "Show per-trade measured latency when available, plus 24h p50/p95 versus the preceding six-day baseline.",
+      "Keep RPC round-trip latency separate from transaction inclusion/copy latency.",
+      "If telemetry is missing or baseline count is below five, say INSUFFICIENT DATA rather than estimating a measured result.",
+      "Assess trading impact only where success/failure, slippage or PnL evidence supports the inference.",
+      "Rank infrastructure recommendations by actual seven-day chain trade share and latency degradation."
+    ],
+    "required_engineering_review": true,
+    "total_trades_7d": 0,
+    "window": "7d with current 24h compared against the preceding six-day same-server baseline"
   },
   "trade_latency_privacy": {
     "no_private_keys": true,
+    "no_process_environment_dump": true,
     "no_raw_transaction_hashes": true,
     "no_rpc_urls_or_credentials": true,
-    "no_wallet_addresses": true
+    "no_wallet_addresses": true,
+    "trade_references_are_one_way_hash_prefixes": true
   },
   "trend": {
-    "elapsed_seconds": 21644,
-    "network_bytes_per_hour": 216103530.77,
-    "network_megabytes_per_hour": 206.092,
-    "previous_sample_epoch": 1787984121,
-    "rx_delta_bytes": 964368364,
-    "total_network_delta_bytes": 1299262450,
-    "tx_delta_bytes": 334894086
+    "elapsed_seconds": 21558,
+    "network_bytes_per_hour": 189337484.39,
+    "network_megabytes_per_hour": 180.566,
+    "previous_sample_epoch": 1788005765,
+    "rx_delta_bytes": 845390903,
+    "total_network_delta_bytes": 1133815969,
+    "tx_delta_bytes": 288425066
   }
 }
