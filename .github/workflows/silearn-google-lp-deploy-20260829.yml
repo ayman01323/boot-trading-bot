@@ -58,6 +58,7 @@ jobs:
             if test -f "$ROOT/learnerbot/$f"; then
               sudo -n cp -a "$ROOT/learnerbot/$f" "$BACKUP/$f.pre"
             else
+              sudo -n rm -f "$BACKUP/$f.pre"
               sudo -n touch "$BACKUP/$f.was_absent"
             fi
           done
@@ -95,7 +96,6 @@ jobs:
           }
           trap 'rc=$?; if test $rc -ne 0; then rollback; fi; rm -rf "$TMP"; exit $rc' EXIT
 
-          # Install only the two approved late-layer modules.
           MODE="$(stat -c %a "$ROOT/learnerbot/__main__.py")"
           for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
             sudo -n install -m "$MODE" "$TMP/$f" "$ROOT/learnerbot/$f"
@@ -154,9 +154,19 @@ jobs:
           grep -F '[learner-reject-once]' "$LOG"
           grep -F '[silearn-lp-warning-only]' "$LOG"
 
-          # Pure evaluator regression checks only; no quote, signing or broadcast.
+          # Use the Learner's own Python environment for import-based regression checks.
+          PYBIN=''
+          for candidate in "$ROOT/.venv/bin/python" "$ROOT/venv/bin/python"; do
+            if test -x "$candidate"; then PYBIN="$candidate"; break; fi
+          done
+          if test -z "$PYBIN"; then
+            EXECSTART="$(systemctl show learnerbot-learn.service -p ExecStart --value)"
+            PYBIN="$(printf '%s\n' "$EXECSTART" | grep -oE '/[^ ;{}]+/(\.venv|venv)/bin/python[0-9.]*' | head -1 || true)"
+          fi
+          test -n "$PYBIN" -a -x "$PYBIN"
+          echo "verification_python=$PYBIN"
           cd "$ROOT"
-          PYTHONPATH="$ROOT" python3 - <<'PY'
+          PYTHONPATH="$ROOT" "$PYBIN" - <<'PY'
           from learnerbot import solana_lp_warning_only_patch as w
           cfg={'live_pool_rugcheck_hard_score':'70','live_pool_min_lp_locked_pct':'50'}
           lp={
