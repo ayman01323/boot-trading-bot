@@ -10,8 +10,9 @@ provides Jupiter order -> local single-signer signing -> mandatory
 
 Direction: the Grok known-asset is native SOL, so an ENTRY is USDC -> SOL and an
 EXIT is SOL -> USDC. This is off the executor's usual SOL->token path but
-``swap()`` is direction-generic and Jupiter handles wrap/unwrap. Flagged for GPT
-review in .github/ai-mailbox.
+``swap()`` is direction-generic and Jupiter handles wrap/unwrap. The canary keeps
+ExactIn semantics and enforces the approved minimum output plus the 0.009 SOL
+ledger cap before any approval can reach execution.
 """
 from __future__ import annotations
 
@@ -25,7 +26,7 @@ from typing import Any
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 
-# SOL that must remain for fees / rent after any entry.
+# SOL that must remain for fees / rent after any entry or exit.
 SOL_FEE_RESERVE_LAMPORTS = 20_000_000
 
 
@@ -206,4 +207,30 @@ def preflight_funding(*, need_input_micro_usdc: int, executor=None) -> tuple[boo
         return False, f"insufficient USDC: have {usdc} micro, need {int(need_input_micro_usdc)}"
     if sol < SOL_FEE_RESERVE_LAMPORTS:
         return False, f"insufficient SOL fee reserve: have {sol} lamports, need {SOL_FEE_RESERVE_LAMPORTS}"
+    return True, "ok"
+
+
+def preflight_exit_balance(*, need_sol_lamports: int, executor=None) -> tuple[bool, str]:
+    """Prove the approved SOL position still exists on-chain before an exit.
+
+    The live wallet must hold the exact approved sell amount plus the protected
+    fee/rent reserve. This is deliberately checked immediately before the exit
+    transaction is built; a stale ledger row alone can never authorise a sell.
+    """
+    need_sol_lamports = int(need_sol_lamports)
+    if need_sol_lamports <= 0:
+        return False, "exit amount must be positive"
+    try:
+        executor = executor or build_executor()
+        sol = int(executor.native_balance_lamports())
+    except ExecConfigError as exc:
+        return False, str(exc)
+    except Exception as exc:  # pragma: no cover - env-specific
+        return False, f"exit balance check failed: {type(exc).__name__}: {exc}"
+    required = need_sol_lamports + SOL_FEE_RESERVE_LAMPORTS
+    if sol < required:
+        return False, (
+            f"insufficient on-chain SOL for approved exit: have {sol} lamports, "
+            f"need position {need_sol_lamports} + reserve {SOL_FEE_RESERVE_LAMPORTS}"
+        )
     return True, "ok"
