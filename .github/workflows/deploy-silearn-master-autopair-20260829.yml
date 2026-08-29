@@ -1,0 +1,66 @@
+name: Deploy SiLearn MASTER Autopair 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/telegram_learner_master_autopair_patch.py'
+      - '.github/workflows/deploy-silearn-master-autopair-20260829.yml'
+  workflow_run:
+    workflows: ["Deploy BOOT to VPS"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 7
+    steps:
+      - name: Install secure MASTER autopair patch into isolated learner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          test -d "$ROOT/learnerbot"
+          TMP="$(mktemp)"
+          trap 'rm -f "$TMP"' EXIT
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/telegram_learner_master_autopair_patch.py -o "$TMP"
+          python3 -m py_compile "$TMP"
+          sudo -n install -o ayman01323 -g ayman01323 -m 0644 "$TMP" "$ROOT/learnerbot/telegram_learner_master_autopair_patch.py"
+
+          sudo -n python3 - "$ROOT/learnerbot/__main__.py" <<'PY'
+          import os, sys
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          text=p.read_text(encoding='utf-8')
+          line='from . import telegram_learner_master_autopair_patch  # noqa: F401'
+          if line not in text:
+              anchor='from . import telegram_google_learner_launcher_patch  # noqa: F401'
+              if anchor not in text:
+                  raise SystemExit('google learner launcher anchor missing')
+              text=text.replace(anchor, anchor+'\n# Securely reconcile a live private /learnerbot identity with trusted external MASTER records.\n'+line, 1)
+              tmp=p.with_suffix('.py.tmp-master-autopair')
+              tmp.write_text(text,encoding='utf-8')
+              os.replace(tmp,p)
+          PY
+          sudo -n chown ayman01323:ayman01323 "$ROOT/learnerbot/__main__.py"
+          py="$ROOT/.venv/bin/python"; test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          PYTHONPATH="$ROOT" sudo -n -E "$py" -m py_compile "$ROOT/learnerbot/telegram_learner_master_autopair_patch.py" "$ROOT/learnerbot/__main__.py"
+          grep -q 'telegram_learner_master_autopair_patch' "$ROOT/learnerbot/__main__.py"
+          sudo -n systemctl restart "$SERVICE"
+          sleep 10
+          test "$(systemctl is-active "$SERVICE")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$ROOT/.env")" -eq 1
+          conflicts="$(sudo -n journalctl -u "$SERVICE" --since '3 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          test "$conflicts" -eq 0
+          echo service_active=true
+          echo inbound_enabled=true
+          echo autopair_patch_installed=true
+          echo telegram_409_conflicts=0
