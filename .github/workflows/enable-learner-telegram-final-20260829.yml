@@ -1,0 +1,174 @@
+name: Enable Learner Telegram Final 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/enable-learner-telegram-final-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  enable:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Enable valid isolated Telegram env and verify polling
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          DROPIN_DIR=/etc/systemd/system/learnerbot-learn.service.d
+          DROPIN="$DROPIN_DIR/10-restore-telegram-env.conf"
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup="$LROOT/private/pre-final-telegram-enable-$stamp"
+          mkdir -p "$backup" "$DROPIN_DIR"
+          systemctl cat "$SERVICE" > "$backup/systemctl-cat.before.txt"
+          cp -a "$LROOT/.env" "$backup/.env.before"
+          if [[ -f "$DROPIN" ]]; then cp -a "$DROPIN" "$backup/dropin.before"; echo present > "$backup/dropin-state"; else echo absent > "$backup/dropin-state"; fi
+          echo "telegram_enable_backup=$backup"
+
+          # Trading recovery must remain untouched.
+          LROOT="$LROOT" python3 - <<'PY'
+          import csv,os
+          from pathlib import Path
+          root=Path(os.environ['LROOT'])
+          with (root/'CSVbot/solana_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              d={r.get('setting'):r.get('value') for r in csv.DictReader(f)}
+          assert d.get('live_trade_sol')=='0.009'
+          assert d.get('live_min_economic_trade_sol')=='0.009'
+          with (root/'CSVbot/user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              vals=[r.get('value') for r in csv.DictReader(f) if r.get('setting')=='solana_live_trade_sol']
+          assert vals and all(v=='0.009' for v in vals)
+          print('precheck_minimum_entry=0.009_SOL')
+          PY
+
+          changed=0
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo 'FINAL_TELEGRAM_ROLLBACK=START'
+              if [[ "$(cat "$backup/dropin-state")" = present ]]; then cp -a "$backup/dropin.before" "$DROPIN"; else rm -f "$DROPIN"; fi
+              systemctl daemon-reload || true
+              systemctl restart "$SERVICE" || true
+              echo 'FINAL_TELEGRAM_ROLLBACK=COMPLETE'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          cat > "$DROPIN" <<'EOF'
+          [Service]
+          # learnerbot/config.py loads the isolated .env with python-dotenv.
+          # Remove inherited EMPTY Telegram variables from the base unit so the
+          # valid /home/ayman01323/BOOT/testingbots/learn/.env values can load.
+          UnsetEnvironment=TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_IDS TELEGRAM_CHAT_ID
+          EOF
+          chmod 644 "$DROPIN"
+          changed=1
+          systemctl daemon-reload
+
+          # Validate current .env identity, recipient and no webhook without printing secrets.
+          LROOT="$LROOT" python3 - <<'PY'
+          import json,os,pathlib,urllib.request
+          root=pathlib.Path(os.environ['LROOT']); e={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); e[k.strip()]=v.strip().strip('"').strip("'")
+          token=e.get('TELEGRAM_BOT_TOKEN',''); chats=e.get('TELEGRAM_CHAT_IDS','') or e.get('TELEGRAM_CHAT_ID','')
+          assert token and chats
+          def get(method):
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/{method}',headers={'User-Agent':'learner-final-enable/1'})
+              with urllib.request.urlopen(req,timeout=10) as r:return json.load(r)
+          me=get('getMe'); wh=get('getWebhookInfo')
+          assert me.get('ok') and (me.get('result') or {}).get('username')=='SiLearn_bot'
+          assert not str((wh.get('result') or {}).get('url') or '')
+          print('telegram_identity=@SiLearn_bot')
+          print('telegram_recipient_present=true')
+          print('telegram_webhook=false')
+          PY
+
+          systemctl restart "$SERVICE"
+          started=$(date -u +'%Y-%m-%d %H:%M:%S')
+          sleep 18
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p1=$(systemctl show "$SERVICE" -p MainPID --value)
+          sleep 12
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p2=$(systemctl show "$SERVICE" -p MainPID --value)
+          [[ "$p1" != 0 && "$p2" != 0 && "$r1" = "$r2" ]]
+
+          log=$(journalctl -u "$SERVICE" --since "$started" --no-pager -o cat 2>/dev/null || true)
+          echo 'TELEGRAM_RUNTIME_PROOF_BEGIN'
+          printf '%s\n' "$log" | grep -Ei 'telegram-menu|telegram-command-scope|poll error|409 Conflict|getUpdates|setMyCommands' | tail -n 120 || true
+          echo 'TELEGRAM_RUNTIME_PROOF_END'
+          # Command setup warning is deliberately non-fatal in the historical source.
+          # What matters for control is that the interactive getUpdates loop starts.
+          printf '%s\n' "$log" | grep -q '\[telegram-menu\] interactive multi-chain menu started'
+          if printf '%s\n' "$log" | grep -Eqi '409 Conflict|terminated by other getUpdates|another getUpdates request'; then exit 72; fi
+
+          # Re-register the exact proven base command menu after startup. The extended
+          # scope layer can fail independently, but this keeps the blue menu usable.
+          LROOT="$LROOT" python3 - <<'PY'
+          import ast,csv,json,os,pathlib,urllib.error,urllib.parse,urllib.request
+          root=pathlib.Path(os.environ['LROOT']); e={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); e[k.strip()]=v.strip().strip('"').strip("'")
+          token=e['TELEGRAM_BOT_TOKEN']
+          tree=ast.parse((root/'learnerbot/telegram.py').read_text(encoding='utf-8'))
+          commands=None
+          for node in tree.body:
+              if isinstance(node,ast.FunctionDef) and node.name=='set_commands':
+                  for stmt in node.body:
+                      if isinstance(stmt,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='commands' for t in stmt.targets):
+                          commands=ast.literal_eval(stmt.value); break
+          assert commands and len(commands)==56
+          def post(method,payload):
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/{method}',data=json.dumps(payload).encode(),headers={'Content-Type':'application/json','User-Agent':'learner-final-enable/1'})
+              with urllib.request.urlopen(req,timeout=15) as r:return json.load(r)
+          reg=post('setMyCommands',{'commands':commands})
+          assert reg.get('ok')
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getMyCommands',headers={'User-Agent':'learner-final-enable/1'})
+          with urllib.request.urlopen(req,timeout=10) as r: got=json.load(r)
+          default_commands=got.get('result') or []
+          assert len(default_commands)==56
+          chats=[]
+          for key in ('TELEGRAM_CHAT_IDS','TELEGRAM_CHAT_ID'):
+              v=e.get(key,'')
+              if v: chats += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+          assert chats
+          sent=post('sendMessage',{
+              'chat_id':chats[0],
+              'text':'✅ Learner Telegram is working. Interactive commands and trading/status alerts are active. Minimum LIVE entry remains 0.009 SOL. No trade was placed by this test.',
+              'protect_content':True,
+          })
+          assert sent.get('ok') and (sent.get('result') or {}).get('message_id')
+          with (root/'CSVbot/solana_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              d={r.get('setting'):r.get('value') for r in csv.DictReader(f)}
+          assert d.get('live_trade_sol')=='0.009' and d.get('live_min_economic_trade_sol')=='0.009'
+          print('base_commands_registered=56')
+          print('telegram_delivery_test=success')
+          print('interactive_polling=active')
+          print('competing_poller=false')
+          print('minimum_entry=0.009_SOL')
+          print('trade_placed_by_test=NO')
+          PY
+
+          echo "learner_service_active=true"
+          echo "learner_service_pid=$p2"
+          echo "learner_service_restarts=$r2"
+          echo 'learner_telegram_enable=SUCCESS'
+          trap - EXIT
+          ROOT
