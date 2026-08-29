@@ -1,0 +1,424 @@
+name: Recover Learner and SiRisky 1240 BST 009 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-learner-sirisky-1240-009-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recover-learner-sirisky-1240-009-20260829
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Recover isolated Learner to 12:40 BST baseline plus 0.009 SOL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n env WORKSPACE="$GITHUB_WORKSPACE" bash <<'ROOT'
+          set -Eeuo pipefail
+          TARGET_SHA=5fe79e5ab1b87e178adcc9973a9aa73d085bfa63
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          HIST="$LROOT/data/transaction_audits/run_20260828_115717/strategy_snapshot"
+          test -d "$LROOT/learnerbot"
+          test -f "$HIST/solana_settings.csv"
+          test -f "$HIST/user_trading_settings.csv"
+          test "$(sha256sum "$HIST/solana_settings.csv" | awk '{print $1}')" = 75c787b64f66cfefab23824ccccb48d1485d4d6be2ef1ae8164db59b86841aa8
+          git -C "$WORKSPACE" cat-file -e "$TARGET_SHA^{commit}"
+
+          # Refuse a code/config replacement while a current Solana LIVE position is open.
+          LROOT="$LROOT" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          root=Path(os.environ['LROOT'])
+          dbs=[root/'data'/'sibot1_solana_live_bridge.sqlite3']
+          open_rows=0
+          details=[]
+          for db in dbs:
+              if not db.exists():
+                  continue
+              con=sqlite3.connect(db)
+              try:
+                  tables=[r[0] for r in con.execute("select name from sqlite_master where type='table'") if 'position' in r[0].lower()]
+                  for t in tables:
+                      cols=[r[1] for r in con.execute(f'pragma table_info("{t}")')]
+                      state_col=next((c for c in cols if c.lower() in {'status','state','position_status'}),None)
+                      if state_col:
+                          n=con.execute(f'''select count(*) from "{t}" where lower(coalesce("{state_col}",'')) in ('open','active','pending','closing','exit_pending')''').fetchone()[0]
+                          if n:
+                              open_rows+=n; details.append(f'{db.name}:{t}:{n}')
+              finally:
+                  con.close()
+          print('learner_open_position_rows='+str(open_rows))
+          if details: print('learner_open_position_sources='+','.join(details))
+          if open_rows:
+              raise SystemExit('REFUSE_RECOVERY: Learner has an open/live position')
+          PY
+
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          BACKUP="$LROOT/private/pre-1240-recovery-$stamp"
+          mkdir -p "$BACKUP"
+          cp -a "$LROOT/learnerbot" "$BACKUP/learnerbot"
+          cp -a "$LROOT/CSVbot/solana_settings.csv" "$BACKUP/solana_settings.csv"
+          cp -a "$LROOT/CSVbot/user_trading_settings.csv" "$BACKUP/user_trading_settings.csv"
+          echo "learner_pre_recovery_backup=$BACKUP"
+
+          was_active=0
+          systemctl is-active --quiet "$SERVICE" && was_active=1 || true
+          changed=0
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo "LEARNER_ROLLBACK=START"
+              rm -rf "$LROOT/learnerbot"
+              cp -a "$BACKUP/learnerbot" "$LROOT/learnerbot"
+              cp -a "$BACKUP/solana_settings.csv" "$LROOT/CSVbot/solana_settings.csv"
+              cp -a "$BACKUP/user_trading_settings.csv" "$LROOT/CSVbot/user_trading_settings.csv"
+              systemctl restart "$SERVICE" || true
+              echo "LEARNER_ROLLBACK=COMPLETE"
+            elif [[ "$rc" -ne 0 && "$was_active" -eq 1 ]]; then
+              systemctl start "$SERVICE" || true
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          systemctl stop "$SERVICE"
+          tmp=$(mktemp -d)
+          git -C "$WORKSPACE" archive "$TARGET_SHA" learnerbot | tar -x -C "$tmp"
+          rm -rf "$LROOT/learnerbot"
+          cp -a "$tmp/learnerbot" "$LROOT/learnerbot"
+          changed=1
+
+          # Restore the preserved pre-12:40 settings and user overrides.
+          cp -a "$HIST/solana_settings.csv" "$LROOT/CSVbot/solana_settings.csv"
+          cp -a "$HIST/user_trading_settings.csv" "$LROOT/CSVbot/user_trading_settings.csv"
+
+          # Sole requested logical change: the configured LIVE entry and economic floor are 0.009 SOL.
+          LROOT="$LROOT" HIST="$HIST" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['LROOT']); hist=Path(os.environ['HIST'])
+
+          def rewrite_settings(path, wanted):
+              with path.open(encoding='utf-8-sig',newline='') as f:
+                  rd=csv.DictReader(f); fields=list(rd.fieldnames or []); rows=list(rd)
+              if not {'setting','value'}.issubset(fields):
+                  raise SystemExit(f'unexpected settings schema: {fields}')
+              by={str(r.get('setting') or '').strip():r for r in rows}
+              for k,v in wanted.items():
+                  if k not in by:
+                      raise SystemExit(f'missing required historical setting {k}')
+                  by[k]['value']=v
+              tmp=path.with_suffix(path.suffix+'.tmp')
+              with tmp.open('w',encoding='utf-8',newline='') as f:
+                  w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+              tmp.replace(path)
+
+          sol=root/'CSVbot'/'solana_settings.csv'
+          rewrite_settings(sol, {'live_trade_sol':'0.009','live_min_economic_trade_sol':'0.009'})
+
+          up=root/'CSVbot'/'user_trading_settings.csv'
+          with up.open(encoding='utf-8-sig',newline='') as f:
+              rd=csv.DictReader(f); fields=list(rd.fieldnames or []); rows=list(rd)
+          if not {'telegram_id','chain_id','setting','value'}.issubset(fields):
+              raise SystemExit(f'unexpected user settings schema: {fields}')
+          changed_user=0
+          for r in rows:
+              if str(r.get('setting') or '').strip()=='solana_live_trade_sol':
+                  r['value']='0.009'; changed_user+=1
+          if changed_user < 1:
+              raise SystemExit('missing historical per-user solana_live_trade_sol override')
+          tmp=up.with_suffix(up.suffix+'.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
+          tmp.replace(up)
+
+          # Prove nothing other than the requested size/floor changed from the preserved snapshot.
+          def kv(path):
+              with path.open(encoding='utf-8-sig',newline='') as f:
+                  return {str(r.get('setting') or ''):str(r.get('value') or '') for r in csv.DictReader(f)}
+          old=kv(hist/'solana_settings.csv'); new=kv(sol)
+          allowed={'live_trade_sol','live_min_economic_trade_sol'}
+          for k in set(old)|set(new):
+              if k not in allowed and old.get(k)!=new.get(k):
+                  raise SystemExit(f'Learner non-size setting changed: {k}: {old.get(k)!r}->{new.get(k)!r}')
+          if new.get('live_trade_sol')!='0.009' or new.get('live_min_economic_trade_sol')!='0.009':
+              raise SystemExit('Learner 0.009 settings not effective')
+
+          def user_rows(path):
+              with path.open(encoding='utf-8-sig',newline='') as f:
+                  return {(str(r.get('telegram_id') or ''),str(r.get('chain_id') or ''),str(r.get('setting') or '')):str(r.get('value') or '') for r in csv.DictReader(f)}
+          oldu=user_rows(hist/'user_trading_settings.csv'); newu=user_rows(up)
+          for k in set(oldu)|set(newu):
+              if k[2]!='solana_live_trade_sol' and oldu.get(k)!=newu.get(k):
+                  raise SystemExit(f'Learner non-size user setting changed: {k}: {oldu.get(k)!r}->{newu.get(k)!r}')
+          if not any(k[2]=='solana_live_trade_sol' and v=='0.009' for k,v in newu.items()):
+              raise SystemExit('Learner per-user 0.009 trade size missing')
+          print('learner_settings_match_1240_except_size=true')
+          print('learner_live_trade_sol=0.009')
+          print('learner_live_min_economic_trade_sol=0.009')
+          print('learner_per_user_trade_sol=0.009')
+          PY
+
+          diff -qr "$tmp/learnerbot" "$LROOT/learnerbot"
+          py="$LROOT/.venv/bin/python"; [[ -x "$py" ]] || py=python3
+          PYTHONPATH="$LROOT" "$py" -m compileall -q "$LROOT/learnerbot"
+          chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" "$LROOT/CSVbot/solana_settings.csv" "$LROOT/CSVbot/user_trading_settings.csv"
+          rm -rf "$tmp"
+
+          systemctl restart "$SERVICE"
+          sleep 6
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p1=$(systemctl show "$SERVICE" -p MainPID --value)
+          sleep 10
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p2=$(systemctl show "$SERVICE" -p MainPID --value)
+          [[ "$p1" != 0 && "$p2" != 0 ]]
+          [[ "$r2" -eq "$r1" ]]
+          if journalctl -u "$SERVICE" --since '20 seconds ago' --no-pager | grep -q 'Traceback (most recent call last)'; then
+              journalctl -u "$SERVICE" --since '30 seconds ago' -n 120 --no-pager
+              exit 71
+          fi
+          echo "learner_service_active=true"
+          echo "learner_service_stable_pid=$p2"
+          echo "learner_nrestarts=$r2"
+          echo "learner_code_baseline=$TARGET_SHA"
+          echo "learner_only_change=trade_floor_and_size_to_0.009_SOL"
+          trap - EXIT
+          ROOT
+
+      - name: Recover SiRisky to 12:40 BST baseline plus 0.009 SOL
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n env WORKSPACE="$GITHUB_WORKSPACE" bash <<'ROOT'
+          set -Eeuo pipefail
+          TARGET_SHA=5fe79e5ab1b87e178adcc9973a9aa73d085bfa63
+          TARGET_EPOCH=$(date -u -d '2026-08-28 11:40:17 UTC' +%s)
+          SROOT=/root/SiRisky
+          SERVICE=sirisky.service
+          RUNTIME_SNAP="$SROOT/data/live-armed-runtime-backup-20260828T101931Z.csv"
+          test -d "$SROOT/sirisky"
+          test -f "$RUNTIME_SNAP"
+          git -C "$WORKSPACE" cat-file -e "$TARGET_SHA^{commit}"
+
+          open_rows=0
+          if [[ -f "$SROOT/CSV/open_positions.csv" ]]; then
+            open_rows=$(tail -n +2 "$SROOT/CSV/open_positions.csv" | sed '/^[[:space:]]*$/d' | wc -l)
+          fi
+          echo "sirisky_open_position_rows=$open_rows"
+          [[ "$open_rows" -eq 0 ]] || { echo 'REFUSE_RECOVERY: SiRisky has an open position'; exit 81; }
+
+          # Resolve the latest preserved Stage-2/3 files at or before 12:40 BST.
+          select_pre_target() {
+            local name="$1"
+            NAME="$name" TARGET_EPOCH="$TARGET_EPOCH" SROOT="$SROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          name=os.environ['NAME']; target=float(os.environ['TARGET_EPOCH']); root=Path(os.environ['SROOT'])
+          candidates=[]
+          for p in root.rglob(name):
+              if '/data/' not in str(p) and p.parent != root/'CSV':
+                  continue
+              try: m=p.stat().st_mtime
+              except OSError: continue
+              if m <= target: candidates.append((m,p))
+          if not candidates:
+              raise SystemExit(f'no preserved {name} at/before target')
+          candidates.sort(key=lambda x:x[0])
+          print(candidates[-1][1])
+          PY
+          }
+          STAGE2_SNAP=$(select_pre_target stage2_strategy.csv)
+          STAGE3_SNAP=$(select_pre_target stage3_risk.csv)
+          echo "sirisky_runtime_snapshot=$RUNTIME_SNAP"
+          echo "sirisky_stage2_snapshot=$STAGE2_SNAP"
+          echo "sirisky_stage3_snapshot=$STAGE3_SNAP"
+
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          BACKUP="$SROOT/data/pre-1240-recovery-$stamp"
+          mkdir -p "$BACKUP"
+          cp -a "$SROOT/run.py" "$BACKUP/run.py"
+          cp -a "$SROOT/sirisky" "$BACKUP/sirisky"
+          cp -a "$SROOT/CSV/runtime.csv" "$BACKUP/runtime.csv"
+          cp -a "$SROOT/CSV/stage2_strategy.csv" "$BACKUP/stage2_strategy.csv"
+          cp -a "$SROOT/CSV/stage3_risk.csv" "$BACKUP/stage3_risk.csv"
+          echo "sirisky_pre_recovery_backup=$BACKUP"
+
+          was_active=0
+          systemctl is-active --quiet "$SERVICE" && was_active=1 || true
+          changed=0
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo "SIRISKY_ROLLBACK=START"
+              cp -a "$BACKUP/run.py" "$SROOT/run.py"
+              rm -rf "$SROOT/sirisky"
+              cp -a "$BACKUP/sirisky" "$SROOT/sirisky"
+              cp -a "$BACKUP/runtime.csv" "$SROOT/CSV/runtime.csv"
+              cp -a "$BACKUP/stage2_strategy.csv" "$SROOT/CSV/stage2_strategy.csv"
+              cp -a "$BACKUP/stage3_risk.csv" "$SROOT/CSV/stage3_risk.csv"
+              systemctl restart "$SERVICE" || true
+              echo "SIRISKY_ROLLBACK=COMPLETE"
+            elif [[ "$rc" -ne 0 && "$was_active" -eq 1 ]]; then
+              systemctl start "$SERVICE" || true
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          systemctl stop "$SERVICE"
+          tmp=$(mktemp -d)
+          git -C "$WORKSPACE" archive "$TARGET_SHA" SiRisky/overrides | tar -x -C "$tmp"
+          cp -a "$tmp/SiRisky/overrides/run.py" "$SROOT/run.py"
+
+          # Remove Python override files introduced after 12:40, then apply every override that existed at 12:40.
+          while IFS= read -r path; do
+            rel=${path#SiRisky/overrides/sirisky/}
+            if ! git -C "$WORKSPACE" cat-file -e "$TARGET_SHA:$path" 2>/dev/null; then
+              rm -f "$SROOT/sirisky/$rel"
+            fi
+          done < <(git -C "$WORKSPACE" ls-tree -r --name-only HEAD SiRisky/overrides/sirisky | grep -E '\.py$' || true)
+          find "$tmp/SiRisky/overrides/sirisky" -maxdepth 1 -type f -name '*.py' -exec cp -a {} "$SROOT/sirisky/" \;
+          changed=1
+
+          cp -a "$RUNTIME_SNAP" "$SROOT/CSV/runtime.csv"
+          cp -a "$STAGE2_SNAP" "$SROOT/CSV/stage2_strategy.csv"
+          cp -a "$STAGE3_SNAP" "$SROOT/CSV/stage3_risk.csv"
+
+          SROOT="$SROOT" RUNTIME_SNAP="$RUNTIME_SNAP" STAGE2_SNAP="$STAGE2_SNAP" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['SROOT'])
+
+          def read_raw(path):
+              with Path(path).open(encoding='utf-8-sig',newline='') as f: return list(csv.reader(f))
+          def write_raw(path, rows):
+              p=Path(path); tmp=p.with_suffix(p.suffix+'.tmp')
+              with tmp.open('w',encoding='utf-8',newline='') as f: csv.writer(f).writerows(rows)
+              tmp.replace(p)
+
+          # Runtime: preserve every 12:40 value except the quote/entry sizing floor.
+          p=root/'CSV'/'runtime.csv'; rows=read_raw(p)
+          header = rows[0] if rows and rows[0] and rows[0][0].strip().lower() in {'key','setting'} else None
+          body = rows[1:] if header else rows
+          found=False
+          for r in body:
+              if len(r)>=2 and r[0].strip()=='auto_probe_sol':
+                  r[1]='0.009'; found=True
+          if not found: raise SystemExit('12:40 SiRisky runtime missing auto_probe_sol')
+          write_raw(p, ([header] if header else [])+body)
+
+          # Stage 2: only increase enabled strategy position sizes that were below 0.009 SOL.
+          p2=root/'CSV'/'stage2_strategy.csv'
+          with p2.open(encoding='utf-8-sig',newline='') as f:
+              rd=csv.DictReader(f); fields=list(rd.fieldnames or []); srows=list(rd)
+          if not {'position_sol','enabled'}.issubset(fields): raise SystemExit(f'unexpected Stage2 schema {fields}')
+          enabled_count=0; raised=0
+          for r in srows:
+              enabled=str(r.get('enabled') or '').strip().lower() in {'1','true','yes','on'}
+              if not enabled: continue
+              enabled_count+=1
+              try: val=float(r.get('position_sol') or 0)
+              except Exception: raise SystemExit('invalid enabled position_sol')
+              if val < 0.009:
+                  r['position_sol']='0.009'; raised+=1
+          if enabled_count < 1: raise SystemExit('12:40 SiRisky Stage2 has no enabled strategy')
+          tmp=p2.with_suffix(p2.suffix+'.tmp')
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(srows)
+          tmp.replace(p2)
+
+          # Verify runtime differs from the preserved snapshot only in auto_probe_sol.
+          def raw_map(path):
+              rr=read_raw(path); start=1 if rr and rr[0] and rr[0][0].strip().lower() in {'key','setting'} else 0
+              return {r[0].strip():r[1].strip() for r in rr[start:] if len(r)>=2 and r[0].strip()}
+          old=raw_map(os.environ['RUNTIME_SNAP']); new=raw_map(root/'CSV'/'runtime.csv')
+          for k in set(old)|set(new):
+              if k!='auto_probe_sol' and old.get(k)!=new.get(k):
+                  raise SystemExit(f'SiRisky non-size runtime changed {k}: {old.get(k)!r}->{new.get(k)!r}')
+          if new.get('auto_probe_sol')!='0.009': raise SystemExit('SiRisky auto_probe_sol not 0.009')
+
+          # Verify Stage2 differs from the pre-target snapshot only in enabled position_sol values.
+          def dictrows(path):
+              with Path(path).open(encoding='utf-8-sig',newline='') as f:
+                  rd=csv.DictReader(f); return list(rd), list(rd.fieldnames or [])
+          oldrows, oldfields=dictrows(os.environ['STAGE2_SNAP']); newrows, newfields=dictrows(root/'CSV'/'stage2_strategy.csv')
+          if oldfields!=newfields or len(oldrows)!=len(newrows): raise SystemExit('SiRisky Stage2 shape changed')
+          for i,(a,b) in enumerate(zip(oldrows,newrows)):
+              enabled=str(a.get('enabled') or '').strip().lower() in {'1','true','yes','on'}
+              for k in oldfields:
+                  if enabled and k=='position_sol': continue
+                  if str(a.get(k) or '')!=str(b.get(k) or ''):
+                      raise SystemExit(f'SiRisky non-size Stage2 change row={i} field={k}')
+              if enabled and float(b.get('position_sol') or 0) < 0.009:
+                  raise SystemExit(f'SiRisky enabled strategy remains below 0.009 row={i}')
+          print('sirisky_runtime_matches_1240_except_size=true')
+          print('sirisky_stage2_matches_1240_except_enabled_position_size=true')
+          print('sirisky_auto_probe_sol=0.009')
+          print('sirisky_enabled_strategies='+str(enabled_count))
+          print('sirisky_enabled_sizes_raised='+str(raised))
+          PY
+
+          py="$SROOT/.venv/bin/python"; test -x "$py"
+          cd "$SROOT"
+          PYTHONPATH=. "$py" -m compileall -q run.py sirisky
+          PYTHONPATH=. "$py" run.py selftest
+
+          systemctl restart "$SERVICE"
+          sleep 6
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p1=$(systemctl show "$SERVICE" -p MainPID --value)
+          sleep 10
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p2=$(systemctl show "$SERVICE" -p MainPID --value)
+          [[ "$p1" != 0 && "$p2" != 0 ]]
+          [[ "$r2" -eq "$r1" ]]
+          if journalctl -u "$SERVICE" --since '20 seconds ago' --no-pager | grep -q 'Traceback (most recent call last)'; then
+              journalctl -u "$SERVICE" --since '30 seconds ago' -n 120 --no-pager
+              exit 91
+          fi
+          echo "sirisky_service_active=true"
+          echo "sirisky_service_stable_pid=$p2"
+          echo "sirisky_nrestarts=$r2"
+          echo "sirisky_code_baseline=$TARGET_SHA"
+          echo "sirisky_only_change=minimum_enabled_entry_size_to_0.009_SOL"
+          trap - EXIT
+          ROOT
+
+      - name: Final recovery summary
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo '=== RECOVERY COMPLETE ==='
+          echo 'target_london=2026-08-28T12:40:00+01:00'
+          echo 'repository_baseline=5fe79e5ab1b87e178adcc9973a9aa73d085bfa63'
+          echo 'learner_root=/home/ayman01323/BOOT/testingbots/learn'
+          echo 'sirisky_root=/root/SiRisky'
+          echo 'minimum_live_entry_sol=0.009'
+          echo "learner_service=$(systemctl is-active learnerbot-learn.service)"
+          echo "sirisky_service=$(sudo -n systemctl is-active sirisky.service)"
+          echo 'forced_trade=NO'
