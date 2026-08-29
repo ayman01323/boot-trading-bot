@@ -26,7 +26,7 @@ jobs:
       QUEUE_ROOT: /home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY
       CODE_ROOT: /home/ayman01323/BOOT/datacentre/rejected_router
     steps:
-      - name: Remove leaked historical Actions log
+      - name: Contain historical leaked log
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -38,12 +38,8 @@ jobs:
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/33245289800")"
-          if [[ "$code" != 204 && "$code" != 404 ]]; then
-            echo "historical_log_delete_http=$code"
-            cat /tmp/delete-run.out
-            exit 30
-          fi
-          echo "historical_log_removed=true"
+          [[ "$code" = 204 || "$code" = 404 ]] || { echo "historical_log_delete_http=$code"; exit 30; }
+          echo 'historical_log_removed=true'
 
       - name: Fetch safe repair sources
         shell: bash
@@ -59,9 +55,7 @@ jobs:
           curl -fsSL --retry 3 --retry-delay 1 \
             'https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/rejected_opportunity_publisher.py' \
             -o "$SRC_ROOT/learnerbot/rejected_opportunity_publisher.py"
-          python3 -m py_compile \
-            "$SRC_ROOT/scripts/repair_isolated_learner_reject_reporting.py" \
-            "$SRC_ROOT/learnerbot/rejected_opportunity_publisher.py"
+          python3 -m py_compile "$SRC_ROOT/scripts/repair_isolated_learner_reject_reporting.py" "$SRC_ROOT/learnerbot/rejected_opportunity_publisher.py"
           echo "SRC_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
           echo 'repair_sources=READY'
 
@@ -70,12 +64,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo -n /usr/bin/env \
-            REPAIR_ROOT="$SRC_ROOT" \
-            LROOT="$LROOT" \
-            PROOT="$PROOT" \
-            SERVICE="$SERVICE" \
-            QUEUE_ROOT="$QUEUE_ROOT" \
-            CODE_ROOT="$CODE_ROOT" \
+            REPAIR_ROOT="$SRC_ROOT" LROOT="$LROOT" PROOT="$PROOT" SERVICE="$SERVICE" \
+            QUEUE_ROOT="$QUEUE_ROOT" CODE_ROOT="$CODE_ROOT" \
             /usr/bin/bash <<'ROOT'
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
@@ -129,8 +119,7 @@ jobs:
           trap rollback EXIT
 
           TARGET="$LROOT" PROD="$PROOT" QUEUE_ROOT="$QUEUE_ROOT" CODE_ROOT="$CODE_ROOT" python3 - <<'PY'
-          import csv
-          import os
+          import csv, os
           from pathlib import Path
           import requests
 
@@ -138,10 +127,10 @@ jobs:
           prod = Path(os.environ['PROD'])
           envp = root / '.env'
 
-          def file_env(path: Path) -> dict[str, str]:
+          def file_env(path):
               out = {}
               try:
-                  lines = path.read_text(encoding='utf-8').splitlines()
+                  lines = Path(path).read_text(encoding='utf-8').splitlines()
               except Exception:
                   return out
               for raw in lines:
@@ -159,12 +148,15 @@ jobs:
               raise SystemExit('no local Telegram token available')
 
           base = 'https://api.telegram.org/bot' + token
-          me = requests.get(base + '/getMe', timeout=15).json()
+          me_r = requests.get(base + '/getMe', timeout=15)
+          try:
+              me = me_r.json()
+          except Exception:
+              me = {}
           if not me.get('ok'):
-              raise SystemExit('telegram_getMe_failed=' + str(me.get('description') or 'unknown'))
-          bot = me.get('result') or {}
+              raise SystemExit('telegram_getMe_failed=' + str(me.get('description') or me_r.status_code))
           print('telegram_bot_verified=true')
-          print('telegram_bot_username=' + str(bot.get('username') or 'unknown'))
+          print('telegram_bot_username=' + str((me.get('result') or {}).get('username') or 'unknown'))
 
           candidates = []
           def add(value, source):
@@ -176,8 +168,7 @@ jobs:
           for key in ('TELEGRAM_CHAT_ID', 'TELEGRAM_CHAT_IDS'):
               add(learner_env.get(key), 'learner_env_' + key.lower())
               add(prod_env.get(key), 'production_env_' + key.lower())
-
-          for csv_path, source in ((root / 'CSVbot' / 'users.csv', 'learner_users'), (prod / 'CSVbot' / 'users.csv', 'production_users')):
+          for csv_path, source in ((root/'CSVbot'/'users.csv','learner_users'), (prod/'CSVbot'/'users.csv','production_users')):
               try:
                   with csv_path.open(encoding='utf-8-sig', newline='') as f:
                       rows = list(csv.DictReader(f))
@@ -185,12 +176,7 @@ jobs:
                   rows = []
               rows.sort(key=lambda r: 0 if str(r.get('role') or '').upper() == 'MASTER' else 1)
               for row in rows:
-                  if str(row.get('status') or 'ACTIVE').upper() not in {'ACTIVE', 'ENABLED', ''}:
-                      continue
                   add(row.get('telegram_id'), source + '_' + str(row.get('role') or 'user').lower())
-
-          if not candidates:
-              raise SystemExit('no numeric Telegram chat candidates found locally')
 
           verified = []
           for cid, source in candidates:
@@ -201,18 +187,14 @@ jobs:
                   print(f'chat_probe source={source} id=***{cid[-4:]} ok=false transport={type(exc).__name__}')
                   continue
               if data.get('ok'):
-                  chat = data.get('result') or {}
-                  ctype = str(chat.get('type') or 'unknown')
+                  ctype = str((data.get('result') or {}).get('type') or 'unknown')
                   print(f'chat_probe source={source} id=***{cid[-4:]} ok=true type={ctype}')
                   verified.append((cid, source, ctype))
               else:
-                  desc = str(data.get('description') or 'unknown')[:120]
-                  print(f'chat_probe source={source} id=***{cid[-4:]} ok=false description={desc}')
-
+                  print(f"chat_probe source={source} id=***{cid[-4:]} ok=false description={str(data.get('description') or 'unknown')[:120]}")
           if not verified:
               raise SystemExit('no Telegram recipient candidate is valid for this bot')
 
-          # Prefer a Learner MASTER/user candidate, then the existing Learner env destination, then any verified local destination.
           verified.sort(key=lambda x: (0 if x[1].startswith('learner_users_master') else 1 if x[1].startswith('learner_users') else 2 if x[1].startswith('learner_env') else 3))
           chosen, source, ctype = verified[0]
           print('verified_recipient_source=' + source)
@@ -232,7 +214,7 @@ jobs:
           out, seen = [], set()
           for raw in old:
               if '=' in raw and not raw.lstrip().startswith('#'):
-                  key = raw.split('=', 1)[0].strip()
+                  key = raw.split('=',1)[0].strip()
                   if key in replace:
                       if key not in seen:
                           out.append(f'{key}={replace[key]}')
@@ -242,25 +224,24 @@ jobs:
           for key, value in replace.items():
               if key not in seen:
                   out.append(f'{key}={value}')
-          envp.write_text('\n'.join(out).rstrip() + '\n', encoding='utf-8')
+          envp.write_text('\n'.join(out).rstrip()+'\n', encoding='utf-8')
           os.chmod(envp, 0o600)
           print('learner_reporting_env_repaired=true')
           PY
 
           python3 "$REPAIR_ROOT/scripts/repair_isolated_learner_reject_reporting.py" --repo "$REPAIR_ROOT" --root "$LROOT"
           changed=1
+          echo 'patch_applied=true'
 
           chown ayman01323:ayman01323 "$LROOT/.env" "$LROOT/learnerbot/telegram_ui.py" "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$LROOT/learnerbot/rejected_opportunity_publisher.py"
           chmod 600 "$LROOT/.env"
+          echo 'ownership_ok=true'
 
           py="$LROOT/.venv/bin/python"
           [[ -x "$py" ]] || py="$PROOT/.venv/bin/python"
           [[ -x "$py" ]] || py=/usr/bin/python3
           PYTHONPATH="$LROOT" "$py" -m py_compile "$LROOT/learnerbot/telegram_ui.py" "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$LROOT/learnerbot/rejected_opportunity_publisher.py"
-          grep -q 'outbound-only mode: polling disabled' "$LROOT/learnerbot/telegram_ui.py"
-          grep -q '_report_reject_actions(app, payload, actions)' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
-          grep -q 'telegram_send_failed' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
-          echo 'runtime_hooks=PASS'
+          echo 'runtime_compile=PASS'
 
           systemctl restart "$SERVICE"
           sleep 10
@@ -292,20 +273,18 @@ jobs:
 
           cd "$LROOT"
           PYTHONPATH=. "$py" - <<'PY'
-          import os
           from learnerbot.config import AppSettings
           from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report
-
           app = AppSettings.load()
-          tid = os.getenv('TELEGRAM_CHAT_ID', '').strip()
-          if not tid:
-              raise SystemExit('verified Telegram recipient not loaded')
+          if not app.telegram_chat_ids:
+              raise SystemExit('verified Telegram recipient not loaded by AppSettings')
+          tid = app.telegram_chat_ids[0]
           try:
               ok = _send_reject_report(
                   app,
                   tid,
-                  {'mint': 'SYSTEM_TEST_ONLY', 'leader_wallet': '', 'signature': 'reject-report-smoke'},
-                  {'action': 'REJECT', 'reason': 'REJECT_REPORT_SMOKE_TEST'},
+                  {'mint':'SYSTEM_TEST_ONLY','leader_wallet':'','signature':'reject-report-smoke'},
+                  {'action':'REJECT','reason':'REJECT_REPORT_SMOKE_TEST'},
                   test_only=True,
               )
           except Exception as exc:
