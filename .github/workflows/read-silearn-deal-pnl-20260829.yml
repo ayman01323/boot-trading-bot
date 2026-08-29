@@ -1,0 +1,92 @@
+name: Read SiLearn Deal PnL 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/read-silearn-deal-pnl-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Trace latest SiLearn Solana deal PnL read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          echo "REPORT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "REPORT_BST=$(TZ=Europe/London date +%Y-%m-%dT%H:%M:%S%z)"
+          echo "=== SERVICE ==="
+          systemctl is-active "$SERVICE" || true
+          echo "=== LAST 24H SOLANA TRADE / EXECUTION JOURNAL ==="
+          sudo -n journalctl -u "$SERVICE" --since '24 hours ago' --no-pager 2>/dev/null \
+            | grep -Ei 'solana|live.*buy|buy.*live|live.*sell|sell.*live|entry|exit|position|execut|landed|invalid|wallet.delta|input.*sol|output.*sol|fee|rent|pnl|profit|loss|jupiter|signature|tx[_ =:]|mint|token.amount|received|spent' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|TOKEN|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
+            | tail -1400 || true
+
+          echo "=== RECENT DATA FILES ==="
+          find "$ROOT/data" "$ROOT/CSVbot" -maxdepth 6 -type f -mmin -1800 2>/dev/null \
+            | grep -Eiv '(^|/)(\.env|.*secret.*|.*private.*|.*credential.*|.*mnemonic.*|.*seed.*|.*key.*)$' \
+            | grep -Ei '\.(csv|json|jsonl|txt|log|sqlite3|db)$' \
+            | sort | tail -250 || true
+
+          echo "=== RECENT TEXT RECORD HITS ==="
+          while IFS= read -r f; do
+            case "$f" in
+              *.csv|*.json|*.jsonl|*.txt|*.log)
+                if [ -s "$f" ]; then
+                  hits=$(grep -Ein 'buy|sell|entry|exit|position|pnl|profit|loss|realised|realized|unrealised|unrealized|fee|rent|jupiter|signature|tx|mint|token|amount|wallet.delta|landed|invalid' "$f" 2>/dev/null | tail -80 || true)
+                  if [ -n "$hits" ]; then
+                    echo "FILE=$f mtime=$(stat -c%y "$f")"
+                    printf '%s\n' "$hits" | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)[=:][^,[:space:]]+#\1=<REDACTED>#Ig'
+                  fi
+                fi
+              ;;
+            esac
+          done < <(find "$ROOT/data" "$ROOT/CSVbot" -maxdepth 6 -type f -mmin -1800 2>/dev/null \
+            | grep -Eiv '/(\.env|secrets?|private|credentials?|mnemonic|seed|keys?)(/|$)' \
+            | grep -Ei '\.(csv|json|jsonl|txt|log)$' | sort)
+
+          echo "=== SQLITE CANDIDATES / POSITION+TRADE ROWS ==="
+          export ROOT
+          python3 - <<'PY'
+          import os, sqlite3, json
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          files=[]
+          for p in root.rglob('*'):
+              if p.is_file() and p.suffix.lower() in {'.sqlite3','.sqlite','.db'}:
+                  try: files.append((p.stat().st_mtime,p))
+                  except: pass
+          for _,p in sorted(files, reverse=True)[:20]:
+              try:
+                  con=sqlite3.connect(f'file:{p}?mode=ro', uri=True); con.row_factory=sqlite3.Row
+                  cur=con.cursor(); tables=[r[0] for r in cur.execute("select name from sqlite_master where type='table'")]
+              except Exception:
+                  continue
+              interesting=[t for t in tables if any(k in t.lower() for k in ('position','trade','execution','order','transaction','fill','event'))]
+              if not interesting: con.close(); continue
+              print('DB='+str(p))
+              for t in interesting:
+                  try:
+                      cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+                      order=next((c for c in ('updated_at','created_at','closed_at','entry_ts','sell_ts','buy_ts','id','position_id','trade_id') if c in cols),None)
+                      q=f'select * from "{t}"'+(f' order by "{order}" desc' if order else '')+' limit 30'
+                      rows=list(cur.execute(q))
+                      print(f'TABLE={t} ROWS={len(rows)} COLS='+','.join(cols))
+                      for r in rows:
+                          d={k:r[k] for k in r.keys() if not any(x in k.lower() for x in ('secret','private','credential','api_key','mnemonic','seed'))}
+                          print('ROW '+t+' '+json.dumps(d,default=str,sort_keys=True)[:5000])
+                  except Exception as e:
+                      print(f'TABLE_ERROR {t} {type(e).__name__}:{e}')
+              con.close()
+          PY
+          echo "TRACE_COMPLETE=true"
