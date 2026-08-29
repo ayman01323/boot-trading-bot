@@ -88,6 +88,21 @@ def _short(value: str, n: int = 22) -> str:
     return value[:10] + "…" + value[-8:]
 
 
+def _telegram_error_text(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    description = ""
+    if response is not None:
+        try:
+            data = response.json()
+            description = str(data.get("description") or "")[:180]
+        except Exception:
+            description = ""
+    if description:
+        return f"status={status or 'unknown'} description={description}"
+    return f"status={status or 'unknown'} type={type(exc).__name__}"
+
+
 def _send_reject_report(app, tid: str, event: dict, action: dict, *, test_only: bool = False) -> bool:
     if not getattr(app, "telegram_bot_token", ""):
         return False
@@ -107,14 +122,17 @@ def _send_reject_report(app, tid: str, event: dict, action: dict, *, test_only: 
     lines.append("Decision: <b>NO BUY / NO BROADCAST</b>")
     if test_only:
         lines.append("Synthetic reporting test only — no market opportunity was evaluated and no trade was placed.")
-    response = send_message(
-        app.telegram_bot_token,
-        str(tid),
-        "\n".join(lines),
-        parse_mode="HTML",
-        protect_content=True,
-    )
-    return bool((response or {}).get("message_id"))
+    try:
+        sent_count = send_message(
+            app.telegram_bot_token,
+            str(tid),
+            "\n".join(lines),
+            parse_mode="HTML",
+            protect_content=True,
+        )
+    except Exception as exc:
+        raise RuntimeError("telegram_send_failed " + _telegram_error_text(exc)) from None
+    return int(sent_count or 0) > 0
 
 
 def _report_reject_actions(app, event: dict, actions: list[dict]) -> None:
@@ -161,7 +179,7 @@ def _report_reject_actions(app, event: dict, actions: list[dict]) -> None:
                     sent += 1
                     _REJECT_REPORT_DEDUP[dedup_key] = now
             except Exception as exc:
-                print("[learner-reject-report] telegram_error=%s:%s" % (type(exc).__name__, str(exc)[:180]))
+                print("[learner-reject-report] telegram_error=%s" % str(exc)[:220])
         print(
             "[learner-reject-report] decision=REJECT targets=%d sent=%d class=%s reason=%s" %
             (len(targets), sent, klass, reason[:180])
