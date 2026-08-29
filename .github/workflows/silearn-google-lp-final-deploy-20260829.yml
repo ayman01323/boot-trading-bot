@@ -1,0 +1,182 @@
+name: SiLearn Google LP final deploy
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1644BST-google-lp-final-deploy'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Final guarded targeted deploy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n true
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          TARGET_SHA=cd55e1f470e36c6966ff9a71e51cab5e985952dc
+          BACKUP="$ROOT/private/change-control/20260829T1644BST-lp-warning-only-final"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          echo 'SiLearn — 2026-08-29 16:44 BST — Subject: Finalise LP warning-only deployment'
+          test -d "$ROOT/learnerbot"
+          test "$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)" = active
+
+          # Refuse code replacement while any real LIVE Solana position is open.
+          ROOT="$ROOT" python3 - <<'PY'
+          import os, sqlite3, sys
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          total=0
+          for p in (root/'data'/'sibot.sqlite3', root/'data'/'solana_sibot.sqlite3'):
+              if not p.exists():
+                  continue
+              conn=sqlite3.connect(f'file:{p}?mode=ro', uri=True, timeout=2)
+              tables={r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
+              if 'positions' in tables:
+                  cols={r[1] for r in conn.execute('pragma table_info(positions)')}
+                  if {'status','mode'} <= cols:
+                      n=int(conn.execute("select count(*) from positions where upper(coalesce(status,''))='OPEN' and upper(coalesce(mode,''))='LIVE'").fetchone()[0])
+                      print(f'predeploy_open_live {p.name}={n}')
+                      total += n
+              conn.close()
+          print(f'predeploy_open_live_total={total}')
+          if total:
+              sys.exit(42)
+          PY
+
+          sudo -n mkdir -p "$BACKUP"
+          sudo -n cp -a "$ROOT/learnerbot/__main__.py" "$BACKUP/__main__.py.pre"
+          for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
+            if test -f "$ROOT/learnerbot/$f"; then
+              sudo -n cp -a "$ROOT/learnerbot/$f" "$BACKUP/$f.pre"
+            else
+              sudo -n rm -f "$BACKUP/$f.pre"
+              sudo -n touch "$BACKUP/$f.was_absent"
+            fi
+          done
+          printf '%s\n' "$TARGET_SHA" | sudo -n tee "$BACKUP/source_sha.txt" >/dev/null
+          printf '%s\n' 'SiLearn — 2026-08-29 16:44 BST — Subject: Finalise LP warning-only deployment' | sudo -n tee "$BACKUP/subject.txt" >/dev/null
+
+          BASE="https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$TARGET_SHA/learnerbot"
+          curl -fsSL "$BASE/solana_reject_once_reporting_patch.py" -o "$TMP/solana_reject_once_reporting_patch.py"
+          curl -fsSL "$BASE/solana_lp_warning_only_patch.py" -o "$TMP/solana_lp_warning_only_patch.py"
+
+          # Dependency-free source verification against the exact merged source.
+          grep -Fq 'once_per_account_mint_leader_reason' "$TMP/solana_reject_once_reporting_patch.py"
+          grep -Fq 'persistent=true signature_in_key=false' "$TMP/solana_reject_once_reporting_patch.py"
+          grep -Fq 'LP_WARNING_ONLY' "$TMP/solana_lp_warning_only_patch.py"
+          grep -Fq 'lp_lock=WARNING_ONLY' "$TMP/solana_lp_warning_only_patch.py"
+          grep -Fq 'structural_danger=HARD_BLOCK' "$TMP/solana_lp_warning_only_patch.py"
+          for term in 'freeze authority' 'mint authority' 'honeypot' 'blacklist' 'malicious transfer'; do
+            grep -Fq "$term" "$TMP/solana_lp_warning_only_patch.py"
+          done
+          grep -Fq 'if _structural_risk_present(summary):' "$TMP/solana_lp_warning_only_patch.py"
+          grep -Fq 'return False' "$TMP/solana_lp_warning_only_patch.py"
+
+          TMP="$TMP" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          t=Path(os.environ['TMP'])
+          for p in t.glob('*.py'):
+              compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+              print('compile_ok='+p.name)
+          PY
+
+          rollback() {
+            echo 'ROLLBACK_START'
+            sudo -n cp -a "$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
+            for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
+              if test -f "$BACKUP/$f.pre"; then
+                sudo -n cp -a "$BACKUP/$f.pre" "$ROOT/learnerbot/$f"
+              else
+                sudo -n rm -f "$ROOT/learnerbot/$f"
+              fi
+            done
+            sudo -n systemctl restart learnerbot-learn.service || true
+            sleep 5
+            echo "rollback_service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          }
+          trap 'rc=$?; if test $rc -ne 0; then rollback; fi; rm -rf "$TMP"; exit $rc' EXIT
+
+          MODE="$(stat -c %a "$ROOT/learnerbot/__main__.py")"
+          for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
+            sudo -n install -m "$MODE" "$TMP/$f" "$ROOT/learnerbot/$f"
+            sudo -n chown --reference="$ROOT/learnerbot/__main__.py" "$ROOT/learnerbot/$f"
+            cmp -s "$TMP/$f" "$ROOT/learnerbot/$f"
+            echo "installed_exact=$f sha256=$(sha256sum "$ROOT/learnerbot/$f" | awk '{print $1}')"
+          done
+
+          # Preserve the Google-specific startup file; add only the two late policy imports.
+          sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'learnerbot'/'__main__.py'
+          text=p.read_text(encoding='utf-8')
+          marker='from .cli import main\n'
+          if marker not in text:
+              raise SystemExit('custom __main__.py CLI marker not found')
+          lines=[]
+          if 'from . import solana_reject_once_reporting_patch' not in text:
+              lines += [
+                  '# SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts.',
+                  'from . import solana_reject_once_reporting_patch  # noqa: F401',
+              ]
+          if 'from . import solana_lp_warning_only_patch' not in text:
+              lines += [
+                  '# SiLearn — 2026-08-29 13:28 BST — Subject: Downgrade LP lock/provider warnings to Telegram reference only.',
+                  'from . import solana_lp_warning_only_patch  # noqa: F401',
+              ]
+          if lines:
+              text=text.replace(marker, '\n'.join(lines)+'\n'+marker, 1)
+              tmp=p.with_name('__main__.py.silearn-new')
+              tmp.write_text(text, encoding='utf-8')
+              os.chmod(tmp, p.stat().st_mode)
+              os.replace(tmp, p)
+          compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+          print('custom_main_compile_ok=true')
+          PY
+          sudo -n chown --reference="$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
+          grep -Fq 'from . import solana_reject_once_reporting_patch' "$ROOT/learnerbot/__main__.py"
+          grep -Fq 'from . import solana_lp_warning_only_patch' "$ROOT/learnerbot/__main__.py"
+
+          SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+          BEFORE_RESTARTS="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo 0)"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 7
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          PID1="$(systemctl show learnerbot-learn.service -p MainPID --value)"
+          R1="$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          test "$PID1" != 0
+          sleep 25
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          PID2="$(systemctl show learnerbot-learn.service -p MainPID --value)"
+          R2="$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          test "$PID1" = "$PID2"
+          test "$R1" = "$R2"
+
+          LOG="$TMP/postrestart.log"
+          journalctl -u learnerbot-learn.service --since "$SINCE" --no-pager > "$LOG" 2>/dev/null || true
+          grep -F '[learner-reject-once]' "$LOG"
+          grep -F '[silearn-lp-warning-only]' "$LOG"
+
+          # The old LP reason must not reappear as a LIVE rejection after this restart.
+          if grep -E '\[solana-pool-risk\].*decision=(SHADOW_ONLY|HARD_BLOCK|COOLING).*code=LP_CONCENTRATION_RISK' "$LOG"; then
+            echo 'old_lp_block_detected_after_restart=true'
+            exit 43
+          fi
+
+          echo 'postrestart_non_lp_rejections:'
+          grep -E 'learner-reject-once.*decision=REJECT' "$LOG" | tail -n 20 || true
+          echo "deploy_source_sha=$TARGET_SHA"
+          echo "service=active pid=$PID2 restarts=$R2 prior_restarts=$BEFORE_RESTARTS"
+          echo "backup=$BACKUP"
+          echo 'DEPLOY_VERIFIED=true'
+          trap - EXIT
+          rm -rf "$TMP"
