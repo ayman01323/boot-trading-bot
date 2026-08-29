@@ -1,0 +1,236 @@
+name: Emergency Google Server Backup
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/emergency-google-server-backup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emergency-google-server-backup
+  cancel-in-progress: false
+
+jobs:
+  emergency-backup:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 180
+    env:
+      TZ: Europe/London
+      DEST_ROOT: /home/ayman01323/GoogleServerBuckup
+      EMERGENCY_ROOT: /home/ayman01323/GoogleServerBuckup/emergency
+      BOOT: /home/ayman01323/BOOT
+      CLAUDE: /home/ayman01323/ClaudeServer
+      PROD: /root/multichain-learning-bot-v2.2-fast-direct-market
+      SIRISKY: /root/SiRisky
+      SYSTEMD_ROOT: /etc/systemd/system
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prepare emergency destination and check space
+        id: prep
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = 'botgoogle'
+          test "$(id -un)" = 'ayman01323'
+          test -d "$BOOT"
+          test -d "$CLAUDE"
+          test -d "$SYSTEMD_ROOT"
+          mkdir -p "$EMERGENCY_ROOT"
+          chmod 700 "$DEST_ROOT" "$EMERGENCY_ROOT"
+          stamp="$(date '+%Y-%m-%d_%H%M%S')"
+          emergency_dir="$EMERGENCY_ROOT/$stamp"
+          mkdir -p "$emergency_dir"
+          chmod 700 "$emergency_dir"
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          echo "emergency_dir=$emergency_dir" >> "$GITHUB_OUTPUT"
+          echo "EMERGENCY_DIR=$emergency_dir" >> "$GITHUB_ENV"
+          avail_kb="$(df -Pk "$DEST_ROOT" | awk 'NR==2 {print $4}')"
+          echo "available_kb=$avail_kb"
+          # Protected backup generation plus emergency copies need working room.
+          if [ "$avail_kb" -lt 4194304 ]; then
+            echo "BLOCKED: less than 4 GiB free on backup filesystem" >&2
+            df -h "$DEST_ROOT"
+            exit 1
+          fi
+          echo "emergency_directory=$emergency_dir"
+          df -h "$DEST_ROOT"
+
+      - name: Create resilient BOOT emergency ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - "$BOOT" "$EMERGENCY_DIR/BOOT.zip" BOOT <<'PY'
+          import os, sqlite3, stat, sys, tempfile, zipfile
+          from pathlib import Path
+          src=Path(sys.argv[1]).resolve(); out=Path(sys.argv[2]); root=sys.argv[3]
+          skipped=[]; sqlite_count=0
+          def add_link(zf,p,a):
+              try: target=os.readlink(p)
+              except OSError as e: skipped.append(f'symlink_error:{p}:{type(e).__name__}'); return
+              i=zipfile.ZipInfo(a); i.create_system=3; i.external_attr=(stat.S_IFLNK|0o777)<<16; zf.writestr(i,target.encode())
+          def add_sqlite(zf,p,a):
+              global sqlite_count
+              fd,name=tempfile.mkstemp(prefix='emergency-sqlite.',suffix=p.suffix); os.close(fd); snap=Path(name)
+              try:
+                  s=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=10); d=sqlite3.connect(str(snap))
+                  try: s.backup(d)
+                  finally: d.close(); s.close()
+                  zf.write(snap,a); sqlite_count+=1; return True
+              except (sqlite3.DatabaseError,sqlite3.OperationalError,FileNotFoundError): return False
+              finally:
+                  try: snap.unlink()
+                  except FileNotFoundError: pass
+          with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as zf:
+              for current,dirs,files in os.walk(src,topdown=True,followlinks=False):
+                  cp=Path(current); rel=cp.relative_to(src); ad=root if str(rel)=='.' else f'{root}/{rel.as_posix()}'
+                  i=zipfile.ZipInfo(ad.rstrip('/')+'/'); i.create_system=3; i.external_attr=(stat.S_IFDIR|0o755)<<16; zf.writestr(i,b'')
+                  for d in list(dirs):
+                      p=cp/d
+                      if p.is_symlink(): add_link(zf,p,f'{ad}/{d}'); dirs.remove(d)
+                  for f in files:
+                      p=cp/f; a=f'{ad}/{f}'; low=f.lower()
+                      if low.endswith('-wal') or low.endswith('-shm'): skipped.append(f'sqlite_sidecar:{p}'); continue
+                      try: st=p.lstat()
+                      except OSError as e: skipped.append(f'stat_error:{p}:{type(e).__name__}'); continue
+                      if stat.S_ISLNK(st.st_mode): add_link(zf,p,a); continue
+                      if not stat.S_ISREG(st.st_mode): skipped.append(f'special_file:{p}'); continue
+                      if p.suffix.lower() in {'.db','.sqlite','.sqlite3'} and add_sqlite(zf,p,a): continue
+                      try: zf.write(p,a)
+                      except OSError as e: skipped.append(f'read_error:{p}:{type(e).__name__}')
+          with zipfile.ZipFile(out,'r') as zf:
+              bad=zf.testzip(); entries=len(zf.infolist())
+          if bad: raise SystemExit(f'ZIP integrity failure: {bad}')
+          size=out.stat().st_size
+          if entries < 5 or size < 4096: raise SystemExit(f'ZIP sanity failure entries={entries} bytes={size}')
+          Path(str(out)+'.skipped.txt').write_text(('\n'.join(skipped)+'\n') if skipped else 'none\n',encoding='utf-8')
+          Path(str(out)+'.stats').write_text(f'source={src}\nentries={entries}\nbytes={size}\nformat=zip\ncompression_level=1\nsqlite_snapshots={sqlite_count}\nskipped_transient={len(skipped)}\n',encoding='utf-8')
+          print(f'BOOT entries={entries} bytes={size} sqlite_snapshots={sqlite_count} skipped={len(skipped)}')
+          PY
+          (cd "$EMERGENCY_DIR" && sha256sum BOOT.zip > BOOT.zip.sha256)
+          mv "$EMERGENCY_DIR/BOOT.zip.stats" "$EMERGENCY_DIR/BOOT.stats"
+          mv "$EMERGENCY_DIR/BOOT.zip.skipped.txt" "$EMERGENCY_DIR/BOOT.skipped.txt"
+          (cd "$EMERGENCY_DIR" && sha256sum -c BOOT.zip.sha256)
+
+      - name: Refresh protected root backups with reviewed helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGED=/home/ayman01323/BOOT/.backup-helper/scripts/google-root-backup
+          INSTALLED=/usr/local/sbin/google-root-backup
+          test -f "$STAGED"
+          test -x "$INSTALLED"
+          cmp -s "$STAGED" "$INSTALLED" || {
+            echo 'BLOCKED: installed protected helper differs from reviewed staged copy' >&2
+            exit 1
+          }
+          sudo -n "$INSTALLED"
+
+      - name: Copy verified protected archives into emergency snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          day_dir="$DEST_ROOT/$(date '+%Y-%m-%d')"
+          for name in ClaudeServer multichain-learning-bot-v2.2-fast-direct-market SiRisky; do
+            for suffix in zip zip.sha256 stats skipped.txt; do
+              src="$day_dir/$name.$suffix"
+              test -s "$src"
+              cp --reflink=auto --preserve=mode,timestamps "$src" "$EMERGENCY_DIR/$name.$suffix"
+            done
+            (cd "$EMERGENCY_DIR" && sha256sum -c "$name.zip.sha256")
+          done
+          cp --reflink=auto --preserve=mode,timestamps "$day_dir/google-protected-folders-manifest.txt" "$EMERGENCY_DIR/normal-helper-manifest.txt"
+
+      - name: Create systemd emergency ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - "$SYSTEMD_ROOT" "$EMERGENCY_DIR/systemd-system.zip" <<'PY'
+          import os,stat,sys,zipfile
+          from pathlib import Path
+          src=Path(sys.argv[1]).resolve(); out=Path(sys.argv[2]); root='system'
+          with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as zf:
+              for current,dirs,files in os.walk(src,topdown=True,followlinks=False):
+                  cp=Path(current); rel=cp.relative_to(src); ad=root if str(rel)=='.' else f'{root}/{rel.as_posix()}'
+                  i=zipfile.ZipInfo(ad.rstrip('/')+'/'); i.create_system=3; i.external_attr=(stat.S_IFDIR|0o755)<<16; zf.writestr(i,b'')
+                  for d in list(dirs):
+                      p=cp/d
+                      if p.is_symlink():
+                          i=zipfile.ZipInfo(f'{ad}/{d}'); i.create_system=3; i.external_attr=(stat.S_IFLNK|0o777)<<16; zf.writestr(i,os.readlink(p).encode()); dirs.remove(d)
+                  for f in files:
+                      p=cp/f; a=f'{ad}/{f}'
+                      if p.is_symlink():
+                          i=zipfile.ZipInfo(a); i.create_system=3; i.external_attr=(stat.S_IFLNK|0o777)<<16; zf.writestr(i,os.readlink(p).encode())
+                      elif p.is_file(): zf.write(p,a)
+          with zipfile.ZipFile(out,'r') as zf:
+              bad=zf.testzip(); entries=len(zf.infolist())
+          if bad: raise SystemExit(f'ZIP integrity failure: {bad}')
+          size=out.stat().st_size
+          if entries < 5 or size < 1024: raise SystemExit(f'ZIP sanity failure entries={entries} bytes={size}')
+          Path(str(out)+'.stats').write_text(f'source={src}\nentries={entries}\nbytes={size}\nformat=zip\ncompression_level=1\n',encoding='utf-8')
+          print(f'systemd entries={entries} bytes={size}')
+          PY
+          (cd "$EMERGENCY_DIR" && sha256sum systemd-system.zip > systemd-system.zip.sha256)
+          mv "$EMERGENCY_DIR/systemd-system.zip.stats" "$EMERGENCY_DIR/systemd-system.stats"
+          (cd "$EMERGENCY_DIR" && sha256sum -c systemd-system.zip.sha256)
+
+      - name: Write emergency manifest and verify full set
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$EMERGENCY_DIR/emergency-backup-manifest.txt" <<EOF
+          backup_type=emergency
+          created_london=$(date '+%Y-%m-%d %H:%M:%S %Z')
+          created_utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          hostname=$(hostname)
+          git_sha=$(git rev-parse HEAD)
+          destination=$EMERGENCY_DIR
+          source_boot=$BOOT
+          source_claude=$CLAUDE
+          source_production=$PROD
+          source_sirisky=$SIRISKY
+          source_systemd=$SYSTEMD_ROOT
+          retention=manual_no_automatic_deletion
+          format=zip
+          EOF
+          cd "$EMERGENCY_DIR"
+          required=(
+            BOOT.zip BOOT.zip.sha256 BOOT.stats BOOT.skipped.txt
+            ClaudeServer.zip ClaudeServer.zip.sha256 ClaudeServer.stats ClaudeServer.skipped.txt
+            multichain-learning-bot-v2.2-fast-direct-market.zip multichain-learning-bot-v2.2-fast-direct-market.zip.sha256 multichain-learning-bot-v2.2-fast-direct-market.stats multichain-learning-bot-v2.2-fast-direct-market.skipped.txt
+            SiRisky.zip SiRisky.zip.sha256 SiRisky.stats SiRisky.skipped.txt
+            systemd-system.zip systemd-system.zip.sha256 systemd-system.stats
+            emergency-backup-manifest.txt normal-helper-manifest.txt
+          )
+          for f in "${required[@]}"; do test -s "$f"; done
+          sha256sum -c BOOT.zip.sha256
+          sha256sum -c ClaudeServer.zip.sha256
+          sha256sum -c multichain-learning-bot-v2.2-fast-direct-market.zip.sha256
+          sha256sum -c SiRisky.zip.sha256
+          sha256sum -c systemd-system.zip.sha256
+          python3 - <<'PY'
+          import zipfile
+          names=['BOOT.zip','ClaudeServer.zip','multichain-learning-bot-v2.2-fast-direct-market.zip','SiRisky.zip','systemd-system.zip']
+          for name in names:
+              with zipfile.ZipFile(name,'r') as zf:
+                  bad=zf.testzip(); n=len(zf.infolist())
+              if bad: raise SystemExit(f'{name}: bad entry {bad}')
+              print(f'zip_verify={name} entries={n} status=PASS')
+          PY
+          sha256sum BOOT.zip ClaudeServer.zip multichain-learning-bot-v2.2-fast-direct-market.zip SiRisky.zip systemd-system.zip > SHA256SUMS
+          printf '%s\n' "${{ steps.prep.outputs.stamp }}" > "$EMERGENCY_ROOT/LATEST"
+          echo 'EMERGENCY_BACKUP_STATUS=PASS'
+          echo "EMERGENCY_BACKUP_PATH=$EMERGENCY_DIR"
+          ls -lh BOOT.zip ClaudeServer.zip multichain-learning-bot-v2.2-fast-direct-market.zip SiRisky.zip systemd-system.zip SHA256SUMS emergency-backup-manifest.txt
+          df -h "$DEST_ROOT"
