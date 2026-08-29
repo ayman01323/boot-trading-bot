@@ -13,6 +13,8 @@ concurrency:
   group: google-systemd-daily-backup
   cancel-in-progress: false
 
+# Backups are retained indefinitely. There is no age-based automatic deletion.
+
 jobs:
   backup:
     name: Backup /etc/systemd/system to Google backup folder
@@ -21,7 +23,6 @@ jobs:
     env:
       SOURCE: /etc/systemd/system
       DEST_ROOT: /home/ayman01323/GoogleServerBuckup
-      RETENTION_DAYS: '30'
       TZ: Europe/London
     steps:
       - name: Verify Google runner and source
@@ -112,15 +113,6 @@ jobs:
           cat systemd-system.stats
           ls -lh systemd-system.zip systemd-system.zip.sha256 systemd-system.stats
 
-      - name: Apply retention policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          find "$DEST_ROOT" -mindepth 1 -maxdepth 1 -type d \
-            -regextype posix-extended -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}' \
-            -mtime +"$RETENTION_DAYS" -print -exec rm -rf {} +
-          echo "retention_days=$RETENTION_DAYS"
-
       - name: Backup summary
         if: always()
         shell: bash
@@ -128,3 +120,4 @@ jobs:
           echo "Source: $SOURCE"
           echo "Destination pattern: $DEST_ROOT/YYYY-MM-DD/systemd-system.zip"
           echo "Schedule: daily at 03:00 Europe/London"
+          echo "Retention: indefinite; no automatic age-based deletion"
