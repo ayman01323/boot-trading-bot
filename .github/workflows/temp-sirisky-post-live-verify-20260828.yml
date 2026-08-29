@@ -43,7 +43,7 @@ jobs:
           set_env() { local k="$1" v="$2"; sudo -n sed -i "/^${k}=/d" "$ROOT/.env"; printf '%s=%s\n' "$k" "$v" | sudo -n tee -a "$ROOT/.env" >/dev/null; }
           set_env TELEGRAM_BOT_TOKEN "$TOKEN"
           set_env TELEGRAM_CHAT_ID "$MASTER"
-          set_env LEARNER_TELEGRAM_OUTBOUND_ONLY true
+          set_env LEARNER_TELEGRAM_OUTBOUND_ONLY false
           set_env BOOT_REJECTED_OPPORTUNITY_ENABLED 1
           set_env BOOT_REJECTED_OPPORTUNITY_DIR '/home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY'
           set_env BOOT_REJECTED_OPPORTUNITY_CODE_ROOT /home/ayman01323/BOOT/datacentre/rejected_router
@@ -60,12 +60,14 @@ jobs:
           sudo -n systemctl restart "$SERVICE"
           sleep 8
           test "$(systemctl is-active "$SERVICE")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$ROOT/.env")" -eq 1
           test "$SOL_BEFORE" = "$(sha256sum "$ROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
           test "$USER_BEFORE" = "$(sha256sum "$ROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
           test "$SOURCE_BEFORE" = "$(cat "$ROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
           cd "$ROOT"
           PYTHONPATH=. "$PYBIN" -c "from learnerbot.config import AppSettings; from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report; app=AppSettings.load(); ok=_send_reject_report(app,'$MASTER',{'mint':'Ay4WoENShiwYg4m4TSThVgiTknom4acE3XhJouQkagWx','signature':'reject-report-smoke'},{'action':'REJECT','reason':'REJECT_REPORT_SMOKE_TEST'},test_only=True); print('reject_report_telegram_smoke=PASS' if ok else 'reject_report_telegram_smoke=FAIL'); raise SystemExit(0 if ok else 1)"
           echo learner_service=active
+          echo learner_inbound_telegram=true
           echo trading_settings_unchanged=PASS
           echo learner_reject_reporting=PASS
           echo dexview_link=PASS
