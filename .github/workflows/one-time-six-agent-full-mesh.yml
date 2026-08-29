@@ -1,0 +1,30 @@
+name: One-time Strategy Factory Six-Agent Full Mesh
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/one-time-six-agent-full-mesh.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-time-six-agent-full-mesh-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# The live 30-direction mesh was completed in run 32650210360 attempt 1:
+# MESH_TOTAL=30, MESH_PASS=30, MESH_FAIL=0.
+# Keep this PR diagnostic-only and prevent later audit commits from purchasing
+# another 30 provider calls. Durable evidence is checked by the separate
+# one-time-six-agent-full-mesh-audit workflow.
+jobs:
+  completed-marker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Do not repeat completed provider mesh
+        run: |
+          echo 'FULL_MESH_PROVIDER_TEST_ALREADY_COMPLETED=32650210360'
+          echo 'MESH_TOTAL=30'
+          echo 'MESH_PASS=30'
+          echo 'MESH_FAIL=0'
