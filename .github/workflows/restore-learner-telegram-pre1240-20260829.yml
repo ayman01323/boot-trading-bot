@@ -1,0 +1,161 @@
+name: Restore Learner Telegram Pre1240 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/restore-learner-telegram-pre1240-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Restore and verify Learner Telegram interactive mode
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          EXPECTED_SOURCE=894c5597c5cf0c695f1f75df39f26ebe64c2dce9
+          ENVFILE="$LROOT/.env"
+          UI="$LROOT/learnerbot/telegram_ui.py"
+          test -f "$ENVFILE"
+          test -f "$UI"
+          test "$(cat "$LROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null)" = "$EXPECTED_SOURCE"
+
+          # The target source had no outbound-only code path. Refuse to mutate if the
+          # restored source was unexpectedly patched again after the 12:40 recovery.
+          ! grep -q 'outbound-only mode: polling disabled' "$UI"
+          grep -q 'interactive multi-chain menu started' "$UI"
+          grep -q 'get_updates(app.telegram_bot_token' "$UI"
+
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup="$LROOT/private/pre-telegram-1240-restore-$stamp"
+          mkdir -p "$backup"
+          cp -a "$ENVFILE" "$backup/.env"
+          cp -a "$UI" "$backup/telegram_ui.py"
+          echo "telegram_restore_backup=$backup"
+
+          # Remove only the later outbound-only environment key. The 12:40 source did
+          # not know this setting; absence is the exact historical behaviour.
+          tmp=$(mktemp)
+          grep -v '^LEARNER_TELEGRAM_OUTBOUND_ONLY=' "$ENVFILE" > "$tmp" || true
+          cat "$tmp" > "$ENVFILE"
+          rm -f "$tmp"
+          chmod 600 "$ENVFILE"
+          chown ayman01323:ayman01323 "$ENVFILE"
+          ! grep -q '^LEARNER_TELEGRAM_OUTBOUND_ONLY=' "$ENVFILE"
+
+          # Read identity/config without printing credentials or chat IDs.
+          LROOT="$LROOT" python3 - <<'PY'
+          import json, os, pathlib, urllib.request
+          root=pathlib.Path(os.environ['LROOT'])
+          env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env.get('TELEGRAM_BOT_TOKEN','')
+          if not token: raise SystemExit('Learner Telegram token missing')
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getMe',headers={'User-Agent':'learner-restore/1'})
+          with urllib.request.urlopen(req,timeout=10) as r: me=json.load(r)
+          if not me.get('ok'): raise SystemExit('Telegram getMe failed')
+          result=me.get('result') or {}
+          username=str(result.get('username') or '')
+          if username != 'SiLearn_bot': raise SystemExit(f'unexpected Learner bot identity @{username}')
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getWebhookInfo',headers={'User-Agent':'learner-restore/1'})
+          with urllib.request.urlopen(req,timeout=10) as r: wh=json.load(r)
+          url=str((wh.get('result') or {}).get('url') or '')
+          if url: raise SystemExit('Learner Telegram has a webhook configured; refusing to mix webhook and getUpdates')
+          chats=[]
+          for key in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              v=env.get(key,'')
+              if v: chats += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+          if not chats: raise SystemExit('Learner Telegram recipient missing')
+          print('learner_bot=@'+username)
+          print('learner_bot_name='+str(result.get('first_name') or ''))
+          print('learner_destination_count='+str(len(set(chats))))
+          print('learner_webhook_configured=false')
+          print('outbound_only_key_present=false')
+          PY
+
+          # Preserve the 0.009 SOL recovery while touching Telegram only.
+          LROOT="$LROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['LROOT'])
+          with (root/'CSVbot/solana_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              d={r.get('setting'):r.get('value') for r in csv.DictReader(f)}
+          if d.get('live_trade_sol')!='0.009' or d.get('live_min_economic_trade_sol')!='0.009':
+              raise SystemExit('0.009 SOL recovery settings changed unexpectedly')
+          with (root/'CSVbot/user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          vals=[r.get('value') for r in rows if r.get('setting')=='solana_live_trade_sol']
+          if not vals or any(v!='0.009' for v in vals): raise SystemExit('per-user 0.009 SOL setting changed unexpectedly')
+          print('trade_minimum_preserved=0.009_SOL')
+          PY
+
+          systemctl restart "$SERVICE"
+          started=$(date -u +'%Y-%m-%d %H:%M:%S')
+          sleep 15
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p1=$(systemctl show "$SERVICE" -p MainPID --value)
+          sleep 12
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p2=$(systemctl show "$SERVICE" -p MainPID --value)
+          [[ "$p1" != 0 && "$p2" != 0 && "$r1" = "$r2" ]]
+
+          log=$(journalctl -u "$SERVICE" --since "$started" --no-pager -o cat 2>/dev/null || true)
+          printf '%s\n' "$log" | grep -q '\[telegram-menu\] interactive multi-chain menu started'
+          if printf '%s\n' "$log" | grep -Eqi '409 Conflict|terminated by other getUpdates|another getUpdates request|outbound-only mode: polling disabled'; then
+              printf '%s\n' "$log" | grep -Ei 'telegram|409|outbound-only' | tail -n 80 || true
+              exit 71
+          fi
+
+          # Verify Telegram command registration and send one non-trading delivery proof.
+          LROOT="$LROOT" python3 - <<'PY'
+          import json, os, pathlib, urllib.parse, urllib.request
+          root=pathlib.Path(os.environ['LROOT'])
+          env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env['TELEGRAM_BOT_TOKEN']
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getMyCommands',headers={'User-Agent':'learner-restore/1'})
+          with urllib.request.urlopen(req,timeout=10) as r: d=json.load(r)
+          if not d.get('ok'): raise SystemExit('getMyCommands failed')
+          commands=d.get('result') or []
+          if not commands: raise SystemExit('Learner bot commands are empty')
+          chats=[]
+          for key in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              v=env.get(key,'')
+              if v: chats += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+          chat=chats[0]
+          data=urllib.parse.urlencode({'chat_id':chat,'text':'🧠 Learner Bot restored to the 12:40 Telegram behaviour: interactive commands and trading/status alerts are active. 0.009 SOL minimum entry remains in force. No trade was placed by this test.','protect_content':'true'}).encode()
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/sendMessage',data=data,headers={'User-Agent':'learner-restore/1'})
+          with urllib.request.urlopen(req,timeout=10) as r: sent=json.load(r)
+          if not sent.get('ok') or not (sent.get('result') or {}).get('message_id'): raise SystemExit('Telegram delivery proof failed')
+          print('telegram_commands_registered='+str(len(commands)))
+          print('telegram_delivery_test=success')
+          print('telegram_interactive_polling=active')
+          print('telegram_competing_poller_detected=false')
+          print('trade_placed_by_test=NO')
+          PY
+
+          echo "learner_service_active=true"
+          echo "learner_service_pid=$p2"
+          echo "learner_service_restarts=$r2"
+          echo "learner_telegram_restore=SUCCESS"
+          ROOT
