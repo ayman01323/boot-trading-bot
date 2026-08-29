@@ -1,0 +1,90 @@
+name: Inspect Learner Pre1240 Telegram Env 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/inspect-learner-pre1240-telegram-env-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Telegram env provenance without exposing secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n python3 - <<'PY'
+          import json, pathlib, urllib.request, datetime, os
+          root=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn')
+          target=datetime.datetime(2026,8,28,11,40,0,tzinfo=datetime.timezone.utc).timestamp()
+
+          def parse_env(p):
+              out={}
+              try: lines=p.read_text(encoding='utf-8',errors='ignore').splitlines()
+              except Exception: return out
+              for raw in lines:
+                  s=raw.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              return out
+          def me(token):
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getMe',headers={'User-Agent':'pre1240-inspector/1'})
+              with urllib.request.urlopen(req,timeout=10) as r: d=json.load(r)
+              return d.get('result') or {}
+          def chats(e):
+              vals=[]
+              for k in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+                  v=e.get(k,'')
+                  if v: vals += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+              return tuple(sorted(set(vals)))
+
+          current=root/'.env'
+          ce=parse_env(current); cm=me(ce['TELEGRAM_BOT_TOKEN']) if ce.get('TELEGRAM_BOT_TOKEN') else {}
+          print('CURRENT_USERNAME=@'+str(cm.get('username') or ''))
+          print('CURRENT_NAME='+str(cm.get('first_name') or ''))
+          print('CURRENT_DESTINATION_COUNT='+str(len(chats(ce))))
+          print('CURRENT_ENV_MTIME_UTC='+datetime.datetime.fromtimestamp(current.stat().st_mtime,datetime.timezone.utc).isoformat())
+          print('CURRENT_HAS_OUTBOUND_FLAG='+str('LEARNER_TELEGRAM_OUTBOUND_ONLY' in ce).lower())
+          print('CURRENT_OUTBOUND_FLAG='+str(ce.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','')).lower())
+
+          candidates=[]
+          for p in root.rglob('*'):
+              if not p.is_file(): continue
+              name=p.name.lower()
+              if not (name=='.env' or name.startswith('.env.') or 'env.before' in name or name.endswith('.env')): continue
+              if p==current: continue
+              try: st=p.stat()
+              except OSError: continue
+              e=parse_env(p)
+              if not e.get('TELEGRAM_BOT_TOKEN'): continue
+              candidates.append((st.st_mtime,p,e))
+          candidates.sort(key=lambda x:x[0])
+          pre=[x for x in candidates if x[0] <= target]
+          print('TOKEN_ENV_CANDIDATES='+str(len(candidates)))
+          print('PRE1240_CANDIDATES='+str(len(pre)))
+          if pre:
+              mt,p,e=pre[-1]
+              m=me(e['TELEGRAM_BOT_TOKEN'])
+              print('PRE1240_NEAREST_PATH='+str(p))
+              print('PRE1240_NEAREST_MTIME_UTC='+datetime.datetime.fromtimestamp(mt,datetime.timezone.utc).isoformat())
+              print('PRE1240_USERNAME=@'+str(m.get('username') or ''))
+              print('PRE1240_NAME='+str(m.get('first_name') or ''))
+              print('PRE1240_DESTINATION_COUNT='+str(len(chats(e))))
+              print('CURRENT_SAME_BOT='+str(m.get('id')==cm.get('id')).lower())
+              print('CURRENT_SAME_DESTINATIONS='+str(chats(e)==chats(ce) and bool(chats(e) or chats(ce))).lower())
+              print('PRE1240_HAS_OUTBOUND_FLAG='+str('LEARNER_TELEGRAM_OUTBOUND_ONLY' in e).lower())
+          else:
+              print('PRE1240_NEAREST_PATH=NONE')
+
+          print('SERVICE_UNIT:')
+          os.system("systemctl show learnerbot-learn.service -p FragmentPath -p ExecStart -p WorkingDirectory -p EnvironmentFiles --no-pager | sed -E 's/(TELEGRAM_[A-Z_]+=)[^ ;]*/\\1[redacted]/g'")
+          print('NO_SECRET_PRINTED=true')
+          print('NO_MESSAGE_SENT=true')
+          PY
