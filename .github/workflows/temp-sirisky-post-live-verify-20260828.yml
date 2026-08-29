@@ -27,8 +27,9 @@ jobs:
           trap 'rm -rf "$TMP"' EXIT
           mkdir -p "$TMP/scripts" "$TMP/learnerbot"
           curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/repair_isolated_learner_reject_reporting.py -o "$TMP/scripts/repair_isolated_learner_reject_reporting.py"
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/add_dexview_to_learner_reject_report.py -o "$TMP/scripts/add_dexview_to_learner_reject_report.py"
           curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/rejected_opportunity_publisher.py -o "$TMP/learnerbot/rejected_opportunity_publisher.py"
-          python3 -m py_compile "$TMP/scripts/repair_isolated_learner_reject_reporting.py" "$TMP/learnerbot/rejected_opportunity_publisher.py"
+          python3 -m py_compile "$TMP/scripts/repair_isolated_learner_reject_reporting.py" "$TMP/scripts/add_dexview_to_learner_reject_report.py" "$TMP/learnerbot/rejected_opportunity_publisher.py"
           SOL_BEFORE="$(sha256sum "$ROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
           USER_BEFORE="$(sha256sum "$ROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
           SOURCE_BEFORE="$(cat "$ROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
@@ -48,12 +49,14 @@ jobs:
           set_env BOOT_REJECTED_OPPORTUNITY_CODE_ROOT /home/ayman01323/BOOT/datacentre/rejected_router
           set_env BOOT_REJECTED_SOURCE_BOT learnerbot
           sudo -n python3 "$TMP/scripts/repair_isolated_learner_reject_reporting.py" --repo "$TMP" --root "$ROOT"
+          sudo -n python3 "$TMP/scripts/add_dexview_to_learner_reject_report.py" --root "$ROOT"
           sudo -n chown ayman01323:ayman01323 "$ROOT/.env" "$ROOT/learnerbot/telegram_ui.py" "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$ROOT/learnerbot/rejected_opportunity_publisher.py"
           sudo -n chmod 600 "$ROOT/.env"
           PYBIN="$ROOT/.venv/bin/python"; [[ -x "$PYBIN" ]] || PYBIN=/usr/bin/python3
           PYTHONPATH="$ROOT" "$PYBIN" -m py_compile "$ROOT/learnerbot/telegram_ui.py" "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$ROOT/learnerbot/rejected_opportunity_publisher.py"
           grep -q 'outbound-only mode: polling disabled' "$ROOT/learnerbot/telegram_ui.py"
           grep -q '_report_reject_actions(app, payload, actions)' "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
+          grep -q 'https://www.dexview.com/solana/' "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
           sudo -n systemctl restart "$SERVICE"
           sleep 8
           test "$(systemctl is-active "$SERVICE")" = active
@@ -61,7 +64,8 @@ jobs:
           test "$USER_BEFORE" = "$(sha256sum "$ROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
           test "$SOURCE_BEFORE" = "$(cat "$ROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
           cd "$ROOT"
-          PYTHONPATH=. "$PYBIN" -c "from learnerbot.config import AppSettings; from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report; app=AppSettings.load(); ok=_send_reject_report(app,'$MASTER',{'mint':'SYSTEM_TEST_ONLY','signature':'reject-report-smoke'},{'action':'REJECT','reason':'REJECT_REPORT_SMOKE_TEST'},test_only=True); print('reject_report_telegram_smoke=PASS' if ok else 'reject_report_telegram_smoke=FAIL'); raise SystemExit(0 if ok else 1)"
+          PYTHONPATH=. "$PYBIN" -c "from learnerbot.config import AppSettings; from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report; app=AppSettings.load(); ok=_send_reject_report(app,'$MASTER',{'mint':'Ay4WoENShiwYg4m4TSThVgiTknom4acE3XhJouQkagWx','signature':'reject-report-smoke'},{'action':'REJECT','reason':'REJECT_REPORT_SMOKE_TEST'},test_only=True); print('reject_report_telegram_smoke=PASS' if ok else 'reject_report_telegram_smoke=FAIL'); raise SystemExit(0 if ok else 1)"
           echo learner_service=active
           echo trading_settings_unchanged=PASS
           echo learner_reject_reporting=PASS
+          echo dexview_link=PASS
