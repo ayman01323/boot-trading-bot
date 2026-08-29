@@ -1,0 +1,68 @@
+name: SiLearn Google LP runtime inspect
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1632BST-google-lp-deploy'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 6
+    steps:
+      - name: Inspect Google Learner composition and open positions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          echo 'SiLearn — 2026-08-29 16:32 BST — Subject: Inspect Google Learner before LP warning-only deploy'
+          echo "root=$ROOT"
+          test -d "$ROOT/learnerbot"
+          echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo '=== COMPOSITION ==='
+          grep -nE 'owner_changeset_4|reject_once|lp_warning' "$ROOT/learnerbot/__main__.py" 2>/dev/null || true
+          grep -nE 'solana_reject_once_reporting_patch|solana_lp_warning_only_patch' "$ROOT/learnerbot/solana_owner_changeset_4_integrity_patch.py" 2>/dev/null || true
+          for f in solana_owner_changeset_4_patch.py solana_owner_changeset_4_integrity_patch.py solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
+            if test -f "$ROOT/learnerbot/$f"; then
+              echo "file.$f=present sha256=$(sha256sum "$ROOT/learnerbot/$f" | awk '{print $1}')"
+            else
+              echo "file.$f=missing"
+            fi
+          done
+          echo '=== OPEN LIVE POSITION SCAN ==='
+          ROOT="$ROOT" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          total=0
+          seen=[]
+          for p in list(root.rglob('*.db'))+list(root.rglob('*.sqlite'))+list(root.rglob('*.sqlite3')):
+              if p in seen: continue
+              seen.append(p)
+              try:
+                  conn=sqlite3.connect(f'file:{p}?mode=ro', uri=True, timeout=1)
+                  tables={r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
+                  if 'positions' not in tables:
+                      conn.close(); continue
+                  cols={r[1] for r in conn.execute('pragma table_info(positions)')}
+                  if {'status','mode'} <= cols:
+                      n=int(conn.execute("select count(*) from positions where upper(coalesce(status,''))='OPEN' and upper(coalesce(mode,''))='LIVE'").fetchone()[0])
+                      print(f'positions_db={p} open_live={n}')
+                      total += n
+                  conn.close()
+              except Exception as exc:
+                  print(f'db_scan_error={p}:{type(exc).__name__}')
+          print(f'open_live_total={total}')
+          PY
+          echo '=== RECENT STAMPS ==='
+          journalctl -u learnerbot-learn.service --since '2026-08-29 10:00:00' --no-pager 2>/dev/null \
+            | grep -E '\[(owner-changeset-4|owner-changeset-4-integrity|learner-reject-once|lp-warning-only|silearn-lp-warning-only)\]' \
+            | tail -n 120 || true
+          echo '=== RECENT LP DECISIONS ==='
+          journalctl -u learnerbot-learn.service --since '2026-08-29 15:00:00' --no-pager 2>/dev/null \
+            | grep -E 'LP_CONCENTRATION_RISK|LP_WARNING_ONLY|Large Amount of LP Unlocked|learner-reject-once' \
+            | tail -n 100 || true
