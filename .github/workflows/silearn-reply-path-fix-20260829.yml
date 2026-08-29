@@ -13,15 +13,59 @@ permissions:
 jobs:
   probe:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 7
+    timeout-minutes: 8
     steps:
+      - name: Restore inbound polling after permanent regression fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          envfile="$target/.env"
+          test "$(hostname)" = botgoogle
+          test -f "$envfile"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n mkdir -p "$target/private"
+          sudo -n cp -a "$envfile" "$target/private/.env.before-silearn-reply-fix-$stamp"
+          ENVFILE="$envfile" sudo -n -E python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ENVFILE'])
+          lines=p.read_text(encoding='utf-8',errors='ignore').splitlines()
+          out=[]; found=False
+          for line in lines:
+              if '=' in line and line.split('=',1)[0].strip()=='LEARNER_TELEGRAM_OUTBOUND_ONLY':
+                  if not found:
+                      out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
+                      found=True
+              else:
+                  out.append(line)
+          if not found:
+              out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
+          p.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          os.chmod(p,0o600)
+          PY
+          sudo -n chown ayman01323:ayman01323 "$envfile"
+          start="$(date -u '+%Y-%m-%d %H:%M:%S')"
+          sudo -n systemctl restart "$service"
+          sleep 30
+          test "$(systemctl is-active "$service")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile")" -eq 1
+          conflicts="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          disabled="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'outbound-only mode: polling disabled' || true)"
+          test "$conflicts" -eq 0
+          test "$disabled" -eq 0
+          echo receiver_active=true
+          echo inbound_enabled=true
+          echo telegram_409_conflicts=0
+          echo outbound_disabled_markers=0
+
       - name: Probe reply path safely
         shell: bash
         run: |
           set -Eeuo pipefail
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
-          test "$(hostname)" = botgoogle
           test "$(systemctl is-active "$service")" = active
           test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
           py="$target/.venv/bin/python"
@@ -63,6 +107,9 @@ jobs:
                   except Exception: body={}
                   print(label+'_ok=false'); print(label+'_http='+str(e.code)); print(label+'_description='+str(body.get('description') or '<unavailable>')[:240])
                   return False,body
+              except Exception as e:
+                  print(label+'_ok=false'); print(label+'_transport='+type(e).__name__)
+                  return False,{}
           ok,me=call('getMe',{},'getme')
           if not ok: raise SystemExit(2)
           print('bot_is_silearn='+str(str((me.get('result') or {}).get('username') or '').lower()=='silearn_bot').lower())
@@ -97,3 +144,19 @@ jobs:
           echo service_active=true
           echo inbound_enabled=true
           echo telegram_409_conflicts=0
+
+      - name: Final persistence check
+        if: always()
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          sleep 20
+          test "$(systemctl is-active "$service")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
+          conflicts="$(sudo -n journalctl -u "$service" --since '5 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          test "$conflicts" -eq 0
+          echo final_service_active=true
+          echo final_inbound_enabled=true
+          echo final_telegram_409_conflicts=0
