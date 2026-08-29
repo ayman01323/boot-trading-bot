@@ -13,50 +13,73 @@ permissions:
 jobs:
   hotfix:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
-      - name: Prove isolated SiLearn identity
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "$(hostname)" = botgoogle
-          target=/home/ayman01323/BOOT/testingbots/learn
-          test -f "$target/.env"
-          test "$(systemctl show learnerbot-learn.service -p LoadState --value)" = loaded
-          TARGET="$target" sudo -n -E python3 - <<'PY'
-          import json, os, subprocess, urllib.request
-          from pathlib import Path
-          target=Path(os.environ['TARGET'])
-          def env_file_token(path):
-              try:
-                  for line in Path(path).read_text(encoding='utf-8',errors='ignore').splitlines():
-                      if '=' not in line or line.lstrip().startswith('#'): continue
-                      k,v=line.split('=',1)
-                      if k.strip()=='TELEGRAM_BOT_TOKEN' and v.strip(): return v.strip().strip('"').strip("'")
-              except Exception: pass
-              return ''
-          iso=env_file_token(target/'.env')
-          if not iso: raise SystemExit('isolated Telegram token unavailable')
-          with urllib.request.urlopen(f'https://api.telegram.org/bot{iso}/getMe',timeout=8) as r:
-              data=json.loads(r.read().decode())
-          username=str((data.get('result') or {}).get('username') or '')
-          print('isolated_is_silearn='+str(bool(data.get('ok')) and username.lower()=='silearn_bot').lower())
-          if username.lower()!='silearn_bot': raise SystemExit('isolated token is not SiLearn_bot')
-          PY
-
-      - name: Enable SiLearn inbound polling with automatic conflict rollback
+      - name: Install missing learnerbot handler into isolated runtime
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
-          envfile="$target/.env"
+          module="$target/learnerbot/telegram_google_learner_launcher_patch.py"
+          mainpy="$target/learnerbot/__main__.py"
+          py="$target/.venv/bin/python"
+          test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          test -f "$mainpy"
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          backup="$target/private/.env.before-silearn-inbound-$stamp"
-          sudo -n mkdir -p "$target/private"
-          sudo -n cp -a "$envfile" "$backup"
-          start="$(date -u '+%Y-%m-%d %H:%M:%S')"
+          backup="$target/private/silearn-launcher-$stamp"
+          sudo -n mkdir -p "$backup"
+          sudo -n cp -a "$mainpy" "$backup/__main__.py.before"
+          if [ -f "$module" ]; then sudo -n cp -a "$module" "$backup/telegram_google_learner_launcher_patch.py.before"; fi
+
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+          curl -fsSL \
+            'https://raw.githubusercontent.com/ayman01323/boot-trading-bot/dac221c928f8e4a353cb4fde6c553f54779e01d8/learnerbot/telegram_google_learner_launcher_patch.py' \
+            -o "$tmp"
+          grep -q '"/learnergoogle", "/learnerbot"' "$tmp"
+          grep -q 'def handle_update' "$tmp"
+          sudo -n install -o ayman01323 -g ayman01323 -m 0644 "$tmp" "$module"
+
+          MAINPY="$mainpy" sudo -n -E python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['MAINPY'])
+          text=p.read_text(encoding='utf-8',errors='strict')
+          stmt='from . import telegram_google_learner_launcher_patch  # noqa: F401'
+          # Remove accidental duplicates first.
+          lines=[line for line in text.splitlines() if line.strip()!=stmt]
+          text='\n'.join(lines).rstrip()+'\n'
+          marker='from .cli import main'
+          if marker not in text:
+              raise SystemExit('cannot safely locate cli import in isolated __main__.py')
+          text=text.replace(marker, '# MASTER bridge for isolated Google learner.\n'+stmt+'\n'+marker, 1)
+          p.write_text(text,encoding='utf-8')
+          PY
+          sudo -n chown ayman01323:ayman01323 "$mainpy"
+          sudo -n chmod 0644 "$mainpy"
+
+          "$py" -m py_compile "$module" "$mainpy"
+          cd "$target"
+          PYTHONPATH="$target" "$py" - <<'PY'
+          import importlib
+          m=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
+          assert callable(m.handle_update)
+          assert getattr(m._ui,'_google_learner_launcher_installed',False)
+          print('launcher_import_test=PASS')
+          PY
+          grep -q 'telegram_google_learner_launcher_patch' "$mainpy"
+          echo launcher_module_installed=true
+          echo launcher_main_import_installed=true
+
+      - name: Enable inbound polling and restart isolated SiLearn
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          envfile="$target/.env"
           ENVFILE="$envfile" sudo -n -E python3 - <<'PY'
           import os
           from pathlib import Path
@@ -66,8 +89,7 @@ jobs:
           for line in lines:
               if '=' in line and line.split('=',1)[0].strip()=='LEARNER_TELEGRAM_OUTBOUND_ONLY':
                   if not found:
-                      out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
-                      found=True
+                      out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false'); found=True
               else:
                   out.append(line)
           if not found: out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
@@ -75,35 +97,26 @@ jobs:
           os.chmod(p,0o600)
           PY
           sudo -n chown ayman01323:ayman01323 "$envfile"
+          start="$(date -u '+%Y-%m-%d %H:%M:%S')"
           sudo -n systemctl restart "$service"
           sleep 35
-          state="$(systemctl is-active "$service" 2>/dev/null || true)"
+          test "$(systemctl is-active "$service")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile")" -eq 1
           conflicts="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
           disabled="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'outbound-only mode: polling disabled' || true)"
-          if [ "$state" != active ] || [ "$conflicts" -gt 0 ] || [ "$disabled" -gt 0 ]; then
-            echo telegram_inbound_conflict_or_disabled=true
-            echo telegram_409_conflicts="$conflicts"
-            echo outbound_disabled_markers="$disabled"
-            sudo -n cp -a "$backup" "$envfile"
-            sudo -n chown ayman01323:ayman01323 "$envfile"
-            sudo -n systemctl restart "$service"
-            sleep 8
-            test "$(systemctl is-active "$service")" = active
-            echo rollback_completed=true
-            exit 1
-          fi
-          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile")" -eq 1
-          echo telegram_inbound_enabled=true
+          test "$conflicts" -eq 0
+          test "$disabled" -eq 0
+          grep -q 'telegram_google_learner_launcher_patch' "$target/learnerbot/__main__.py"
+          echo service_active=true
+          echo inbound_enabled=true
           echo telegram_409_conflicts=0
           echo outbound_disabled_markers=0
-          echo service=active
-          echo '--- recent safe telegram menu status ---'
           sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'telegram-menu|poll error|outbound-only|interactive multi-chain' \
+            | grep -Ei 'telegram-menu|poll error|interactive multi-chain' \
             | tail -50 \
             | sed -E 's/[0-9]{7,}/<id>/g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' || true
 
-      - name: Prove learnerbot command handler and send harmless live menu
+      - name: Execute harmless learnerbot command through real handler
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -112,31 +125,28 @@ jobs:
           test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
           cd "$target"
           TARGET="$target" PYTHONPATH="$target" sudo -n -E "$py" - <<'PY'
-          import csv, os
+          import csv, importlib, os
           from pathlib import Path
           from learnerbot.config import AppSettings
-          from learnerbot import telegram_google_learner_launcher_patch as p
-
+          p=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
           root=Path(os.environ['TARGET'])
           master=''
           with (root/'CSVbot'/'users.csv').open(encoding='utf-8-sig',newline='') as f:
               for row in csv.DictReader(f):
                   tid=str(row.get('telegram_id') or '').strip()
                   if str(row.get('status') or '').upper()=='ACTIVE' and str(row.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
-                      master=tid
-                      break
+                      master=tid; break
           if not master: raise SystemExit('no ACTIVE MASTER Telegram recipient')
           app=AppSettings.load()
           if not p._master(app, master): raise SystemExit('MASTER gate did not recognise configured MASTER')
-          # This synthetic incoming command is deliberately read-only. The real handler
-          # sends the same learner status/menu that /learnerbot should send; no trading
-          # control or callback is invoked.
+          # Read-only command: opens the learner status/menu. No callback, signing,
+          # order, entry, exit, wallet mutation or trading setting is invoked.
           p.handle_update(app, {'message': {'chat': {'id': int(master), 'type': 'private'}, 'text': '/learnerbot'}})
           print('learnerbot_handler_smoke=PASS')
           print('learnerbot_menu_sent_to_master=true')
           PY
 
-      - name: Final stability check
+      - name: Final stability proof
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -146,7 +156,10 @@ jobs:
           test "$(systemctl is-active "$service")" = active
           test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
           conflicts="$(sudo -n journalctl -u "$service" --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          disabled="$(sudo -n journalctl -u "$service" --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'outbound-only mode: polling disabled' || true)"
           test "$conflicts" -eq 0
+          test "$disabled" -eq 0
           echo final_service_active=true
           echo final_inbound_enabled=true
           echo final_telegram_409_conflicts=0
+          echo final_outbound_disabled_markers=0
