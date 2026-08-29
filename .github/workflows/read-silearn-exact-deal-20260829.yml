@@ -1,0 +1,98 @@
+name: Read SiLearn Exact Deal 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/read-silearn-exact-deal-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trace:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Trace exact deal read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          POS=07d9f95e7dbb77288b2d4abca53e3949
+          MINT=8fipYA8kSkzHgcXUdKVgdh3CvoMhXR6kAo74693M3fPV
+          TID=5923828381
+          export ROOT POS MINT TID
+          echo "REPORT_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "REPORT_BST=$(TZ=Europe/London date +%Y-%m-%dT%H:%M:%S%z)"
+
+          echo '=== EXACT JOURNAL MATCHES ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '48 hours ago' --no-pager 2>/dev/null \
+            | grep -E "$POS|$MINT" \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
+            | tail -350 || true
+
+          echo '=== USER TRADE JOURNAL MATCHES ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '48 hours ago' --no-pager 2>/dev/null \
+            | grep -F "$TID" \
+            | grep -Ei 'solana|buy|sell|entry|exit|position|execut|landed|invalid|pnl|profit|loss|fee|rent|jupiter|signature|tx' \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
+            | tail -250 || true
+
+          echo '=== EXACT TEXT FILE MATCHES ==='
+          for BASE in "$ROOT/data" "$ROOT/CSVbot"; do
+            [ -d "$BASE" ] || continue
+            grep -RIl --exclude='*.sqlite' --exclude='*.sqlite3' --exclude='*.db' --exclude='.env*' \
+              -E "$POS|$MINT" "$BASE" 2>/dev/null | head -80 | while IFS= read -r f; do
+                echo "FILE=$f mtime=$(stat -c%y "$f" 2>/dev/null || true)"
+                grep -n -C 6 -E "$POS|$MINT" "$f" 2>/dev/null \
+                  | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)[=:][^,[:space:]]+#\1=<REDACTED>#Ig' \
+                  | head -180 || true
+            done
+          done
+
+          echo '=== EXACT SQLITE MATCHES ==='
+          python3 - <<'PY'
+          import os, sqlite3, json
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); needles=[os.environ['POS'], os.environ['MINT']]
+          sensitive=('secret','private','credential','api_key','mnemonic','seed')
+          dbs=[]
+          for p in root.rglob('*'):
+              if p.is_file() and p.suffix.lower() in {'.sqlite','.sqlite3','.db'}:
+                  try: dbs.append((p.stat().st_mtime,p))
+                  except: pass
+          matches=0
+          for _,p in sorted(dbs, reverse=True):
+              try:
+                  con=sqlite3.connect(f'file:{p}?mode=ro', uri=True); con.row_factory=sqlite3.Row
+                  cur=con.cursor(); tables=[r[0] for r in cur.execute("select name from sqlite_master where type='table'")]
+              except Exception: continue
+              for t in tables:
+                  try: cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+                  except Exception: continue
+                  if not cols: continue
+                  ors=[]; params=[]
+                  for c in cols:
+                      for n in needles:
+                          ors.append(f'CAST("{c}" AS TEXT) LIKE ?'); params.append('%'+n+'%')
+                  q=f'SELECT * FROM "{t}" WHERE '+ ' OR '.join(ors) + ' LIMIT 50'
+                  try: rows=list(cur.execute(q,params))
+                  except Exception: continue
+                  if not rows: continue
+                  print(f'DB={p} TABLE={t} MATCH_ROWS={len(rows)}')
+                  for r in rows:
+                      d={k:r[k] for k in r.keys() if not any(x in k.lower() for x in sensitive)}
+                      print('MATCH '+json.dumps(d,default=str,sort_keys=True)[:7000])
+                      matches+=1
+              con.close()
+          print('SQLITE_MATCH_TOTAL='+str(matches))
+          PY
+
+          echo '=== POSSIBLE DEAL AUDIT FILES ==='
+          find "$ROOT/data" -maxdepth 8 -type f 2>/dev/null \
+            | grep -Ei 'audit|transaction|trade|position|solana|execution|pnl|profit|loss' \
+            | tail -120 || true
+          echo 'TRACE_COMPLETE=true'
