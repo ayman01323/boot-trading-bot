@@ -13,9 +13,9 @@ permissions:
 jobs:
   fix:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Deploy rejected opportunity Telegram alerts
+      - name: Verify rejected opportunity Telegram alerts
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -23,35 +23,16 @@ jobs:
           sudo -n bash -c '
             set -Eeuo pipefail
             LROOT=/home/ayman01323/BOOT/testingbots/learn
-            SERVICE=learnerbot-learn.service
             FILE=$LROOT/learnerbot/solana_sibot.py
-            DB=$LROOT/data/solana_sibot.sqlite3
-            OPEN=0
-            if [[ -f "$DB" ]]; then OPEN=$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:$DB?mode=ro\",uri=True); print(c.execute(\"select count(*) from positions where status='\''OPEN'\'' and mode='\''LIVE'\''\").fetchone()[0]); c.close()"); fi
-            echo learner_open_live_positions=$OPEN
-            test "$OPEN" = 0
-            STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-            BACKUP=$LROOT/private/pre-reject-telegram-$STAMP
-            mkdir -p "$BACKUP"
-            cp -a "$FILE" "$BACKUP/solana_sibot.py"
-            echo "CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aApwPVBhdGgoIi9ob21lL2F5bWFuMDEzMjMvQk9PVC90ZXN0aW5nYm90cy9sZWFybi9sZWFybmVyYm90L3NvbGFuYV9zaWJvdC5weSIpCnM9cC5yZWFkX3RleHQoKQppZiAiZnJvbSAudGVsZWdyYW0gaW1wb3J0IHNlbmRfbWVzc2FnZSIgbm90IGluIHM6CiAgICBhbmNob3I9ImZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnNcbiIKICAgIGlmIGFuY2hvciBub3QgaW4gczoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCJmdXR1cmUgaW1wb3J0IGFuY2hvciBub3QgZm91bmQiKQogICAgcz1zLnJlcGxhY2UoYW5jaG9yLCBhbmNob3IrIlxuZnJvbSBodG1sIGltcG9ydCBlc2NhcGVcbmZyb20gLnRlbGVncmFtIGltcG9ydCBzZW5kX21lc3NhZ2VcbiIsIDEpCmVsaWYgImZyb20gaHRtbCBpbXBvcnQgZXNjYXBlIiBub3QgaW4gczoKICAgIHM9cy5yZXBsYWNlKCJmcm9tIC50ZWxlZ3JhbSBpbXBvcnQgc2VuZF9tZXNzYWdlXG4iLCJmcm9tIGh0bWwgaW1wb3J0IGVzY2FwZVxuZnJvbSAudGVsZWdyYW0gaW1wb3J0IHNlbmRfbWVzc2FnZVxuIiwxKQoKaGVscGVyID0gJycnCmRlZiBfcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgZXZlbnQ6IGRpY3QsIGFjdGlvbnMpIC0+IE5vbmU6CiAgICB0b2tlbiA9IHN0cihnZXRhdHRyKGFwcCwgInRlbGVncmFtX2JvdF90b2tlbiIsICIiKSBvciAiIikuc3RyaXAoKQogICAgaWYgbm90IHRva2VuOgogICAgICAgIHJldHVybgogICAgbm93ID0gaW50KHRpbWUudGltZSgpKQogICAgdHJ5OgogICAgICAgIHNpZ25hbF90cyA9IGludCgoZXZlbnQgb3Ige30pLmdldCgiZXZlbnRfdHMiKSBvciBub3cpCiAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgIHNpZ25hbF90cyA9IG5vdwogICAgYWdlID0gbWF4KDAsIG5vdyAtIHNpZ25hbF90cykKICAgIG1pbnQgPSBzdHIoKGV2ZW50IG9yIHt9KS5nZXQoIm1pbnQiKSBvciAidW5rbm93biIpCiAgICBsZWFkZXIgPSBzdHIoKGV2ZW50IG9yIHt9KS5nZXQoImxlYWRlcl93YWxsZXQiKSBvciAidW5rbm93biIpCiAgICBzaWduYXR1cmUgPSBzdHIoKGV2ZW50IG9yIHt9KS5nZXQoInNpZ25hdHVyZSIpIG9yICIiKQogICAgZm9yIHJvdyBpbiAoYWN0aW9ucyBvciBbXSk6CiAgICAgICAgaWYgc3RyKChyb3cgb3Ige30pLmdldCgiYWN0aW9uIikgb3IgIiIpLnVwcGVyKCkgIT0gIlJFSkVDVCI6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgdGlkID0gc3RyKChyb3cgb3Ige30pLmdldCgidGVsZWdyYW1faWQiKSBvciAiIikuc3RyaXAoKQogICAgICAgIHRhcmdldHMgPSBbdGlkXSBpZiB0aWQgZWxzZSBbXQogICAgICAgIGlmIG5vdCB0YXJnZXRzOgogICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICBmb3IgdSBpbiBhbGxfdXNlcnMoYXBwLmNzdl9kaXIsIGVuYWJsZWRfb25seT1UcnVlKToKICAgICAgICAgICAgICAgICAgICB1aWQgPSBzdHIodS5nZXQoInRlbGVncmFtX2lkIikgb3IgIiIpLnN0cmlwKCkKICAgICAgICAgICAgICAgICAgICBpZiB1aWQgYW5kIF9sZWFkZXJfcmFuayhhcHAsIHVpZCwgbGVhZGVyKSBpcyBub3QgTm9uZToKICAgICAgICAgICAgICAgICAgICAgICAgdGFyZ2V0cy5hcHBlbmQodWlkKQogICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgcGFzcwogICAgICAgIHJlYXNvbiA9IHN0cigocm93IG9yIHt9KS5nZXQoInJlYXNvbiIpIG9yICJ1bnNwZWNpZmllZCByZWplY3Rpb24iKVs6OTAwXQogICAgICAgIHRleHQgPSBjaHIoMTApLmpvaW4oWwogICAgICAgICAgICAi4puUIDxiPlJFSkVDVEVEIE9QUE9SVFVOSVRZPC9iPiIsCiAgICAgICAgICAgIGYiQXNzZXQ6IDxjb2RlPntlc2NhcGUobWludCl9PC9jb2RlPiIsCiAgICAgICAgICAgIGYiTGVhZGVyOiA8Y29kZT57ZXNjYXBlKGxlYWRlcil9PC9jb2RlPiIsCiAgICAgICAgICAgIGYiUmVhc29uOiA8Y29kZT57ZXNjYXBlKHJlYXNvbil9PC9jb2RlPiIsCiAgICAgICAgICAgIGYiU2lnbmFsIGFnZTogPGI+e2FnZX1zPC9iPiIsCiAgICAgICAgICAgIGYiU2lnbmF0dXJlOiA8Y29kZT57ZXNjYXBlKHNpZ25hdHVyZVs6MTIwXSl9PC9jb2RlPiIsCiAgICAgICAgICAgICJEZWNpc2lvbjogPGI+Tk8gVFJBREU8L2I+IiwKICAgICAgICBdKQogICAgICAgIGZvciB0YXJnZXQgaW4gZGljdC5mcm9ta2V5cyh4IGZvciB4IGluIHRhcmdldHMgaWYgeCk6CiAgICAgICAgICAgIHNlbmRfbWVzc2FnZSh0b2tlbiwgdGFyZ2V0LCB0ZXh0LCBwYXJzZV9tb2RlPSJIVE1MIiwgcHJvdGVjdF9jb250ZW50PVRydWUpCgonJycKaWYgImRlZiBfcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgZXZlbnQ6IGRpY3QsIGFjdGlvbnMpIiBub3QgaW4gczoKICAgIG1hcmtlcj0iXG5kZWYgbW9uaXRvcl9sZWFkZXJzKGFwcCk6XG4iCiAgICBpZiBtYXJrZXIgbm90IGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgibW9uaXRvcl9sZWFkZXJzIG1hcmtlciBub3QgZm91bmQiKQogICAgcz1zLnJlcGxhY2UobWFya2VyLCAiXG4iK2hlbHBlcittYXJrZXIsIDEpCgpvbGQgPSAnICAgICAgICAgICAgICAgICAgICBpZiBzYXZlZDpcbiAgICAgICAgICAgICAgICAgICAgICAgIGV2ZW50cy5hcHBlbmQoc2F2ZWQpXG4gICAgICAgICAgICAgICAgICAgICAgICBwcm9jZXNzX2xlYWRlcl9ldmVudChhcHAsIHNhdmVkKScKbmV3ID0gJyAgICAgICAgICAgICAgICAgICAgaWYgc2F2ZWQ6XG4gICAgICAgICAgICAgICAgICAgICAgICBldmVudHMuYXBwZW5kKHNhdmVkKVxuICAgICAgICAgICAgICAgICAgICAgICAgYWN0aW9ucyA9IHByb2Nlc3NfbGVhZGVyX2V2ZW50KGFwcCwgc2F2ZWQpXG4gICAgICAgICAgICAgICAgICAgICAgICBfcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgc2F2ZWQsIGFjdGlvbnMpJwppZiBuZXcgbm90IGluIHM6CiAgICBpZiBvbGQgbm90IGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgibGVhZGVyIGFjdGlvbi1kaXNjYXJkIGJsb2NrIG5vdCBmb3VuZCIpCiAgICBzPXMucmVwbGFjZShvbGQsbmV3LDEpCnAud3JpdGVfdGV4dChzKQo=" | base64 -d > /tmp/learner_reject_patch.py
-            python3 /tmp/learner_reject_patch.py
-            PY=$LROOT/.venv/bin/python; [[ -x "$PY" ]] || PY=python3
-            if ! PYTHONPATH=$LROOT "$PY" -m py_compile "$FILE"; then cp -a "$BACKUP/solana_sibot.py" "$FILE"; exit 1; fi
-            systemctl restart "$SERVICE"
-            sleep 15
+            SERVICE=learnerbot-learn.service
             test "$(systemctl is-active "$SERVICE")" = active
-            R1=$(systemctl show "$SERVICE" -p NRestarts --value)
-            sleep 5
-            test "$(systemctl is-active "$SERVICE")" = active
-            R2=$(systemctl show "$SERVICE" -p NRestarts --value)
-            test "$R1" = "$R2"
-            echo "CmltcG9ydCBvcyx0aW1lLGNzdixzeXMKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmZyb20gZG90ZW52IGltcG9ydCBsb2FkX2RvdGVudgpyb290PVBhdGgoIi9ob21lL2F5bWFuMDEzMjMvQk9PVC90ZXN0aW5nYm90cy9sZWFybiIpCmxvYWRfZG90ZW52KHJvb3QvIi5lbnYiLCBvdmVycmlkZT1GYWxzZSkKc3lzLnBhdGguaW5zZXJ0KDAsc3RyKHJvb3QpKQpmcm9tIGxlYXJuZXJib3QgaW1wb3J0IHNvbGFuYV9zaWJvdCBhcyBzb2wKY2xhc3MgQXBwOgogICAgY3N2X2Rpcj1yb290LyJDU1Zib3QiCiAgICB0ZWxlZ3JhbV9ib3RfdG9rZW49b3MuZ2V0ZW52KCJURUxFR1JBTV9CT1RfVE9LRU4iLCIiKS5zdHJpcCgpCmFwcD1BcHAoKQp0YXJnZXRzPVtdCndpdGggKHJvb3QvIkNTVmJvdCIvInVzZXJfdHJhZGluZ19zZXR0aW5ncy5jc3YiKS5vcGVuKGVuY29kaW5nPSJ1dGYtOC1zaWciLG5ld2xpbmU9IiIpIGFzIGY6CiAgICBmb3IgciBpbiBjc3YuRGljdFJlYWRlcihmKToKICAgICAgICBpZiByLmdldCgic2V0dGluZyIpPT0ic29sYW5hX2xpdmVfZW5hYmxlZCIgYW5kIHN0cihyLmdldCgidmFsdWUiKSBvciAiIikubG93ZXIoKT09InRydWUiOgogICAgICAgICAgICB0aWQ9c3RyKHIuZ2V0KCJ0ZWxlZ3JhbV9pZCIpIG9yICIiKS5zdHJpcCgpCiAgICAgICAgICAgIGlmIHRpZCBhbmQgdGlkIT0iOTAwMDAxIjoKICAgICAgICAgICAgICAgIHRhcmdldHMuYXBwZW5kKHRpZCkKaWYgbm90IGFwcC50ZWxlZ3JhbV9ib3RfdG9rZW4gb3Igbm90IHRhcmdldHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJUZWxlZ3JhbSByb3V0ZSB1bmF2YWlsYWJsZSIpCnNvbC5fcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgeyJtaW50IjoiVEVTVC1OTy1UUkFERSIsImxlYWRlcl93YWxsZXQiOiJURVNULVJFSkVDVC1QQVRIIiwic2lnbmF0dXJlIjoiVEVTVC1OTy1DSEFJTi1TVUJNSVNTSU9OIiwiZXZlbnRfdHMiOmludCh0aW1lLnRpbWUoKSl9LCBbeyJ0ZWxlZ3JhbV9pZCI6dGFyZ2V0c1swXSwiYWN0aW9uIjoiUkVKRUNUIiwicmVhc29uIjoiVGVsZWdyYW0gcmVqZWN0ZWQtb3Bwb3J0dW5pdHkgZGVsaXZlcnkgcGF0aCByZXN0b3JlZCAtIFRFU1QgT05MWSJ9XSkKcHJpbnQoInJlamVjdF90ZWxlZ3JhbV90ZXN0X3NlbnQ9dHJ1ZSIpCnByaW50KCJ0ZXN0X3RyYWRlX3BsYWNlZD1mYWxzZSIpCg==" | base64 -d > /tmp/learner_reject_test.py
-            PYTHONPATH=$LROOT "$PY" /tmp/learner_reject_test.py
+            grep -q "def _push_rejected_actions" "$FILE"
             grep -q "actions = process_leader_event(app, saved)" "$FILE"
             grep -q "_push_rejected_actions(app, saved, actions)" "$FILE"
+            PY=$LROOT/.venv/bin/python; [[ -x "$PY" ]] || PY=python3
+            echo "CmltcG9ydCBvcyx0aW1lLGNzdixzeXMKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnJvb3Q9UGF0aCgiL2hvbWUvYXltYW4wMTMyMy9CT09UL3Rlc3Rpbmdib3RzL2xlYXJuIikKZW52PXt9CmZvciByYXcgaW4gKHJvb3QvIi5lbnYiKS5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IixlcnJvcnM9Imlnbm9yZSIpLnNwbGl0bGluZXMoKToKICAgIHM9cmF3LnN0cmlwKCkKICAgIGlmIG5vdCBzIG9yIHMuc3RhcnRzd2l0aCgiIyIpIG9yICI9IiBub3QgaW4gczoKICAgICAgICBjb250aW51ZQogICAgayx2PXMuc3BsaXQoIj0iLDEpCiAgICBlbnZbay5zdHJpcCgpXT12LnN0cmlwKCkuc3RyaXAoJyInKS5zdHJpcCgiJyIpCnN5cy5wYXRoLmluc2VydCgwLHN0cihyb290KSkKZnJvbSBsZWFybmVyYm90IGltcG9ydCBzb2xhbmFfc2lib3QgYXMgc29sCmNsYXNzIEFwcDoKICAgIGNzdl9kaXI9cm9vdC8iQ1NWYm90IgogICAgdGVsZWdyYW1fYm90X3Rva2VuPWVudi5nZXQoIlRFTEVHUkFNX0JPVF9UT0tFTiIsIiIpLnN0cmlwKCkKYXBwPUFwcCgpCnRhcmdldHM9W10Kd2l0aCAocm9vdC8iQ1NWYm90Ii8idXNlcl90cmFkaW5nX3NldHRpbmdzLmNzdiIpLm9wZW4oZW5jb2Rpbmc9InV0Zi04LXNpZyIsbmV3bGluZT0iIikgYXMgZjoKICAgIGZvciByIGluIGNzdi5EaWN0UmVhZGVyKGYpOgogICAgICAgIGlmIHIuZ2V0KCJzZXR0aW5nIik9PSJzb2xhbmFfbGl2ZV9lbmFibGVkIiBhbmQgc3RyKHIuZ2V0KCJ2YWx1ZSIpIG9yICIiKS5sb3dlcigpPT0idHJ1ZSI6CiAgICAgICAgICAgIHRpZD1zdHIoci5nZXQoInRlbGVncmFtX2lkIikgb3IgIiIpLnN0cmlwKCkKICAgICAgICAgICAgaWYgdGlkIGFuZCB0aWQhPSI5MDAwMDEiOgogICAgICAgICAgICAgICAgdGFyZ2V0cy5hcHBlbmQodGlkKQppZiBub3QgYXBwLnRlbGVncmFtX2JvdF90b2tlbiBvciBub3QgdGFyZ2V0czoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIlRlbGVncmFtIHJvdXRlIHVuYXZhaWxhYmxlIikKc29sLl9wdXNoX3JlamVjdGVkX2FjdGlvbnMoYXBwLCB7Im1pbnQiOiJURVNULU5PLVRSQURFIiwibGVhZGVyX3dhbGxldCI6IlRFU1QtUkVKRUNULVBBVEgiLCJzaWduYXR1cmUiOiJURVNULU5PLUNIQUlOLVNVQk1JU1NJT04iLCJldmVudF90cyI6aW50KHRpbWUudGltZSgpKX0sIFt7InRlbGVncmFtX2lkIjp0YXJnZXRzWzBdLCJhY3Rpb24iOiJSRUpFQ1QiLCJyZWFzb24iOiJUZWxlZ3JhbSByZWplY3RlZC1vcHBvcnR1bml0eSBkZWxpdmVyeSBwYXRoIHJlc3RvcmVkIC0gVEVTVCBPTkxZIn1dKQpwcmludCgicmVqZWN0X3RlbGVncmFtX3Rlc3Rfc2VudD10cnVlIikKcHJpbnQoInRlc3RfdHJhZGVfcGxhY2VkPWZhbHNlIikK" | base64 -d > /tmp/verify_learner_reject.py
+            PYTHONPATH=$LROOT "$PY" /tmp/verify_learner_reject.py
             echo learner_service_active=true
-            echo learner_restarts=$R2
             echo learner_reject_push=enabled
-            echo TRADE_PLACED_BY_FIX=NO
+            echo TRADE_PLACED_BY_VERIFY=NO
           '
