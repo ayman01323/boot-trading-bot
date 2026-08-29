@@ -91,3 +91,9 @@ from . import solana_reject_once_reporting_patch as _reject_once  # noqa: E402,F
 # Loaded after the stamped Change Set 4 integrity proof. It changes only LP-specific
 # RugCheck lock/provider classifications; all other PoolCheck/execution gates remain.
 from . import solana_lp_warning_only_patch as _lp_warning_only  # noqa: E402,F401
+
+# Explicit manual force-exit recovery only. Load this last, after the complete
+# Change Set 4 integrity proof, so it can never weaken or mask the automatic
+# duplicate-SELL guard verified above. Reverting the change removes this import
+# and the isolated patch without altering any pre-existing exit implementation.
+from . import solana_manual_force_exit_reconcile_patch as _manual_force_reconcile  # noqa: E402,F401
