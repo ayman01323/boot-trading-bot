@@ -44,8 +44,9 @@ jobs:
           config_dir = Path('/home/ayman01323/.config/grok-known-assets-bot')
           canary = config_dir / 'canary.env'
           telegram = config_dir / 'telegram.env'
-          csv_dir = Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot')
-          data_dir = Path('/home/ayman01323/BOOT/testingbots/learn/data')
+          learner_root = Path('/home/ayman01323/BOOT/testingbots/learn')
+          csv_dir = learner_root / 'CSVbot'
+          data_dir = learner_root / 'data'
           wallet_csv = csv_dir / 'auto' / 'solana_user_wallets.csv'
           wallet_root = data_dir / 'user_solana_wallets'
           main_users_csv = Path('/home/ayman01323/BOOT/CSVbot/users.csv')
@@ -63,6 +64,8 @@ jobs:
           def split_ids(raw):
               return [x for x in re.split(r'[,;\s]+', str(raw or '').strip()) if x]
 
+          if not (learner_root / 'learnerbot').is_dir():
+              raise SystemExit('BLOCKED: isolated learner source package is missing')
           if not wallet_csv.exists() or not (data_dir / '.solana_wallet_store.key').exists():
               raise SystemExit('BLOCKED: isolated learner encrypted wallet store is not initialised')
           rows=list(csv.DictReader(wallet_csv.open('r',encoding='utf-8-sig',newline='')))
@@ -116,6 +119,7 @@ jobs:
 
           values=dict(existing)
           values['GROK_LIVE_CANARY_TELEGRAM_ID']=tid
+          values['GROK_BOOT_REPO_ROOT']=str(learner_root)
           values['GROK_LEARNERBOT_CSV_DIR']=str(csv_dir)
           values['GROK_LEARNERBOT_DATA_DIR']=str(data_dir)
           values.setdefault('GROK_LIVE_CANARY_APPROVAL_TTL_SECONDS','90')
@@ -137,6 +141,7 @@ jobs:
           os.chmod(config_dir,0o700); os.chown(config_dir,owner.pw_uid,owner.pw_gid)
           for p in (canary,telegram): os.chmod(p,0o600); os.chown(p,owner.pw_uid,owner.pw_gid)
           print('authorised_telegram_signer=BOUND_REDACTED')
+          print('isolated_learner_source=BOUND')
           print('telegram_approval_identity=BOUND_REDACTED')
           print('private_rpc_config=READY_REDACTED')
           PY
@@ -153,7 +158,7 @@ jobs:
               line=raw.strip()
               if line and not line.startswith('#') and '=' in line:
                   k,v=line.split('=',1); os.environ[k.strip()]=v.strip().strip('"').strip("'")
-          os.environ['GROK_BOOT_REPO_ROOT']='/home/ayman01323/BOOT'
+          os.environ['GROK_BOOT_REPO_ROOT']='/home/ayman01323/BOOT/testingbots/learn'
           from grok_known_assets_bot import live_canary as lc
           from grok_known_assets_bot import live_execution as lx
           ok,why=lx.signer_status()
@@ -187,7 +192,7 @@ jobs:
           sudo install -m 0644 systemd/grok-known-assets-canary.service.example /etc/systemd/system/grok-known-assets-canary.service
           sudo install -m 0644 systemd/grok-known-assets-telegram.service.example /etc/systemd/system/grok-known-assets-telegram.service
           sudo mkdir -p /etc/systemd/system/grok-known-assets-canary.service.d
-          printf '%s\n' '[Service]' 'Environment=GROK_LEARNERBOT_CSV_DIR=/home/ayman01323/BOOT/testingbots/learn/CSVbot' 'Environment=GROK_LEARNERBOT_DATA_DIR=/home/ayman01323/BOOT/testingbots/learn/data' | sudo tee /etc/systemd/system/grok-known-assets-canary.service.d/10-isolated-signer.conf >/dev/null
+          printf '%s\n' '[Service]' 'Environment=GROK_BOOT_REPO_ROOT=/home/ayman01323/BOOT/testingbots/learn' 'Environment=GROK_LEARNERBOT_CSV_DIR=/home/ayman01323/BOOT/testingbots/learn/CSVbot' 'Environment=GROK_LEARNERBOT_DATA_DIR=/home/ayman01323/BOOT/testingbots/learn/data' | sudo tee /etc/systemd/system/grok-known-assets-canary.service.d/10-isolated-signer.conf >/dev/null
           sudo systemctl daemon-reload
           sudo systemctl enable grok-known-assets-telegram.service grok-known-assets-canary.service
           sudo systemctl restart grok-known-assets-telegram.service grok-known-assets-canary.service
