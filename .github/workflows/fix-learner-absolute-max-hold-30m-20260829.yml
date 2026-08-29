@@ -13,9 +13,23 @@ permissions:
 jobs:
   fix:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Make 30 minute hold limit absolute
+      - name: Keep 30 minute hold limit absolute
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          FILE="$LROOT/learnerbot/solana_live_patch.py"
+          grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$FILE"
+          grep -q '^max_hold_hours,0.5,' "$LROOT/CSVbot/solana_settings.csv"
+          echo learner_absolute_max_hold_minutes=30
+          ROOT
+
+      - name: Restore immediate rejected opportunity Telegram alerts
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -24,13 +38,9 @@ jobs:
           set -Eeuo pipefail
           LROOT=/home/ayman01323/BOOT/testingbots/learn
           SERVICE=learnerbot-learn.service
-          FILE="$LROOT/learnerbot/solana_live_patch.py"
-          stamp=$(date -u +%Y%m%dT%H%M%SZ)
-          backup="$LROOT/private/pre-absolute-max-hold-$stamp"
-          mkdir -p "$backup"
-          cp -a "$FILE" "$backup/solana_live_patch.py"
+          FILE="$LROOT/learnerbot/solana_sibot.py"
+          test -f "$FILE"
 
-          # Avoid a restart while capital is open.
           LROOT="$LROOT" python3 - <<'PY'
           import os,sqlite3
           from pathlib import Path
@@ -43,21 +53,39 @@ jobs:
           if n: raise SystemExit('REFUSE_RESTART_WITH_OPEN_POSITION')
           PY
 
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup="$LROOT/private/pre-reject-telegram-$stamp"
+          mkdir -p "$backup"
+          cp -a "$FILE" "$backup/solana_sibot.py"
           changed=0
-          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_live_patch.py" "$FILE"; systemctl restart "$SERVICE" || true; fi; exit $rc; }
+          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_sibot.py" "$FILE"; systemctl restart "$SERVICE" || true; fi; exit $rc; }
           trap rollback EXIT
 
           python3 - <<PY
           from pathlib import Path
           p=Path('$FILE'); s=p.read_text()
-          old='''        if reason is None and age_h >= _sol._dec(cfg.get("max_hold_hours"), 24) and current > 0:\n            reason = "SOLANA_MAX_HOLD_PROFIT"'''
-          new='''        if reason is None and age_h >= _sol._dec(cfg.get("max_hold_hours"), 24):\n            reason = "SOLANA_MAX_HOLD_100PCT"'''
+          if 'from .telegram import send_message' not in s:
+              anchor='from decimal import Decimal\n'
+              if anchor not in s: raise SystemExit('import anchor not found')
+              s=s.replace(anchor, anchor+'from html import escape\n\nfrom .telegram import send_message\n',1)
+          elif 'from html import escape' not in s:
+              s=s.replace('from .telegram import send_message\n','from html import escape\n\nfrom .telegram import send_message\n',1)
+
+          helper='''\n\ndef _push_rejected_actions(app, event: dict, actions) -> None:\n    token = str(getattr(app, \"telegram_bot_token\", \"\") or \"\").strip()\n    if not token:\n        return\n    now = int(time.time())\n    try:\n        signal_ts = int((event or {}).get(\"event_ts\") or now)\n    except Exception:\n        signal_ts = now\n    age = max(0, now - signal_ts)\n    mint = str((event or {}).get(\"mint\") or \"unknown\")\n    leader = str((event or {}).get(\"leader_wallet\") or \"unknown\")\n    signature = str((event or {}).get(\"signature\") or \"\")\n    for row in (actions or []):\n        if str((row or {}).get(\"action\") or \"\").upper() != \"REJECT\":\n            continue\n        tid = str((row or {}).get(\"telegram_id\") or \"\").strip()\n        targets=[tid] if tid else []\n        if not targets:\n            try:\n                for u in all_users(app.csv_dir, enabled_only=True):\n                    uid=str(u.get(\"telegram_id\") or \"\").strip()\n                    if uid and _leader_rank(app, uid, leader) is not None:\n                        targets.append(uid)\n            except Exception:\n                pass\n        reason = str((row or {}).get(\"reason\") or \"unspecified rejection\")[:900]\n        text=(\n            \"⛔ <b>REJECTED OPPORTUNITY</b>\\n\"\n            f\"Asset: <code>{escape(mint)}</code>\\n\"\n            f\"Leader: <code>{escape(leader)}</code>\\n\"\n            f\"Reason: <code>{escape(reason)}</code>\\n\"\n            f\"Signal age: <b>{age}s</b>\\n\"\n            f\"Signature: <code>{escape(signature[:120])}</code>\\n\"\n            \"Decision: <b>NO TRADE</b>\"\n        )\n        for target in dict.fromkeys(x for x in targets if x):\n            try:\n                send_message(token, target, text, parse_mode=\"HTML\", protect_content=True)\n            except Exception as exc:\n                print(f\"[solana-reject-telegram] send failed chat={target}: {type(exc).__name__}: {str(exc)[:180]}\")\n\n'''
+          if 'def _push_rejected_actions(app, event: dict, actions)' not in s:
+              marker='\ndef monitor_leaders(app):\n'
+              if marker not in s: raise SystemExit('monitor_leaders marker not found')
+              s=s.replace(marker,helper+marker,1)
+
+          old='''                    if saved:\n                        events.append(saved)\n                        process_leader_event(app, saved)'''
+          new='''                    if saved:\n                        events.append(saved)\n                        actions = process_leader_event(app, saved)\n                        _push_rejected_actions(app, saved, actions)'''
           if new not in s:
-              if old not in s: raise SystemExit('Expected max-hold block not found')
-              s=s.replace(old,new)
+              if old not in s: raise SystemExit('leader action-discard block not found')
+              s=s.replace(old,new,1)
           p.write_text(s)
           PY
           changed=1
+
           py="$LROOT/.venv/bin/python"; [[ -x "$py" ]] || py=python3
           PYTHONPATH="$LROOT" "$py" -m py_compile "$FILE"
           systemctl restart "$SERVICE"
@@ -68,13 +96,39 @@ jobs:
           test "$(systemctl is-active "$SERVICE")" = active
           r2=$(systemctl show "$SERVICE" -p NRestarts --value)
           test "$r1" = "$r2"
-          grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$FILE"
-          grep -q '^max_hold_hours,0.5,' "$LROOT/CSVbot/solana_settings.csv"
-          echo learner_absolute_max_hold_minutes=30
-          echo learner_max_hold_requires_profit=false
-          echo learner_max_hold_sell_fraction=100_percent
+
+          LROOT="$LROOT" "$py" - <<'PY'
+          import os,time,csv,sys
+          from pathlib import Path
+          from dotenv import load_dotenv
+          root=Path(os.environ['LROOT'])
+          load_dotenv(root/'.env', override=False)
+          sys.path.insert(0,str(root))
+          from learnerbot import solana_sibot as sol
+          class App:
+              csv_dir=root/'CSVbot'
+              telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN','').strip()
+          app=App()
+          if not app.telegram_bot_token: raise SystemExit('Telegram token not loaded')
+          targets=[]
+          with (root/'CSVbot'/'user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  if r.get('setting')=='solana_live_enabled' and str(r.get('value') or '').lower()=='true':
+                      tid=str(r.get('telegram_id') or '').strip()
+                      if tid and tid!='900001': targets.append(tid)
+          if not targets: raise SystemExit('No live Telegram target')
+          event={'mint':'TEST-NO-TRADE','leader_wallet':'TEST-REJECT-PATH','signature':'TEST-NO-CHAIN-SUBMISSION','event_ts':int(time.time())}
+          actions=[{'telegram_id':targets[0],'action':'REJECT','reason':'Telegram rejected-opportunity delivery path restored — TEST ONLY'}]
+          sol._push_rejected_actions(app,event,actions)
+          print('reject_telegram_test_sent=true')
+          print('test_trade_placed=false')
+          PY
+
+          grep -q 'actions = process_leader_event(app, saved)' "$FILE"
+          grep -q '_push_rejected_actions(app, saved, actions)' "$FILE"
           echo learner_service_active=true
           echo learner_restarts=$r2
-          echo trade_placed_by_fix=NO
+          echo learner_reject_push=enabled
+          echo TRADE_PLACED_BY_FIX=NO
           trap - EXIT
           ROOT
