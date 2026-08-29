@@ -1,0 +1,82 @@
+name: SiRisky All-AI PnL Live Bus Diagnostic
+
+on:
+  push:
+    branches:
+      - 'diag/sirisky-all-ai-pnl-20260829-2249'
+    paths:
+      - '.github/workflows/sirisky-all-ai-pnl-live-bus.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  pnl-review:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 25
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Ask all seven Strategy Factory agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          VENV="$RUNNER_TEMP/sirisky-pnl-${GITHUB_RUN_ID}"
+          rm -rf "$VENV"
+          python3 -m venv "$VENV"
+          "$VENV/bin/python" -m pip install --disable-pip-version-check -q 'websockets>=15,<16'
+          export PYTHONPATH="$GITHUB_WORKSPACE"
+          MSG=$(cat <<'EOF'
+          SiRisky P/L audit. Independently determine whether these 3 completed BUY→SELL deals made a PROFIT or LOSS.
+
+          Opening native SOL: 0.040018323
+          Closing native SOL: 0.024186704
+          Native wallet change: -0.015831619 SOL
+
+          DEAL 1: BUY funded 0.009 SOL; SELL gross 0.010083140 SOL; trading P/L after identified route + network fees +0.001060252 SOL.
+          DEAL 2: BUY funded 0.009 SOL; SELL gross 0.009304846 SOL; trading P/L after identified route + network fees +0.000282259 SOL.
+          DEAL 3: BUY funded 0.009 SOL; SELL gross 0.008439882 SOL; trading P/L after identified route + network fees -0.000581490 SOL.
+
+          TOTAL BUY principal: 0.027 SOL.
+          Calculated trading P/L: +0.000761021 SOL = +2.82% of 0.027 SOL.
+          Net account funding outside native balance across six transactions: 0.016592640 SOL.
+          Temporary WSOL rent was returned within each transaction; net WSOL rent cost 0.
+
+          Distinguish (A) swap/trading P/L from (B) final economic wallet P/L. Do not call the 0.016592640 SOL account funding a permanent loss unless evidence proves it is unrecoverable. If recoverability cannot be determined from the supplied evidence, say UNKNOWN.
+
+          Reply exactly:
+          AGENT: <name>
+          TRADING_RESULT: PROFIT|LOSS|UNKNOWN
+          TRADING_PNL_SOL: <amount>
+          TRADING_PNL_PCT: <percent>
+          NATIVE_WALLET_CHANGE_SOL: <amount>
+          FINAL_ECONOMIC_RESULT: PROFIT|LOSS|UNKNOWN
+          RECOVERABLE_ACCOUNT_SOL: <amount or UNKNOWN>
+          UNRECOVERABLE_ACCOUNT_SOL: <amount or UNKNOWN>
+          REASON: <maximum 3 concise sentences>
+
+          READ-ONLY analysis only. Do not trade, sign/broadcast, move SOL/tokens, close accounts, deploy, restart, change LIVE/ARMED/AUTO, alter risk/capital controls, or access secrets/private keys.
+          EOF
+          )
+
+          : > "$RUNNER_TEMP/sirisky-all-ai-pnl.txt"
+          for AGENT in gpt claude gemini deepseek grok kimi copilot; do
+            echo "========== ${AGENT} ==========" | tee -a "$RUNNER_TEMP/sirisky-all-ai-pnl.txt"
+            set +e
+            "$VENV/bin/python" scripts/strategy_factory_chat.py \
+              "$AGENT" "$MSG" \
+              --subject 'SiRisky 3-trade profit loss audit' \
+              --timeout 180 2>&1 | tee -a "$RUNNER_TEMP/sirisky-all-ai-pnl.txt"
+            RC=${PIPESTATUS[0]}
+            set -e
+            echo "RETURN_CODE=${RC}" | tee -a "$RUNNER_TEMP/sirisky-all-ai-pnl.txt"
+          done
+
+          echo '## SiRisky All-AI P/L Review' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/sirisky-all-ai-pnl.txt" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          rm -rf "$VENV"
