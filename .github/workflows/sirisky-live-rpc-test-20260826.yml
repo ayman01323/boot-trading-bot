@@ -1,4 +1,4 @@
-name: SiRisky Live RPC Test 20260826
+name: SiRisky LIVE Activation and Verification
 
 on:
   push:
@@ -9,76 +9,63 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: sirisky-live-activation
+  cancel-in-progress: false
+
 jobs:
-  test-live:
+  activate-live:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
-      - name: Test live SiRisky connectivity without transaction broadcast
+      - name: Repair runner checkout without actions checkout
         shell: bash
         run: |
-          set -euo pipefail
-          test "$(hostname)" = 'botgoogle'
-          sudo -n true
-          sudo -n test -d /root/SiRisky
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          cd "$GITHUB_WORKSPACE"
+          if [[ ! -d .git ]]; then
+            find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+            git init
+            git remote add origin https://github.com/ayman01323/boot-trading-bot.git
+          else
+            git remote set-url origin https://github.com/ayman01323/boot-trading-bot.git
+          fi
+          git fetch --force --no-tags --depth=50 origin main
+          git cat-file -e "$GITHUB_SHA^{commit}"
+          git reset --hard "$GITHUB_SHA"
+          git clean -ffd
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
 
-          echo '=== SERVICE ==='
-          systemctl show sirisky.service -p ActiveState -p SubState -p Result -p WorkingDirectory --no-pager
-          test "$(systemctl is-active sirisky.service)" = 'active'
+      - name: Arm governed LIVE automatic execution
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          WRAPPER=/root/SiRisky/ops/sirisky-governed-live-arm
+          sudo -n -l "$WRAPPER" >/dev/null
+          output="$(sudo -n "$WRAPPER" "$GITHUB_SHA")"
+          printf '%s\n' "$output"
+          grep -qx 'service=active' <<<"$output"
+          grep -qx 'trading_mode=LIVE' <<<"$output"
+          grep -qx 'live_enabled=1' <<<"$output"
+          grep -qx 'broadcast_enabled=1' <<<"$output"
+          grep -qx 'manual_approval_enabled=0' <<<"$output"
+          grep -qx 'manual_approval_require_external_signature=0' <<<"$output"
+          grep -qx 'telegram_manual_run_enabled=0' <<<"$output"
 
-          echo '=== RPC TARGETS (HOST ONLY) ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
-from urllib.parse import urlparse
-from sirisky.config import Settings
-s=Settings.load()
-for label,url in (("http",s.resolve_rpc("http")),("ws",s.resolve_rpc("ws"))):
-    p=urlparse(url)
-    print(f"{label}_scheme={p.scheme}")
-    print(f"{label}_host={p.hostname or \"MISSING\"}")
-    print(f"{label}_configured={str(bool(url)).lower()}")
-PY'
+      - name: Verify effective server state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(systemctl is-active sirisky.service)" = active
+          echo '=== SIRISKY EFFECTIVE LIVE STATE ==='
+          sudo -n awk -F, 'NR==1 || $1 ~ /^(trading_mode|live_enabled|broadcast_enabled|auto_discovery_enabled|auto_promote_to_selected|manual_approval_enabled|manual_approval_require_external_signature|telegram_manual_run_enabled)$/' /root/SiRisky/CSV/runtime.csv
+          test "$(sudo -n awk -F, '$1=="trading_mode"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = LIVE
+          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 1
+          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 1
+          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 0
+          echo 'sirisky_live_activation=PASS'
+          echo 'real_transaction_broadcast=ENABLED_AFTER_EXISTING_STRATEGY_AND_RISK_GATES'
 
-          echo '=== WEBSOCKET NETWORK REACHABILITY ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
-import socket, ssl
-from urllib.parse import urlparse
-from sirisky.config import Settings
-u=Settings.load().resolve_rpc("ws")
-p=urlparse(u)
-if p.scheme not in ("ws","wss") or not p.hostname:
-    raise SystemExit("WS_URL_INVALID")
-port=p.port or (443 if p.scheme=="wss" else 80)
-sock=socket.create_connection((p.hostname,port),timeout=8)
-try:
-    if p.scheme=="wss":
-        ctx=ssl.create_default_context(); tls=ctx.wrap_socket(sock,server_hostname=p.hostname); tls.close()
-    else:
-        sock.close()
-finally:
-    try: sock.close()
-    except Exception: pass
-print("ws_network_reachable=true")
-PY'
-
-          echo '=== SIRISKY SAFE LIVE CHECK ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python run.py check'
-
-          echo '=== DISCOVERY STATUS ==='
-          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv, time
-from pathlib import Path
-p=Path("/root/SiRisky/CSV/stage1_candidates.csv")
-rows=list(csv.DictReader(p.open(encoding="utf-8-sig",newline=""))) if p.exists() else []
-print("candidate_count="+str(len(rows)))
-if rows:
-    newest=max(int(float(r.get("discovered_epoch") or 0)) for r in rows)
-    print("candidate_snapshot_age_seconds="+str(max(0,int(time.time())-newest)))
-PY'
-
-          echo '=== APPROVAL / SAFETY GATES ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|auto_discovery_enabled)$/' /root/SiRisky/CSV/runtime.csv
-          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
-          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '0'
-          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = '1'
-          echo 'live_monitoring_test=PASS'
-          echo 'real_transaction_broadcast=NO'
+# Owner-requested activation: 2026-08-29T17:14:56Z
