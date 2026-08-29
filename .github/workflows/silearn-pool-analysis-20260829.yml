@@ -1,0 +1,90 @@
+name: SiLearn read-only pool analysis
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T130244BST-pool-analysis'
+
+permissions:
+  contents: read
+
+jobs:
+  analyse:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read live public pool data only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          MINT='Ay4WoENShiwYg4m4TSThVgiTknom4acE3XhJouQkagWx'
+          export MINT
+          python3 - <<'PY'
+          import json, os, urllib.request, datetime, time
+          mint=os.environ['MINT']
+          def get(url):
+              req=urllib.request.Request(url,headers={'User-Agent':'Mozilla/5.0'})
+              with urllib.request.urlopen(req,timeout=15) as r:
+                  return json.load(r)
+          print('analysis_utc='+datetime.datetime.now(datetime.timezone.utc).isoformat())
+          try:
+              ds=get(f'https://api.dexscreener.com/latest/dex/tokens/{mint}')
+              pairs=[p for p in (ds.get('pairs') or []) if p.get('chainId')=='solana']
+              pairs.sort(key=lambda p: float(((p.get('liquidity') or {}).get('usd') or 0)), reverse=True)
+              print('dex_pairs='+str(len(pairs)))
+              total_liq=sum(float(((p.get('liquidity') or {}).get('usd') or 0)) for p in pairs)
+              print(f'dex_total_liquidity_usd={total_liq:.2f}')
+              for i,p in enumerate(pairs[:10],1):
+                  created=p.get('pairCreatedAt')
+                  age_s=None
+                  if created:
+                      age_s=max(0,time.time()-float(created)/1000.0)
+                  tx=p.get('txns') or {}; vol=p.get('volume') or {}; liq=p.get('liquidity') or {}
+                  print('PAIR',i,
+                        'dex='+str(p.get('dexId')),
+                        'pair='+str(p.get('pairAddress')),
+                        'quote='+str((p.get('quoteToken') or {}).get('symbol')),
+                        f'liq_usd={float(liq.get("usd") or 0):.2f}',
+                        f'age_minutes={(age_s/60 if age_s is not None else -1):.2f}',
+                        f'age_hours={(age_s/3600 if age_s is not None else -1):.2f}',
+                        f'tx_m5_buys={int(((tx.get("m5") or {}).get("buys") or 0))}',
+                        f'tx_m5_sells={int(((tx.get("m5") or {}).get("sells") or 0))}',
+                        f'tx_h1_buys={int(((tx.get("h1") or {}).get("buys") or 0))}',
+                        f'tx_h1_sells={int(((tx.get("h1") or {}).get("sells") or 0))}',
+                        f'tx_h6_buys={int(((tx.get("h6") or {}).get("buys") or 0))}',
+                        f'tx_h6_sells={int(((tx.get("h6") or {}).get("sells") or 0))}',
+                        f'tx_h24_buys={int(((tx.get("h24") or {}).get("buys") or 0))}',
+                        f'tx_h24_sells={int(((tx.get("h24") or {}).get("sells") or 0))}',
+                        f'vol_m5={float(vol.get("m5") or 0):.2f}',
+                        f'vol_h1={float(vol.get("h1") or 0):.2f}',
+                        f'vol_h6={float(vol.get("h6") or 0):.2f}',
+                        f'vol_h24={float(vol.get("h24") or 0):.2f}',
+                        f'price_usd={p.get("priceUsd")}',
+                        f'fdv={p.get("fdv")}',
+                        f'mcap={p.get("marketCap")}')
+          except Exception as e:
+              print('DEX_ERROR='+type(e).__name__+':'+str(e))
+          for endpoint in ('summary','report'):
+              try:
+                  rg=get(f'https://api.rugcheck.xyz/v1/tokens/{mint}/report/'+endpoint) if endpoint=='summary' else get(f'https://api.rugcheck.xyz/v1/tokens/{mint}/report')
+                  if endpoint=='summary':
+                      print('rug_score='+str(rg.get('score')))
+                      for risk in rg.get('risks') or []:
+                          name=str(risk.get('name') or '')
+                          if 'LP' in name.upper() or 'LIQUID' in name.upper() or 'MINT' in name.upper() or 'FREEZE' in name.upper():
+                              print('RISK',json.dumps({'name':name,'level':risk.get('level'),'description':risk.get('description'),'value':risk.get('value')},sort_keys=True))
+                  else:
+                      markets=rg.get('markets') or []
+                      print('rug_markets='+str(len(markets)))
+                      for i,m in enumerate(markets[:10],1):
+                          lp=m.get('lp') or {}
+                          print('RUG_MARKET',i,
+                                'marketType='+str(m.get('marketType')),
+                                'pubkey='+str(m.get('pubkey')),
+                                'lp_locked_pct='+str(lp.get('lpLockedPct')),
+                                'lp_locked='+str(lp.get('lpLocked')),
+                                'lp_total_supply='+str(lp.get('lpTotalSupply')))
+              except Exception as e:
+                  print('RUG_'+endpoint.upper()+'_ERROR='+type(e).__name__+':'+str(e))
+          PY
