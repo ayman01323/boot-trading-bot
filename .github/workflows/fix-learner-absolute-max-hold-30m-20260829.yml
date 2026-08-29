@@ -15,161 +15,43 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 8
     steps:
-      - name: Keep 30 minute hold limit absolute
+      - name: Deploy rejected opportunity Telegram alerts
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          sudo -n bash <<'ROOT'
-          set -Eeuo pipefail
-          LROOT=/home/ayman01323/BOOT/testingbots/learn
-          grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$LROOT/learnerbot/solana_live_patch.py"
-          grep -q '^max_hold_hours,0.5,' "$LROOT/CSVbot/solana_settings.csv"
-          ROOT
-
-      - name: Restore immediate rejected opportunity Telegram alerts
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "$(hostname)" = botgoogle
-          sudo -n bash <<'ROOT'
-          set -Eeuo pipefail
-          LROOT=/home/ayman01323/BOOT/testingbots/learn
-          SERVICE=learnerbot-learn.service
-          FILE="$LROOT/learnerbot/solana_sibot.py"
-
-          LROOT="$LROOT" python3 - <<'PY'
-          import os,sqlite3
-          from pathlib import Path
-          p=Path(os.environ['LROOT'])/'data'/'solana_sibot.sqlite3'; n=0
-          if p.exists():
-              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True)
-              try:n=c.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]
-              finally:c.close()
-          print('learner_open_live_positions='+str(n))
-          if n: raise SystemExit('REFUSE_RESTART_WITH_OPEN_POSITION')
-          PY
-
-          stamp=$(date -u +%Y%m%dT%H%M%SZ)
-          backup="$LROOT/private/pre-reject-telegram-$stamp"
-          mkdir -p "$backup"
-          cp -a "$FILE" "$backup/solana_sibot.py"
-          changed=0
-          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_sibot.py" "$FILE"; systemctl restart "$SERVICE" || true; echo ROLLBACK_COMPLETE=true; fi; exit $rc; }
-          trap rollback EXIT
-
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('/home/ayman01323/BOOT/testingbots/learn/learnerbot/solana_sibot.py')
-          s=p.read_text()
-          if 'from .telegram import send_message' not in s:
-              anchor='from __future__ import annotations\n'
-              if anchor not in s: raise SystemExit('future import anchor not found')
-              s=s.replace(anchor, anchor+'\nfrom html import escape\nfrom .telegram import send_message\n',1)
-          elif 'from html import escape' not in s:
-              s=s.replace('from .telegram import send_message\n','from html import escape\nfrom .telegram import send_message\n',1)
-
-          helper='''
-
-def _push_rejected_actions(app, event: dict, actions) -> None:
-    token = str(getattr(app, "telegram_bot_token", "") or "").strip()
-    if not token:
-        return
-    now = int(time.time())
-    try:
-        signal_ts = int((event or {}).get("event_ts") or now)
-    except Exception:
-        signal_ts = now
-    age = max(0, now - signal_ts)
-    mint = str((event or {}).get("mint") or "unknown")
-    leader = str((event or {}).get("leader_wallet") or "unknown")
-    signature = str((event or {}).get("signature") or "")
-    for row in (actions or []):
-        if str((row or {}).get("action") or "").upper() != "REJECT":
-            continue
-        tid = str((row or {}).get("telegram_id") or "").strip()
-        targets = [tid] if tid else []
-        if not targets:
-            try:
-                for u in all_users(app.csv_dir, enabled_only=True):
-                    uid = str(u.get("telegram_id") or "").strip()
-                    if uid and _leader_rank(app, uid, leader) is not None:
-                        targets.append(uid)
-            except Exception:
-                pass
-        reason = str((row or {}).get("reason") or "unspecified rejection")[:900]
-        text = chr(10).join([
-            "⛔ <b>REJECTED OPPORTUNITY</b>",
-            f"Asset: <code>{escape(mint)}</code>",
-            f"Leader: <code>{escape(leader)}</code>",
-            f"Reason: <code>{escape(reason)}</code>",
-            f"Signal age: <b>{age}s</b>",
-            f"Signature: <code>{escape(signature[:120])}</code>",
-            "Decision: <b>NO TRADE</b>",
-        ])
-        for target in dict.fromkeys(x for x in targets if x):
-            send_message(token, target, text, parse_mode="HTML", protect_content=True)
-
-'''
-          if 'def _push_rejected_actions(app, event: dict, actions)' not in s:
-              marker='\ndef monitor_leaders(app):\n'
-              if marker not in s: raise SystemExit('monitor_leaders marker not found')
-              s=s.replace(marker,helper+marker,1)
-
-          old='''                    if saved:
-                        events.append(saved)
-                        process_leader_event(app, saved)'''
-          new='''                    if saved:
-                        events.append(saved)
-                        actions = process_leader_event(app, saved)
-                        _push_rejected_actions(app, saved, actions)'''
-          if new not in s:
-              if old not in s: raise SystemExit('leader action-discard block not found')
-              s=s.replace(old,new,1)
-          p.write_text(s)
-          PY
-          changed=1
-
-          py="$LROOT/.venv/bin/python"; [[ -x "$py" ]] || py=python3
-          PYTHONPATH="$LROOT" "$py" -m py_compile "$FILE"
-          systemctl restart "$SERVICE"
-          sleep 15
-          test "$(systemctl is-active "$SERVICE")" = active
-          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
-          sleep 5
-          test "$(systemctl is-active "$SERVICE")" = active
-          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
-          test "$r1" = "$r2"
-
-          LROOT="$LROOT" "$py" - <<'PY'
-          import os,time,csv,sys
-          from pathlib import Path
-          from dotenv import load_dotenv
-          root=Path(os.environ['LROOT'])
-          load_dotenv(root/'.env', override=False)
-          sys.path.insert(0,str(root))
-          from learnerbot import solana_sibot as sol
-          class App:
-              csv_dir=root/'CSVbot'
-              telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN','').strip()
-          app=App()
-          targets=[]
-          with (root/'CSVbot'/'user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
-              for r in csv.DictReader(f):
-                  if r.get('setting')=='solana_live_enabled' and str(r.get('value') or '').lower()=='true':
-                      tid=str(r.get('telegram_id') or '').strip()
-                      if tid and tid!='900001': targets.append(tid)
-          if not app.telegram_bot_token or not targets: raise SystemExit('Telegram route unavailable')
-          sol._push_rejected_actions(app, {'mint':'TEST-NO-TRADE','leader_wallet':'TEST-REJECT-PATH','signature':'TEST-NO-CHAIN-SUBMISSION','event_ts':int(time.time())}, [{'telegram_id':targets[0],'action':'REJECT','reason':'Telegram rejected-opportunity delivery path restored — TEST ONLY'}])
-          print('reject_telegram_test_sent=true')
-          print('test_trade_placed=false')
-          PY
-
-          grep -q 'actions = process_leader_event(app, saved)' "$FILE"
-          grep -q '_push_rejected_actions(app, saved, actions)' "$FILE"
-          echo learner_service_active=true
-          echo learner_restarts=$r2
-          echo learner_reject_push=enabled
-          echo TRADE_PLACED_BY_FIX=NO
-          trap - EXIT
-          ROOT
+          sudo -n bash -c '
+            set -Eeuo pipefail
+            LROOT=/home/ayman01323/BOOT/testingbots/learn
+            SERVICE=learnerbot-learn.service
+            FILE=$LROOT/learnerbot/solana_sibot.py
+            DB=$LROOT/data/solana_sibot.sqlite3
+            OPEN=0
+            if [[ -f "$DB" ]]; then OPEN=$(python3 -c "import sqlite3; c=sqlite3.connect(\"file:$DB?mode=ro\",uri=True); print(c.execute(\"select count(*) from positions where status='\''OPEN'\'' and mode='\''LIVE'\''\").fetchone()[0]); c.close()"); fi
+            echo learner_open_live_positions=$OPEN
+            test "$OPEN" = 0
+            STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+            BACKUP=$LROOT/private/pre-reject-telegram-$STAMP
+            mkdir -p "$BACKUP"
+            cp -a "$FILE" "$BACKUP/solana_sibot.py"
+            echo "CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aApwPVBhdGgoIi9ob21lL2F5bWFuMDEzMjMvQk9PVC90ZXN0aW5nYm90cy9sZWFybi9sZWFybmVyYm90L3NvbGFuYV9zaWJvdC5weSIpCnM9cC5yZWFkX3RleHQoKQppZiAiZnJvbSAudGVsZWdyYW0gaW1wb3J0IHNlbmRfbWVzc2FnZSIgbm90IGluIHM6CiAgICBhbmNob3I9ImZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnNcbiIKICAgIGlmIGFuY2hvciBub3QgaW4gczoKICAgICAgICByYWlzZSBTeXN0ZW1FeGl0KCJmdXR1cmUgaW1wb3J0IGFuY2hvciBub3QgZm91bmQiKQogICAgcz1zLnJlcGxhY2UoYW5jaG9yLCBhbmNob3IrIlxuZnJvbSBodG1sIGltcG9ydCBlc2NhcGVcbmZyb20gLnRlbGVncmFtIGltcG9ydCBzZW5kX21lc3NhZ2VcbiIsIDEpCmVsaWYgImZyb20gaHRtbCBpbXBvcnQgZXNjYXBlIiBub3QgaW4gczoKICAgIHM9cy5yZXBsYWNlKCJmcm9tIC50ZWxlZ3JhbSBpbXBvcnQgc2VuZF9tZXNzYWdlXG4iLCJmcm9tIGh0bWwgaW1wb3J0IGVzY2FwZVxuZnJvbSAudGVsZWdyYW0gaW1wb3J0IHNlbmRfbWVzc2FnZVxuIiwxKQoKaGVscGVyID0gJycnCmRlZiBfcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgZXZlbnQ6IGRpY3QsIGFjdGlvbnMpIC0+IE5vbmU6CiAgICB0b2tlbiA9IHN0cihnZXRhdHRyKGFwcCwgInRlbGVncmFtX2JvdF90b2tlbiIsICIiKSBvciAiIikuc3RyaXAoKQogICAgaWYgbm90IHRva2VuOgogICAgICAgIHJldHVybgogICAgbm93ID0gaW50KHRpbWUudGltZSgpKQogICAgdHJ5OgogICAgICAgIHNpZ25hbF90cyA9IGludCgoZXZlbnQgb3Ige30pLmdldCgiZXZlbnRfdHMiKSBvciBub3cpCiAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgIHNpZ25hbF90cyA9IG5vdwogICAgYWdlID0gbWF4KDAsIG5vdyAtIHNpZ25hbF90cykKICAgIG1pbnQgPSBzdHIoKGV2ZW50IG9yIHt9KS5nZXQoIm1pbnQiKSBvciAidW5rbm93biIpCiAgICBsZWFkZXIgPSBzdHIoKGV2ZW50IG9yIHt9KS5nZXQoImxlYWRlcl93YWxsZXQiKSBvciAidW5rbm93biIpCiAgICBzaWduYXR1cmUgPSBzdHIoKGV2ZW50IG9yIHt9KS5nZXQoInNpZ25hdHVyZSIpIG9yICIiKQogICAgZm9yIHJvdyBpbiAoYWN0aW9ucyBvciBbXSk6CiAgICAgICAgaWYgc3RyKChyb3cgb3Ige30pLmdldCgiYWN0aW9uIikgb3IgIiIpLnVwcGVyKCkgIT0gIlJFSkVDVCI6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgdGlkID0gc3RyKChyb3cgb3Ige30pLmdldCgidGVsZWdyYW1faWQiKSBvciAiIikuc3RyaXAoKQogICAgICAgIHRhcmdldHMgPSBbdGlkXSBpZiB0aWQgZWxzZSBbXQogICAgICAgIGlmIG5vdCB0YXJnZXRzOgogICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICBmb3IgdSBpbiBhbGxfdXNlcnMoYXBwLmNzdl9kaXIsIGVuYWJsZWRfb25seT1UcnVlKToKICAgICAgICAgICAgICAgICAgICB1aWQgPSBzdHIodS5nZXQoInRlbGVncmFtX2lkIikgb3IgIiIpLnN0cmlwKCkKICAgICAgICAgICAgICAgICAgICBpZiB1aWQgYW5kIF9sZWFkZXJfcmFuayhhcHAsIHVpZCwgbGVhZGVyKSBpcyBub3QgTm9uZToKICAgICAgICAgICAgICAgICAgICAgICAgdGFyZ2V0cy5hcHBlbmQodWlkKQogICAgICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICAgICAgcGFzcwogICAgICAgIHJlYXNvbiA9IHN0cigocm93IG9yIHt9KS5nZXQoInJlYXNvbiIpIG9yICJ1bnNwZWNpZmllZCByZWplY3Rpb24iKVs6OTAwXQogICAgICAgIHRleHQgPSBjaHIoMTApLmpvaW4oWwogICAgICAgICAgICAi4puUIDxiPlJFSkVDVEVEIE9QUE9SVFVOSVRZPC9iPiIsCiAgICAgICAgICAgIGYiQXNzZXQ6IDxjb2RlPntlc2NhcGUobWludCl9PC9jb2RlPiIsCiAgICAgICAgICAgIGYiTGVhZGVyOiA8Y29kZT57ZXNjYXBlKGxlYWRlcil9PC9jb2RlPiIsCiAgICAgICAgICAgIGYiUmVhc29uOiA8Y29kZT57ZXNjYXBlKHJlYXNvbil9PC9jb2RlPiIsCiAgICAgICAgICAgIGYiU2lnbmFsIGFnZTogPGI+e2FnZX1zPC9iPiIsCiAgICAgICAgICAgIGYiU2lnbmF0dXJlOiA8Y29kZT57ZXNjYXBlKHNpZ25hdHVyZVs6MTIwXSl9PC9jb2RlPiIsCiAgICAgICAgICAgICJEZWNpc2lvbjogPGI+Tk8gVFJBREU8L2I+IiwKICAgICAgICBdKQogICAgICAgIGZvciB0YXJnZXQgaW4gZGljdC5mcm9ta2V5cyh4IGZvciB4IGluIHRhcmdldHMgaWYgeCk6CiAgICAgICAgICAgIHNlbmRfbWVzc2FnZSh0b2tlbiwgdGFyZ2V0LCB0ZXh0LCBwYXJzZV9tb2RlPSJIVE1MIiwgcHJvdGVjdF9jb250ZW50PVRydWUpCgonJycKaWYgImRlZiBfcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgZXZlbnQ6IGRpY3QsIGFjdGlvbnMpIiBub3QgaW4gczoKICAgIG1hcmtlcj0iXG5kZWYgbW9uaXRvcl9sZWFkZXJzKGFwcCk6XG4iCiAgICBpZiBtYXJrZXIgbm90IGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgibW9uaXRvcl9sZWFkZXJzIG1hcmtlciBub3QgZm91bmQiKQogICAgcz1zLnJlcGxhY2UobWFya2VyLCAiXG4iK2hlbHBlcittYXJrZXIsIDEpCgpvbGQgPSAnICAgICAgICAgICAgICAgICAgICBpZiBzYXZlZDpcbiAgICAgICAgICAgICAgICAgICAgICAgIGV2ZW50cy5hcHBlbmQoc2F2ZWQpXG4gICAgICAgICAgICAgICAgICAgICAgICBwcm9jZXNzX2xlYWRlcl9ldmVudChhcHAsIHNhdmVkKScKbmV3ID0gJyAgICAgICAgICAgICAgICAgICAgaWYgc2F2ZWQ6XG4gICAgICAgICAgICAgICAgICAgICAgICBldmVudHMuYXBwZW5kKHNhdmVkKVxuICAgICAgICAgICAgICAgICAgICAgICAgYWN0aW9ucyA9IHByb2Nlc3NfbGVhZGVyX2V2ZW50KGFwcCwgc2F2ZWQpXG4gICAgICAgICAgICAgICAgICAgICAgICBfcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgc2F2ZWQsIGFjdGlvbnMpJwppZiBuZXcgbm90IGluIHM6CiAgICBpZiBvbGQgbm90IGluIHM6CiAgICAgICAgcmFpc2UgU3lzdGVtRXhpdCgibGVhZGVyIGFjdGlvbi1kaXNjYXJkIGJsb2NrIG5vdCBmb3VuZCIpCiAgICBzPXMucmVwbGFjZShvbGQsbmV3LDEpCnAud3JpdGVfdGV4dChzKQo=" | base64 -d > /tmp/learner_reject_patch.py
+            python3 /tmp/learner_reject_patch.py
+            PY=$LROOT/.venv/bin/python; [[ -x "$PY" ]] || PY=python3
+            if ! PYTHONPATH=$LROOT "$PY" -m py_compile "$FILE"; then cp -a "$BACKUP/solana_sibot.py" "$FILE"; exit 1; fi
+            systemctl restart "$SERVICE"
+            sleep 15
+            test "$(systemctl is-active "$SERVICE")" = active
+            R1=$(systemctl show "$SERVICE" -p NRestarts --value)
+            sleep 5
+            test "$(systemctl is-active "$SERVICE")" = active
+            R2=$(systemctl show "$SERVICE" -p NRestarts --value)
+            test "$R1" = "$R2"
+            echo "CmltcG9ydCBvcyx0aW1lLGNzdixzeXMKZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCmZyb20gZG90ZW52IGltcG9ydCBsb2FkX2RvdGVudgpyb290PVBhdGgoIi9ob21lL2F5bWFuMDEzMjMvQk9PVC90ZXN0aW5nYm90cy9sZWFybiIpCmxvYWRfZG90ZW52KHJvb3QvIi5lbnYiLCBvdmVycmlkZT1GYWxzZSkKc3lzLnBhdGguaW5zZXJ0KDAsc3RyKHJvb3QpKQpmcm9tIGxlYXJuZXJib3QgaW1wb3J0IHNvbGFuYV9zaWJvdCBhcyBzb2wKY2xhc3MgQXBwOgogICAgY3N2X2Rpcj1yb290LyJDU1Zib3QiCiAgICB0ZWxlZ3JhbV9ib3RfdG9rZW49b3MuZ2V0ZW52KCJURUxFR1JBTV9CT1RfVE9LRU4iLCIiKS5zdHJpcCgpCmFwcD1BcHAoKQp0YXJnZXRzPVtdCndpdGggKHJvb3QvIkNTVmJvdCIvInVzZXJfdHJhZGluZ19zZXR0aW5ncy5jc3YiKS5vcGVuKGVuY29kaW5nPSJ1dGYtOC1zaWciLG5ld2xpbmU9IiIpIGFzIGY6CiAgICBmb3IgciBpbiBjc3YuRGljdFJlYWRlcihmKToKICAgICAgICBpZiByLmdldCgic2V0dGluZyIpPT0ic29sYW5hX2xpdmVfZW5hYmxlZCIgYW5kIHN0cihyLmdldCgidmFsdWUiKSBvciAiIikubG93ZXIoKT09InRydWUiOgogICAgICAgICAgICB0aWQ9c3RyKHIuZ2V0KCJ0ZWxlZ3JhbV9pZCIpIG9yICIiKS5zdHJpcCgpCiAgICAgICAgICAgIGlmIHRpZCBhbmQgdGlkIT0iOTAwMDAxIjoKICAgICAgICAgICAgICAgIHRhcmdldHMuYXBwZW5kKHRpZCkKaWYgbm90IGFwcC50ZWxlZ3JhbV9ib3RfdG9rZW4gb3Igbm90IHRhcmdldHM6CiAgICByYWlzZSBTeXN0ZW1FeGl0KCJUZWxlZ3JhbSByb3V0ZSB1bmF2YWlsYWJsZSIpCnNvbC5fcHVzaF9yZWplY3RlZF9hY3Rpb25zKGFwcCwgeyJtaW50IjoiVEVTVC1OTy1UUkFERSIsImxlYWRlcl93YWxsZXQiOiJURVNULVJFSkVDVC1QQVRIIiwic2lnbmF0dXJlIjoiVEVTVC1OTy1DSEFJTi1TVUJNSVNTSU9OIiwiZXZlbnRfdHMiOmludCh0aW1lLnRpbWUoKSl9LCBbeyJ0ZWxlZ3JhbV9pZCI6dGFyZ2V0c1swXSwiYWN0aW9uIjoiUkVKRUNUIiwicmVhc29uIjoiVGVsZWdyYW0gcmVqZWN0ZWQtb3Bwb3J0dW5pdHkgZGVsaXZlcnkgcGF0aCByZXN0b3JlZCAtIFRFU1QgT05MWSJ9XSkKcHJpbnQoInJlamVjdF90ZWxlZ3JhbV90ZXN0X3NlbnQ9dHJ1ZSIpCnByaW50KCJ0ZXN0X3RyYWRlX3BsYWNlZD1mYWxzZSIpCg==" | base64 -d > /tmp/learner_reject_test.py
+            PYTHONPATH=$LROOT "$PY" /tmp/learner_reject_test.py
+            grep -q "actions = process_leader_event(app, saved)" "$FILE"
+            grep -q "_push_rejected_actions(app, saved, actions)" "$FILE"
+            echo learner_service_active=true
+            echo learner_restarts=$R2
+            echo learner_reject_push=enabled
+            echo TRADE_PLACED_BY_FIX=NO
+          '
