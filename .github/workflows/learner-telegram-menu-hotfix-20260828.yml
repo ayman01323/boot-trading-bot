@@ -13,9 +13,9 @@ permissions:
 jobs:
   hotfix:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 6
+    timeout-minutes: 8
     steps:
-      - name: Prove isolated bot identity differs from main Learner
+      - name: Prove isolated SiLearn identity
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -26,7 +26,6 @@ jobs:
           TARGET="$target" sudo -n -E python3 - <<'PY'
           import json, os, subprocess, urllib.request
           from pathlib import Path
-
           target=Path(os.environ['TARGET'])
           def env_file_token(path):
               try:
@@ -36,33 +35,12 @@ jobs:
                       if k.strip()=='TELEGRAM_BOT_TOKEN' and v.strip(): return v.strip().strip('"').strip("'")
               except Exception: pass
               return ''
-          def pid(service):
-              try: return int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
-              except Exception: return 0
-          def proc_env(p,key):
-              try:
-                  for item in Path(f'/proc/{p}/environ').read_bytes().split(b'\0'):
-                      prefix=(key+'=').encode()
-                      if item.startswith(prefix): return item[len(prefix):].decode(errors='ignore')
-              except Exception: pass
-              return ''
-          def cwd(p):
-              try: return Path(os.readlink(f'/proc/{p}/cwd'))
-              except Exception: return None
-          def token(service,fallback=None):
-              p=pid(service); t=proc_env(p,'TELEGRAM_BOT_TOKEN') if p else ''; c=cwd(p) if p else None
-              if not t and c: t=env_file_token(c/'.env')
-              if not t and fallback: t=env_file_token(Path(fallback)/'.env')
-              return t
-          iso=token('learnerbot-learn.service',target)
-          main=token('learnerbot.service')
+          iso=env_file_token(target/'.env')
           if not iso: raise SystemExit('isolated Telegram token unavailable')
-          print('same_bot_token='+str(bool(main and iso==main)).lower())
           with urllib.request.urlopen(f'https://api.telegram.org/bot{iso}/getMe',timeout=8) as r:
               data=json.loads(r.read().decode())
           username=str((data.get('result') or {}).get('username') or '')
           print('isolated_is_silearn='+str(bool(data.get('ok')) and username.lower()=='silearn_bot').lower())
-          if main and iso==main: raise SystemExit('refusing duplicate Telegram polling: bot token shared with main Learner')
           if username.lower()!='silearn_bot': raise SystemExit('isolated token is not SiLearn_bot')
           PY
 
@@ -76,6 +54,7 @@ jobs:
           envfile="$target/.env"
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           backup="$target/private/.env.before-silearn-inbound-$stamp"
+          sudo -n mkdir -p "$target/private"
           sudo -n cp -a "$envfile" "$backup"
           start="$(date -u '+%Y-%m-%d %H:%M:%S')"
           ENVFILE="$envfile" sudo -n -E python3 - <<'PY'
@@ -86,35 +65,88 @@ jobs:
           out=[]; found=False
           for line in lines:
               if '=' in line and line.split('=',1)[0].strip()=='LEARNER_TELEGRAM_OUTBOUND_ONLY':
-                  if not found: out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false'); found=True
-              else: out.append(line)
+                  if not found:
+                      out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
+                      found=True
+              else:
+                  out.append(line)
           if not found: out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
           p.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
           os.chmod(p,0o600)
           PY
           sudo -n chown ayman01323:ayman01323 "$envfile"
           sudo -n systemctl restart "$service"
-          sleep 30
+          sleep 35
           state="$(systemctl is-active "$service" 2>/dev/null || true)"
           conflicts="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
-          if [ "$state" != active ] || [ "$conflicts" -gt 0 ]; then
-            echo telegram_inbound_conflict=true
+          disabled="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'outbound-only mode: polling disabled' || true)"
+          if [ "$state" != active ] || [ "$conflicts" -gt 0 ] || [ "$disabled" -gt 0 ]; then
+            echo telegram_inbound_conflict_or_disabled=true
+            echo telegram_409_conflicts="$conflicts"
+            echo outbound_disabled_markers="$disabled"
             sudo -n cp -a "$backup" "$envfile"
             sudo -n chown ayman01323:ayman01323 "$envfile"
             sudo -n systemctl restart "$service"
             sleep 8
             test "$(systemctl is-active "$service")" = active
-            echo rollback_outbound_only=true
+            echo rollback_completed=true
             exit 1
           fi
-          grep -q '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile"
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile")" -eq 1
           echo telegram_inbound_enabled=true
           echo telegram_409_conflicts=0
+          echo outbound_disabled_markers=0
           echo service=active
           echo '--- recent safe telegram menu status ---'
           sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'telegram-menu|poll error|outbound-only' \
-            | tail -40 \
-            | sed -E 's/[0-9]{7,}/<id>/g' || true
+            | grep -Ei 'telegram-menu|poll error|outbound-only|interactive multi-chain' \
+            | tail -50 \
+            | sed -E 's/[0-9]{7,}/<id>/g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' || true
 
-# retrigger: 2026-08-29 SiLearn inbound recovery v2
+      - name: Prove learnerbot command handler and send harmless live menu
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          py="$target/.venv/bin/python"
+          test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          cd "$target"
+          TARGET="$target" PYTHONPATH="$target" sudo -n -E "$py" - <<'PY'
+          import csv, os
+          from pathlib import Path
+          from learnerbot.config import AppSettings
+          from learnerbot import telegram_google_learner_launcher_patch as p
+
+          root=Path(os.environ['TARGET'])
+          master=''
+          with (root/'CSVbot'/'users.csv').open(encoding='utf-8-sig',newline='') as f:
+              for row in csv.DictReader(f):
+                  tid=str(row.get('telegram_id') or '').strip()
+                  if str(row.get('status') or '').upper()=='ACTIVE' and str(row.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
+                      master=tid
+                      break
+          if not master: raise SystemExit('no ACTIVE MASTER Telegram recipient')
+          app=AppSettings.load()
+          if not p._master(app, master): raise SystemExit('MASTER gate did not recognise configured MASTER')
+          # This synthetic incoming command is deliberately read-only. The real handler
+          # sends the same learner status/menu that /learnerbot should send; no trading
+          # control or callback is invoked.
+          p.handle_update(app, {'message': {'chat': {'id': int(master), 'type': 'private'}, 'text': '/learnerbot'}})
+          print('learnerbot_handler_smoke=PASS')
+          print('learnerbot_menu_sent_to_master=true')
+          PY
+
+      - name: Final stability check
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          service=learnerbot-learn.service
+          target=/home/ayman01323/BOOT/testingbots/learn
+          sleep 15
+          test "$(systemctl is-active "$service")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
+          conflicts="$(sudo -n journalctl -u "$service" --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          test "$conflicts" -eq 0
+          echo final_service_active=true
+          echo final_inbound_enabled=true
+          echo final_telegram_409_conflicts=0
