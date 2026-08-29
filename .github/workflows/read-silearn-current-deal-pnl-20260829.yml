@@ -15,97 +15,63 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Read current deal economics only
+      - name: Trace CjFL mint buyer read-only
         shell: bash
         run: |
           set -u
-          ROOT=/home/ayman01323/BOOT/testingbots/learn
-          POS=a3690eee37133e29213d915e45f869b2
-          MINT=FJgfUuzEr8JMsbxhHwkTQMEcCkSgEnnUtmZf9qiSBs7t
-          TID=5923828381
-          export ROOT POS MINT TID
+          MINT='CjFLUpDhQ4TZp7azvKo3FDAJv1cxeDR2nNv3rGs1pump'
+          export MINT
           echo "REPORT_BST=$(TZ=Europe/London date +%Y-%m-%dT%H:%M:%S%z)"
-
-          echo '=== ENTRY_EXIT_WINDOW ==='
-          sudo -n journalctl -u learnerbot-learn.service \
-            --since '2026-08-29 16:25:30 UTC' --until '2026-08-29 16:35:30 UTC' --no-pager 2>/dev/null \
-            | grep -Ei "$MINT|$POS|solana.*(buy|sell|entry|exit|execut|position|quote|order|reconcile|wallet|fee|rent|pnl|profit|loss|landed|simulation)|jupiter.*(buy|sell|order|execut|quote)|live-decision" \
-            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
-            | tail -500 || true
-
-          echo '=== CURRENT_POSITION_JOURNAL ==='
-          sudo -n journalctl -u learnerbot-learn.service --since '2026-08-29 16:25:30 UTC' --no-pager 2>/dev/null \
-            | grep -E "$MINT|$POS" \
-            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' \
-            | tail -250 || true
-
-          echo '=== SQLITE_EXACT_CURRENT_DEAL ==='
+          echo '=== SQLITE_MATCHES ==='
           python3 - <<'PY'
           import os, sqlite3, json
           from pathlib import Path
-          root=Path(os.environ['ROOT']); needles=[os.environ['POS'],os.environ['MINT']]
-          sens=('secret','private','credential','api_key','mnemonic','seed')
-          n=0
-          dbs=[]
-          for p in root.rglob('*'):
-              if p.is_file() and p.suffix.lower() in {'.sqlite','.sqlite3','.db'}:
-                  try: dbs.append((p.stat().st_mtime,p))
-                  except: pass
-          for _,p in sorted(dbs, reverse=True):
-              try:
-                  con=sqlite3.connect(f'file:{p}?mode=ro',uri=True); con.row_factory=sqlite3.Row; cur=con.cursor()
-                  tables=[x[0] for x in cur.execute("select name from sqlite_master where type='table'")]
-              except Exception: continue
-              for t in tables:
-                  try: cols=[x[1] for x in cur.execute(f'pragma table_info("{t}")')]
-                  except: continue
-                  if not cols: continue
-                  # Search only likely identifier/address/mint/token columns first; fall back to all text casts.
-                  searchcols=[c for c in cols if any(k in c.lower() for k in ('position','mint','token','address','id'))]
-                  if not searchcols: continue
-                  ors=[]; params=[]
-                  for c in searchcols:
-                      for needle in needles:
-                          ors.append(f'CAST("{c}" AS TEXT) LIKE ?'); params.append('%'+needle+'%')
-                  try: rows=list(cur.execute(f'SELECT * FROM "{t}" WHERE '+ ' OR '.join(ors)+' LIMIT 20',params))
+          mint=os.environ['MINT']
+          roots=[Path('/home/ayman01323/BOOT/testingbots'),Path('/home/ayman01323/BOOT')]
+          seen=set(); total=0
+          for root in roots:
+              if not root.exists(): continue
+              for p in root.rglob('*'):
+                  if not p.is_file() or p.suffix.lower() not in {'.db','.sqlite','.sqlite3'}: continue
+                  try: rp=str(p.resolve())
+                  except: rp=str(p)
+                  if rp in seen: continue
+                  seen.add(rp)
+                  try:
+                      con=sqlite3.connect(f'file:{p}?mode=ro',uri=True); con.row_factory=sqlite3.Row; cur=con.cursor()
+                      tables=[r[0] for r in cur.execute("select name from sqlite_master where type='table'")]
                   except Exception: continue
-                  if rows:
-                      print(f'DB={p} TABLE={t} ROWS={len(rows)}')
-                      for r in rows:
-                          d={k:r[k] for k in r.keys() if not any(x in k.lower() for x in sens)}
-                          print('ROW='+json.dumps(d,default=str,sort_keys=True)[:12000]); n+=1
-              con.close()
-          print('MATCH_ROWS_TOTAL='+str(n))
+                  for t in tables:
+                      try: cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+                      except Exception: continue
+                      search=[c for c in cols if any(k in c.lower() for k in ('mint','token','asset','address'))]
+                      if not search: continue
+                      ors=[]; params=[]
+                      for c in search:
+                          ors.append(f'CAST("{c}" AS TEXT)=?'); params.append(mint)
+                      try: rows=list(cur.execute(f'SELECT * FROM "{t}" WHERE '+ ' OR '.join(ors)+' ORDER BY rowid DESC LIMIT 100',params))
+                      except Exception: continue
+                      if rows:
+                          print(f'DB={p} TABLE={t} ROWS={len(rows)}')
+                          for r in rows:
+                              d=dict(r)
+                              for k in list(d):
+                                  if any(s in k.lower() for s in ('secret','private','credential','api_key','mnemonic','seed')): d.pop(k,None)
+                              print('ROW='+json.dumps(d,default=str,sort_keys=True)[:12000])
+                              total+=1
+                  con.close()
+          print('SQLITE_MATCH_TOTAL='+str(total))
           PY
 
-          echo '=== TEXT_EXACT_CURRENT_DEAL ==='
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          root=Path(os.environ['ROOT']); needles=(os.environ['POS'],os.environ['MINT'])
-          shown=0
-          for base in (root/'data',root/'CSVbot'):
-              if not base.exists(): continue
-              for p in base.rglob('*'):
-                  if not p.is_file() or p.suffix.lower() not in {'.csv','.json','.jsonl','.txt','.log'}: continue
-                  if any(x in str(p).lower() for x in ('/.env','secret','private','credential','mnemonic','seed')): continue
-                  try: text=p.read_text(errors='replace')
-                  except: continue
-                  if not any(n in text for n in needles): continue
-                  print(f'FILE={p} MTIME={p.stat().st_mtime}')
-                  lines=text.splitlines()
-                  hitidx=[i for i,l in enumerate(lines) if any(n in l for n in needles)]
-                  idx=[]
-                  for i in hitidx:
-                      idx.extend(range(max(0,i-5),min(len(lines),i+6)))
-                  for i in sorted(set(idx))[:160]:
-                      line=lines[i]
-                      if len(line)>3000: line=line[:3000]+'...'
-                      print(f'{i+1}:{line}')
-                  shown+=1
-                  if shown>=30: break
-              if shown>=30: break
-          print('MATCH_FILES_TOTAL='+str(shown))
-          PY
+          echo '=== LEARN_JOURNAL_MATCHES ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '2026-08-28 00:00:00 UTC' --no-pager 2>/dev/null \
+            | grep -F "$MINT" | tail -300 || true
 
-          echo 'REPORT_COMPLETE=true'
+          echo '=== ALL_JOURNAL_MATCHES ==='
+          sudo -n journalctl --since '2026-08-28 00:00:00 UTC' --no-pager 2>/dev/null \
+            | grep -F "$MINT" | tail -300 || true
+
+          echo '=== TEXT_MATCHES ==='
+          grep -RFn --binary-files=without-match --exclude='.env' --exclude='*.key' --exclude='*secret*' --exclude='*credential*' \
+            "$MINT" /home/ayman01323/BOOT/testingbots 2>/dev/null | tail -250 || true
+          echo 'TRACE_COMPLETE=true'
