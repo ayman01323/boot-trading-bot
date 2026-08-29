@@ -119,7 +119,10 @@ def _position_text(app, position: dict) -> str:
         f"Current estimated exit: <b>{current_exit:.9f} SOL</b>",
         f"Estimated net P/L: <b>{net_sol:+.9f} SOL ({net_pct:+.2f}%)</b>",
         f"Peak: <b>{peak:+.2f}%</b>",
-        f"Leader: <code>{html.escape(_short(leader))}</code>",
+        (
+            f"Leader: <a href=\"https://solscan.io/account/{html.escape(leader, quote=True)}\">"
+            f"{html.escape(_short(leader))}</a>"
+        ),
         f"Dexview: <a href=\"https://www.dexview.com/solana/{html.escape(mint, quote=True)}\">Open Dexview</a>",
     ])
     return "\n".join(lines)
@@ -158,7 +161,7 @@ def send_silearn_position_updates(app, force: bool = False) -> int:
                 sent += 1
                 print(
                     f"[silearn-position-update] sent=1 position={pid} target={tid} "
-                    f"mint={mint} dexview=true interval={UPDATE_INTERVAL_SECONDS}s"
+                    f"mint={mint} dexview=true leader_link=true interval={UPDATE_INTERVAL_SECONDS}s"
                 )
             except Exception as exc:
                 print("[silearn-position-update] send_error", tid, type(exc).__name__, exc)
@@ -184,7 +187,7 @@ def install() -> None:
     _sol._silearn_position_updates_installed = True
     print(
         "[silearn-position-update] bot=SiLearn approved=2026-08-29T17:20:00Z "
-        "route=position_owner+all_active_masters dexview=true interval=300s "
+        "route=position_owner+all_active_masters dexview=true leader_link=true interval=300s "
         "reporting_only=true trading_logic_unchanged=true"
     )
 
