@@ -1,0 +1,51 @@
+name: SiLearn runtime Python inspect
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1643BST-runtime-python-inspect'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect service runtime Python only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          echo 'SiLearn — 2026-08-29 16:43 BST — Subject: Inspect Learner runtime Python path'
+          echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "execstart=$(systemctl show learnerbot-learn.service -p ExecStart --value 2>/dev/null || true)"
+          echo "environment=$(systemctl show learnerbot-learn.service -p Environment --value 2>/dev/null | sed -E 's/([^ =]*(KEY|TOKEN|SECRET|PASSWORD|RPC)[^ =]*)=[^ ]+/\1=REDACTED/gI' || true)"
+          echo '=== candidate python executables ==='
+          find "$ROOT" -maxdepth 4 -type f -o -type l 2>/dev/null \
+            | grep -E '/(\.venv|venv|env|runtime)/[^/]*/?bin/python([0-9.]*)?$|/(\.venv|venv|env)/bin/python([0-9.]*)?$' \
+            | head -n 50 || true
+          echo '=== service process ==='
+          PID="$(systemctl show learnerbot-learn.service -p MainPID --value 2>/dev/null || echo 0)"
+          echo "pid=$PID"
+          if test "$PID" != 0 -a -r "/proc/$PID/cmdline"; then
+            printf 'cmdline='; tr '\0' ' ' < "/proc/$PID/cmdline"; echo
+            echo "exe=$(readlink -f "/proc/$PID/exe" || true)"
+            echo "cwd=$(readlink -f "/proc/$PID/cwd" || true)"
+          fi
+          echo '=== python package probes ==='
+          for p in "$ROOT/.venv/bin/python" "$ROOT/venv/bin/python" "$ROOT/env/bin/python" /usr/bin/python3 /usr/local/bin/python3; do
+            if test -x "$p"; then
+              "$p" - <<'PY' 2>/dev/null || true
+import sys
+mods=[]
+for name in ('web3','requests'):
+    try:
+        __import__(name); mods.append(name+'=yes')
+    except Exception: mods.append(name+'=no')
+print('python='+sys.executable+' prefix='+sys.prefix+' '+' '.join(mods))
+PY
+            fi
+          done
