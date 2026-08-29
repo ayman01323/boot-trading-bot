@@ -6,13 +6,13 @@ Approval timestamp: 2026-08-29T10:38:58Z (2026-08-29 11:38:58 BST)
 Subject: Learner historical BUY restore + 0.005 SOL/10 positions + 30+3 minute
 full-exit + LP conditional revalidation.
 
-The normal final_runtime_integrity_patch runs first and proves the pre-existing
-safety stack. Change Set 4 is then composed, the timed-exit reason is attached to
-the existing safe-slice/backoff execution protection, and this second gate proves
-that the late wrappers are complete.
+The normal audited invariants run first against the pre-change moderate leader
+quality layer. Change Set 4 then installs the owner profile as a final late-bound
+wrapper, and this gate proves both stages are composed in the intended order.
 """
 
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
+from . import solana_first_day_strategy_restore_patch as _first_day
 from . import solana_leader_quality_restore_patch as _quality
 from . import solana_liquidity_stuck_nonblocking_patch as _stuck
 from . import solana_live_patch as _live
@@ -20,14 +20,34 @@ from . import solana_owner_changeset_4_exit_safety_patch as _exit_safety
 from . import solana_owner_changeset_4_patch as _owner
 from . import solana_pool_risk_gate as _pool
 from . import solana_positive_edge_entry_gate_patch as _edge
+from . import solana_profit_guard_patch as _guard
 from . import solana_sibot as _sol
 
 
 def composition_checks() -> dict[str, bool]:
+    profile = _owner._OWNER_PROFILE_OVERRIDES
     return {
         "changeset_id": _owner.CHANGESET_ID == "CHANGE_SET_4",
         "changeset_timestamp": _owner.CHANGESET_APPROVED_UTC == "2026-08-29T10:38:58Z",
-        "historical_profile_outer": _sol.settings is _quality.settings_quality_restored,
+        "pre_invariant_quality_preserved": _owner._PREV_SETTINGS is _quality.settings_quality_restored,
+        "historical_profile_final_outer": _sol.settings is _owner.settings_owner_changeset_4,
+        "historical_profile_values": (
+            profile.get("leaders_per_user") == "5"
+            and profile.get("min_profit_factor") == "1.20"
+            and profile.get("min_recent_win_rate_pct") == "50"
+            and profile.get("min_recent_profit_factor") == "1.00"
+            and profile.get("min_copied_trades_for_guard") == "5"
+            and profile.get("min_copied_win_rate_pct") == "40"
+            and profile.get("min_copied_profit_factor") == "1.0"
+            and profile.get("max_consecutive_copied_losses") == "3"
+            and profile.get("leader_suspend_minutes") == "180"
+            and profile.get("take_profit_pct") == "15"
+            and profile.get("max_hold_hours") == "0.5"
+            and profile.get("mirror_partial_sells") == "false"
+            and profile.get("live_trade_sol") == "0.005"
+            and profile.get("live_max_positions") == "10"
+        ),
+        "owner_copied_guard_final": _guard._copied_ok is _first_day.copied_ok_first_day,
         "owner_trade_limit_outer": _live.live_limits is _owner.live_limits_owner_changeset_4,
         "owner_lp_revalidation_outer": _pool.evaluate_rugcheck is _owner.evaluate_rugcheck_lp_revalidation,
         "owner_capacity_eligibility_outer": _pool._eligible_live_users is _owner.eligible_live_users_owner_changeset_4,
@@ -55,7 +75,7 @@ def install() -> None:
         raise RuntimeError("Change Set 4 runtime integrity failed: " + ", ".join(failed))
     print(
         "[owner-changeset-4-integrity] OK approved=2026-08-29T10:38:58Z "
-        "checks=%d rollback_manifest=docs/change-control/2026-08-29T103858Z-change-set-4.md"
+        "staged_profile=true checks=%d rollback_manifest=docs/change-control/2026-08-29T103858Z-change-set-4.md"
         % len(checks)
     )
 
