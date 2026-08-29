@@ -1,0 +1,204 @@
+name: SiLearn MASTER Repair 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/silearn-master-repair-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Resolve trusted operator and repair isolated SiLearn MASTER
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          test -f "$ROOT/.env"
+          test -f "$ROOT/CSVbot/users.csv"
+          sudo -n mkdir -p "$ROOT/private"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a "$ROOT/.env" "$ROOT/private/.env.before-master-repair-$stamp"
+          sudo -n cp -a "$ROOT/CSVbot/users.csv" "$ROOT/private/users.before-master-repair-$stamp.csv"
+
+          ROOT="$ROOT" sudo -n -E python3 - <<'PY'
+          import csv, glob, os, re
+          from collections import defaultdict
+          from pathlib import Path
+
+          root=Path(os.environ['ROOT'])
+          learner_users=(root/'CSVbot/users.csv').resolve()
+          learner_env=(root/'.env').resolve()
+          evidence=defaultdict(set)
+          source_kind={}
+
+          def valid_id(v):
+              s=str(v or '').strip()
+              return s if s and s.lstrip('-').isdigit() else ''
+
+          def add(tid, source, kind):
+              tid=valid_id(tid)
+              if not tid: return
+              evidence[tid].add(source)
+              source_kind[source]=kind
+
+          # Trusted users.csv registries from other bot/runtime roots.
+          csv_paths=set()
+          for pat in [
+              '/root/multichain-learning-bot-v2.2-fast-direct-market/CSVbot/users.csv',
+              '/home/ayman01323/BOOT/CSVbot/users.csv',
+              '/home/ayman01323/BOOT/testingbots/*/CSVbot/users.csv',
+          ]:
+              csv_paths.update(glob.glob(pat))
+          for raw in sorted(csv_paths):
+              p=Path(raw)
+              try:
+                  if p.resolve()==learner_users or not p.is_file(): continue
+                  rows=list(csv.DictReader(p.open(encoding='utf-8-sig',newline='')))
+              except Exception:
+                  continue
+              for row in rows:
+                  if str(row.get('status') or '').upper()!='ACTIVE': continue
+                  if str(row.get('role') or '').upper()!='MASTER': continue
+                  add(row.get('telegram_id'), 'users:'+str(p), 'users')
+
+          # Dedicated runtime envs / bot envs. Only chat identifiers are read;
+          # bot tokens and all other secret values are ignored.
+          env_paths=set()
+          for pat in [
+              '/root/multichain-learning-bot-v2.2-fast-direct-market/.env',
+              '/home/ayman01323/BOOT/.env',
+              '/home/ayman01323/BOOT/testingbots/*/.env',
+              '/var/tmp/*telegram*runtime*.env',
+              '/var/tmp/*council*runtime*.env',
+          ]:
+              env_paths.update(glob.glob(pat))
+          chat_key=re.compile(r'^(?:[A-Z0-9_]*TELEGRAM_[A-Z0-9_]*CHAT_IDS?|TELEGRAM_CHAT_IDS?)$')
+          for raw in sorted(env_paths):
+              p=Path(raw)
+              try:
+                  if p.resolve()==learner_env or not p.is_file(): continue
+                  lines=p.read_text(encoding='utf-8',errors='ignore').splitlines()
+              except Exception:
+                  continue
+              for line in lines:
+                  s=line.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); k=k.strip().upper()
+                  if not chat_key.match(k): continue
+                  v=v.strip().strip('"').strip("'")
+                  for item in re.split(r'[,;\s]+',v):
+                      add(item, 'env:'+str(p), 'env')
+
+          # Require corroboration by at least two distinct source files and at
+          # least one source to be a structured users.csv MASTER registry.
+          scored=[]
+          for tid,sources in evidence.items():
+              kinds={source_kind[s] for s in sources}
+              if len(sources)>=2 and 'users' in kinds:
+                  scored.append((len(sources), len(kinds), tid, sources))
+          scored.sort(reverse=True, key=lambda x:(x[0],x[1]))
+          if not scored:
+              print('trusted_candidate_found=false')
+              print('candidate_count='+str(len(evidence)))
+              raise SystemExit(20)
+          best=scored[0]
+          if len(scored)>1 and scored[1][:2]==best[:2] and scored[1][2]!=best[2]:
+              print('trusted_candidate_found=false')
+              print('diagnosis=ambiguous_trusted_operator_consensus')
+              raise SystemExit(21)
+          tid=best[2]
+          print('trusted_candidate_found=true')
+          print('trusted_source_count='+str(best[0]))
+          print('trusted_source_kinds='+str(best[1]))
+
+          # Confirm candidate is not merely the existing stale learner MASTER.
+          rows=list(csv.DictReader((root/'CSVbot/users.csv').open(encoding='utf-8-sig',newline='')))
+          fields=['telegram_id','role','status','fee_plan_id','label','allowed_chains','max_wallets','can_transfer','can_manual_trade','can_auto_trade','created_epoch','activated_epoch','notes']
+          old=[str(r.get('telegram_id') or '').strip() for r in rows if str(r.get('role') or '').upper()=='MASTER' and str(r.get('status') or '').upper()=='ACTIVE']
+          print('candidate_differs_from_stale_master='+str(tid not in old).lower())
+
+          # Reassign MASTER atomically. Preserve prior record but suspend it so
+          # a stale ID cannot retain operator privileges.
+          found=False
+          import time
+          now=str(int(time.time()))
+          for r in rows:
+              rid=str(r.get('telegram_id') or '').strip()
+              if str(r.get('role') or '').upper()=='MASTER' and rid!=tid:
+                  r['role']='USER'; r['status']='SUSPENDED'; r['notes']='Superseded by secure SiLearn MASTER repair '+now
+              if rid==tid:
+                  r['role']='MASTER'; r['status']='ACTIVE'; r['fee_plan_id']='MASTER'; r['allowed_chains']='*'; r['max_wallets']=r.get('max_wallets') or '20'; r['can_transfer']='true'; r['can_manual_trade']='true'; r['can_auto_trade']='true'; r['activated_epoch']=r.get('activated_epoch') or now; r['notes']='Verified operator identity restored by cross-runtime consensus '+now; found=True
+          if not found:
+              rows.append({'telegram_id':tid,'role':'MASTER','status':'ACTIVE','fee_plan_id':'MASTER','label':'Master','allowed_chains':'*','max_wallets':'20','can_transfer':'true','can_manual_trade':'true','can_auto_trade':'true','created_epoch':now,'activated_epoch':now,'notes':'Verified operator identity restored by cross-runtime consensus '+now})
+          tmp=root/'CSVbot/users.csv.tmp-master-repair'
+          with tmp.open('w',encoding='utf-8',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows([{k:r.get(k,'') for k in fields} for r in rows]); f.flush(); os.fsync(f.fileno())
+          os.replace(tmp,root/'CSVbot/users.csv')
+
+          # Align learner Telegram recipient configuration with the same trusted
+          # MASTER identity. Never alter or print TELEGRAM_BOT_TOKEN.
+          ep=root/'.env'; lines=ep.read_text(encoding='utf-8',errors='ignore').splitlines(); out=[]; seen=set()
+          for line in lines:
+              if '=' not in line or line.lstrip().startswith('#'):
+                  out.append(line); continue
+              k=line.split('=',1)[0].strip()
+              if k in {'TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'}:
+                  if k not in seen:
+                      out.append(k+'='+tid); seen.add(k)
+              else:
+                  out.append(line)
+          for k in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              if k not in seen: out.append(k+'='+tid)
+          ep.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          os.chmod(ep,0o600)
+          print('registry_repaired=true')
+          print('env_recipient_repaired=true')
+          PY
+
+          sudo -n chown ayman01323:ayman01323 "$ROOT/.env" "$ROOT/CSVbot/users.csv"
+          sudo -n chmod 600 "$ROOT/.env"
+          sudo -n systemctl restart "$SERVICE"
+          sleep 10
+          test "$(systemctl is-active "$SERVICE")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$ROOT/.env")" -eq 1
+
+      - name: Prove repaired MASTER through the actual learnerbot handler
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          py="$ROOT/.venv/bin/python"; test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          ROOT="$ROOT" PYTHONPATH="$ROOT" sudo -n -E "$py" - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          rows=list(csv.DictReader((root/'CSVbot/users.csv').open(encoding='utf-8-sig',newline='')))
+          masters=[str(r.get('telegram_id') or '').strip() for r in rows if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER']
+          if len(masters)!=1: raise SystemExit('active_master_count_invalid')
+          tid=masters[0]
+          from learnerbot.config import AppSettings
+          import learnerbot.telegram_google_learner_launcher_patch as p
+          app=AppSettings.load()
+          if not p._master(app,tid): raise SystemExit('handler_master_check_failed')
+          p.handle_update(app,{'message':{'chat':{'id':int(tid),'type':'private'},'text':'/learnerbot'}})
+          print('handler_master_check=true')
+          print('learner_menu_send_attempted=true')
+          PY
+          sleep 5
+          conflicts="$(sudo -n journalctl -u "$SERVICE" --since '3 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          test "$conflicts" -eq 0
+          test "$(systemctl is-active "$SERVICE")" = active
+          echo service_active=true
+          echo inbound_enabled=true
+          echo telegram_409_conflicts=0
+          echo master_repair_complete=true
