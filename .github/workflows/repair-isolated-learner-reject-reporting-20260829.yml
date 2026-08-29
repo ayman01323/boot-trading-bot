@@ -1,0 +1,246 @@
+name: Repair Isolated Learner Reject Reporting 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/repair_isolated_learner_reject_reporting.py'
+      - '.github/workflows/repair-isolated-learner-reject-reporting-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repair-isolated-learner-reject-reporting-20260829
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      LROOT: /home/ayman01323/BOOT/testingbots/learn
+      SERVICE: learnerbot-learn.service
+      QUEUE_ROOT: /home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY
+      CODE_ROOT: /home/ayman01323/BOOT/datacentre/rejected_router
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Repair rejection reporting only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test -n "${TELEGRAM_BOT_TOKEN:-}"
+          test -d "$LROOT/learnerbot"
+          test -f "$LROOT/CSVbot/solana_settings.csv"
+          test -f "$LROOT/CSVbot/user_trading_settings.csv"
+          test -f "$LROOT/.env"
+          test "$(systemctl show "$SERVICE" -p LoadState --value)" = loaded
+          python3 -m py_compile scripts/repair_isolated_learner_reject_reporting.py learnerbot/rejected_opportunity_publisher.py
+
+          SOLANA_HASH_BEFORE="$(sha256sum "$LROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
+          USER_HASH_BEFORE="$(sha256sum "$LROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
+          SOURCE_BEFORE="$(cat "$LROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
+          echo "trading_settings_hash_before=$SOLANA_HASH_BEFORE"
+          echo "user_settings_hash_before=$USER_HASH_BEFORE"
+          echo "restored_source_before=${SOURCE_BEFORE:-unknown}"
+
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP="$LROOT/private/pre-reject-report-repair-$stamp"
+          mkdir -p "$BACKUP/learnerbot"
+          cp -a "$LROOT/.env" "$BACKUP/.env"
+          cp -a "$LROOT/learnerbot/telegram_ui.py" "$BACKUP/learnerbot/telegram_ui.py"
+          cp -a "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$BACKUP/learnerbot/solana_leader_cursor_reliability_patch.py"
+          if [[ -f "$LROOT/learnerbot/rejected_opportunity_publisher.py" ]]; then
+            cp -a "$LROOT/learnerbot/rejected_opportunity_publisher.py" "$BACKUP/learnerbot/rejected_opportunity_publisher.py"
+            touch "$BACKUP/publisher-existed"
+          fi
+          echo "backup=$BACKUP"
+
+          changed=0
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo 'REJECT_REPORT_REPAIR_ROLLBACK=START'
+              systemctl stop "$SERVICE" || true
+              cp -a "$BACKUP/.env" "$LROOT/.env"
+              cp -a "$BACKUP/learnerbot/telegram_ui.py" "$LROOT/learnerbot/telegram_ui.py"
+              cp -a "$BACKUP/learnerbot/solana_leader_cursor_reliability_patch.py" "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
+              if [[ -f "$BACKUP/publisher-existed" ]]; then
+                cp -a "$BACKUP/learnerbot/rejected_opportunity_publisher.py" "$LROOT/learnerbot/rejected_opportunity_publisher.py"
+              else
+                rm -f "$LROOT/learnerbot/rejected_opportunity_publisher.py"
+              fi
+              chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" "$LROOT/.env" || true
+              chmod 600 "$LROOT/.env" || true
+              systemctl restart "$SERVICE" || true
+              sleep 4
+              echo "learner_after_rollback=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+              echo 'REJECT_REPORT_REPAIR_ROLLBACK=COMPLETE'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          # Keep every existing environment value except the narrow reporting keys below.
+          TARGET="$LROOT" TOKEN="$TELEGRAM_BOT_TOKEN" QUEUE_ROOT="$QUEUE_ROOT" CODE_ROOT="$CODE_ROOT" python3 - <<'PY'
+          import csv, os
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          envp=root/'.env'
+          token=os.environ['TOKEN'].strip()
+          if not token:
+              raise SystemExit('Telegram token unavailable')
+          master=''
+          users=root/'CSVbot'/'users.csv'
+          if users.exists():
+              with users.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '').strip()
+                      if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
+                          master=tid
+                          break
+          replace={
+              'TELEGRAM_BOT_TOKEN': token,
+              'LEARNER_TELEGRAM_OUTBOUND_ONLY': 'true',
+              'BOOT_REJECTED_OPPORTUNITY_ENABLED': '1',
+              'BOOT_REJECTED_OPPORTUNITY_DIR': os.environ['QUEUE_ROOT'],
+              'BOOT_REJECTED_OPPORTUNITY_CODE_ROOT': os.environ['CODE_ROOT'],
+              'BOOT_REJECTED_SOURCE_BOT': 'learnerbot',
+          }
+          if master:
+              replace['TELEGRAM_CHAT_ID']=master
+          old=envp.read_text(encoding='utf-8').splitlines()
+          out=[]; seen=set()
+          for line in old:
+              if '=' in line and not line.lstrip().startswith('#'):
+                  key=line.split('=',1)[0].strip()
+                  if key in replace:
+                      if key not in seen:
+                          out.append(f'{key}={replace[key]}')
+                          seen.add(key)
+                      continue
+              out.append(line)
+          for key,value in replace.items():
+              if key not in seen:
+                  out.append(f'{key}={value}')
+          envp.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
+          os.chmod(envp,0o600)
+          print('telegram_token_present=true')
+          print('outbound_only=true')
+          print('rejected_queue_enabled=true')
+          print('master_recipient_configured='+str(bool(master)).lower())
+          PY
+
+          python3 scripts/repair_isolated_learner_reject_reporting.py --repo "$GITHUB_WORKSPACE" --root "$LROOT"
+          changed=1
+
+          chown -R ayman01323:$(id -gn ayman01323) \
+            "$LROOT/learnerbot/telegram_ui.py" \
+            "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" \
+            "$LROOT/learnerbot/rejected_opportunity_publisher.py" \
+            "$LROOT/.env"
+          chmod 600 "$LROOT/.env"
+
+          py="$LROOT/.venv/bin/python"
+          [[ -x "$py" ]] || py=python3
+          PYTHONPATH="$LROOT" "$py" -m py_compile \
+            "$LROOT/learnerbot/telegram_ui.py" \
+            "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" \
+            "$LROOT/learnerbot/rejected_opportunity_publisher.py"
+
+          grep -q 'outbound-only mode: polling disabled' "$LROOT/learnerbot/telegram_ui.py"
+          grep -q '_report_reject_actions(app, payload, actions)' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
+          grep -q 'LEARNER REJECTED OPPORTUNITY' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
+          echo 'runtime_hooks=PASS'
+
+          systemctl restart "$SERVICE"
+          sleep 10
+          state1="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          pid1="$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)"
+          restarts1="$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)"
+          [[ "$state1" = active && "$pid1" != 0 ]] || exit 71
+          sleep 7
+          state2="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          pid2="$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)"
+          restarts2="$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)"
+          [[ "$state2" = active && "$pid2" != 0 && "$restarts1" = "$restarts2" ]] || exit 72
+          if journalctl -u "$SERVICE" --since '25 seconds ago' --no-pager | grep -q 'Traceback (most recent call last)'; then
+            journalctl -u "$SERVICE" --since '25 seconds ago' -n 120 --no-pager
+            exit 73
+          fi
+          echo "learner_service_active=true"
+          echo "learner_service_stable_pid=$pid2"
+          echo "learner_nrestarts=$restarts2"
+
+          SOLANA_HASH_AFTER="$(sha256sum "$LROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
+          USER_HASH_AFTER="$(sha256sum "$LROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
+          SOURCE_AFTER="$(cat "$LROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
+          test "$SOLANA_HASH_BEFORE" = "$SOLANA_HASH_AFTER"
+          test "$USER_HASH_BEFORE" = "$USER_HASH_AFTER"
+          test "$SOURCE_BEFORE" = "$SOURCE_AFTER"
+          echo 'trading_settings_unchanged=true'
+          echo 'restored_source_unchanged=true'
+
+          # Send one synthetic report through the exact outbound helper. It cannot call a trader,
+          # cannot publish to the rejection queue, and explicitly says that no trade was placed.
+          cd "$LROOT"
+          PYTHONPATH=. "$py" - <<'PY'
+          import csv
+          from pathlib import Path
+          from learnerbot.config import AppSettings
+          from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report
+          app=AppSettings.load()
+          if not app.telegram_bot_token:
+              raise SystemExit('runtime Telegram token not loaded')
+          master=''
+          p=Path('CSVbot/users.csv')
+          if p.exists():
+              with p.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '').strip()
+                      if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
+                          master=tid
+                          break
+          if not master:
+              ids=[str(x).strip() for x in getattr(app,'telegram_chat_ids',[]) if str(x).strip()]
+              master=ids[0] if ids else ''
+          if not master:
+              raise SystemExit('no Telegram recipient available for reject-report smoke test')
+          ok=_send_reject_report(
+              app,
+              master,
+              {'mint':'SYSTEM_TEST_ONLY','leader_wallet':'','signature':'reject-report-smoke'},
+              {'action':'REJECT','reason':'REJECT_REPORT_SMOKE_TEST'},
+              test_only=True,
+          )
+          if not ok:
+              raise SystemExit('reject-report smoke delivery returned no message id')
+          print('reject_report_telegram_smoke=PASS')
+          PY
+
+          echo '=== recent reporting evidence ==='
+          journalctl -u "$SERVICE" --since '5 minutes ago' --no-pager -o cat 2>/dev/null \
+            | grep -E 'telegram-menu|learner-reject-report|rejected-opportunity' \
+            | tail -n 100 || true
+
+          echo 'repair=PASS'
+          trap - EXIT
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          echo "service=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          echo "source=$(cat "$LROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || echo unknown)"
+          echo "outbound_guard=$([[ -f "$LROOT/learnerbot/telegram_ui.py" ]] && grep -q 'outbound-only mode: polling disabled' "$LROOT/learnerbot/telegram_ui.py" && echo present || echo missing)"
+          echo "reject_consumer=$([[ -f "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" ]] && grep -q '_report_reject_actions(app, payload, actions)' "$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py" && echo present || echo missing)"
