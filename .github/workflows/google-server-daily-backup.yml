@@ -13,6 +13,8 @@ concurrency:
   group: google-server-daily-backup
   cancel-in-progress: false
 
+# Backups are retained indefinitely. There is no age-based automatic deletion.
+
 jobs:
   boot:
     name: Backup BOOT project folder
@@ -21,7 +23,6 @@ jobs:
     env:
       DEST_ROOT: /home/ayman01323/GoogleServerBuckup
       BOOT: /home/ayman01323/BOOT
-      RETENTION_DAYS: '30'
       TZ: Europe/London
     steps:
       - name: Verify BOOT source
@@ -108,14 +109,6 @@ jobs:
           echo "BOOT ZIP backup completed: $DAY_DIR"
           cat BOOT.stats
           ls -lh BOOT.zip BOOT.zip.sha256 BOOT.stats
-
-      - name: Apply retention policy
-        shell: bash
-        run: |
-          set -euo pipefail
-          find "$DEST_ROOT" -mindepth 1 -maxdepth 1 -type d \
-            -regextype posix-extended -regex '.*/[0-9]{4}-[0-9]{2}-[0-9]{2}' \
-            -mtime +"$RETENTION_DAYS" -print -exec rm -rf {} +
 
   protected:
     name: Backup ClaudeServer, production and SiRisky
