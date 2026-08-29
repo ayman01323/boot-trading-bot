@@ -48,7 +48,6 @@ jobs:
           p=Path(os.environ['MAINPY'])
           text=p.read_text(encoding='utf-8',errors='strict')
           stmt='from . import telegram_google_learner_launcher_patch  # noqa: F401'
-          # Remove accidental duplicates first.
           lines=[line for line in text.splitlines() if line.strip()!=stmt]
           text='\n'.join(lines).rstrip()+'\n'
           marker='from .cli import main'
@@ -60,9 +59,9 @@ jobs:
           sudo -n chown ayman01323:ayman01323 "$mainpy"
           sudo -n chmod 0644 "$mainpy"
 
-          "$py" -m py_compile "$module" "$mainpy"
+          sudo -n "$py" -m py_compile "$module" "$mainpy"
           cd "$target"
-          PYTHONPATH="$target" "$py" - <<'PY'
+          PYTHONPATH="$target" sudo -n -E "$py" - <<'PY'
           import importlib
           m=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
           assert callable(m.handle_update)
@@ -139,8 +138,6 @@ jobs:
           if not master: raise SystemExit('no ACTIVE MASTER Telegram recipient')
           app=AppSettings.load()
           if not p._master(app, master): raise SystemExit('MASTER gate did not recognise configured MASTER')
-          # Read-only command: opens the learner status/menu. No callback, signing,
-          # order, entry, exit, wallet mutation or trading setting is invoked.
           p.handle_update(app, {'message': {'chat': {'id': int(master), 'type': 'private'}, 'text': '/learnerbot'}})
           print('learnerbot_handler_smoke=PASS')
           print('learnerbot_menu_sent_to_master=true')
