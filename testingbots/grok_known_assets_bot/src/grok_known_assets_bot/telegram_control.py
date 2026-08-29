@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib import error, request
 
+from . import live_canary as lc
 from .control import load_state, save_state
+from .live_readiness import ENTRY_TARGET_SOL, HARD_MAX_ENTRY_SOL
 
 API_ROOT = "https://api.telegram.org"
 ALERT_KINDS = (
@@ -22,7 +24,46 @@ ALERT_KINDS = (
     "LIVE_PREFLIGHT_REJECT",
     "OPEN",
     "CLOSE",
+    "CANARY_PENDING",
+    "CANARY_EXECUTED",
+    "CANARY_REJECTED",
+    "CANARY_RECONCILIATION",
 )
+
+
+def _canary_approver_user_ids() -> frozenset[str]:
+    raw = str(os.environ.get("GROK_LIVE_CANARY_APPROVER_USER_IDS") or "").strip()
+    return frozenset(x.strip() for x in raw.replace(";", ",").split(",") if x.strip())
+
+
+def _canary_approver_ok(chat_id: str, from_user_id: str | None, allowed_chats: Iterable[str]) -> tuple[bool, str]:
+    """Approver must be an explicit user id, or (fallback) a private allow-listed chat.
+
+    Chat allow-list alone is not enough for approval: in a group any participant
+    could approve. Bind to the immutable Telegram user id.
+    """
+    approvers = _canary_approver_user_ids()
+    uid = str(from_user_id or "").strip()
+    if approvers:
+        if uid and uid in approvers:
+            return True, "ok"
+        return False, "sender is not on GROK_LIVE_CANARY_APPROVER_USER_IDS"
+    # Fallback: no approver list configured -> require a private chat (chat.id ==
+    # from.id) that is also on the command allow-list.
+    if uid and str(chat_id) == uid and str(chat_id) in set(str(c) for c in allowed_chats):
+        return True, "ok"
+    return False, "set GROK_LIVE_CANARY_APPROVER_USER_IDS or approve from a private allow-listed chat"
+
+
+def _canary_db_rw() -> sqlite3.Connection | None:
+    path = _journal_db_path()
+    try:
+        db = sqlite3.connect(str(path), timeout=8.0)
+        db.execute("PRAGMA busy_timeout=8000")
+        lc.ensure_schema(db)
+        return db
+    except sqlite3.Error:
+        return None
 
 
 @dataclass(frozen=True)
@@ -158,10 +199,45 @@ def _latest_decision_text(path: Path) -> str:
     return f"Latest decision: {kind} {asset or 'system'} — {reason} ({age}s ago)"
 
 
+def _canary_status_lines() -> list[str]:
+    state = load_state()
+    canary_on = bool(state.get("live_canary_enabled"))
+    lines = [
+        f"LIVE canary: {'🔴 ARMED (real money)' if state.get('live_money_enabled') else '⚪ OFF'}",
+        f"Hard cap: {HARD_MAX_ENTRY_SOL:.9f} SOL  •  target: {ENTRY_TARGET_SOL:.9f} SOL",
+    ]
+    db = _canary_db_rw()
+    if db is None:
+        lines.append("Approvals: journal unavailable")
+        return lines
+    try:
+        pending = lc.list_pending(db)
+        recon = lc.needs_reconciliation(db)
+        open_pos = lc.open_entry_position_count(db)
+    finally:
+        db.close()
+    lines.append(f"Open canary position: {open_pos}")
+    if recon:
+        lines.append("⚠️ RECONCILIATION REQUIRED — canary paused until a human checks the chain")
+    if pending:
+        for t in pending[:5]:
+            lines.append(
+                f"• {t['status']} {t['approval_id'][:12]}… {t['kind']} exp={int(t['expires_epoch'])}"
+            )
+    else:
+        lines.append("Pending approvals: none")
+    if canary_on and not state.get("live_money_enabled"):
+        lines.append("(canary flag set but arm/readiness is off)")
+    return lines
+
+
 def _status_text() -> str:
     state = load_state()
     path = _journal_db_path()
     readiness = bool(state.get("live_readiness_enabled"))
+    money = bool(state.get("live_money_enabled"))
+    signing = "🔴 ENABLED (canary)" if money else "DISABLED"
+    broadcast = "🔴 ENABLED (canary, approval-gated)" if money else "DISABLED"
     return "\n".join(
         [
             "🤖 GROK KNOWN-ASSETS BOT",
@@ -170,9 +246,9 @@ def _status_text() -> str:
             f"Persisted PAPER positions: {_position_count(path)}",
             "Market feed: REAL PUBLIC DATA",
             f"Live route preflight: {'🟢 ENABLED' if readiness else '⚪ OFF'}",
-            "Canary target: 0.0005 SOL (hard max 0.001 SOL)",
-            "Real-money signing: DISABLED",
-            "Transaction broadcast: DISABLED",
+            *_canary_status_lines(),
+            f"Real-money signing: {signing}",
+            f"Transaction broadcast: {broadcast}",
             _latest_decision_text(path),
         ]
     )
@@ -185,31 +261,45 @@ def _normalise_command(text: str) -> tuple[str, list[str]]:
     return parts[0].lower().split("@", 1)[0], parts[1:]
 
 
-def handle_command(text: str, chat_id: str) -> str | None:
+def _cancel_canary_tickets(reason: str) -> int:
+    db = _canary_db_rw()
+    if db is None:
+        return 0
+    try:
+        return lc.cancel_unclaimed(db, reason=reason)
+    finally:
+        db.close()
+
+
+def handle_command(text: str, chat_id: str, from_user_id: str | None = None) -> str | None:
     command, args = _normalise_command(text)
     if command in {"/start", "/help"}:
         return (
             "Grok controls:\n"
             "/grokstatus\n"
-            "/grokarm on CONFIRM\n"
-            "/grokarm off\n"
-            "/groklivecheck on CONFIRM\n"
-            "/groklivecheck off\n"
+            "/grokarm on CONFIRM   /grokarm off\n"
+            "/groklivecheck on CONFIRM   /groklivecheck off\n"
+            "/groklivecanary on CONFIRM   /groklivecanary off\n"
+            "/grokpending\n"
+            "/grokapprove <id> CONFIRM\n"
+            "/grokexit <position_id> CONFIRM\n"
             "/grokstop\n\n"
-            "LIVE CHECK uses fresh Jupiter entry/reverse/3x-stress quotes and produces a LIVE-READY ticket.\n"
-            "Signing and transaction broadcast are not enabled."
+            "LIVE CANARY broadcasts real money. Every entry AND every exit needs a\n"
+            "single-use approval. /grokarm and /groklivecanary alone never broadcast."
         )
     if command == "/grokstatus":
         return _status_text()
     if command == "/grokstop":
-        save_state(armed=False, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
-        return "🛑 GROK STOPPED. PAPER entries and LIVE-readiness checks are blocked."
+        save_state(armed=False, live_readiness_enabled=False, live_canary_enabled=False, updated_by=f"telegram:{chat_id}")
+        cancelled = _cancel_canary_tickets(f"grokstop by {chat_id}")
+        return f"🛑 GROK STOPPED. PAPER, LIVE-readiness and LIVE canary are all off. Cancelled {cancelled} unclaimed approval(s)."
     if command == "/grokarm":
         if len(args) == 1 and args[0].lower() == "off":
-            save_state(armed=False, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
-            return "✅ GROK PAPER ARM: OFF."
+            save_state(armed=False, live_readiness_enabled=False, live_canary_enabled=False, updated_by=f"telegram:{chat_id}")
+            _cancel_canary_tickets(f"grokarm off by {chat_id}")
+            return "✅ GROK PAPER ARM: OFF. LIVE canary also off."
         if len(args) == 2 and args[0].lower() == "on" and args[1].upper() == "CONFIRM":
-            save_state(armed=True, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
+            save_state(armed=True, live_readiness_enabled=False, live_canary_enabled=False, updated_by=f"telegram:{chat_id}")
             return (
                 "✅ GROK PAPER ARMED. Grok may open PAPER positions when research and risk gates pass.\n"
                 "📣 Entry/exit/rejection alerts are enabled.\n"
@@ -218,18 +308,93 @@ def handle_command(text: str, chat_id: str) -> str | None:
         return "❌ Use exactly: /grokarm on CONFIRM  or  /grokarm off"
     if command == "/groklivecheck":
         if len(args) == 1 and args[0].lower() == "off":
-            save_state(armed=False, live_readiness_enabled=False, updated_by=f"telegram:{chat_id}")
-            return "✅ GROK LIVE READINESS: OFF."
+            save_state(armed=False, live_readiness_enabled=False, live_canary_enabled=False, updated_by=f"telegram:{chat_id}")
+            _cancel_canary_tickets(f"groklivecheck off by {chat_id}")
+            return "✅ GROK LIVE READINESS: OFF. LIVE canary also off."
         if len(args) == 2 and args[0].lower() == "on" and args[1].upper() == "CONFIRM":
             save_state(armed=True, live_readiness_enabled=True, updated_by=f"telegram:{chat_id}")
             return (
                 "🟡 GROK LIVE READINESS ARMED.\n"
                 "Qualified SOL entries will be re-quoted USDC→SOL, full-reverse tested SOL→USDC, and 3x exit-stress checked.\n"
-                "Canary target: 0.0005 SOL; hard maximum: 0.001 SOL.\n"
+                f"Canary target: {ENTRY_TARGET_SOL:.9f} SOL; hard maximum: {HARD_MAX_ENTRY_SOL:.9f} SOL.\n"
                 "🔒 Signing: DISABLED. Broadcast: DISABLED."
             )
         return "❌ Use exactly: /groklivecheck on CONFIRM  or  /groklivecheck off"
+    if command == "/groklivecanary":
+        if len(args) == 1 and args[0].lower() == "off":
+            save_state(armed=load_state().get("armed", False), live_readiness_enabled=load_state().get("live_readiness_enabled", False),
+                       live_canary_enabled=False, updated_by=f"telegram:{chat_id}")
+            cancelled = _cancel_canary_tickets(f"groklivecanary off by {chat_id}")
+            return f"✅ LIVE CANARY: OFF. Cancelled {cancelled} unclaimed approval(s). Any in-flight broadcast is left to reconcile."
+        if len(args) == 2 and args[0].lower() == "on" and args[1].upper() == "CONFIRM":
+            state = load_state()
+            if not (state.get("armed") and state.get("live_readiness_enabled")):
+                return "❌ Arm the bot and enable /groklivecheck first — canary needs both."
+            save_state(armed=True, live_readiness_enabled=True, live_canary_enabled=True, updated_by=f"telegram:{chat_id}")
+            return (
+                f"🔴 LIVE CANARY ENABLED. Real money is now reachable.\n"
+                f"Hard cap {HARD_MAX_ENTRY_SOL:.9f} SOL per approved trade, max 1 open position.\n"
+                "No broadcast happens without /grokapprove <id> CONFIRM (entries) or /grokexit <position_id> CONFIRM."
+            )
+        return "❌ Use exactly: /groklivecanary on CONFIRM  or  /groklivecanary off"
+    if command == "/grokpending":
+        db = _canary_db_rw()
+        if db is None:
+            return "Journal unavailable."
+        try:
+            pending = lc.list_pending(db)
+        finally:
+            db.close()
+        if not pending:
+            return "No pending or approved canary tickets."
+        out = ["Pending / approved canary tickets:"]
+        for t in pending:
+            out.append(
+                f"• {t['status']}  {t['approval_id']}\n  {t['kind']} {t['asset_key']} "
+                f"target={t['target_lamports']} lamports  expires_epoch={int(t['expires_epoch'])}"
+            )
+        return "\n".join(out)
+    if command == "/grokapprove":
+        if len(args) != 2 or args[1].upper() != "CONFIRM":
+            return "❌ Use exactly: /grokapprove <id> CONFIRM"
+        ok, why = _canary_approver_ok(str(chat_id), from_user_id, _allowed_chats_safe())
+        if not ok:
+            return f"❌ Not authorised to approve: {why}"
+        db = _canary_db_rw()
+        if db is None:
+            return "Journal unavailable."
+        try:
+            lc.approve_entry(db, args[0], user_id=str(from_user_id or ""), chat_id=str(chat_id))
+        except lc.CanaryLedgerError as exc:
+            return f"❌ {exc}"
+        finally:
+            db.close()
+        return f"✅ Approved {args[0]}. The runner will revalidate, simulate and broadcast one entry."
+    if command == "/grokexit":
+        if len(args) != 2 or args[1].upper() != "CONFIRM":
+            return "❌ Use exactly: /grokexit <position_id> CONFIRM"
+        ok, why = _canary_approver_ok(str(chat_id), from_user_id, _allowed_chats_safe())
+        if not ok:
+            return f"❌ Not authorised to approve an exit: {why}"
+        db = _canary_db_rw()
+        if db is None:
+            return "Journal unavailable."
+        try:
+            eid = lc.create_approved_exit(db, position_approval_id=args[0], user_id=str(from_user_id or ""), chat_id=str(chat_id))
+        except lc.CanaryLedgerError as exc:
+            return f"❌ {exc}"
+        finally:
+            db.close()
+        return f"✅ Exit approved ({eid}). The runner will revalidate the sell route, simulate and broadcast."
     return None
+
+
+def _allowed_chats_safe() -> frozenset[str]:
+    try:
+        raw = str(os.environ.get("GROK_TELEGRAM_CHAT_IDS") or "").strip()
+        return frozenset(x.strip() for x in raw.replace(";", ",").split(",") if x.strip())
+    except Exception:
+        return frozenset()
 
 
 def _iter_updates(settings: TelegramSettings, offset: int) -> tuple[list[dict[str, Any]], int]:
@@ -310,6 +475,39 @@ def _event_alert_text(kind: str, asset: str, payload: dict[str, Any]) -> str | N
         pnl = float(payload.get("realised_pnl_usd") or 0.0)
         icon = "🟢" if pnl >= 0 else "🔴"
         return f"{icon} GROK PAPER TRADE EXIT\nAsset: {asset_text}\nReason: {reason}\nRealised P&L: ${pnl:.4f}\nMode: PAPER"
+    if kind == "CANARY_PENDING":
+        return (
+            "🟠 GROK LIVE CANARY — APPROVAL NEEDED\n"
+            f"Asset: {asset_text}\n"
+            f"Target: {int(payload.get('target_lamports') or 0)} lamports\n"
+            f"Spend: {int(payload.get('input_micro_usdc') or 0)} micro-USDC  min out: {int(payload.get('min_out_lamports') or 0)} lamports\n"
+            f"Approve: {payload.get('approve_with') or '/grokpending for the id'}\n"
+            "Expires fast. No broadcast without your CONFIRM."
+        )
+    if kind == "CANARY_EXECUTED":
+        return (
+            "🟢 GROK LIVE CANARY — BROADCAST CONFIRMED\n"
+            f"Asset: {asset_text}\n"
+            f"Kind: {payload.get('kind')}\n"
+            f"Output raw: {payload.get('out_raw')}\n"
+            f"TX: {payload.get('signature')}"
+        )
+    if kind == "CANARY_REJECTED":
+        return (
+            "⚪ GROK LIVE CANARY — REJECTED (no money moved)\n"
+            f"Asset: {asset_text}\n"
+            f"Approval: {payload.get('approval_id')}\n"
+            f"Reason: {reason}"
+        )
+    if kind == "CANARY_RECONCILIATION":
+        return (
+            "🚨 GROK LIVE CANARY — RECONCILIATION REQUIRED\n"
+            f"Asset: {asset_text}\n"
+            f"Approval: {payload.get('approval_id')}\n"
+            f"Signature (if any): {payload.get('signature') or 'none recorded'}\n"
+            f"Detail: {reason}\n"
+            "Canary is PAUSED. Check the chain, then re-enable manually."
+        )
     return None
 
 
@@ -388,7 +586,9 @@ def run() -> int:
             text = message.get("text")
             if not isinstance(text, str):
                 continue
-            reply = handle_command(text, chat_id)
+            sender = message.get("from")
+            from_user_id = str(sender.get("id")).strip() if isinstance(sender, dict) and sender.get("id") is not None else None
+            reply = handle_command(text, chat_id, from_user_id)
             if reply:
                 try:
                     _send_message(settings, chat_id, reply)

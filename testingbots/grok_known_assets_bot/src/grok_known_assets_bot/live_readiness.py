@@ -34,6 +34,11 @@ class LiveReadinessResult:
     slippage_bps: int
     route_id: str
     expires_epoch: int
+    # Integer micro-USDC input and minimum acceptable lamports output for the
+    # entry leg, derived from the fresh quote and the slippage cap. The LIVE
+    # canary uses these as hard execution invariants; they are 0 on any reject.
+    entry_input_micro_usdc: int = 0
+    entry_min_out_lamports: int = 0
     signing_enabled: bool = False
     broadcast_enabled: bool = False
 
@@ -55,6 +60,8 @@ def _result(
     reverse_impact_bps: float = 0.0,
     stress_impact_bps: float = 0.0,
     route_id: str = "",
+    input_micro_usdc: int = 0,
+    min_out_lamports: int = 0,
     now: float,
 ) -> LiveReadinessResult:
     return LiveReadinessResult(
@@ -72,6 +79,8 @@ def _result(
         slippage_bps=int(settings.slippage_bps),
         route_id=route_id,
         expires_epoch=int(now + MAX_SIGNAL_AGE_SECONDS),
+        entry_input_micro_usdc=int(input_micro_usdc) if ready else 0,
+        entry_min_out_lamports=int(min_out_lamports) if ready else 0,
         signing_enabled=False,
         broadcast_enabled=False,
     )
@@ -153,6 +162,7 @@ def assess_live_readiness(
     loss_pct = max(0.0, (1.0 - reverse_usdc / spend_usdc) * 100.0) if spend_usdc > 0 else 100.0
     route_id = "|".join(_route_pool_ids(entry, reverse, stress))
 
+    min_out_lamports = int(sol_raw * (1.0 - float(settings.slippage_bps) / 10_000.0))
     common = dict(
         spend_usdc=spend_usdc,
         sol_out=sol_out,
@@ -162,6 +172,8 @@ def assess_live_readiness(
         reverse_impact_bps=reverse_impact,
         stress_impact_bps=stress_impact,
         route_id=route_id,
+        input_micro_usdc=micro_usdc,
+        min_out_lamports=min_out_lamports,
         now=now,
     )
     if entry_impact > MAX_ENTRY_IMPACT_BPS:

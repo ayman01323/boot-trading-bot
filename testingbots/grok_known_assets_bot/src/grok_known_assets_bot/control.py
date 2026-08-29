@@ -19,6 +19,11 @@ def default_state() -> dict[str, Any]:
         "armed": False,
         "mode": "PAPER_ONLY",
         "live_readiness_enabled": False,
+        # LIVE canary is a distinct, explicit, default-OFF state. It does NOT by
+        # itself approve or broadcast anything: it only lets the approval commands
+        # accept input. Every real-money broadcast still needs a single-use
+        # /grokapprove or /grokexit CONFIRM.
+        "live_canary_enabled": False,
         "live_money_enabled": False,
         "updated_epoch": 0,
         "updated_by": "",
@@ -40,9 +45,14 @@ def load_state(path: Path | None = None) -> dict[str, Any]:
 
     state["armed"] = bool(state.get("armed", False))
     state["live_readiness_enabled"] = bool(state.get("live_readiness_enabled", False))
+    state["live_canary_enabled"] = bool(state.get("live_canary_enabled", False))
     state["mode"] = "LIVE_READINESS" if state["live_readiness_enabled"] else "PAPER_ONLY"
-    # Hard boundary: this component never signs or broadcasts money transactions.
-    state["live_money_enabled"] = False
+    # A canary broadcast path is only reachable when the operator has armed, kept
+    # live-readiness on (so the readiness pipeline still gates candidates), and
+    # explicitly enabled the canary. Any one of these off closes the money path.
+    state["live_money_enabled"] = bool(
+        state["armed"] and state["live_readiness_enabled"] and state["live_canary_enabled"]
+    )
     return state
 
 
@@ -50,6 +60,7 @@ def save_state(
     *,
     armed: bool,
     live_readiness_enabled: bool | None = None,
+    live_canary_enabled: bool | None = None,
     updated_by: str = "",
     path: Path | None = None,
 ) -> dict[str, Any]:
@@ -57,11 +68,15 @@ def save_state(
     target.parent.mkdir(parents=True, exist_ok=True)
     previous = load_state(target)
     readiness = previous.get("live_readiness_enabled", False) if live_readiness_enabled is None else bool(live_readiness_enabled)
+    canary = previous.get("live_canary_enabled", False) if live_canary_enabled is None else bool(live_canary_enabled)
+    # The canary can never be on without arm + readiness.
+    canary = bool(canary and armed and readiness)
     state = {
         "armed": bool(armed),
         "mode": "LIVE_READINESS" if readiness else "PAPER_ONLY",
         "live_readiness_enabled": readiness,
-        "live_money_enabled": False,
+        "live_canary_enabled": canary,
+        "live_money_enabled": bool(armed and readiness and canary),
         "updated_epoch": int(time.time()),
         "updated_by": str(updated_by or ""),
     }
@@ -90,3 +105,13 @@ def is_armed(path: Path | None = None) -> bool:
 def is_live_readiness_enabled(path: Path | None = None) -> bool:
     state = load_state(path)
     return bool(state.get("armed") and state.get("live_readiness_enabled"))
+
+
+def is_live_canary_enabled(path: Path | None = None) -> bool:
+    """True only when arm + live-readiness + canary are all explicitly on."""
+    state = load_state(path)
+    return bool(
+        state.get("armed")
+        and state.get("live_readiness_enabled")
+        and state.get("live_canary_enabled")
+    )
