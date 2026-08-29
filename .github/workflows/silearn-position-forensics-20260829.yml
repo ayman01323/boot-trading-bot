@@ -1,0 +1,231 @@
+name: SiLearn FJgf position forensics
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1937BST-position-forensics'
+
+permissions:
+  contents: read
+
+jobs:
+  forensic:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 12
+    steps:
+      - name: Read-only forensic analysis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          MINT=FJgfUuzEr8JMsbxhHwkTQMEcCkSgEnnUtmZf9qiSBs7t
+          LEADER=2rKeXU4y5xEo3WcsXcgvzm2FYGfLSZFkHfXaRVdc3Aid
+          echo 'SiLearn — 2026-08-29 19:37 BST — Subject: Read-only forensic analysis of FJgf position'
+          echo 'READ_ONLY=true NO_SIGNING=true NO_BROADCAST=true'
+          echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+
+          echo '=== DATABASE FORENSICS ==='
+          ROOT="$ROOT" MINT="$MINT" LEADER="$LEADER" python3 - <<'PY'
+          import os, sqlite3, json, datetime as dt
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); mint=os.environ['MINT']; leader=os.environ['LEADER']
+          for dbname in ('solana_sibot.sqlite3','sibot.sqlite3'):
+              p=root/'data'/dbname
+              if not p.exists():
+                  continue
+              print(f'--- DB {dbname} ---')
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=5); c.row_factory=sqlite3.Row
+              tables=[r[0] for r in c.execute("select name from sqlite_master where type='table' order by name")]
+              print('tables='+','.join(tables))
+              if 'positions' in tables:
+                  rows=[dict(r) for r in c.execute("select * from positions where mint=? or leader_wallet=? order by coalesce(entry_ts,0)",(mint,leader)).fetchall()]
+                  for r in rows:
+                      print('POSITION_ROW='+json.dumps(r,default=str,sort_keys=True))
+                      ets=int(r.get('entry_ts') or 0)
+                      if ets:
+                          x=dt.datetime.fromtimestamp(ets,dt.timezone.utc)
+                          print('POSITION_ENTRY_UTC='+x.isoformat())
+                          print('POSITION_ENTRY_BST='+x.astimezone(dt.timezone(dt.timedelta(hours=1))).isoformat())
+              # Dump rows from relevant evidence tables when they contain a mint/token or leader/wallet column.
+              preferred={'leader_events','leaders','rankings','wallet_trades','wallet_history_status','signal_attempts','execution_attempts','position_events','pool_checks','pool_risk_events'}
+              for t in tables:
+                  try:
+                      cols=[r[1] for r in c.execute(f'pragma table_info("{t}")')]
+                  except Exception:
+                      continue
+                  if not cols: continue
+                  cond=[]; args=[]
+                  for col in cols:
+                      lc=col.lower()
+                      if lc in {'mint','token','token_mint','output_mint','input_mint'}:
+                          cond.append(f'"{col}"=?'); args.append(mint)
+                      elif lc in {'leader_wallet','wallet','address','leader'}:
+                          cond.append(f'lower("{col}")=lower(?)'); args.append(leader)
+                  if not cond: continue
+                  try:
+                      q=f'select * from "{t}" where '+ ' or '.join(cond) +' limit 80'
+                      found=[dict(r) for r in c.execute(q,args).fetchall()]
+                  except Exception:
+                      continue
+                  if found:
+                      print(f'TABLE_MATCH={t} count={len(found)}')
+                      for r in found:
+                          print(f'{t.upper()}_ROW='+json.dumps(r,default=str,sort_keys=True))
+              c.close()
+          PY
+
+          echo '=== ENTRY WINDOW JOURNAL ==='
+          journalctl -u learnerbot-learn.service --since '2026-08-29 16:20:00 UTC' --until '2026-08-29 16:35:30 UTC' --no-pager 2>/dev/null \
+            | grep -E "$MINT|$LEADER|solana-pool-risk|positive-edge|leader|BUY|pool|RugCheck|Dex|Jupiter" \
+            | tail -n 500 || true
+
+          echo '=== LATER POSITION JOURNAL ==='
+          journalctl -u learnerbot-learn.service --since '2026-08-29 16:26:00 UTC' --no-pager 2>/dev/null \
+            | grep -E "$MINT|a3690eee37133e29213d915e45f869b2|LIQUIDITY|33-minute|TAKE_PROFIT|STOP_LOSS|POSITION UPDATE|emergency|exit|SELL" \
+            | tail -n 500 || true
+
+          echo '=== STORED EVIDENCE SEARCH ==='
+          for D in "$ROOT/data" "$ROOT/CSVbot" /home/ayman01323/BOOT/data /home/ayman01323/BOOT/datacentre; do
+            test -d "$D" || continue
+            echo "SEARCH_DIR=$D"
+            grep -RFn --binary-files=without-match --exclude='*.sqlite*' --exclude='*.pyc' --exclude-dir='__pycache__' \
+              "$MINT" "$D" 2>/dev/null | head -n 250 || true
+          done
+
+          echo '=== CURRENT DEXSCREENER / RUGCHECK / JUPITER ==='
+          ROOT="$ROOT" MINT="$MINT" LEADER="$LEADER" python3 - <<'PY'
+          import os,json,urllib.request,urllib.parse,urllib.error,time
+          from decimal import Decimal
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); mint=os.environ['MINT']; leader=os.environ['LEADER']
+          env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          def get_json(url,headers=None,timeout=25):
+              req=urllib.request.Request(url,headers=headers or {'User-Agent':'SiLearn-forensics/1.0'})
+              with urllib.request.urlopen(req,timeout=timeout) as r: return json.loads(r.read().decode())
+          try:
+              pairs=get_json('https://api.dexscreener.com/token-pairs/v1/solana/'+mint)
+              print('DEX_PAIR_COUNT='+str(len(pairs) if isinstance(pairs,list) else 0))
+              if isinstance(pairs,list):
+                  pairs=sorted(pairs,key=lambda p: Decimal(str(((p.get('liquidity') or {}).get('usd') or 0))),reverse=True)
+                  total=sum((Decimal(str(((p.get('liquidity') or {}).get('usd') or 0))) for p in pairs),Decimal(0))
+                  print('DEX_CURRENT_TOTAL_LIQ_USD='+str(total))
+                  for i,p in enumerate(pairs[:10],1):
+                      keep={k:p.get(k) for k in ('chainId','dexId','pairAddress','priceNative','priceUsd','fdv','marketCap','pairCreatedAt')}
+                      keep['liquidity']=p.get('liquidity'); keep['volume']=p.get('volume'); keep['txns']=p.get('txns'); keep['priceChange']=p.get('priceChange')
+                      keep['baseToken']=p.get('baseToken'); keep['quoteToken']=p.get('quoteToken')
+                      print(f'DEX_PAIR_{i}='+json.dumps(keep,default=str,sort_keys=True))
+          except Exception as e: print('DEX_ERROR='+type(e).__name__+':'+str(e))
+          try:
+              rug=get_json('https://api.rugcheck.xyz/v1/tokens/'+mint+'/report/summary')
+              keep={k:rug.get(k) for k in ('score_normalised','lpLockedPct','tokenProgram','risks')}
+              print('RUGCHECK_NOW='+json.dumps(keep,default=str,sort_keys=True)[:12000])
+          except Exception as e: print('RUGCHECK_ERROR='+type(e).__name__+':'+str(e))
+          primary=env.get('JUPITER_API_KEY',''); backup=env.get('JUPITER_BACKUP_API_KEY',''); base=(env.get('JUPITER_API_URL') or 'https://api.jup.ag').rstrip('/')
+          wsol='So11111111111111111111111111111111111111112'; usdc='EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+          def jq(inp,out,amount):
+              qs=urllib.parse.urlencode({'inputMint':inp,'outputMint':out,'amount':str(int(amount))})
+              errs=[]
+              for label,key in [('primary',primary),('backup',backup)]:
+                  if not key: continue
+                  req=urllib.request.Request(base+'/swap/v2/order?'+qs,headers={'x-api-key':key,'User-Agent':'SiLearn-forensics/1.0'})
+                  try:
+                      with urllib.request.urlopen(req,timeout=25) as r: return label,json.loads(r.read().decode())
+                  except urllib.error.HTTPError as e:
+                      body=e.read().decode(errors='ignore')[:300]; errs.append(f'{label}:HTTP{e.code}:{body}')
+                      if e.code not in (429,500,502,503,504): break
+                  except Exception as e: errs.append(f'{label}:{type(e).__name__}:{e}')
+              raise RuntimeError(' | '.join(errs))
+          # Read token amount from position DB if still available.
+          import sqlite3
+          p=root/'data'/'solana_sibot.sqlite3'; raw=0; entry=Decimal(0); status='NA'; pid=''
+          if p.exists():
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=5); c.row_factory=sqlite3.Row
+              r=c.execute('select * from positions where mint=? order by entry_ts desc limit 1',(mint,)).fetchone(); c.close()
+              if r:
+                  d=dict(r); raw=int(d.get('token_amount_raw') or 0); entry=Decimal(str(d.get('entry_cost_sol') or 0)); status=str(d.get('status') or ''); pid=str(d.get('position_id') or '')
+          print('LATEST_POSITION_STATUS='+status+' id='+pid+' token_raw='+str(raw)+' entry_cost_sol='+str(entry))
+          if raw>0:
+              try:
+                  provider,q=jq(mint,wsol,raw)
+                  out=int(q.get('outAmount') or q.get('outputAmount') or q.get('estimatedOutputAmount') or 0)
+                  cur=Decimal(out)/Decimal(1_000_000_000)
+                  print('JUPITER_CURRENT_EXIT_PROVIDER='+provider)
+                  print('JUPITER_CURRENT_EXIT_SOL='+str(cur))
+                  if entry>0:
+                      print('JUPITER_WALLET_SPEND_PNL_SOL='+str(cur-entry))
+                      print('JUPITER_WALLET_SPEND_PNL_PCT='+str((cur-entry)/entry*Decimal(100)))
+              except Exception as e: print('JUPITER_EXIT_ERROR='+str(e))
+          try:
+              provider,q=jq(wsol,usdc,1_000_000_000)
+              out=int(q.get('outAmount') or q.get('outputAmount') or q.get('estimatedOutputAmount') or 0)
+              print('SOL_USD_PROVIDER='+provider); print('SOL_USD='+str(Decimal(out)/Decimal(1_000_000)))
+          except Exception as e: print('SOL_USD_ERROR='+str(e))
+
+          # Reconstruct leader token-changing transactions from Solana RPC.
+          rpc_urls=[]
+          for k in ('SOLANA_RPC_URLS','SOLANA_RPC_FALLBACK_URLS'):
+              rpc_urls += [x.strip() for x in env.get(k,'').split(',') if x.strip()]
+          rid=0
+          def rpc(method,params):
+              nonlocal_dummy=None
+              global rid
+              rid+=1
+              payload=json.dumps({'jsonrpc':'2.0','id':rid,'method':method,'params':params}).encode()
+              last=None
+              for u in rpc_urls:
+                  try:
+                      req=urllib.request.Request(u,data=payload,headers={'Content-Type':'application/json','User-Agent':'SiLearn-forensics/1.0'})
+                      with urllib.request.urlopen(req,timeout=25) as r: d=json.loads(r.read().decode())
+                      if d.get('error'): raise RuntimeError(str(d['error']))
+                      return d.get('result')
+                  except Exception as e: last=e
+              raise RuntimeError(str(last))
+          try:
+              sigs=rpc('getSignaturesForAddress',[leader,{'limit':80,'commitment':'confirmed'}]) or []
+              print('LEADER_SIGNATURES_SCANNED='+str(len(sigs)))
+              events=[]
+              for s in sigs:
+                  bt=int(s.get('blockTime') or 0)
+                  # cover roughly 6h around/after the copied entry
+                  if bt and bt < 1788010000:  # loose lower bound; DB evidence remains authoritative
+                      pass
+                  sig=str(s.get('signature') or '')
+                  if not sig: continue
+                  try:
+                      tx=rpc('getTransaction',[sig,{'encoding':'jsonParsed','commitment':'confirmed','maxSupportedTransactionVersion':0}])
+                  except Exception:
+                      continue
+                  if not tx or not tx.get('meta'): continue
+                  meta=tx['meta']; pre=meta.get('preTokenBalances') or []; post=meta.get('postTokenBalances') or []
+                  def balances(rows):
+                      out={}
+                      for b in rows:
+                          if str(b.get('mint') or '')!=mint: continue
+                          if str(b.get('owner') or '')!=leader: continue
+                          try: amt=int(((b.get('uiTokenAmount') or {}).get('amount') or 0))
+                          except Exception: amt=0
+                          out[int(b.get('accountIndex') or -1)]=amt
+                      return out
+                  a=balances(pre); b=balances(post); idx=set(a)|set(b); delta=sum(b.get(i,0)-a.get(i,0) for i in idx)
+                  if delta==0: continue
+                  keys=((tx.get('transaction') or {}).get('message') or {}).get('accountKeys') or []
+                  leader_idx=None
+                  for i,k in enumerate(keys):
+                      pub=k.get('pubkey') if isinstance(k,dict) else k
+                      if str(pub)==leader: leader_idx=i; break
+                  sol_delta=None
+                  if leader_idx is not None:
+                      try: sol_delta=int(meta['postBalances'][leader_idx])-int(meta['preBalances'][leader_idx])
+                      except Exception: pass
+                  events.append({'signature':sig,'blockTime':bt,'token_delta_raw':delta,'leader_sol_delta_lamports':sol_delta,'fee':meta.get('fee'),'err':meta.get('err')})
+              events.sort(key=lambda x:x['blockTime'])
+              for e in events: print('LEADER_CHAIN_EVENT='+json.dumps(e,sort_keys=True))
+          except Exception as e: print('LEADER_RPC_ERROR='+type(e).__name__+':'+str(e))
+          PY
+
+          echo 'FORENSICS_COMPLETE=true'
