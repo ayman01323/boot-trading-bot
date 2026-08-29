@@ -1,0 +1,106 @@
+name: Diagnose Learner Telegram Command 400 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/diagnose-learner-telegram-command-400-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 6
+    steps:
+      - name: Isolate failing Telegram command scope
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n env -u TELEGRAM_BOT_TOKEN -u TELEGRAM_CHAT_ID -u TELEGRAM_CHAT_IDS \
+            PYTHONPATH=/home/ayman01323/BOOT/testingbots/learn \
+            /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python - <<'PY'
+          import hashlib, json, os, requests
+          from pathlib import Path
+
+          root=Path('/home/ayman01323/BOOT/testingbots/learn')
+          # Import source directly after clearing inherited empty Telegram vars so .env loads.
+          from learnerbot.config import AppSettings
+          from learnerbot import telegram as tg
+          from learnerbot import telegram_command_scope_patch as scope
+          from learnerbot.user_registry import all_users
+
+          app=AppSettings.load()
+          token=app.telegram_bot_token
+          if not token: raise SystemExit('token failed to load after clearing inherited env')
+          me=tg.get_me(token)
+          print('bot=@'+str(me.get('username') or ''))
+
+          def safe_error(exc):
+              resp=getattr(exc,'response',None)
+              if resp is None:
+                  return type(exc).__name__
+              try:
+                  body=resp.json()
+                  return f"HTTP {resp.status_code}: {body.get('description') or body.get('error_code') or 'Telegram error'}"
+              except Exception:
+                  return f'HTTP {getattr(resp,"status_code","?")}'
+
+          # 1) Exact historical base setMyCommands.
+          try:
+              tg.set_commands(token)
+              print('BASE_SET_COMMANDS=PASS')
+          except Exception as exc:
+              print('BASE_SET_COMMANDS=FAIL')
+              print('BASE_ERROR='+safe_error(exc))
+
+          # 2) Reconstruct the same full command union used by scope patch, but inspect
+          # each Telegram scope independently instead of aborting on first failure.
+          try:
+              current=scope._dedupe(tg._json('getMyCommands',token,payload={},timeout=15) or [])
+          except Exception as exc:
+              print('GET_COMMANDS_AFTER_BASE=FAIL '+safe_error(exc)); current=[]
+          if not any(x['command']=='autodeploy' for x in current):
+              current.append({'command':'autodeploy','description':'MASTER deployment status'})
+          non_master=[x for x in current if x['command'] not in scope.MASTER_ONLY and 'MASTER' not in x['description'].upper()]
+          active=scope._visible(non_master,scope.ACTIVE_USER_VISIBLE)
+          onboarding=scope._visible(non_master,scope.ONBOARDING_VISIBLE)
+          default=scope._visible(non_master,scope.DEFAULT_VISIBLE)
+          master=scope._dedupe(current)
+          print('FULL_COMMAND_COUNT='+str(len(master)))
+          print('DEFAULT_COMMAND_COUNT='+str(len(default)))
+
+          def call(label,payload):
+              try:
+                  tg._json('setMyCommands',token,payload=payload,timeout=15)
+                  print(label+'=PASS')
+                  return True
+              except Exception as exc:
+                  print(label+'=FAIL '+safe_error(exc))
+                  return False
+
+          call('SCOPE_DEFAULT',{'commands':default,'scope':{'type':'default'}})
+          call('SCOPE_ALL_PRIVATE',{'commands':default,'scope':{'type':'all_private_chats'}})
+
+          failures=0; passes=0
+          for row in all_users(root/'CSVbot'):
+              tid=str(row.get('telegram_id') or '').strip()
+              if not tid or not tid.lstrip('-').isdigit(): continue
+              status=str(row.get('status') or '').upper()
+              if status=='SUSPENDED': continue
+              role=str(row.get('role') or 'USER').upper()
+              if role=='MASTER': cmds=master; group='MASTER'
+              elif status=='ACTIVE': cmds=active; group='ACTIVE_USER'
+              else: cmds=onboarding; group='ONBOARDING'
+              # Never print the actual chat id. Stable short digest is enough to isolate the row.
+              tag=hashlib.sha256(tid.encode()).hexdigest()[:8]
+              ok=call(f'CHAT_SCOPE_{group}_{tag}',{'commands':cmds,'scope':{'type':'chat','chat_id':int(tid)}})
+              passes+=int(ok); failures+=int(not ok)
+          print('CHAT_SCOPE_PASSES='+str(passes))
+          print('CHAT_SCOPE_FAILURES='+str(failures))
+          print('NO_SECRET_PRINTED=true')
+          print('NO_TRADING_STATE_CHANGED=true')
+          PY
