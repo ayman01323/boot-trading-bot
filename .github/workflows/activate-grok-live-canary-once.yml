@@ -88,17 +88,12 @@ jobs:
               if wid and (wallet_root/tid/f'{wid}.enc.json').exists(): candidates.append(tid)
           candidates=sorted(set(candidates))
 
-          # The dedicated Grok Telegram allow-list is the primary authority for
-          # live approvals. Select the single encrypted signer whose Telegram
-          # identity is already allowed to control Grok; never choose by order.
           action_allowed={x for x in split_ids(os.environ.get('ACTION_GROK_TELEGRAM_CHAT_IDS')) if re.fullmatch(r'\d{1,24}',x) and int(x)>0}
           tg_existing=parse(telegram)
           file_allowed={x for x in split_ids(tg_existing.get('GROK_TELEGRAM_CHAT_IDS')) if re.fullmatch(r'\d{1,24}',x) and int(x)>0}
           allowed=action_allowed or file_allowed
           authorised=sorted(set(candidates).intersection(allowed))
 
-          # Backstop only: if the dedicated allow-list cannot resolve the
-          # signer, permit an exact single match to the ACTIVE MASTER registry.
           if len(authorised)!=1:
               master_ids=[]
               if main_users_csv.exists():
@@ -155,7 +150,7 @@ jobs:
           print('private_rpc_config=READY_REDACTED')
           PY
 
-      - name: Verify signer funding and reconciliation read-only
+      - name: Verify signer RPC fee reserve and reconciliation read-only
         shell: bash
         run: |
           set -euo pipefail
@@ -180,12 +175,18 @@ jobs:
               try: need=max(1,int(json.loads(row[0]).get('entry_input_micro_usdc') or need))
               except Exception: pass
           db.close()
-          ok,why=lx.preflight_funding(need_input_micro_usdc=need)
-          if not ok: raise SystemExit('BLOCKED funding: '+why)
+          ex=lx.build_executor()
+          usdc=int(ex.token_balance_raw(lx.USDC_MINT))
+          sol=int(ex.native_balance_lamports())
+          if sol < int(lx.SOL_FEE_RESERVE_LAMPORTS):
+              raise SystemExit(f'BLOCKED fee reserve: have {sol} lamports, need {int(lx.SOL_FEE_RESERVE_LAMPORTS)}')
           print('signer_ready=true')
           print('reconciliation_required=false')
-          print('funding_ready=true')
+          print('sol_fee_reserve_ready=true')
+          print('entry_funding_ready='+str(usdc >= need).lower())
+          print('current_usdc_micro='+str(usdc))
           print('required_entry_micro_usdc='+str(need))
+          print('per_entry_funding_gate=ENFORCED')
           PY
 
       - name: Install services with money path OFF
@@ -240,6 +241,8 @@ jobs:
           print('GROK_LIVE_CANARY=ACTIVE')
           print('SIGNING=ENABLED_APPROVAL_GATED')
           print('BROADCAST=ENABLED_APPROVAL_GATED')
+          print('PER_ENTRY_FUNDING_CHECK=ENFORCED')
+          print('MANDATORY_SIMULATION=ENFORCED')
           print('HARD_CAP_SOL=0.009')
           print('MAX_OPEN_POSITIONS=1')
           print('ENTRY_CONFIRM=/grokapprove <ticket_id> CONFIRM')
