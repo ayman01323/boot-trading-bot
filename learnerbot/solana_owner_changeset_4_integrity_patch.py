@@ -7,15 +7,16 @@ Subject: Learner historical BUY restore + 0.005 SOL/10 positions + 30+3 minute
 full-exit + LP conditional revalidation.
 
 The normal final_runtime_integrity_patch runs first and proves the pre-existing
-safety stack.  Change Set 4 is then composed, and this second gate proves that its
-late wrappers are complete and that the protected close/stuck-liquidity layers
-remain directly underneath them.
+safety stack. Change Set 4 is then composed, the timed-exit reason is attached to
+the existing safe-slice/backoff execution protection, and this second gate proves
+that the late wrappers are complete.
 """
 
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
 from . import solana_leader_quality_restore_patch as _quality
 from . import solana_liquidity_stuck_nonblocking_patch as _stuck
 from . import solana_live_patch as _live
+from . import solana_owner_changeset_4_exit_safety_patch as _exit_safety
 from . import solana_owner_changeset_4_patch as _owner
 from . import solana_pool_risk_gate as _pool
 from . import solana_positive_edge_entry_gate_patch as _edge
@@ -37,6 +38,10 @@ def composition_checks() -> dict[str, bool]:
         "owner_33m_monitor_outer": _sol.monitor_positions is _owner.monitor_positions_owner_changeset_4,
         "liquidity_stuck_monitor_preserved": _owner._PREV_MONITOR is _stuck.monitor_positions_with_stuck_owner_resolution,
         "protected_close_preserved": _live._close_live is _exit_circuit.close_live_guarded,
+        "timed_exit_safe_backoff": (
+            _exit_safety.CHANGESET4_TIMED_EXIT_REASON
+            in _exit_safety._emergency._LOSS_EXIT_REASONS
+        ),
         "trade_size_exact": _owner.OWNER_LIVE_TRADE_SOL == _owner.Decimal("0.005"),
         "position_ceiling_exact": _owner.OWNER_MAX_LIVE_POSITIONS == 10,
         "force_exit_exact": _owner.OWNER_FORCE_EXIT_SECONDS == 33 * 60,
