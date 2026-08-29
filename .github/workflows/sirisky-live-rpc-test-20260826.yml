@@ -18,7 +18,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 12
     steps:
-      - name: Repair runner checkout without actions checkout
+      - name: Repair runner checkout in place
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -26,7 +26,6 @@ jobs:
           test "$(id -un)" = ayman01323
           cd "$GITHUB_WORKSPACE"
           if [[ ! -d .git ]]; then
-            find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
             git init
             git remote add origin https://github.com/ayman01323/boot-trading-bot.git
           else
@@ -35,8 +34,8 @@ jobs:
           git fetch --force --no-tags --depth=50 origin main
           git cat-file -e "$GITHUB_SHA^{commit}"
           git reset --hard "$GITHUB_SHA"
-          git clean -ffd
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "runner_checkout_sha=$(git rev-parse HEAD)"
 
       - name: Arm governed LIVE automatic execution
         shell: bash
@@ -69,3 +68,4 @@ jobs:
           echo 'real_transaction_broadcast=ENABLED_AFTER_EXISTING_STRATEGY_AND_RISK_GATES'
 
 # Owner-requested activation: 2026-08-29T17:14:56Z
+# Workspace repair intentionally preserves root-owned untracked runtime caches.
