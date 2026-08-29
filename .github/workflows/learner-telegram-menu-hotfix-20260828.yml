@@ -13,109 +13,27 @@ permissions:
 jobs:
   hotfix:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
-      - name: Install missing learnerbot handler into isolated runtime
+      - name: Verify live SiLearn receiver and launcher
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           target=/home/ayman01323/BOOT/testingbots/learn
           service=learnerbot-learn.service
-          module="$target/learnerbot/telegram_google_learner_launcher_patch.py"
-          mainpy="$target/learnerbot/__main__.py"
-          py="$target/.venv/bin/python"
-          test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
-          test -f "$mainpy"
-          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          backup="$target/private/silearn-launcher-$stamp"
-          sudo -n mkdir -p "$backup"
-          sudo -n cp -a "$mainpy" "$backup/__main__.py.before"
-          if [ -f "$module" ]; then sudo -n cp -a "$module" "$backup/telegram_google_learner_launcher_patch.py.before"; fi
-
-          tmp="$(mktemp)"
-          trap 'rm -f "$tmp"' EXIT
-          curl -fsSL \
-            'https://raw.githubusercontent.com/ayman01323/boot-trading-bot/dac221c928f8e4a353cb4fde6c553f54779e01d8/learnerbot/telegram_google_learner_launcher_patch.py' \
-            -o "$tmp"
-          grep -q '"/learnergoogle", "/learnerbot"' "$tmp"
-          grep -q 'def handle_update' "$tmp"
-          sudo -n install -o ayman01323 -g ayman01323 -m 0644 "$tmp" "$module"
-
-          MAINPY="$mainpy" sudo -n -E python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p=Path(os.environ['MAINPY'])
-          text=p.read_text(encoding='utf-8',errors='strict')
-          stmt='from . import telegram_google_learner_launcher_patch  # noqa: F401'
-          lines=[line for line in text.splitlines() if line.strip()!=stmt]
-          text='\n'.join(lines).rstrip()+'\n'
-          marker='from .cli import main'
-          if marker not in text:
-              raise SystemExit('cannot safely locate cli import in isolated __main__.py')
-          text=text.replace(marker, '# MASTER bridge for isolated Google learner.\n'+stmt+'\n'+marker, 1)
-          p.write_text(text,encoding='utf-8')
-          PY
-          sudo -n chown ayman01323:ayman01323 "$mainpy"
-          sudo -n chmod 0644 "$mainpy"
-
-          sudo -n "$py" -m py_compile "$module" "$mainpy"
-          cd "$target"
-          PYTHONPATH="$target" sudo -n -E "$py" - <<'PY'
-          import importlib
-          m=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
-          assert callable(m.handle_update)
-          assert getattr(m._ui,'_google_learner_launcher_installed',False)
-          print('launcher_import_test=PASS')
-          PY
-          grep -q 'telegram_google_learner_launcher_patch' "$mainpy"
-          echo launcher_module_installed=true
-          echo launcher_main_import_installed=true
-
-      - name: Enable inbound polling and restart isolated SiLearn
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          target=/home/ayman01323/BOOT/testingbots/learn
-          service=learnerbot-learn.service
-          envfile="$target/.env"
-          ENVFILE="$envfile" sudo -n -E python3 - <<'PY'
-          import os
-          from pathlib import Path
-          p=Path(os.environ['ENVFILE'])
-          lines=p.read_text(encoding='utf-8',errors='ignore').splitlines()
-          out=[]; found=False
-          for line in lines:
-              if '=' in line and line.split('=',1)[0].strip()=='LEARNER_TELEGRAM_OUTBOUND_ONLY':
-                  if not found:
-                      out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false'); found=True
-              else:
-                  out.append(line)
-          if not found: out.append('LEARNER_TELEGRAM_OUTBOUND_ONLY=false')
-          p.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8')
-          os.chmod(p,0o600)
-          PY
-          sudo -n chown ayman01323:ayman01323 "$envfile"
-          start="$(date -u '+%Y-%m-%d %H:%M:%S')"
-          sudo -n systemctl restart "$service"
-          sleep 35
           test "$(systemctl is-active "$service")" = active
-          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$envfile")" -eq 1
-          conflicts="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
-          disabled="$(sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null | grep -Eic 'outbound-only mode: polling disabled' || true)"
-          test "$conflicts" -eq 0
-          test "$disabled" -eq 0
+          test -f "$target/learnerbot/telegram_google_learner_launcher_patch.py"
           grep -q 'telegram_google_learner_launcher_patch' "$target/learnerbot/__main__.py"
-          echo service_active=true
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
+          conflicts="$(sudo -n journalctl -u "$service" --since '3 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          test "$conflicts" -eq 0
+          echo receiver_active=true
+          echo launcher_installed=true
           echo inbound_enabled=true
           echo telegram_409_conflicts=0
-          echo outbound_disabled_markers=0
-          sudo -n journalctl -u "$service" --since "$start" --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'telegram-menu|poll error|interactive multi-chain' \
-            | tail -50 \
-            | sed -E 's/[0-9]{7,}/<id>/g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' || true
 
-      - name: Execute harmless learnerbot command through real handler
+      - name: Isolate Telegram sendMessage rejection without exposing credentials
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -124,39 +42,116 @@ jobs:
           test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
           cd "$target"
           TARGET="$target" PYTHONPATH="$target" sudo -n -E "$py" - <<'PY'
-          import csv, importlib, os
+          import csv, html, importlib, json, os, re, urllib.error, urllib.request
           from pathlib import Path
           from learnerbot.config import AppSettings
-          p=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
+
           root=Path(os.environ['TARGET'])
-          master=''
+          vals={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); vals[k.strip()]=v.strip().strip('"').strip("'")
+          token=vals.get('TELEGRAM_BOT_TOKEN','').strip()
+          if not token: raise SystemExit('telegram_token_present=false')
+
+          masters=[]
           with (root/'CSVbot'/'users.csv').open(encoding='utf-8-sig',newline='') as f:
               for row in csv.DictReader(f):
                   tid=str(row.get('telegram_id') or '').strip()
-                  if str(row.get('status') or '').upper()=='ACTIVE' and str(row.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
-                      master=tid; break
-          if not master: raise SystemExit('no ACTIVE MASTER Telegram recipient')
+                  if (str(row.get('status') or '').upper()=='ACTIVE' and
+                      str(row.get('role') or '').upper()=='MASTER' and
+                      tid.lstrip('-').isdigit() and tid not in masters):
+                      masters.append(tid)
+          env_ids=[]
+          raw_ids=(vals.get('TELEGRAM_CHAT_IDS','').strip() or vals.get('TELEGRAM_CHAT_ID','').strip())
+          for x in raw_ids.split(','):
+              x=x.strip()
+              if x and x.lstrip('-').isdigit() and x not in env_ids: env_ids.append(x)
+          print('telegram_token_present=true')
+          print('env_recipient_present='+str(bool(env_ids)).lower())
+          print('active_master_present='+str(bool(masters)).lower())
+          print('env_recipient_matches_master='+str(bool(env_ids and masters and env_ids[0] in masters)).lower())
+
+          def api(method,payload,label):
+              url=f'https://api.telegram.org/bot{token}/{method}'
+              req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=15) as r:
+                      body=json.loads(r.read().decode())
+                  ok=bool(body.get('ok'))
+                  print(label+'_ok='+str(ok).lower())
+                  if not ok: print(label+'_description='+str(body.get('description') or '<none>')[:300])
+                  return ok,body
+              except urllib.error.HTTPError as exc:
+                  try: body=json.loads(exc.read().decode(errors='ignore'))
+                  except Exception: body={}
+                  print(label+'_ok=false')
+                  print(label+'_http_status='+str(exc.code))
+                  print(label+'_description='+str(body.get('description') or '<unavailable>')[:300])
+                  return False,body
+              except Exception as exc:
+                  print(label+'_ok=false')
+                  print(label+'_transport_error='+type(exc).__name__)
+                  return False,{}
+
+          ok,me=api('getMe',{},'getme')
+          if not ok: raise SystemExit('getMe failed')
+          username=str((me.get('result') or {}).get('username') or '')
+          print('bot_is_silearn='+str(username.lower()=='silearn_bot').lower())
+
+          candidates=[]
+          if env_ids: candidates.append(('env',env_ids[0]))
+          if masters and masters[0] not in [c[1] for c in candidates]: candidates.append(('master',masters[0]))
+          if not candidates: raise SystemExit('no safe configured Telegram recipient')
+
+          plain_ok=[]
+          for label,tid in candidates:
+              ok,_=api('sendMessage',{'chat_id':tid,'text':'SiLearn reply-path test: plain message OK.'},label+'_plain')
+              if ok: plain_ok.append((label,tid))
+
+          if not plain_ok:
+              print('diagnosis=no_configured_recipient_accepts_plain_message')
+              raise SystemExit(2)
+
+          label,tid=plain_ok[0]
+          p=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
           app=AppSettings.load()
-          if not p._master(app, master): raise SystemExit('MASTER gate did not recognise configured MASTER')
-          p.handle_update(app, {'message': {'chat': {'id': int(master), 'type': 'private'}, 'text': '/learnerbot'}})
-          print('learnerbot_handler_smoke=PASS')
-          print('learnerbot_menu_sent_to_master=true')
+          page=p.learner_page(str(tid))
+          keyboard=p.learner_keyboard(str(tid))
+
+          # Test the generated page without keyboard first.
+          html_ok,_=api('sendMessage',{'chat_id':tid,'text':page,'parse_mode':'HTML'},'learner_page_html')
+          if not html_ok:
+              plain_page=html.unescape(re.sub(r'<[^>]*>','',page))
+              text_ok,_=api('sendMessage',{'chat_id':tid,'text':plain_page},'learner_page_plain')
+              print('diagnosis='+('generated_html_invalid' if text_ok else 'generated_page_rejected_even_plain'))
+              raise SystemExit(3)
+
+          # Then isolate the full inline keyboard on a short safe message.
+          kb_ok,_=api('sendMessage',{'chat_id':tid,'text':'SiLearn menu keyboard test','reply_markup':keyboard},'learner_keyboard')
+          if not kb_ok:
+              print('diagnosis=learner_keyboard_invalid')
+              raise SystemExit(4)
+
+          # Finally prove exactly what /learnerbot sends.
+          full_ok,_=api('sendMessage',{'chat_id':tid,'text':page,'parse_mode':'HTML','reply_markup':keyboard},'learner_full_payload')
+          print('diagnosis='+('full_learner_payload_valid' if full_ok else 'full_combination_rejected'))
+          if not full_ok: raise SystemExit(5)
+          print('reply_path_proven=true')
           PY
 
-      - name: Final stability proof
+      - name: Final receiver stability
+        if: always()
         shell: bash
         run: |
           set -Eeuo pipefail
           service=learnerbot-learn.service
           target=/home/ayman01323/BOOT/testingbots/learn
-          sleep 15
           test "$(systemctl is-active "$service")" = active
           test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
-          conflicts="$(sudo -n journalctl -u "$service" --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
-          disabled="$(sudo -n journalctl -u "$service" --since '2 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'outbound-only mode: polling disabled' || true)"
+          conflicts="$(sudo -n journalctl -u "$service" --since '3 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
           test "$conflicts" -eq 0
-          test "$disabled" -eq 0
           echo final_service_active=true
           echo final_inbound_enabled=true
           echo final_telegram_409_conflicts=0
-          echo final_outbound_disabled_markers=0
