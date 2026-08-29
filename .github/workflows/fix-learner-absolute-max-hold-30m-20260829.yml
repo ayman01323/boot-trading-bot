@@ -26,7 +26,6 @@ jobs:
           FILE="$LROOT/learnerbot/solana_live_patch.py"
           grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$FILE"
           grep -q '^max_hold_hours,0.5,' "$LROOT/CSVbot/solana_settings.csv"
-          echo learner_absolute_max_hold_minutes=30
           ROOT
 
       - name: Restore immediate rejected opportunity Telegram alerts
@@ -65,18 +64,17 @@ jobs:
           from pathlib import Path
           p=Path('$FILE'); s=p.read_text()
           if 'from .telegram import send_message' not in s:
-              anchor='from decimal import Decimal\n'
-              if anchor not in s: raise SystemExit('import anchor not found')
-              s=s.replace(anchor, anchor+'from html import escape\n\nfrom .telegram import send_message\n',1)
+              anchor='from __future__ import annotations\n'
+              if anchor not in s: raise SystemExit('future import anchor not found')
+              s=s.replace(anchor, anchor+'\nfrom html import escape\nfrom .telegram import send_message\n',1)
           elif 'from html import escape' not in s:
-              s=s.replace('from .telegram import send_message\n','from html import escape\n\nfrom .telegram import send_message\n',1)
+              s=s.replace('from .telegram import send_message\n','from html import escape\nfrom .telegram import send_message\n',1)
 
-          helper='''\n\ndef _push_rejected_actions(app, event: dict, actions) -> None:\n    token = str(getattr(app, \"telegram_bot_token\", \"\") or \"\").strip()\n    if not token:\n        return\n    now = int(time.time())\n    try:\n        signal_ts = int((event or {}).get(\"event_ts\") or now)\n    except Exception:\n        signal_ts = now\n    age = max(0, now - signal_ts)\n    mint = str((event or {}).get(\"mint\") or \"unknown\")\n    leader = str((event or {}).get(\"leader_wallet\") or \"unknown\")\n    signature = str((event or {}).get(\"signature\") or \"\")\n    for row in (actions or []):\n        if str((row or {}).get(\"action\") or \"\").upper() != \"REJECT\":\n            continue\n        tid = str((row or {}).get(\"telegram_id\") or \"\").strip()\n        targets=[tid] if tid else []\n        if not targets:\n            try:\n                for u in all_users(app.csv_dir, enabled_only=True):\n                    uid=str(u.get(\"telegram_id\") or \"\").strip()\n                    if uid and _leader_rank(app, uid, leader) is not None:\n                        targets.append(uid)\n            except Exception:\n                pass\n        reason = str((row or {}).get(\"reason\") or \"unspecified rejection\")[:900]\n        text=(\n            \"⛔ <b>REJECTED OPPORTUNITY</b>\\n\"\n            f\"Asset: <code>{escape(mint)}</code>\\n\"\n            f\"Leader: <code>{escape(leader)}</code>\\n\"\n            f\"Reason: <code>{escape(reason)}</code>\\n\"\n            f\"Signal age: <b>{age}s</b>\\n\"\n            f\"Signature: <code>{escape(signature[:120])}</code>\\n\"\n            \"Decision: <b>NO TRADE</b>\"\n        )\n        for target in dict.fromkeys(x for x in targets if x):\n            try:\n                send_message(token, target, text, parse_mode=\"HTML\", protect_content=True)\n            except Exception as exc:\n                print(f\"[solana-reject-telegram] send failed chat={target}: {type(exc).__name__}: {str(exc)[:180]}\")\n\n'''
+          helper='''\n\ndef _push_rejected_actions(app, event: dict, actions) -> None:\n    token = str(getattr(app, \"telegram_bot_token\", \"\") or \"\").strip()\n    if not token:\n        return\n    now = int(time.time())\n    try:\n        signal_ts = int((event or {}).get(\"event_ts\") or now)\n    except Exception:\n        signal_ts = now\n    age = max(0, now - signal_ts)\n    mint = str((event or {}).get(\"mint\") or \"unknown\")\n    leader = str((event or {}).get(\"leader_wallet\") or \"unknown\")\n    signature = str((event or {}).get(\"signature\") or \"\")\n    for row in (actions or []):\n        if str((row or {}).get(\"action\") or \"\").upper() != \"REJECT\":\n            continue\n        tid = str((row or {}).get(\"telegram_id\") or \"\").strip()\n        targets=[tid] if tid else []\n        if not targets:\n            try:\n                for u in all_users(app.csv_dir, enabled_only=True):\n                    uid=str(u.get(\"telegram_id\") or \"\").strip()\n                    if uid and _leader_rank(app, uid, leader) is not None:\n                        targets.append(uid)\n            except Exception:\n                pass\n        reason = str((row or {}).get(\"reason\") or \"unspecified rejection\")[:900]\n        text=(\n            \"⛔ <b>REJECTED OPPORTUNITY</b>\\n\"\n            f\"Asset: <code>{escape(mint)}</code>\\n\"\n            f\"Leader: <code>{escape(leader)}</code>\\n\"\n            f\"Reason: <code>{escape(reason)}</code>\\n\"\n            f\"Signal age: <b>{age}s</b>\\n\"\n            f\"Signature: <code>{escape(signature[:120])}</code>\\n\"\n            \"Decision: <b>NO TRADE</b>\"\n        )\n        for target in dict.fromkeys(x for x in targets if x):\n            send_message(token, target, text, parse_mode=\"HTML\", protect_content=True)\n\n'''
           if 'def _push_rejected_actions(app, event: dict, actions)' not in s:
               marker='\ndef monitor_leaders(app):\n'
               if marker not in s: raise SystemExit('monitor_leaders marker not found')
               s=s.replace(marker,helper+marker,1)
-
           old='''                    if saved:\n                        events.append(saved)\n                        process_leader_event(app, saved)'''
           new='''                    if saved:\n                        events.append(saved)\n                        actions = process_leader_event(app, saved)\n                        _push_rejected_actions(app, saved, actions)'''
           if new not in s:
@@ -109,17 +107,14 @@ jobs:
               csv_dir=root/'CSVbot'
               telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN','').strip()
           app=App()
-          if not app.telegram_bot_token: raise SystemExit('Telegram token not loaded')
           targets=[]
           with (root/'CSVbot'/'user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
               for r in csv.DictReader(f):
                   if r.get('setting')=='solana_live_enabled' and str(r.get('value') or '').lower()=='true':
                       tid=str(r.get('telegram_id') or '').strip()
                       if tid and tid!='900001': targets.append(tid)
-          if not targets: raise SystemExit('No live Telegram target')
-          event={'mint':'TEST-NO-TRADE','leader_wallet':'TEST-REJECT-PATH','signature':'TEST-NO-CHAIN-SUBMISSION','event_ts':int(time.time())}
-          actions=[{'telegram_id':targets[0],'action':'REJECT','reason':'Telegram rejected-opportunity delivery path restored — TEST ONLY'}]
-          sol._push_rejected_actions(app,event,actions)
+          if not app.telegram_bot_token or not targets: raise SystemExit('Telegram route unavailable')
+          sol._push_rejected_actions(app, {'mint':'TEST-NO-TRADE','leader_wallet':'TEST-REJECT-PATH','signature':'TEST-NO-CHAIN-SUBMISSION','event_ts':int(time.time())}, [{'telegram_id':targets[0],'action':'REJECT','reason':'Telegram rejected-opportunity delivery path restored — TEST ONLY'}])
           print('reject_telegram_test_sent=true')
           print('test_trade_placed=false')
           PY
