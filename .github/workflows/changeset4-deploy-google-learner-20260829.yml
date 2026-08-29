@@ -19,11 +19,24 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 20
     steps:
-      - name: Checkout repository history
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
+      - name: Fetch exact signed Change Set 4 source archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          SOURCE_SHA='5838ef652aea5576b09d440dbe57fc9355100798'
+          ARCHIVE='/tmp/changeset4-5838ef652aea5576b09d440dbe57fc9355100798.tar.gz'
+          rm -f "$ARCHIVE"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${SOURCE_SHA}" \
+            -o "$ARCHIVE"
+          test -s "$ARCHIVE"
+          tar -tzf "$ARCHIVE" | grep -q '/learnerbot/solana_owner_changeset_4_patch.py$'
+          echo "source_archive_sha=$SOURCE_SHA"
 
       - name: Deploy stamped Change Set 4 to isolated Google Learner
         shell: bash
@@ -32,7 +45,7 @@ jobs:
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
 
-          sudo -n env WORKSPACE="$GITHUB_WORKSPACE" bash <<'ROOT'
+          sudo -n bash <<'ROOT'
           set -Eeuo pipefail
 
           CHANGESET_ID='CHANGE_SET_4'
@@ -41,13 +54,14 @@ jobs:
           SUBJECT='Learner historical BUY restore + 0.005 SOL/10 positions + 30+3 minute full-exit + LP conditional revalidation'
           SOURCE_SHA='5838ef652aea5576b09d440dbe57fc9355100798'
           PRE_CHANGE_REPO_SHA='a3ad128c99bdaf28e24a034586026be63043df6a'
+          ARCHIVE='/tmp/changeset4-5838ef652aea5576b09d440dbe57fc9355100798.tar.gz'
           LROOT='/home/ayman01323/BOOT/testingbots/learn'
           SERVICE='learnerbot-learn.service'
 
+          test -s "$ARCHIVE"
           test -d "$LROOT/learnerbot"
           test -d "$LROOT/CSVbot"
           test -d "$LROOT/data"
-          git -C "$WORKSPACE" cat-file -e "$SOURCE_SHA^{commit}"
 
           echo "changeset_id=$CHANGESET_ID"
           echo "approval_utc=$APPROVED_UTC"
@@ -56,8 +70,8 @@ jobs:
           echo "target_sha=$SOURCE_SHA"
           echo "pre_change_repo_sha=$PRE_CHANGE_REPO_SHA"
 
-          # Do not replace the live engine while real exposure is open. This is a
-          # deployment guard only; it does not alter or close any position.
+          # Refuse an engine swap while real exposure is open. Nothing is mutated
+          # before this check completes.
           LROOT="$LROOT" python3 - <<'PY'
           import os, sqlite3
           from pathlib import Path
@@ -82,7 +96,8 @@ jobs:
           PY
 
           stamp='20260829T103858Z'
-          BACKUP="$LROOT/private/change-control/$stamp-change-set-4/pre-deploy"
+          CONTROL="$LROOT/private/change-control/$stamp-change-set-4"
+          BACKUP="$CONTROL/pre-deploy"
           mkdir -p "$BACKUP"
           rm -rf "$BACKUP/learnerbot"
           cp -a "$LROOT/learnerbot" "$BACKUP/learnerbot"
@@ -108,7 +123,7 @@ jobs:
               else
                 rm -f "$LROOT/RESTORED_SOURCE_SHA.txt"
               fi
-              chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" "$LROOT/CSVbot" "$LROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true
+              chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" "$LROOT/CSVbot" "$CONTROL" 2>/dev/null || true
               systemctl restart "$SERVICE" || true
               sleep 4
               echo "rollback_service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
@@ -118,15 +133,19 @@ jobs:
           }
           trap rollback EXIT
 
-          systemctl stop "$SERVICE"
           tmp=$(mktemp -d)
-          git -C "$WORKSPACE" archive "$SOURCE_SHA" learnerbot | tar -x -C "$tmp"
+          mkdir -p "$tmp/source"
+          tar -xzf "$ARCHIVE" -C "$tmp/source" --strip-components=1
+          test -d "$tmp/source/learnerbot"
+          test -f "$tmp/source/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'CHANGESET_APPROVED_UTC = "2026-08-29T10:38:58Z"' "$tmp/source/learnerbot/solana_owner_changeset_4_patch.py"
+
+          systemctl stop "$SERVICE"
           rm -rf "$LROOT/learnerbot"
-          cp -a "$tmp/learnerbot" "$LROOT/learnerbot"
+          cp -a "$tmp/source/learnerbot" "$LROOT/learnerbot"
           changed=1
 
-          # Preserve the existing isolated-Learner compatibility rule: production
-          # Polygon one-shot activation is not run on this Solana-only instance.
+          # Preserve the established isolated-Learner compatibility rule.
           MAIN="$LROOT/learnerbot/__main__.py"
           if grep -q '^from \. import polygon_live_enable_migration  # noqa: F401$' "$MAIN"; then
             sed -i 's|^from \. import polygon_live_enable_migration  # noqa: F401$|# Isolated Solana Learner: skip production-only Polygon LIVE one-shot migration.|' "$MAIN"
@@ -136,12 +155,10 @@ jobs:
             exit 61
           fi
           echo 'isolated_learner_polygon_guard=PASS'
-
           printf '%s\n' "$SOURCE_SHA" > "$LROOT/RESTORED_SOURCE_SHA.txt"
 
-          # Keep the durable settings files aligned with the owner-approved values
-          # that are also enforced by the stamped runtime layer. Do NOT change the
-          # separate minimum-economic-trade setting.
+          # Align only the durable settings directly approved by Change Set 4.
+          # The minimum-economic-trade setting is deliberately untouched.
           LROOT="$LROOT" python3 - <<'PY'
           import csv, os
           from pathlib import Path
@@ -187,11 +204,8 @@ jobs:
           PYTHONPATH="$LROOT" "$py" -m compileall -q "$LROOT/learnerbot"
 
           chown -R ayman01323:$(id -gn ayman01323) \
-            "$LROOT/learnerbot" \
-            "$LROOT/CSVbot/solana_settings.csv" \
-            "$LROOT/CSVbot/user_trading_settings.csv" \
-            "$LROOT/RESTORED_SOURCE_SHA.txt" \
-            "$LROOT/private/change-control/$stamp-change-set-4"
+            "$LROOT/learnerbot" "$LROOT/CSVbot/solana_settings.csv" \
+            "$LROOT/CSVbot/user_trading_settings.csv" "$LROOT/RESTORED_SOURCE_SHA.txt" "$CONTROL"
           rm -rf "$tmp"
 
           systemctl start "$SERVICE"
@@ -207,7 +221,7 @@ jobs:
           restarts2=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
           [[ "$state2" = active && "$pid2" != 0 && "$restarts1" = "$restarts2" ]] || exit 63
 
-          journalctl -u "$SERVICE" --since '30 seconds ago' --no-pager > /tmp/changeset4-learner-journal.txt
+          journalctl -u "$SERVICE" --since '35 seconds ago' --no-pager > /tmp/changeset4-learner-journal.txt
           if grep -q 'Traceback (most recent call last)' /tmp/changeset4-learner-journal.txt; then
             echo 'learner_recent_traceback=true' >&2
             tail -n 160 /tmp/changeset4-learner-journal.txt >&2
@@ -216,30 +230,26 @@ jobs:
           grep -q '\[owner-changeset-4\] approved=2026-08-29T10:38:58Z' /tmp/changeset4-learner-journal.txt || exit 65
           grep -q '\[owner-changeset-4-exit-safety\].*safe_slice_fallback=true' /tmp/changeset4-learner-journal.txt || exit 66
           grep -q '\[owner-changeset-4-integrity\] OK approved=2026-08-29T10:38:58Z' /tmp/changeset4-learner-journal.txt || exit 67
-
           [[ "$(cat "$LROOT/RESTORED_SOURCE_SHA.txt")" = "$SOURCE_SHA" ]] || exit 68
 
           LROOT="$LROOT" python3 - <<'PY'
           import csv, os
           from pathlib import Path
           root = Path(os.environ['LROOT'])
-          def values(path):
-              if not path.exists(): return {}
-              with path.open(encoding='utf-8-sig', newline='') as f:
-                  return {str(r.get('setting') or '').strip(): str(r.get('value') or '').strip() for r in csv.DictReader(f)}
-          g = values(root/'CSVbot'/'solana_settings.csv')
-          print('runtime_file_live_trade_sol=' + g.get('live_trade_sol','MISSING'))
-          print('runtime_file_live_max_positions=' + g.get('live_max_positions','MISSING'))
-          print('runtime_file_take_profit_pct=' + g.get('take_profit_pct','MISSING'))
-          print('runtime_file_max_hold_hours=' + g.get('max_hold_hours','MISSING'))
-          print('runtime_file_mirror_partial_sells=' + g.get('mirror_partial_sells','MISSING'))
+          p = root/'CSVbot'/'solana_settings.csv'
+          g = {}
+          if p.exists():
+              with p.open(encoding='utf-8-sig', newline='') as f:
+                  g = {str(r.get('setting') or '').strip(): str(r.get('value') or '').strip() for r in csv.DictReader(f)}
+          for key in ('live_trade_sol','live_max_positions','take_profit_pct','max_hold_hours','mirror_partial_sells'):
+              print(f'runtime_file_{key}={g.get(key,"MISSING")}')
           if g.get('live_trade_sol') not in ('0.005',''):
               raise SystemExit('unexpected durable live_trade_sol')
           if g.get('live_max_positions') not in ('10',''):
               raise SystemExit('unexpected durable live_max_positions')
           PY
 
-          cat > "$LROOT/private/change-control/$stamp-change-set-4/deployment-attestation.txt" <<EOF
+          cat > "$CONTROL/deployment-attestation.txt" <<EOF
           changeset_id=$CHANGESET_ID
           approval_utc=$APPROVED_UTC
           approval_bst=$APPROVED_BST
@@ -254,7 +264,7 @@ jobs:
           service_restarts=$restarts2
           test_trade_broadcast=NO
           EOF
-          chown ayman01323:$(id -gn ayman01323) "$LROOT/private/change-control/$stamp-change-set-4/deployment-attestation.txt"
+          chown ayman01323:$(id -gn ayman01323) "$CONTROL/deployment-attestation.txt"
 
           echo 'CHANGESET4_GOOGLE_LEARNER_DEPLOY=PASS'
           echo "learner_service_state=$state2"
