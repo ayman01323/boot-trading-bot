@@ -6,10 +6,12 @@ from typing import Any
 
 from .core import MarketSnapshot
 from .feed_safety import FeedSafetyError
+from .live_canary import HARD_CAP_LAMPORTS, TARGET_LAMPORTS
 from .live_feed import USDC_MINT, SOL_MINT, LiveFeedSettings, _price_impact_bps, _quote, _route_pool_ids
 
-ENTRY_TARGET_SOL = 0.009
-HARD_MAX_ENTRY_SOL = 0.009
+LAMPORTS_PER_SOL = 1_000_000_000
+ENTRY_TARGET_SOL = TARGET_LAMPORTS / LAMPORTS_PER_SOL
+HARD_MAX_ENTRY_SOL = HARD_CAP_LAMPORTS / LAMPORTS_PER_SOL
 MAX_SIGNAL_AGE_SECONDS = 20.0
 MAX_ENTRY_IMPACT_BPS = 100.0
 MAX_REVERSE_IMPACT_BPS = 200.0
@@ -104,7 +106,7 @@ def assess_live_readiness(
         return _result(snap, settings, ready=False, reason="SIGNAL_TOO_OLD", now=now)
     if not snap.sellable:
         return _result(snap, settings, ready=False, reason="REVERSE_SELL_PATH_UNAVAILABLE", now=now)
-    if ENTRY_TARGET_SOL > HARD_MAX_ENTRY_SOL:
+    if TARGET_LAMPORTS > HARD_CAP_LAMPORTS:
         return _result(snap, settings, ready=False, reason="ENTRY_EXCEEDS_HARD_MAX", now=now)
 
     estimated_spend = max(0.000001, float(snap.ask) * ENTRY_TARGET_SOL)
@@ -154,7 +156,7 @@ def assess_live_readiness(
         )
 
     spend_usdc = micro_usdc / 1_000_000.0
-    sol_out = sol_raw / 1_000_000_000.0
+    sol_out = sol_raw / LAMPORTS_PER_SOL
     reverse_usdc = reverse_raw / 1_000_000.0
     entry_impact = _price_impact_bps(entry)
     reverse_impact = _price_impact_bps(reverse)
