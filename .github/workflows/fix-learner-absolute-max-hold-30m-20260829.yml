@@ -1,0 +1,80 @@
+name: Fix Learner Absolute Max Hold 30m 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/fix-learner-absolute-max-hold-30m-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Make 30 minute hold limit absolute
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          FILE="$LROOT/learnerbot/solana_live_patch.py"
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup="$LROOT/private/pre-absolute-max-hold-$stamp"
+          mkdir -p "$backup"
+          cp -a "$FILE" "$backup/solana_live_patch.py"
+
+          # Avoid a restart while capital is open.
+          LROOT="$LROOT" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          p=Path(os.environ['LROOT'])/'data'/'solana_sibot.sqlite3'; n=0
+          if p.exists():
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True)
+              try:n=c.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]
+              finally:c.close()
+          print('learner_open_live_positions='+str(n))
+          if n: raise SystemExit('REFUSE_RESTART_WITH_OPEN_POSITION')
+          PY
+
+          changed=0
+          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_live_patch.py" "$FILE"; systemctl restart "$SERVICE" || true; fi; exit $rc; }
+          trap rollback EXIT
+
+          python3 - <<PY
+          from pathlib import Path
+          p=Path('$FILE'); s=p.read_text()
+          old='''        if reason is None and age_h >= _sol._dec(cfg.get("max_hold_hours"), 24) and current > 0:\n            reason = "SOLANA_MAX_HOLD_PROFIT"'''
+          new='''        if reason is None and age_h >= _sol._dec(cfg.get("max_hold_hours"), 24):\n            reason = "SOLANA_MAX_HOLD_100PCT"'''
+          if new not in s:
+              if old not in s: raise SystemExit('Expected max-hold block not found')
+              s=s.replace(old,new)
+          p.write_text(s)
+          PY
+          changed=1
+          py="$LROOT/.venv/bin/python"; [[ -x "$py" ]] || py=python3
+          PYTHONPATH="$LROOT" "$py" -m py_compile "$FILE"
+          systemctl restart "$SERVICE"
+          sleep 15
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          sleep 5
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          test "$r1" = "$r2"
+          grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$FILE"
+          grep -q '^max_hold_hours,0.5,' "$LROOT/CSVbot/solana_settings.csv"
+          echo learner_absolute_max_hold_minutes=30
+          echo learner_max_hold_requires_profit=false
+          echo learner_max_hold_sell_fraction=100_percent
+          echo learner_service_active=true
+          echo learner_restarts=$r2
+          echo trade_placed_by_fix=NO
+          trap - EXIT
+          ROOT
