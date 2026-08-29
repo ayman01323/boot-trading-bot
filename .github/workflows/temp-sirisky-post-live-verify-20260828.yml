@@ -1,11 +1,10 @@
-# registered valid workflow retrigger
 name: Temporary SiRisky Post-Live Verify 20260828
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Deploy BOOT to VPS"]
+    types: [completed]
     branches: [main]
-    paths:
-      - '.github/workflows/temp-sirisky-post-live-verify-20260828.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,6 +12,7 @@ permissions:
 
 jobs:
   verify:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
