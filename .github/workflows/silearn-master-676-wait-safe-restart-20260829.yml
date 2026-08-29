@@ -1,0 +1,58 @@
+name: SiLearn MASTER 676 wait for safe restart
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1726BST-master-676-alerts'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  wait:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 45
+    steps:
+      - name: Wait for zero LIVE positions then retry alert deploy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          echo 'SiLearn — 2026-08-29 17:31 BST — Subject: Wait for safe restart then activate MASTER 676 alerts'
+          for attempt in $(seq 1 80); do
+            OPEN="$(ROOT="$ROOT" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); total=0
+          for p in (root/'data'/'sibot.sqlite3', root/'data'/'solana_sibot.sqlite3'):
+              if not p.exists(): continue
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=2)
+              try:
+                  tables={r[0] for r in c.execute("select name from sqlite_master where type='table'")}
+                  if 'positions' not in tables: continue
+                  cols={r[1] for r in c.execute('pragma table_info(positions)')}
+                  if {'status','mode'} <= cols:
+                      total += int(c.execute("select count(*) from positions where upper(coalesce(status,''))='OPEN' and upper(coalesce(mode,''))='LIVE'").fetchone()[0])
+              finally: c.close()
+          print(total)
+          PY
+          )"
+            echo "wait_attempt=$attempt open_live=$OPEN"
+            if test "$OPEN" = 0; then
+              echo 'safe_restart_window=true'
+              curl -fsSL -X POST \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                'https://api.github.com/repos/ayman01323/boot-trading-bot/actions/runs/33262985107/rerun-failed-jobs'
+              echo 'alert_deploy_retry_triggered=true'
+              exit 0
+            fi
+            sleep 30
+          done
+          echo 'safe_restart_window=false timeout=true'
+          exit 42
