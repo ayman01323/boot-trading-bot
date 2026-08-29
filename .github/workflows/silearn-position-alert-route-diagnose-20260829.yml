@@ -1,0 +1,56 @@
+name: SiLearn position alert route diagnose
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1816BST-position-alert-route'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only position alert route diagnosis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          echo 'SiLearn — 2026-08-29 18:16 BST — Subject: Diagnose position update Telegram route'
+          echo '--- exact formatter matches ---'
+          grep -RFn --exclude='*.pyc' --exclude-dir='__pycache__' 'LIVE POSITION UPDATE' "$ROOT/learnerbot" || true
+          grep -RFn --exclude='*.pyc' --exclude-dir='__pycache__' 'Entry cost:' "$ROOT/learnerbot" || true
+          grep -RFn --exclude='*.pyc' --exclude-dir='__pycache__' 'Current exit:' "$ROOT/learnerbot" || true
+          echo '--- notification/token references ---'
+          grep -RFn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'TELEGRAM.*TOKEN|telegram_bot_token|send_message\(' "$ROOT/learnerbot" | grep -E 'position|solana|notify|telegram' | head -200 || true
+          echo '--- service ---'
+          echo "service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          echo "pid=$(systemctl show learnerbot-learn.service -p MainPID --value 2>/dev/null || true)"
+          echo '--- live bot identity from .env token, no token output ---'
+          TOKEN="$(sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'.env'; v=''
+          for raw in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,x=s.split('=',1)
+              if k.strip()=='TELEGRAM_BOT_TOKEN': v=x.strip().strip('"').strip("'"); break
+          print(v)
+          PY
+          )"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          TOKEN="$TOKEN" python3 - <<'PY'
+          import json, os, urllib.request
+          with urllib.request.urlopen('https://api.telegram.org/bot'+os.environ['TOKEN']+'/getMe',timeout=20) as r:
+              d=json.loads(r.read().decode())
+          assert d.get('ok') is True
+          u=d.get('result') or {}
+          print('env_bot_username=@'+str(u.get('username') or ''))
+          print('env_bot_name='+str(u.get('first_name') or ''))
+          PY
+          echo 'DIAGNOSE_COMPLETE=true'
