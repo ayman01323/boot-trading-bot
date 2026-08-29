@@ -82,15 +82,16 @@ def test_runner_refuses_exit_before_swap_when_onchain_balance_not_proven(tmp_pat
     lc.ensure_schema(db)
     ticket = _seed_executing_exit(db)
 
+    monkeypatch.setattr(runner, "_revalidate_exit", lambda *a, **k: (True, "ok", 1_000_000))
     monkeypatch.setattr(
         lx,
-        "preflight_exit_balance",
+        "preflight_exit_funding",
         lambda **_kwargs: (False, "insufficient on-chain SOL for approved exit"),
     )
     swap_calls: list[dict] = []
     monkeypatch.setattr(lx, "execute_swap", lambda **kwargs: swap_calls.append(kwargs))
 
-    runner._execute_ticket(journal, db, ticket, feed=None, assets={}, now=2000)
+    runner._execute_ticket(journal, db, ticket, feed=None, assets={}, now=1050)
 
     row = lc._row(db, ticket["approval_id"])
     assert row is not None

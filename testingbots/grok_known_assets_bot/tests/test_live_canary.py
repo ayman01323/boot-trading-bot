@@ -213,7 +213,7 @@ def test_happy_path_entry_confirms(tmp_path, monkeypatch):
         return {"signature": "SIG", "out_raw": 8_900_000, "wallet_delta_lamports": 8_800_000}
 
     monkeypatch.setattr(lx, "execute_swap", fake_swap)
-    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=2000)
+    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=1050)
     assert lc._row(db, aid)["status"] == lc.STATUS_CONFIRMED
     assert lc._row(db, aid)["tx_signature"] == "SIG"
 
@@ -232,7 +232,7 @@ def test_pre_broadcast_failure_is_simulation_failed_and_canary_stays(tmp_path, m
         raise lx.ExecPreBroadcastError("simulation failed")
 
     monkeypatch.setattr(lx, "execute_swap", fake_swap)
-    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=2000)
+    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=1050)
     assert lc._row(db, aid)["status"] == lc.STATUS_SIMULATION_FAILED
     assert control.is_live_canary_enabled(cf) is True
 
@@ -252,7 +252,7 @@ def test_ambiguous_failure_pauses_canary(tmp_path, monkeypatch):
         raise lx.ExecAmbiguousError("post-send RPC timeout")
 
     monkeypatch.setattr(lx, "execute_swap", fake_swap)
-    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=2000)
+    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=1050)
     assert lc._row(db, aid)["status"] == lc.STATUS_UNKNOWN_OUTCOME
     assert control.is_live_canary_enabled(cf) is False
 
@@ -272,7 +272,7 @@ def test_post_land_unproven_requires_reconciliation(tmp_path, monkeypatch):
         raise lx.ExecPostLandError("landed unproven", "LANDEDSIG")
 
     monkeypatch.setattr(lx, "execute_swap", fake_swap)
-    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=2000)
+    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=1050)
     row = lc._row(db, aid)
     assert row["status"] == lc.STATUS_RECONCILIATION_REQUIRED
     assert control.is_live_canary_enabled(cf) is False
@@ -308,7 +308,7 @@ def test_revalidation_route_degradation_rejects(tmp_path, monkeypatch):
     lc.ensure_schema(db)
     aid = _seed_approved(db)
     monkeypatch.setattr(runner, "assess_live_readiness", lambda *a, **k: _ready(entry_min_out_lamports=1))
-    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=2000)
+    runner.run_once(j, db, _FakeFeed(), {"solana:SOL:NATIVE": _FakeAsset()}, 0, now=1050)
     assert lc._row(db, aid)["status"] == lc.STATUS_REJECTED_REVALIDATION
 
 

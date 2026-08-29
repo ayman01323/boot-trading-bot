@@ -9,10 +9,9 @@ provides Jupiter order -> local single-signer signing -> mandatory
 ``simulateTransaction`` -> execute -> post-execution economic proof.
 
 Direction: the Grok known-asset is native SOL, so an ENTRY is USDC -> SOL and an
-EXIT is SOL -> USDC. This is off the executor's usual SOL->token path but
-``swap()`` is direction-generic and Jupiter handles wrap/unwrap. The canary keeps
-ExactIn semantics and enforces the approved minimum output plus the 0.009 SOL
-ledger cap before any approval can reach execution.
+EXIT is SOL -> USDC. ``swap()`` is direction-generic and Jupiter handles
+wrap/unwrap. Entry and exit funding checks are owned by this adapter because the
+executor's ``buy``/``sell`` helpers assume SOL->SPL-token direction.
 """
 from __future__ import annotations
 
@@ -23,11 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .live_canary import SOL_FEE_RESERVE_LAMPORTS
+
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 WSOL_MINT = "So11111111111111111111111111111111111111112"
-
-# SOL that must remain for fees / rent after any entry or exit.
-SOL_FEE_RESERVE_LAMPORTS = 20_000_000
 
 
 class ExecConfigError(RuntimeError):
@@ -71,12 +69,19 @@ def _learnerbot():
     try:
         from learnerbot import solana_live_executor as _exec  # noqa: WPS433
         from learnerbot import solana_sibot as _sol  # noqa: WPS433
+        from learnerbot import solana_rpc_failover_patch as _rpc_failover  # noqa: WPS433
         from learnerbot.solana_wallet_store import SolanaWalletStore  # noqa: WPS433
     except Exception as exc:  # pragma: no cover - env-specific
         raise ExecConfigError(
             "learnerbot Solana executor is not importable; set GROK_BOOT_REPO_ROOT "
             f"and install the [live] extra ({type(exc).__name__}: {exc})"
         ) from exc
+
+    # The standalone Grok process does not run learnerbot's normal patch chain.
+    # Install the same secret-safe multi-endpoint RPC failover locally so signer,
+    # balance and simulation calls can fail over on 401/403/429/transient faults.
+    if _sol._rpc is not _rpc_failover.rpc_failover:
+        _rpc_failover.install()
     return _exec, _sol, SolanaWalletStore
 
 
@@ -160,7 +165,13 @@ def execute_swap(
     Sequence: pre-broadcast gate (safe) -> mark BROADCAST_SUBMITTED -> real swap.
     Returns ``{"signature", "out_raw", "wallet_delta_lamports"}``.
     """
-    executor = executor or build_executor()
+    if executor is None:
+        try:
+            executor = build_executor()
+        except ExecConfigError as exc:
+            # No signer/executor existed yet, therefore no transaction could have
+            # been submitted. Keep this in the clean pre-broadcast failure class.
+            raise ExecPreBroadcastError(str(exc)) from exc
     amount_raw = int(amount_raw)
     if amount_raw <= 0:
         raise ExecPreBroadcastError("swap amount must be positive")
@@ -194,7 +205,10 @@ def execute_swap(
 
 
 def preflight_funding(*, need_input_micro_usdc: int, executor=None) -> tuple[bool, str]:
-    """Confirm USDC to spend and SOL fee reserve are present for an entry."""
+    """Confirm USDC to spend and native SOL fee reserve are present for entry."""
+    need = int(need_input_micro_usdc)
+    if need <= 0:
+        return False, "entry input must be positive"
     try:
         executor = executor or build_executor()
         usdc = int(executor.token_balance_raw(USDC_MINT))
@@ -203,22 +217,17 @@ def preflight_funding(*, need_input_micro_usdc: int, executor=None) -> tuple[boo
         return False, str(exc)
     except Exception as exc:  # pragma: no cover - env-specific
         return False, f"balance check failed: {type(exc).__name__}: {exc}"
-    if usdc < int(need_input_micro_usdc):
-        return False, f"insufficient USDC: have {usdc} micro, need {int(need_input_micro_usdc)}"
+    if usdc < need:
+        return False, f"insufficient USDC: have {usdc} micro, need {need}"
     if sol < SOL_FEE_RESERVE_LAMPORTS:
         return False, f"insufficient SOL fee reserve: have {sol} lamports, need {SOL_FEE_RESERVE_LAMPORTS}"
     return True, "ok"
 
 
 def preflight_exit_balance(*, need_sol_lamports: int, executor=None) -> tuple[bool, str]:
-    """Prove the approved SOL position still exists on-chain before an exit.
-
-    The live wallet must hold the exact approved sell amount plus the protected
-    fee/rent reserve. This is deliberately checked immediately before the exit
-    transaction is built; a stale ledger row alone can never authorise a sell.
-    """
-    need_sol_lamports = int(need_sol_lamports)
-    if need_sol_lamports <= 0:
+    """Prove the approved SOL position is currently spendable plus fee reserve."""
+    need = int(need_sol_lamports)
+    if need <= 0:
         return False, "exit amount must be positive"
     try:
         executor = executor or build_executor()
@@ -227,10 +236,18 @@ def preflight_exit_balance(*, need_sol_lamports: int, executor=None) -> tuple[bo
         return False, str(exc)
     except Exception as exc:  # pragma: no cover - env-specific
         return False, f"exit balance check failed: {type(exc).__name__}: {exc}"
-    required = need_sol_lamports + SOL_FEE_RESERVE_LAMPORTS
+    required = need + SOL_FEE_RESERVE_LAMPORTS
     if sol < required:
         return False, (
             f"insufficient on-chain SOL for approved exit: have {sol} lamports, "
-            f"need position {need_sol_lamports} + reserve {SOL_FEE_RESERVE_LAMPORTS}"
+            f"need position {need} + reserve {SOL_FEE_RESERVE_LAMPORTS}"
         )
     return True, "ok"
+
+
+def preflight_exit_funding(*, approved_exit_input_lamports: int, executor=None) -> tuple[bool, str]:
+    """Compatibility name used by the hardened runner."""
+    return preflight_exit_balance(
+        need_sol_lamports=int(approved_exit_input_lamports),
+        executor=executor,
+    )
