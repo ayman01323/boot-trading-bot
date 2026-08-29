@@ -1,0 +1,159 @@
+name: Fix Learner Systemd Telegram Env 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/fix-learner-systemd-telegram-env-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Remove empty systemd Telegram overrides and verify end-to-end startup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          DROPIN_DIR=/etc/systemd/system/learnerbot-learn.service.d
+          DROPIN="$DROPIN_DIR/10-restore-telegram-env.conf"
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup="$LROOT/private/pre-systemd-telegram-env-fix-$stamp"
+          mkdir -p "$backup" "$DROPIN_DIR"
+          systemctl cat "$SERVICE" > "$backup/systemctl-cat.before.txt"
+          cp -a "$LROOT/.env" "$backup/.env.before"
+          if [[ -f "$DROPIN" ]]; then cp -a "$DROPIN" "$backup/dropin.before"; echo present > "$backup/dropin-state"; else echo absent > "$backup/dropin-state"; fi
+          echo "telegram_systemd_fix_backup=$backup"
+
+          # Prove the source of the failure without revealing values.
+          pid=$(systemctl show "$SERVICE" -p MainPID --value)
+          PID="$pid" python3 - <<'PY'
+          import os,pathlib
+          raw=pathlib.Path('/proc/'+os.environ['PID']+'/environ').read_bytes().split(b'\0')
+          env={x.split(b'=',1)[0].decode(errors='replace'):x.split(b'=',1)[1] for x in raw if b'=' in x}
+          assert 'TELEGRAM_BOT_TOKEN' in env and len(env['TELEGRAM_BOT_TOKEN'])==0
+          print('confirmed_initial_empty_systemd_token=true')
+          PY
+
+          changed=0
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo 'TELEGRAM_SYSTEMD_ROLLBACK=START'
+              if [[ "$(cat "$backup/dropin-state")" = present ]]; then
+                cp -a "$backup/dropin.before" "$DROPIN"
+              else
+                rm -f "$DROPIN"
+              fi
+              systemctl daemon-reload || true
+              systemctl restart "$SERVICE" || true
+              echo 'TELEGRAM_SYSTEMD_ROLLBACK=COMPLETE'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          cat > "$DROPIN" <<'EOF'
+          [Service]
+          # The base unit currently injects empty Telegram variables. The restored
+          # 12:40 learner source uses python-dotenv with override=False, so empty
+          # exec-time variables prevent the valid isolated .env from loading.
+          # Remove only those inherited empty keys; config.py then loads .env normally.
+          UnsetEnvironment=TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_IDS TELEGRAM_CHAT_ID
+          EOF
+          chmod 644 "$DROPIN"
+          changed=1
+          systemctl daemon-reload
+
+          # Validate the isolated .env before restart without exposing the token/chat ID.
+          LROOT="$LROOT" python3 - <<'PY'
+          import json,os,pathlib,urllib.request
+          root=pathlib.Path(os.environ['LROOT']); env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env.get('TELEGRAM_BOT_TOKEN',''); chat=env.get('TELEGRAM_CHAT_ID','') or env.get('TELEGRAM_CHAT_IDS','')
+          assert token and chat
+          req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getMe',headers={'User-Agent':'learner-systemd-fix/1'})
+          with urllib.request.urlopen(req,timeout=10) as r:d=json.load(r)
+          assert d.get('ok') and (d.get('result') or {}).get('username')=='SiLearn_bot'
+          print('isolated_env_identity=@SiLearn_bot')
+          print('isolated_env_recipient_present=true')
+          PY
+
+          systemctl restart "$SERVICE"
+          started=$(date -u +'%Y-%m-%d %H:%M:%S')
+          sleep 18
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p1=$(systemctl show "$SERVICE" -p MainPID --value)
+          sleep 12
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          p2=$(systemctl show "$SERVICE" -p MainPID --value)
+          [[ "$p1" != 0 && "$p2" != 0 && "$r1" = "$r2" ]]
+
+          log=$(journalctl -u "$SERVICE" --since "$started" --no-pager -o cat 2>/dev/null || true)
+          echo 'TELEGRAM_STARTUP_PROOF_BEGIN'
+          printf '%s\n' "$log" | grep -Ei 'telegram-menu|telegram-command-scope|poll error|409 Conflict|getUpdates|webhook' | tail -n 120 || true
+          echo 'TELEGRAM_STARTUP_PROOF_END'
+          printf '%s\n' "$log" | grep -q '\[telegram-menu\] interactive multi-chain menu started'
+          printf '%s\n' "$log" | grep -q '\[telegram-command-scope\]'
+          if printf '%s\n' "$log" | grep -Eqi '409 Conflict|terminated by other getUpdates|another getUpdates request'; then exit 72; fi
+
+          # Verify commands now exist in Telegram and 0.009 SOL remains unchanged.
+          LROOT="$LROOT" python3 - <<'PY'
+          import csv,json,os,pathlib,urllib.parse,urllib.request
+          root=pathlib.Path(os.environ['LROOT']); env={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
+          token=env['TELEGRAM_BOT_TOKEN']
+          def api(method,payload=None):
+              data=urllib.parse.urlencode(payload).encode() if payload is not None else None
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/{method}',data=data,headers={'User-Agent':'learner-systemd-fix/1'})
+              with urllib.request.urlopen(req,timeout=10) as r:return json.load(r)
+          me=api('getMe'); wh=api('getWebhookInfo'); commands=api('getMyCommands')
+          assert me.get('ok') and (me.get('result') or {}).get('username')=='SiLearn_bot'
+          assert not str((wh.get('result') or {}).get('url') or '')
+          default_commands=commands.get('result') or []
+          if len(default_commands)<1: raise SystemExit('Learner default commands still empty after startup')
+          with (root/'CSVbot/solana_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              d={r.get('setting'):r.get('value') for r in csv.DictReader(f)}
+          assert d.get('live_trade_sol')=='0.009' and d.get('live_min_economic_trade_sol')=='0.009'
+          with (root/'CSVbot/user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              vals=[r.get('value') for r in csv.DictReader(f) if r.get('setting')=='solana_live_trade_sol']
+          assert vals and all(v=='0.009' for v in vals)
+          chats=[]
+          for key in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              v=env.get(key,'')
+              if v: chats += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+          sent=api('sendMessage',{'chat_id':chats[0],'text':'✅ Learner Telegram is restored and working. Interactive commands and trading/status alerts are active. The 0.009 SOL minimum entry remains in force. No trade was placed by this test.','protect_content':'true'})
+          assert sent.get('ok') and (sent.get('result') or {}).get('message_id')
+          print('learner_bot=@SiLearn_bot')
+          print('default_commands_registered='+str(len(default_commands)))
+          print('interactive_polling_startup_verified=true')
+          print('competing_poller_detected=false')
+          print('telegram_delivery_test=success')
+          print('minimum_entry=0.009_SOL')
+          print('trade_placed_by_test=NO')
+          PY
+
+          echo "learner_service_active=true"
+          echo "learner_service_pid=$p2"
+          echo "learner_service_restarts=$r2"
+          echo 'learner_telegram_systemd_fix=SUCCESS'
+          trap - EXIT
+          ROOT
