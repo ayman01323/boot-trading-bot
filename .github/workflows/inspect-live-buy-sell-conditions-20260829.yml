@@ -1,0 +1,73 @@
+name: Inspect Live Buy Sell Conditions 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/inspect-live-buy-sell-conditions-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Print selected non-secret live trading conditions
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n python3 - <<'PY'
+          import csv, pathlib
+
+          def rows(path):
+              p=pathlib.Path(path)
+              if not p.exists(): return []
+              with p.open(encoding='utf-8-sig', newline='') as f: return list(csv.DictReader(f))
+
+          print('=== LEARNER_GLOBAL ===')
+          wanted=[
+            'live_trade_sol','live_min_economic_trade_sol','live_min_sol_reserve','live_max_positions',
+            'live_require_simulation','live_require_execute_output','live_require_swap_events','live_no_output_disable_after',
+            'live_max_observed_overhead_pct','max_signal_age_seconds','max_roundtrip_loss_pct','max_entry_deterioration_pct',
+            'stop_loss_pct','take_profit_pct','leader_exit_loss_cap_pct','break_even_trigger_pct','break_even_floor_pct',
+            'trailing_trigger_pct','trailing_gap_pct','max_hold_hours','mirror_partial_sells','min_closed_trades','min_win_rate_pct',
+            'require_complete_history','min_profit_factor','recent_trade_window','min_recent_win_rate_pct','min_recent_profit_factor',
+            'max_leader_drawdown_pct','leader_recent_activity_hours','min_copied_trades_for_guard','min_copied_win_rate_pct',
+            'min_copied_profit_factor','max_consecutive_copied_losses','leader_suspend_minutes','leaders_per_user'
+          ]
+          d={str(r.get('setting') or '').strip():str(r.get('value') or '').strip() for r in rows('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')}
+          for k in wanted: print(f'{k}={d.get(k,"MISSING")}')
+
+          print('=== LEARNER_USER_OVERRIDES ===')
+          uwanted={'solana_live_enabled','learner_new_entries_enabled','solana_live_trade_sol','solana_live_min_reserve_sol','min_exit_profit_pct'}
+          for r in rows('/home/ayman01323/BOOT/testingbots/learn/CSVbot/user_trading_settings.csv'):
+              s=str(r.get('setting') or '').strip()
+              if s in uwanted:
+                  tid=str(r.get('telegram_id') or '').strip()
+                  print(f'user={tid} chain={str(r.get("chain_id") or "").strip()} {s}={str(r.get("value") or "").strip()}')
+
+          print('=== SIRISKY_RUNTIME ===')
+          for path in ['/root/SiRisky/CSV/runtime.csv','/root/SiRisky/CSV/runtime_settings.csv','/root/SiRisky/CSV/live_runtime.csv']:
+              if pathlib.Path(path).exists():
+                  print('file='+path)
+                  for r in rows(path):
+                      k=str(r.get('setting') or r.get('key') or r.get('name') or '').strip()
+                      v=str(r.get('value') or '').strip()
+                      if k: print(f'{k}={v}')
+
+          print('=== SIRISKY_STAGE2 ===')
+          p='/root/SiRisky/CSV/stage2_strategy.csv'
+          if pathlib.Path(p).exists():
+              for r in rows(p):
+                  print('|'.join(f'{k}={str(v or "").strip()}' for k,v in r.items()))
+          print('=== SIRISKY_STAGE3 ===')
+          p='/root/SiRisky/CSV/stage3_risk.csv'
+          if pathlib.Path(p).exists():
+              for r in rows(p):
+                  print('|'.join(f'{k}={str(v or "").strip()}' for k,v in r.items()))
+          print('NO_STATE_CHANGED=true')
+          PY
