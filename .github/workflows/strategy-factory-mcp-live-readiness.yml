@@ -1,0 +1,37 @@
+name: Strategy Factory MCP Live Readiness
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/strategy-factory-mcp-live-readiness.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-vps]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Inspect bounded HTTPS/tunnel readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "machine=$(hostname)"
+          echo "python311=$(command -v python3.11 || true)"
+          echo "cloudflared=$(command -v cloudflared || true)"
+          echo "nginx=$(command -v nginx || true)"
+          echo "caddy=$(command -v caddy || true)"
+          for svc in cloudflared nginx caddy; do
+            state="$(systemctl is-active "$svc" 2>/dev/null || true)"
+            echo "service_${svc}=${state:-not-found}"
+          done
+          echo 'listeners_80_443_8790:'
+          ss -ltn 2>/dev/null | awk 'NR==1 || $4 ~ /:(80|443|8790)$/'
+          echo 'allowed_sudo_wrappers:'
+          sudo -n -l 2>/dev/null | sed -n '/may run the following commands/,$p' | head -n 20 || true

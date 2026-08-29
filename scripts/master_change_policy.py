@@ -34,11 +34,14 @@ GOVERNANCE_FILES = frozenset({
     "scripts/ai_agent_ws_worker.py",
     "scripts/ai_agent_ws_send.py",
     "scripts/strategy_factory_transport.py",
+    "scripts/strategy_factory_mcp_core.py",
+    "scripts/strategy_factory_mcp_bridge.py",
     "scripts/master_change_policy.py",
     "tests/test_master_change_council.py",
     "tests/test_ai_cost_router.py",
     "tests/test_grok_sixth_agent.py",
     "tests/test_strategy_factory_transport.py",
+    "tests/test_strategy_factory_mcp_bridge.py",
 })
 
 
