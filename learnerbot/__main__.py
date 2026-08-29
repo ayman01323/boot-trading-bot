@@ -174,10 +174,15 @@ from . import sibot_leader_quality_hard_floor_patch  # noqa: F401
 # owned by learnerbot. It never edits trading state and skips itself if an external
 # broker is already serving 127.0.0.1:8765.
 from . import ai_agent_ws_runtime_patch  # noqa: F401
-# Absolute final fail-closed composition gate after every late runtime wrapper.
-# Verification only: never repairs/rebinds a hook or changes trading settings.
+# Base fail-closed composition gate for the complete pre-existing trading stack.
+# Change Set 4 is applied only after this succeeds, then gets its own final gate.
 from . import final_runtime_integrity_patch  # noqa: F401
 # Permanent MASTER Telegram bridge to the isolated Google learner wallet/LIVE controls.
 from . import telegram_google_learner_launcher_patch  # noqa: F401
+# CHANGE SET 4 — approved 2026-08-29T10:38:58Z / 11:38:58 BST.
+# Subject: historical BUY restore + 0.005 SOL/10 positions + 30+3m full-exit + LP revalidation.
+from . import solana_owner_changeset_4_patch  # noqa: F401
+# Refuse startup if any stamped Change Set 4 wrapper is missing or displaced.
+from . import solana_owner_changeset_4_integrity_patch  # noqa: F401
 from .cli import main
 raise SystemExit(main())
