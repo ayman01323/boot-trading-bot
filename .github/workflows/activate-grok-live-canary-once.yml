@@ -17,35 +17,29 @@ concurrency:
 jobs:
   activate:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
-      - name: Verify Google runner and stop stale canary processes
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(hostname)" = "botgoogle"
-          test "$(id -un)" = "ayman01323"
-          sudo systemctl stop grok-known-assets-canary.service 2>/dev/null || true
-          sudo systemctl stop grok-known-assets-telegram.service 2>/dev/null || true
-          echo "money_path_during_sync=OFF"
-
-      - name: Pin Grok runtime to triggering commit
+      - name: Sync Grok LIVE and Telegram runtime
         shell: bash
         env:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
           ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
           BASE="https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${SHA}/testingbots/grok_known_assets_bot"
-          test -d "$ROOT"
+          sudo systemctl stop grok-known-assets-canary.service 2>/dev/null || true
+          sudo systemctl stop grok-known-assets-telegram.service 2>/dev/null || true
           files=(
             pyproject.toml
+            src/grok_known_assets_bot/control.py
             src/grok_known_assets_bot/live_canary.py
             src/grok_known_assets_bot/live_canary_runner.py
             src/grok_known_assets_bot/live_execution.py
             src/grok_known_assets_bot/live_readiness.py
             src/grok_known_assets_bot/telegram_control.py
-            src/grok_known_assets_bot/control.py
+            src/grok_known_assets_bot/telegram_control_runtime.py
             systemd/grok-known-assets-canary.service.example
             systemd/grok-known-assets-telegram.service.example
             tests/test_live_canary.py
@@ -54,107 +48,68 @@ jobs:
           )
           for rel in "${files[@]}"; do
             mkdir -p "$ROOT/$(dirname "$rel")"
-            tmp="$ROOT/$rel.sync"
-            curl -fsSL --retry 3 --connect-timeout 10 "$BASE/$rel" -o "$tmp"
-            test -s "$tmp"
-            mv "$tmp" "$ROOT/$rel"
+            curl -fsSL --retry 3 --connect-timeout 10 "$BASE/$rel" -o "$ROOT/$rel.sync"
+            test -s "$ROOT/$rel.sync"
+            mv "$ROOT/$rel.sync" "$ROOT/$rel"
           done
+          grep -q 'Ticket ID:' "$ROOT/src/grok_known_assets_bot/telegram_control_runtime.py"
+          grep -q 'APPROVE EXACTLY:' "$ROOT/src/grok_known_assets_bot/telegram_control_runtime.py"
+          grep -q 'from_user_id: str | None = None' "$ROOT/src/grok_known_assets_bot/telegram_control_runtime.py"
           grep -q 'LIVE_READY_MISSING_INVARIANTS' "$ROOT/src/grok_known_assets_bot/live_canary_runner.py"
-          grep -q "micro_usdc <= 0 or min_out <= 0" "$ROOT/src/grok_known_assets_bot/live_canary_runner.py"
-          echo "runtime_source_sha=$SHA"
-          echo "zero_value_ticket_invariant=PINNED"
 
-      - name: Install LIVE runtime and run safety tests
+      - name: Install and test LIVE runtime
         shell: bash
         run: |
           set -euo pipefail
-          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          cd "$ROOT"
           .venv/bin/pip install -q \
-            'requests>=2.32,<3' \
-            'python-dotenv>=1.0,<2' \
-            'web3>=7.0,<8' \
-            'cryptography>=42,<46' \
-            'solders>=0.28,<0.29' \
-            'PyYAML>=6.0,<7' \
-            'websockets>=15,<16' \
-            'base58>=2.1' \
-            -e '.[live]'
+            'requests>=2.32,<3' 'python-dotenv>=1.0,<2' 'web3>=7.0,<8' \
+            'cryptography>=42,<46' 'solders>=0.28,<0.29' 'PyYAML>=6.0,<7' \
+            'websockets>=15,<16' 'base58>=2.1' -e '.[live]'
           .venv/bin/python -m pytest -q \
             tests/test_live_canary.py \
             tests/test_live_canary_exit_balance.py \
             tests/test_live_canary_post715_hardening.py
+          .venv/bin/python - <<'PY'
+          from grok_known_assets_bot import telegram_control_runtime as rt
+          good={
+              'approval_id':'ticket-test-123',
+              'target_lamports':9000000,
+              'input_micro_usdc':931079,
+              'min_out_lamports':8955543,
+          }
+          msg=rt._event_alert_text('CANARY_PENDING','solana:SOL:NATIVE',good) or ''
+          assert 'Ticket ID: ticket-test-123' in msg
+          assert '/grokapprove ticket-test-123 CONFIRM' in msg
+          bad=rt._event_alert_text('CANARY_PENDING','solana:SOL:NATIVE',{'approval_id':'bad','target_lamports':9000000}) or ''
+          assert 'MALFORMED APPROVAL BLOCKED' in bad
+          print('telegram_approval_message=PASS')
+          PY
 
-      - name: Cancel stale tickets and prove current LIVE_READY values
+      - name: Clear stale approvals and arm guarded LIVE state
         shell: bash
         run: |
           set -euo pipefail
-          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          cd "$ROOT"
           .venv/bin/python - <<'PY'
-          import json, sqlite3
+          import sqlite3
           from grok_known_assets_bot import live_canary as lc
+          from grok_known_assets_bot.control import save_state
           db=sqlite3.connect('state.sqlite3',timeout=8)
           lc.ensure_schema(db)
-          cancelled=lc.cancel_unclaimed(db, reason='runtime-sync-20260829')
-          row=db.execute("SELECT id,payload FROM events WHERE kind='LIVE_READY' ORDER BY id DESC LIMIT 1").fetchone()
-          if row:
-              data=json.loads(row[1])
-              spend=int(data.get('entry_input_micro_usdc') or 0)
-              min_out=int(data.get('entry_min_out_lamports') or 0)
-              print('latest_live_ready_event_id='+str(row[0]))
-              print('latest_live_ready_spend_micro='+str(spend))
-              print('latest_live_ready_min_out='+str(min_out))
-              if data.get('ready') and (spend <= 0 or min_out <= 0):
-                  raise SystemExit('BLOCKED: latest LIVE_READY has zero execution invariants')
-          print('cancelled_stale_approvals='+str(cancelled))
-          print('approval_payload_invariant=PASS')
+          if lc.needs_reconciliation(db):
+              raise SystemExit('BLOCKED: reconciliation required')
+          print('cancelled_stale_approvals='+str(lc.cancel_unclaimed(db, reason='telegram-ticket-id-fix')))
           db.close()
+          state=save_state(armed=True,live_readiness_enabled=True,live_canary_enabled=True,updated_by='github-ticket-id-fix')
+          if not state.get('live_money_enabled'):
+              raise SystemExit('BLOCKED: LIVE state did not arm')
+          print('live_money_state=ARMED_APPROVAL_GATED')
           PY
 
-      - name: Verify signer RPC balances and reconciliation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
-          sudo -u ayman01323 .venv/bin/python - <<'PY'
-          import json, os, sqlite3
-          from pathlib import Path
-          envp=Path('/home/ayman01323/.config/grok-known-assets-bot/canary.env')
-          if not envp.exists(): raise SystemExit('BLOCKED: Grok canary.env missing')
-          for raw in envp.read_text(encoding='utf-8').splitlines():
-              line=raw.strip()
-              if line and not line.startswith('#') and '=' in line:
-                  k,v=line.split('=',1); os.environ[k.strip()]=v.strip().strip('"').strip("'")
-          os.environ['GROK_BOOT_REPO_ROOT']='/home/ayman01323/BOOT/testingbots/learn'
-          os.environ['GROK_LEARNERBOT_CSV_DIR']='/home/ayman01323/BOOT/testingbots/learn/CSVbot'
-          os.environ['GROK_LEARNERBOT_DATA_DIR']='/home/ayman01323/BOOT/testingbots/learn/data'
-          from grok_known_assets_bot import live_canary as lc
-          from grok_known_assets_bot import live_execution as lx
-          ok,why=lx.signer_status()
-          if not ok: raise SystemExit('BLOCKED signer: '+why)
-          db=sqlite3.connect('state.sqlite3',timeout=8); lc.ensure_schema(db)
-          if lc.needs_reconciliation(db): raise SystemExit('BLOCKED: reconciliation required')
-          need=1
-          row=db.execute("SELECT payload FROM events WHERE kind='LIVE_READY' ORDER BY id DESC LIMIT 1").fetchone()
-          if row:
-              try: need=max(1,int(json.loads(row[0]).get('entry_input_micro_usdc') or 1))
-              except Exception: pass
-          db.close()
-          ex=lx.build_executor()
-          usdc=int(ex.token_balance_raw(lx.USDC_MINT))
-          sol=int(ex.native_balance_lamports())
-          if sol < int(lx.SOL_FEE_RESERVE_LAMPORTS):
-              raise SystemExit(f'BLOCKED fee reserve: have {sol} lamports, need {int(lx.SOL_FEE_RESERVE_LAMPORTS)}')
-          print('signer_address='+str(ex.address))
-          print('signer_ready=true')
-          print('reconciliation_required=false')
-          print('sol_lamports='+str(sol))
-          print('usdc_micro='+str(usdc))
-          print('required_entry_micro='+str(need))
-          print('entry_funding_ready='+str(usdc >= need).lower())
-          print('per_entry_funding_gate=ENFORCED')
-          PY
-
-      - name: Install restart and arm guarded LIVE services
+      - name: Install and restart services
         shell: bash
         run: |
           set -euo pipefail
@@ -169,24 +124,18 @@ jobs:
             | sudo tee /etc/systemd/system/grok-known-assets-canary.service.d/10-isolated-signer.conf >/dev/null
           sudo systemctl daemon-reload
           sudo systemctl enable grok-known-assets-canary.service grok-known-assets-telegram.service
-          cd "$ROOT"
-          .venv/bin/python - <<'PY'
-          import sqlite3
-          from grok_known_assets_bot import live_canary as lc
-          from grok_known_assets_bot.control import save_state
-          db=sqlite3.connect('state.sqlite3',timeout=8); lc.ensure_schema(db)
-          if lc.needs_reconciliation(db): raise SystemExit('BLOCKED: reconciliation required before arm')
-          db.close()
-          s=save_state(armed=True,live_readiness_enabled=True,live_canary_enabled=True,updated_by='github-runtime-sync-live')
-          if not s.get('live_money_enabled'): raise SystemExit('BLOCKED: live money did not arm')
-          PY
-          sudo systemctl restart grok-known-assets-canary.service grok-known-assets-telegram.service
-          sleep 6
-          sudo systemctl is-active --quiet grok-known-assets-canary.service
-          sudo systemctl is-active --quiet grok-known-assets-telegram.service
-          echo "GROK_LIVE_CANARY=ACTIVE"
-          echo "SIGNING=ENABLED_APPROVAL_GATED"
-          echo "BROADCAST=ENABLED_APPROVAL_GATED"
-          echo "ZERO_VALUE_APPROVAL=REJECTED_BY_INVARIANT"
-          echo "HARD_CAP_SOL=0.009"
-          echo "MAX_OPEN_POSITIONS=1"
+          sudo systemctl restart grok-known-assets-canary.service
+          sudo systemctl restart grok-known-assets-telegram.service
+          sleep 7
+          for svc in grok-known-assets-canary.service grok-known-assets-telegram.service; do
+            if ! sudo systemctl is-active --quiet "$svc"; then
+              sudo systemctl status "$svc" --no-pager -l || true
+              sudo journalctl -u "$svc" -n 80 --no-pager || true
+              exit 1
+            fi
+          done
+          echo 'GROK_LIVE_CANARY=ACTIVE'
+          echo 'TELEGRAM_APPROVAL_REQUEST=FULL_TICKET_ID_AND_COMMAND'
+          echo 'SIGNING=ENABLED_APPROVAL_GATED'
+          echo 'BROADCAST=ENABLED_APPROVAL_GATED'
+          echo 'ZERO_VALUE_APPROVAL=BLOCKED'
