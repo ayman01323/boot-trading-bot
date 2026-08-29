@@ -29,7 +29,16 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
           cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
-          .venv/bin/pip install -q -e '.[live]'
+          .venv/bin/pip install -q \
+            'requests>=2.32,<3' \
+            'python-dotenv>=1.0,<2' \
+            'web3>=7.0,<8' \
+            'cryptography>=42,<46' \
+            'solders>=0.28,<0.29' \
+            'PyYAML>=6.0,<7' \
+            'websockets>=15,<16' \
+            'base58>=2.1' \
+            -e '.[live]'
           .venv/bin/python -m pytest -q tests/test_live_canary.py tests/test_live_canary_exit_balance.py tests/test_live_canary_post715_hardening.py
 
       - name: Bind Grok to authorised Telegram encrypted Solana signer
