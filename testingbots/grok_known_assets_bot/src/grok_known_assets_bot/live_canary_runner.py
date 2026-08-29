@@ -148,8 +148,18 @@ def _execute_ticket(journal: Journal, db: sqlite3.Connection, ticket: dict, feed
         amount_raw = int(ticket["input_micro_usdc"])
         min_out = int(ticket["min_out_lamports"])
     else:
-        in_mint, out_mint = lx.WSOL_MINT, lx.USDC_MINT
         amount_raw = int(ticket["target_lamports"])
+        ok, reason = lx.preflight_exit_balance(need_sol_lamports=amount_raw)
+        if not ok:
+            lc.mark_rejected(db, approval_id, status=lc.STATUS_REJECTED_REVALIDATION,
+                             detail=reason, from_status=lc.STATUS_EXECUTING)
+            _event(journal, "CANARY_REJECTED", asset_key, {
+                "approval_id": approval_id,
+                "reason": reason,
+                "stage": "EXIT_ONCHAIN_BALANCE",
+            })
+            return
+        in_mint, out_mint = lx.WSOL_MINT, lx.USDC_MINT
         min_out = 0
 
     def _submitted() -> None:
