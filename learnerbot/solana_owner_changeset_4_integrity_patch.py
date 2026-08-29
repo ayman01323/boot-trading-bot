@@ -61,3 +61,8 @@ def install() -> None:
 
 
 install()
+
+# SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts.
+# This reporting-only layer is intentionally composed only after Change Set 4's
+# trading integrity gate succeeds. It does not alter any trading hook verified above.
+from . import solana_reject_once_reporting_patch as _reject_once  # noqa: E402,F401
