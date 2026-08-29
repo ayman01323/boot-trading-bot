@@ -20,8 +20,15 @@ from typing import Any
 from . import live_canary as lc
 from .control import control_path, is_live_canary_enabled, load_state, save_state
 from .core import Journal, load_config
-from .live_feed import SolanaNativeLiveFeed, SOL_MINT
-from .live_readiness import assess_live_readiness
+from .feed_safety import FeedSafetyError
+from .live_feed import (
+    SolanaNativeLiveFeed,
+    SOL_MINT,
+    USDC_MINT,
+    _price_impact_bps,
+    _quote,
+)
+from .live_readiness import MAX_STRESS_IMPACT_BPS, assess_live_readiness
 
 POLL_SECONDS = 3.0
 
@@ -118,12 +125,86 @@ def _revalidate_entry(feed: SolanaNativeLiveFeed, assets: dict, ticket: dict, *,
     return True, "ok"
 
 
+def _open_position_for_exit(db: sqlite3.Connection, ticket: dict) -> tuple[bool, str, int]:
+    """Prove the approved EXIT still maps to one exact, unclosed Grok position."""
+    position_id = str(ticket.get("position_approval_id") or "")
+    if not position_id:
+        return False, "exit has no position id", 0
+    row = db.execute(
+        "SELECT kind,status,acquired_lamports FROM live_canary_approvals WHERE approval_id=?",
+        (position_id,),
+    ).fetchone()
+    if row is None:
+        return False, "recorded entry position is missing", 0
+    kind, status, acquired_raw = str(row[0]), str(row[1]), int(row[2] or 0)
+    if kind != lc.KIND_ENTRY or status != lc.STATUS_CONFIRMED:
+        return False, f"recorded entry is not a confirmed open position (kind={kind}, status={status})", 0
+    if acquired_raw <= 0:
+        return False, "recorded entry has no confirmed acquired SOL quantity", 0
+    already_closed = db.execute(
+        "SELECT 1 FROM live_canary_approvals WHERE kind='EXIT' AND status='CONFIRMED' "
+        "AND position_approval_id=? LIMIT 1",
+        (position_id,),
+    ).fetchone()
+    if already_closed is not None:
+        return False, "recorded entry position already has a confirmed exit", 0
+    approved_raw = int(ticket.get("target_lamports") or 0)
+    if approved_raw != acquired_raw:
+        return False, (
+            f"exit quantity mismatch: approved {approved_raw} lamports, "
+            f"recorded position {acquired_raw} lamports"
+        ), 0
+    return True, "ok", acquired_raw
+
+
+def _revalidate_exit(feed: SolanaNativeLiveFeed, ticket: dict) -> tuple[bool, str, int]:
+    """Require a fresh executable SOL->USDC route immediately before an exit."""
+    amount_raw = int(ticket.get("target_lamports") or 0)
+    if amount_raw <= 0:
+        return False, "exit amount is not positive", 0
+    slippage_bps = int(ticket.get("slippage_bps") or feed.settings.slippage_bps)
+    try:
+        quote = _quote(
+            SOL_MINT,
+            USDC_MINT,
+            amount_raw,
+            slippage_bps=slippage_bps,
+            timeout=feed.settings.request_timeout_seconds,
+        )
+        out_raw = int(quote.get("outAmount") or 0)
+        if out_raw <= 0:
+            raise FeedSafetyError("EXIT_QUOTE_NO_OUTPUT")
+        impact_bps = float(_price_impact_bps(quote))
+    except (FeedSafetyError, OSError, ValueError, KeyError) as exc:
+        return False, f"fresh exit route failed: {type(exc).__name__}: {exc}", 0
+    if impact_bps > MAX_STRESS_IMPACT_BPS:
+        return False, f"exit impact too high: {impact_bps:.2f} bps > {MAX_STRESS_IMPACT_BPS:.2f}", 0
+    min_out = int(out_raw * (1.0 - float(slippage_bps) / 10_000.0))
+    if min_out <= 0:
+        return False, "fresh exit minimum output is not positive", 0
+    return True, "ok", min_out
+
+
 def _execute_ticket(journal: Journal, db: sqlite3.Connection, ticket: dict, feed, assets, *, now: float) -> None:
     from . import live_execution as lx
 
     approval_id = str(ticket["approval_id"])
     kind = str(ticket["kind"])
     asset_key = str(ticket.get("asset_key") or "")
+
+    # Approval TTL is authoritative even after the worker atomically claims it.
+    # A stalled-but-not-restarted worker must not execute an old approved ticket.
+    if int(now) >= int(ticket.get("expires_epoch") or 0):
+        lc._transition(
+            db,
+            approval_id,
+            expected=lc.STATUS_EXECUTING,
+            new_status=lc.STATUS_EXPIRED,
+            detail="approved ticket expired before execution",
+            now=now,
+        )
+        _event(journal, "CANARY_REJECTED", asset_key, {"approval_id": approval_id, "reason": "approval expired"})
+        return
 
     if not is_live_canary_enabled():
         lc.mark_rejected(db, approval_id, status=lc.STATUS_REJECTED_REVALIDATION,
@@ -148,9 +229,25 @@ def _execute_ticket(journal: Journal, db: sqlite3.Connection, ticket: dict, feed
         amount_raw = int(ticket["input_micro_usdc"])
         min_out = int(ticket["min_out_lamports"])
     else:
+        ok, reason, amount_raw = _open_position_for_exit(db, ticket)
+        if not ok:
+            lc.mark_rejected(db, approval_id, status=lc.STATUS_REJECTED_REVALIDATION,
+                             detail=reason, from_status=lc.STATUS_EXECUTING)
+            _event(journal, "CANARY_REJECTED", asset_key, {"approval_id": approval_id, "reason": reason})
+            return
+        ok, reason, min_out = _revalidate_exit(feed, ticket)
+        if not ok:
+            lc.mark_rejected(db, approval_id, status=lc.STATUS_REJECTED_REVALIDATION,
+                             detail=reason, from_status=lc.STATUS_EXECUTING)
+            _event(journal, "CANARY_REJECTED", asset_key, {"approval_id": approval_id, "reason": reason})
+            return
+        ok, reason = lx.preflight_exit_funding(approved_exit_input_lamports=amount_raw)
+        if not ok:
+            lc.mark_rejected(db, approval_id, status=lc.STATUS_REJECTED_REVALIDATION,
+                             detail=reason, from_status=lc.STATUS_EXECUTING)
+            _event(journal, "CANARY_REJECTED", asset_key, {"approval_id": approval_id, "reason": reason})
+            return
         in_mint, out_mint = lx.WSOL_MINT, lx.USDC_MINT
-        amount_raw = int(ticket["target_lamports"])
-        min_out = 0
 
     def _submitted() -> None:
         lc.mark_broadcast_submitted(db, approval_id)
@@ -172,7 +269,7 @@ def _execute_ticket(journal: Journal, db: sqlite3.Connection, ticket: dict, feed
         _disable_canary("post_land_unproven")
         _event(journal, "CANARY_RECONCILIATION", asset_key, {"approval_id": approval_id, "signature": exc.signature, "reason": str(exc)})
         return
-    except (lx.ExecAmbiguousError, lx.ExecConfigError) as exc:
+    except lx.ExecAmbiguousError as exc:
         lc.mark_rejected(db, approval_id, status=lc.STATUS_UNKNOWN_OUTCOME,
                          detail=str(exc), from_status=lc.STATUS_BROADCAST_SUBMITTED)
         _disable_canary("broadcast_ambiguous")
