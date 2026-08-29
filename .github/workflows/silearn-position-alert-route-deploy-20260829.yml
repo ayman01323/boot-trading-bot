@@ -1,0 +1,174 @@
+name: SiLearn position alert route deploy
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1816BST-position-alert-route'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Deploy reporting-only SiLearn position alert route
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n true
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SOURCE_SHA=2c1038b9927377e5e6073401626a2e25aa2d5179
+          STAMP=20260829T1822BST
+          BACKUP="$ROOT/private/change-control/${STAMP}-silearn-position-alert-route"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          echo 'SiLearn — 2026-08-29 18:22 BST — Subject: Deploy SiLearn position updates with Dexview'
+          test "$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)" = active
+
+          # Evidence before mutation. User explicitly authorised restart while the current LIVE position exists.
+          ROOT="$ROOT" python3 - <<'PY'
+          import os, sqlite3
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); p=root/'data'/'solana_sibot.sqlite3'
+          n=0
+          if p.exists():
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=3)
+              try:
+                  n=int(c.execute("select count(*) from positions where upper(coalesce(status,''))='OPEN' and upper(coalesce(mode,''))='LIVE'").fetchone()[0])
+              finally: c.close()
+          print('predeploy_open_live='+str(n))
+          PY
+
+          sudo -n mkdir -p "$BACKUP"
+          sudo -n cp -a "$ROOT/learnerbot/__main__.py" "$BACKUP/__main__.py.pre"
+          if test -f "$ROOT/learnerbot/telegram_silearn_position_updates_patch.py"; then
+            sudo -n cp -a "$ROOT/learnerbot/telegram_silearn_position_updates_patch.py" "$BACKUP/telegram_silearn_position_updates_patch.py.pre"
+          else
+            sudo -n touch "$BACKUP/telegram_silearn_position_updates_patch.py.was_absent"
+          fi
+          printf '%s\n' "$SOURCE_SHA" | sudo -n tee "$BACKUP/source_sha.txt" >/dev/null
+          printf '%s\n' 'SiLearn — 2026-08-29 18:22 BST — Subject: Deploy SiLearn position updates with Dexview' | sudo -n tee "$BACKUP/subject.txt" >/dev/null
+
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$SOURCE_SHA/learnerbot/telegram_silearn_position_updates_patch.py" -o "$TMP/patch.py"
+          grep -Fq 'SiLearner — Solana LIVE POSITION UPDATE' "$TMP/patch.py"
+          grep -Fq 'www.dexview.com/solana/' "$TMP/patch.py"
+          grep -Fq 'reporting_only=true trading_logic_unchanged=true' "$TMP/patch.py"
+          TMP="$TMP" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['TMP'])/'patch.py'
+          compile(p.read_text(encoding='utf-8'),str(p),'exec')
+          print('patch_compile_ok=true')
+          PY
+
+          rollback() {
+            echo 'ROLLBACK_START'
+            sudo -n cp -a "$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
+            if test -f "$BACKUP/telegram_silearn_position_updates_patch.py.pre"; then
+              sudo -n cp -a "$BACKUP/telegram_silearn_position_updates_patch.py.pre" "$ROOT/learnerbot/telegram_silearn_position_updates_patch.py"
+            else
+              sudo -n rm -f "$ROOT/learnerbot/telegram_silearn_position_updates_patch.py"
+            fi
+            sudo -n systemctl restart learnerbot-learn.service || true
+            sleep 5
+            echo "rollback_service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
+          }
+          trap 'rc=$?; if test $rc -ne 0; then rollback; fi; rm -rf "$TMP"; exit $rc' EXIT
+
+          MODE="$(stat -c %a "$ROOT/learnerbot/__main__.py")"
+          sudo -n install -m "$MODE" "$TMP/patch.py" "$ROOT/learnerbot/telegram_silearn_position_updates_patch.py"
+          sudo -n chown --reference="$ROOT/learnerbot/__main__.py" "$ROOT/learnerbot/telegram_silearn_position_updates_patch.py"
+
+          # Preserve the isolated Google __main__.py; insert only this late reporting import.
+          sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'learnerbot'/'__main__.py'
+          text=p.read_text(encoding='utf-8')
+          marker='from .cli import main\n'
+          line='from . import telegram_silearn_position_updates_patch  # noqa: F401'
+          if marker not in text: raise SystemExit('custom __main__.py CLI marker not found')
+          if line not in text:
+              stamp=(
+                  '# SiLearn — 2026-08-29 18:22 BST — Subject: Route Learner position updates through SiLearn with Dexview.\n'
+                  + line + '\n'
+              )
+              text=text.replace(marker,stamp+marker,1)
+              tmp=p.with_name('__main__.py.silearn-position-route-new')
+              tmp.write_text(text,encoding='utf-8')
+              os.chmod(tmp,p.stat().st_mode)
+              os.replace(tmp,p)
+          compile(p.read_text(encoding='utf-8'),str(p),'exec')
+          print('custom_main_compile_ok=true')
+          PY
+          sudo -n chown --reference="$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
+
+          # Prove this runtime's Telegram token is SiLearn, without printing the token.
+          TOKEN="$(sudo -n env ROOT="$ROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'.env'; v=''
+          for raw in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,x=s.split('=',1)
+              if k.strip()=='TELEGRAM_BOT_TOKEN': v=x.strip().strip('"').strip("'"); break
+          print(v)
+          PY
+          )"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          BOTUSER="$(TOKEN="$TOKEN" python3 - <<'PY'
+          import json,os,urllib.request
+          with urllib.request.urlopen('https://api.telegram.org/bot'+os.environ['TOKEN']+'/getMe',timeout=20) as r: d=json.loads(r.read().decode())
+          assert d.get('ok') is True
+          print('@'+str((d.get('result') or {}).get('username') or ''))
+          PY
+          )"
+          echo "telegram_runtime_bot=$BOTUSER"
+          test "$BOTUSER" = '@SiLearn_bot'
+
+          SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+          sudo -n systemctl restart learnerbot-learn.service
+          sleep 8
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          PID1="$(systemctl show learnerbot-learn.service -p MainPID --value)"
+          R1="$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          test "$PID1" != 0
+          sleep 18
+          test "$(systemctl is-active learnerbot-learn.service)" = active
+          PID2="$(systemctl show learnerbot-learn.service -p MainPID --value)"
+          R2="$(systemctl show learnerbot-learn.service -p NRestarts --value)"
+          test "$PID1" = "$PID2"
+          test "$R1" = "$R2"
+
+          LOG="$TMP/postrestart.log"
+          journalctl -u learnerbot-learn.service --since "$SINCE" --no-pager > "$LOG" 2>/dev/null || true
+          grep -F '[silearn-position-update] bot=SiLearn' "$LOG"
+          OPEN="$(ROOT="$ROOT" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          p=Path(os.environ['ROOT'])/'data'/'solana_sibot.sqlite3'; n=0
+          if p.exists():
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True,timeout=3)
+              try: n=int(c.execute("select count(*) from positions where upper(coalesce(status,''))='OPEN' and upper(coalesce(mode,''))='LIVE'").fetchone()[0])
+              finally: c.close()
+          print(n)
+          PY
+          )"
+          echo "postrestart_open_live=$OPEN"
+          if test "$OPEN" -gt 0; then
+            grep -F '[silearn-position-update] sent=1' "$LOG"
+            grep -F 'target=5923828381' "$LOG"
+            grep -F 'target=6760898817' "$LOG"
+            grep -F 'dexview=true' "$LOG"
+          fi
+
+          echo "service=active pid=$PID2 restarts=$R2"
+          echo "backup=$BACKUP"
+          echo 'POSITION_ALERT_ROUTE_DEPLOY_VERIFIED=true'
+          trap - EXIT
+          rm -rf "$TMP"
