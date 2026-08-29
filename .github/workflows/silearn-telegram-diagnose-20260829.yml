@@ -1,0 +1,88 @@
+name: SiLearn Telegram Diagnose 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/silearn-telegram-diagnose-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect live SiLearn Telegram path safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          envfile="$target/.env"
+          echo "service_state=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "service_pid=$(systemctl show "$service" -p MainPID --value 2>/dev/null || true)"
+          test -f "$envfile"
+
+          TARGET="$target" SERVICE="$service" ENVFILE="$envfile" sudo -n -E python3 - <<'PY'
+          import json, os, subprocess, urllib.request
+          from pathlib import Path
+
+          target=Path(os.environ['TARGET']); envfile=Path(os.environ['ENVFILE']); service=os.environ['SERVICE']
+          vals={}
+          for line in envfile.read_text(encoding='utf-8',errors='ignore').splitlines():
+              if '=' not in line or line.lstrip().startswith('#'): continue
+              k,v=line.split('=',1); vals[k.strip()]=v.strip().strip('"').strip("'")
+          print('outbound_only='+str(vals.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','<unset>')))
+          for key in ('TELEGRAM_CHAT_ID','LEARNER_TELEGRAM_CHAT_ID','LEARNER_TELEGRAM_ALLOWED_CHAT_IDS','TELEGRAM_ALLOWED_CHAT_IDS'):
+              print(key.lower()+'_set='+str(bool(vals.get(key))).lower())
+          token=vals.get('TELEGRAM_BOT_TOKEN','')
+          if not token:
+              raise SystemExit('telegram_token_present=false')
+          print('telegram_token_present=true')
+          try:
+              with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/getMe',timeout=8) as r:
+                  me=json.loads(r.read().decode())
+              result=me.get('result') or {}
+              print('getme_ok='+str(bool(me.get('ok'))).lower())
+              print('bot_username='+str(result.get('username') or ''))
+          except Exception as exc:
+              print('getme_error='+type(exc).__name__)
+          try:
+              with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/getWebhookInfo',timeout=8) as r:
+                  wh=json.loads(r.read().decode())
+              result=wh.get('result') or {}
+              print('webhook_ok='+str(bool(wh.get('ok'))).lower())
+              print('webhook_url_present='+str(bool(result.get('url'))).lower())
+              print('webhook_pending_update_count='+str(result.get('pending_update_count',0)))
+              print('webhook_last_error_present='+str(bool(result.get('last_error_message'))).lower())
+              if result.get('last_error_message'):
+                  print('webhook_last_error='+str(result.get('last_error_message'))[:240])
+          except Exception as exc:
+              print('webhook_error='+type(exc).__name__)
+          try:
+              pid=int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
+              if pid:
+                  print('process_cwd='+os.readlink(f'/proc/{pid}/cwd'))
+                  env={}
+                  for item in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'):
+                      if b'=' in item:
+                          k,v=item.split(b'=',1); env[k.decode(errors='ignore')]=v.decode(errors='ignore')
+                  print('process_outbound_only='+str(env.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','<unset>')))
+                  print('process_token_matches_envfile='+str(env.get('TELEGRAM_BOT_TOKEN','')==token).lower())
+          except Exception as exc:
+              print('process_env_error='+type(exc).__name__)
+          PY
+
+          echo '--- live source command matches ---'
+          sudo -n grep -RInE --include='*.py' '(/learnerbot|learnerbot|/start|getUpdates|chat_id|allowed_chat|setMyCommands)' "$target/learnerbot" 2>/dev/null \
+            | head -220 \
+            | sed -E 's/[0-9]{7,}/<id>/g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' || true
+
+          echo '--- journal since inbound recovery ---'
+          sudo -n journalctl -u "$service" --since '2026-08-29 21:50:00' --no-pager -o cat 2>/dev/null \
+            | tail -260 \
+            | sed -E 's/[0-9]{7,}/<id>/g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' || true
