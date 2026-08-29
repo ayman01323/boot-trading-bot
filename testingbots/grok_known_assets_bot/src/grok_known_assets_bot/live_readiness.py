@@ -6,10 +6,12 @@ from typing import Any
 
 from .core import MarketSnapshot
 from .feed_safety import FeedSafetyError
+from .live_canary import HARD_CAP_LAMPORTS, TARGET_LAMPORTS
 from .live_feed import USDC_MINT, SOL_MINT, LiveFeedSettings, _price_impact_bps, _quote, _route_pool_ids
 
-ENTRY_TARGET_SOL = 0.009
-HARD_MAX_ENTRY_SOL = 0.009
+LAMPORTS_PER_SOL = 1_000_000_000
+ENTRY_TARGET_SOL = TARGET_LAMPORTS / LAMPORTS_PER_SOL
+HARD_MAX_ENTRY_SOL = HARD_CAP_LAMPORTS / LAMPORTS_PER_SOL
 MAX_SIGNAL_AGE_SECONDS = 20.0
 MAX_ENTRY_IMPACT_BPS = 100.0
 MAX_REVERSE_IMPACT_BPS = 200.0
@@ -34,9 +36,6 @@ class LiveReadinessResult:
     slippage_bps: int
     route_id: str
     expires_epoch: int
-    # Integer micro-USDC input and minimum acceptable lamports output for the
-    # entry leg, derived from the fresh quote and the slippage cap. The LIVE
-    # canary uses these as hard execution invariants; they are 0 on any reject.
     entry_input_micro_usdc: int = 0
     entry_min_out_lamports: int = 0
     signing_enabled: bool = False
@@ -92,19 +91,14 @@ def assess_live_readiness(
     *,
     now: float | None = None,
 ) -> LiveReadinessResult:
-    """Prove an unsigned USDC->SOL entry route plus reversible exits.
-
-    This is intentionally a pre-signing boundary. It performs fresh public Jupiter
-    route checks only and never accesses a wallet, private key, signer or broadcast
-    endpoint.
-    """
+    """Prove an unsigned USDC->SOL entry route plus reversible exits."""
     now = float(time.time() if now is None else now)
     age = max(0.0, now - float(snap.ts))
     if age > MAX_SIGNAL_AGE_SECONDS:
         return _result(snap, settings, ready=False, reason="SIGNAL_TOO_OLD", now=now)
     if not snap.sellable:
         return _result(snap, settings, ready=False, reason="REVERSE_SELL_PATH_UNAVAILABLE", now=now)
-    if ENTRY_TARGET_SOL > HARD_MAX_ENTRY_SOL:
+    if TARGET_LAMPORTS > HARD_CAP_LAMPORTS:
         return _result(snap, settings, ready=False, reason="ENTRY_EXCEEDS_HARD_MAX", now=now)
 
     estimated_spend = max(0.000001, float(snap.ask) * ENTRY_TARGET_SOL)
@@ -154,7 +148,7 @@ def assess_live_readiness(
         )
 
     spend_usdc = micro_usdc / 1_000_000.0
-    sol_out = sol_raw / 1_000_000_000.0
+    sol_out = sol_raw / LAMPORTS_PER_SOL
     reverse_usdc = reverse_raw / 1_000_000.0
     entry_impact = _price_impact_bps(entry)
     reverse_impact = _price_impact_bps(reverse)
