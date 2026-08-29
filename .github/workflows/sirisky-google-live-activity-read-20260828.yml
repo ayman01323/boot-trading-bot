@@ -65,7 +65,6 @@ for p in sorted(root.glob("*.csv")):
 print(f"trade_evidence_rows={len(interesting)}")
 for item in interesting[-20:]:
     print(item)
-# Direct current open-position summary
 p=root/"open_positions.csv"
 rows=[]
 if p.exists():
@@ -78,3 +77,103 @@ PY
               | grep -Ei "OPENED|CLOSED|BUY|SELL|broadcast|signature|JUPITER|EXECUTION_REJECT|WAITING_FOR_MANUAL_APPROVAL" \
               | tail -n 300 || true
           '
+
+      - name: Repair Learner rejected-opportunity reporting
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+          mkdir -p "$TMP/scripts" "$TMP/learnerbot"
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/scripts/repair_isolated_learner_reject_reporting.py -o "$TMP/scripts/repair_isolated_learner_reject_reporting.py"
+          curl -fsSL --retry 3 https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/rejected_opportunity_publisher.py -o "$TMP/learnerbot/rejected_opportunity_publisher.py"
+          python3 -m py_compile "$TMP/scripts/repair_isolated_learner_reject_reporting.py" "$TMP/learnerbot/rejected_opportunity_publisher.py"
+          sudo -n env TMP="$TMP" bash <<'EOS'
+          set -Eeuo pipefail
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          test -d "$ROOT/learnerbot"
+          test -f "$ROOT/.env"
+          SOL_BEFORE="$(sha256sum "$ROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
+          USER_BEFORE="$(sha256sum "$ROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
+          SOURCE_BEFORE="$(cat "$ROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
+          python3 - "$ROOT" <<'PY'
+          import csv, os, sys
+          from pathlib import Path
+          root=Path(sys.argv[1]); envp=root/'.env'
+          def read_env(p):
+              out={}
+              try: lines=p.read_text(encoding='utf-8').splitlines()
+              except Exception: return out
+              for line in lines:
+                  s=line.strip()
+                  if s and not s.startswith('#') and '=' in s:
+                      k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              return out
+          current=read_env(envp)
+          token=current.get('TELEGRAM_BOT_TOKEN','').strip()
+          if not token:
+              token=read_env(Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')).get('TELEGRAM_BOT_TOKEN','').strip()
+          if not token: raise SystemExit('Learner Telegram token unavailable locally')
+          master=''
+          users=root/'CSVbot'/'users.csv'
+          if users.exists():
+              with users.open(encoding='utf-8-sig',newline='') as f:
+                  for r in csv.DictReader(f):
+                      tid=str(r.get('telegram_id') or '').strip()
+                      if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit():
+                          master=tid; break
+          repl={
+              'TELEGRAM_BOT_TOKEN':token,
+              'LEARNER_TELEGRAM_OUTBOUND_ONLY':'true',
+              'BOOT_REJECTED_OPPORTUNITY_ENABLED':'1',
+              'BOOT_REJECTED_OPPORTUNITY_DIR':'/home/ayman01323/BOOT/data/candidates/REJECTED OPPORTUNITY',
+              'BOOT_REJECTED_OPPORTUNITY_CODE_ROOT':'/home/ayman01323/BOOT/datacentre/rejected_router',
+              'BOOT_REJECTED_SOURCE_BOT':'learnerbot',
+          }
+          if master: repl['TELEGRAM_CHAT_ID']=master
+          old=envp.read_text(encoding='utf-8').splitlines(); out=[]; seen=set()
+          for line in old:
+              key=line.split('=',1)[0].strip() if '=' in line and not line.lstrip().startswith('#') else None
+              if key in repl:
+                  if key not in seen: out.append(f'{key}={repl[key]}'); seen.add(key)
+              else: out.append(line)
+          for k,v in repl.items():
+              if k not in seen: out.append(f'{k}={v}')
+          envp.write_text('\n'.join(out).rstrip()+'\n',encoding='utf-8'); os.chmod(envp,0o600)
+          print('telegram_config=READY')
+          PY
+          python3 "$TMP/scripts/repair_isolated_learner_reject_reporting.py" --repo "$TMP" --root "$ROOT"
+          chown ayman01323:ayman01323 "$ROOT/.env" "$ROOT/learnerbot/telegram_ui.py" "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$ROOT/learnerbot/rejected_opportunity_publisher.py"
+          chmod 600 "$ROOT/.env"
+          PYBIN="$ROOT/.venv/bin/python"; [[ -x "$PYBIN" ]] || PYBIN=/usr/bin/python3
+          PYTHONPATH="$ROOT" "$PYBIN" -m py_compile "$ROOT/learnerbot/telegram_ui.py" "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py" "$ROOT/learnerbot/rejected_opportunity_publisher.py"
+          grep -q 'outbound-only mode: polling disabled' "$ROOT/learnerbot/telegram_ui.py"
+          grep -q '_report_reject_actions(app, payload, actions)' "$ROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
+          systemctl restart "$SERVICE"
+          sleep 8
+          test "$(systemctl is-active "$SERVICE")" = active
+          test "$SOL_BEFORE" = "$(sha256sum "$ROOT/CSVbot/solana_settings.csv" | awk '{print $1}')"
+          test "$USER_BEFORE" = "$(sha256sum "$ROOT/CSVbot/user_trading_settings.csv" | awk '{print $1}')"
+          test "$SOURCE_BEFORE" = "$(cat "$ROOT/RESTORED_SOURCE_SHA.txt" 2>/dev/null || true)"
+          cd "$ROOT"
+          PYTHONPATH=. "$PYBIN" - <<'PY'
+          import csv
+          from pathlib import Path
+          from learnerbot.config import AppSettings
+          from learnerbot.solana_leader_cursor_reliability_patch import _send_reject_report
+          app=AppSettings.load(); master=''
+          with Path('CSVbot/users.csv').open(encoding='utf-8-sig',newline='') as f:
+              for r in csv.DictReader(f):
+                  tid=str(r.get('telegram_id') or '').strip()
+                  if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit(): master=tid; break
+          if not master: raise SystemExit('no MASTER Telegram recipient')
+          ok=_send_reject_report(app, master, {'mint':'SYSTEM_TEST_ONLY','signature':'reject-report-smoke'}, {'action':'REJECT','reason':'REJECT_REPORT_SMOKE_TEST'}, test_only=True)
+          if not ok: raise SystemExit('Learner rejection Telegram smoke failed')
+          print('reject_report_telegram_smoke=PASS')
+          PY
+          echo 'learner_reject_reporting=PASS'
+          echo 'trading_settings_unchanged=PASS'
+          EOS
