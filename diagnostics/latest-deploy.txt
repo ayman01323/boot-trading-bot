@@ -1,39 +1,108 @@
-requested_sha=a3ad128c99bdaf28e24a034586026be63043df6a
-deploy_outcome=success
-deploy_exit=0
-run_id=33246789814
-utc=2026-08-29T10:04:29Z
+requested_sha=5838ef652aea5576b09d440dbe57fc9355100798
+deploy_outcome=failure
+deploy_exit=10
+run_id=33249110600
+utc=2026-08-29T11:05:41Z
 
 === DEPLOY OUTPUT (tail) ===
-2026-08-29T10:02:44Z BEGIN current=8ef0c261ea047a792585ce9b8df481f73f62fbbd requested=a3ad128c99bdaf28e24a034586026be63043df6a
-From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
- * branch            main       -> FETCH_HEAD
-   8ef0c26..a3ad128  main       -> origin/main
-Updating 8ef0c26..a3ad128
-Fast-forward
- .../workflows/emergency-google-server-backup.yml   | 118 ++++++---------------
- 1 file changed, 31 insertions(+), 87 deletions(-)
+    assert liquidity_health._PREV_MONITOR_POSITIONS is exit_circuit._monitor_with_exit_reconciliation
+    assert exit_circuit._MONITOR_INNER is live.monitor_positions
+    assert sol.monitor_leaders is cursor.monitor_leaders_reliable
+    assert sol.start_workers is workers.start_workers_reliable
+    assert sol.jupiter_quote is quote.jupiter_quote_executable
+    assert sol._validate_shadow_entry is first_day.validate_entry_positive_executable_edge
+    assert first_day._PREV_VALIDATE is preflight.validate_entry_cached
+    assert live._economic_entry_gate is overhead._economic_entry_gate_reconciled
+    assert live._open_live_count is capacity._verified_open_live_count
+    assert guard._copied_metrics is epoch._copied_metrics_with_cleanup
+    assert sibot.poll_leader_blocks is evm.poll_leader_blocks_reliable
+    assert telegram_ui.start_menu_thread is audit_worker.start_menu_thread_with_transaction_audit
+    
+    # The frequency/timing-only strategy modules are still importable/auditable and the
+    # owner-requested first-day *timing* profile is still in effect. Leader *quality* is
+    # no longer the first-day loosened profile: solana_leader_quality_restore_patch is
+    # the final policy layer and re-tightens win-rate/PF/history thresholds plus the
+    # leader-event circuit breaker back to the originally audited values.
+    assert profit_first._PREV_SETTINGS is profit_control.settings_with_profit_control
+    assert first_day.FIRST_DAY_REFERENCE_COMMIT == "f0ca88450fe96a316dc15e676fab1e36c1137285"
+    assert sol.settings is quality_restore.settings_quality_restored
+    assert quality_restore._PREV_SETTINGS is first_day.settings_first_day_strategy
+    assert sol.process_leader_event is positive_edge.process_leader_event_positive_edge
+    assert guard._copied_ok is positive_edge.copied_ok_quarantine_first_loss
+    assert sol.process_leader_event is not live.process_leader_event
+    assert sol.process_leader_event is not partial_guard.process_leader_event_partial_profit_guard
+    assert sol.process_leader_event is not profit_first.process_leader_event_profit_first
+    assert guard._copied_ok is not first_day.copied_ok_first_day
+    
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["leaders_per_user"] == "5"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_signal_age_seconds"] == "30"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_roundtrip_loss_pct"] == "3"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["max_entry_deterioration_pct"] == "2"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["stop_loss_pct"] == "10"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["take_profit_pct"] == "25"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["live_require_positive_executable_edge"] == "true"
+    assert first_day.FIRST_DAY_STRATEGY_TARGETS["live_min_executable_net_edge_pct"] == "0.25"
+    print("AUDITED_TRADING_RUNTIME_COMPOSITION_OK")
+    '''
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+>       assert result.returncode == 0, result.stdout + "\n" + result.stderr
+E       AssertionError: [full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
+E         [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
+E         [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
+E         [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
+E         [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
+E         [solana-overhead-gate] unreconciled_entry_wallet_delta_block=false hard_minimum=true user_minimum=restriction_only
+E         [solana-capacity-reconcile] verified_zero_only=true rpc_uncertainty=fails_closed
+E         [solana-quote-consistency] excludeRouters=jupiterz preflight_matches_live=true
+E         [solana-entry-exit-liquidity] reverse_quote_reused=true fail_closed=true combined_impact_slippage_hard_cap_bps=500 route_telemetry=true existing_roundtrip_preserved=true
+E         [solana-preflight-cache] ttl=3s exact_signal_allocation_risk_key=true
+E         [solana-pool-risk] installed=true live_only=true shadow_external_outage_unaffected=true reference_probe_sol=0.01 reference_impact_hard_cap_bps=200 rugcheck=true dexscreener=true
+E         [solana-rpc-failover] multi_endpoint=true helius_fallback=true public_rpc_last=true rate_limit_cooldown=true auth_endpoint_quarantine=true burst_spread=true secret_safe_errors=true
+E         [solana-profit-epoch] corrected_pnl_only=true historical_rows_preserved=true pending_rent_excluded=true operator_writeoffs_included=true amount_fields_preserved=true
+E         [sibot-evm-reliability] failed_block_or_receipt_retry=true cursor_no_skip=true
+E         [solana-worker-reliability] rpc_retries=true no_slot_skip=true history_independent=true leader_heartbeat=true ws_healthy_fallback=10s
+E         [solana-leader-cursor] confirmed_fast_lane=true processed_signature_checkpoint=true stale_backlog_fast_forward=true transient_preflight_retry=true
+E         [solana-token-reclaim] bot_created_only=true zero_balance_only=true late_confirmation_reconcile=true
+E         [solana-rent-accounting] open_pnl_excludes_refundable_rent=true partial_keeps_rent=true gross_output_separate_from_wallet_cashflow=true
+E         [solana-simulated-reserve] post_buy_wallet_balance_required=true
+E         [solana-exec-efficiency] dynamic_total_fee_cap=true impact_slippage_guard=true atomic_full_close=true detailed_receipts=true unconstrained_tip=false
+E         [solana-jupiter-order-recovery] detailed_http_errors=true orphan_broadcast_fee_removed=true http400_fee_retry=true rfq_excluded=true
+E         [solana-jupiter-429-recovery] shared_cooldown=true retries=bounded retry_after_respected=true economics_unchanged=true pre_signing_only=true
+E         [solana-atomic-close-fallback] eligible_full_exit=atomic legacy_unproven_exit=capped_managed rfq_excluded=true
+E         [solana-liquidity-guard] missing_price_impact=reject route_level_simulation_required=true
+E         [solana-exit-circuit] ambiguous_success=reconcile_only position_retry_block=true chain_metadata_authoritative=true legacy_stale_balance_recovery=true
+E         [solana-emergency-halt] already_applied=true
+E         [hourly-gpt-wording] LIVE engine unchanged; deterministic profit-control results displayed
+E         [profit-control-loop] hourly=true objective=wins_gt_losses+positive_net+pf_gt_1.10 leader_memory=true strategy_memory=true bounded_profiles=true live_arm_unchanged=true
+E         [profit-control-amount-objective] realised_profit_amount>=1.30x_realised_loss_amount
+E         [profit-control-audit] strategy_registry=true control_runs=true leader_registry=true strategy_lab=true
+E         [profit-control-master-summary] every_cycle=true all_active_masters=true notify=true
+E         [solana-profit-first-live] signal_age<=10s entry_deterioration<=0.25% roundtrip_loss<=1% fee_ratio<=1.2% leader_sell=immediate copied_guard_after=2 break_even=3% trailing=5% take_profit=10%
+E         [solana-partial-sell-profit-guard] full_exit=immediate partial_exit=disabled_below_0.002_sol_and_profit_gated min_net=3%
+E         [solana-positive-edge-entry] historical_median>=5% recent_median>=4% platform_realised_pf>=1.30 recovery_canary=single mint_loss_quarantine=24-72h first_copied_loss_quarantine=24h vmv_bypasses_edge_only
+E         [solana-first-day-strategy] restored=true reference=f0ca88450fe9 leaders=5 signal_age=30s roundtrip<=3% entry_deterioration<=2% positive_executable_edge>=0.25% stop=10% tp=25% leader_sell=original_gated execution_safety=current
+E         [solana-position-drawdown] position_level=true fragment_metric_retained=true thresholds=unchanged
+E         [solana-leader-quality] profile=owner-20260829-historical-1230 leaders=5 pf>=1.20 recent_win_rate>=50% recent_pf>=1.00 drawdown<=30% copied_guard=5 copied_win_rate>=40% copied_pf>=1.0 loss_streak=3 suspend=180m tp=15% max_hold_profit=30m partial_sells=false live_trade=0.005 max_positions=10 execution_safety=unchanged
+E         [solana-liquidity-health] check_interval=900s warning_combined_bps=150 repeat_alert_hours=4 action=notify_only never_executes_or_closes=true
+E         
+E         Traceback (most recent call last):
+E           File "<string>", line 25, in <module>
+E           File "/root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/trading_runtime_invariant_patch.py", line 143, in <module>
+E             install()
+E           File "/root/multichain-learning-bot-v2.2-fast-direct-market/learnerbot/trading_runtime_invariant_patch.py", line 139, in install
+E             raise RuntimeError("Audited trading runtime invariant failed: " + ", ".join(failed))
+E         RuntimeError: Audited trading runtime invariant failed: leader_quality_copied_guard_restored
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python', '-c', '\nfrom learner... + ", ".join(failed))\nRuntimeError: Audited trading runtime invariant failed: leader_quality_copied_guard_restored\n').returncode
 
-[notice] A new release of pip available: 22.3.1 -> 26.2.1
-[notice] To update, run: /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m pip install --upgrade pip
-........................................................................ [  5%]
-........................................................................ [ 11%]
-........................................................................ [ 17%]
-........................................................................ [ 23%]
-........................................................................ [ 29%]
-........................................................................ [ 35%]
-................................................................s....... [ 41%]
-........................................................................ [ 46%]
-........................................................................ [ 52%]
-........................................................................ [ 58%]
-........................................................................ [ 64%]
-........................................................................ [ 70%]
-........................................................................ [ 76%]
-........................................................................ [ 82%]
-........................................................................ [ 87%]
-........................................................................ [ 93%]
-........................................................................ [ 99%]
-.....                                                                    [100%]
+tests/test_solana_runtime_composition.py:111: AssertionError
 =============================== warnings summary ===============================
 .venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
   /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
@@ -42,36 +111,24 @@ Fast-forward
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 =========================== short test summary info ============================
 SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-1228 passed, 1 skipped, 1 warning in 65.77s (0:01:05)
-2026-08-29T10:03:58Z TESTS PASSED; restarting learnerbot
-2026-08-29T10:04:06Z SUCCESS sha=a3ad128c99bdaf28e24a034586026be63043df6a version=[full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
-[full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
-[sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
-[sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
-[evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
-2.3.10 service=active
-     Active: active (running) since Sat 2026-08-29 11:04:00 BST; 5s ago
-   Main PID: 2224414 (python)
-      Tasks: 10 (limit: 5869)
-     Memory: 561.9M (peak: 591.6M)
-        CPU: 3.088s
-     CGroup: /system.slice/learnerbot.service
-             └─2224414 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: [ai-agent-health] automatic Telegram warnings disabled by owner
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: [botbuc-telegram-alert] MASTER success alerts enabled; backup failure alerts temporarily disabled
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: [ai-agent-ws] embedded broker active with gpt/claude/gemini/deepseek/grok/kimi/copilot workers
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: gpt worker connected; model=gpt-5-nano
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: claude worker connected; model=claude-haiku-4-5
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: gemini worker connected; model=gemini-3.5-flash-lite
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: deepseek worker connected; model=deepseek-v4-flash
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: grok worker connected; model=grok-4.20-non-reasoning
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: kimi worker connected; model=kimi-k2.6
-Aug 29 11:04:01 mint.yesgoodwill.com python[2224414]: copilot worker connected; model=provider-default
+FAILED tests/test_imports.py::test_all_learnerbot_modules_import - AssertionE...
+FAILED tests/test_imports.py::test_python_m_learnerbot_real_startup_stack_reaches_cli_help
+FAILED tests/test_main_import_order.py::test_main_patch_import_order_starts_cleanly
+FAILED tests/test_sibot_settings_source.py::test_main_master_source_undoes_stale_solana_size_reserve_without_inheriting_live_enable
+FAILED tests/test_solana_low_capital_limits.py::test_default_user_keeps_platform_reserve
+FAILED tests/test_solana_low_capital_limits.py::test_user_specific_low_capital_reserve_is_allowed_but_not_below_floor
+FAILED tests/test_solana_moderate_leader_quality.py::test_moderate_leader_quality_profile_values
+FAILED tests/test_solana_moderate_leader_quality.py::test_actual_copied_live_hard_floors_remain_unchanged
+FAILED tests/test_solana_moderate_leader_quality.py::test_settings_overlay_only_changes_policy_keys
+FAILED tests/test_solana_pool_risk_check_patch.py::test_lp_concentration_is_shadow_only_not_fraud_claim
+FAILED tests/test_solana_runtime_composition.py::test_final_runtime_hooks_match_audited_stack
+11 failed, 1225 passed, 1 skipped, 1 warning in 62.09s (0:01:02)
+2026-08-29T11:05:10Z TESTS FAILED; service remains on old running process
+HEAD is now at a3ad128 Fix emergency backup to run without checkout
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-29T10:04:26Z
+UTC: 2026-08-29T11:05:35Z
 branch: main
 sha:    a3ad128c99bdaf28e24a034586026be63043df6a
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -87,25 +144,25 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; disabled; preset: disabled)
-     Active: active (running) since Sat 2026-08-29 11:04:00 BST; 27s ago
-   Main PID: 2224414 (python)
-      Tasks: 40 (limit: 5869)
-     Memory: 550.6M (peak: 639.3M)
-        CPU: 18.229s
+     Active: active (running) since Sat 2026-08-29 12:03:44 BST; 1min 52s ago
+   Main PID: 2234723 (python)
+      Tasks: 43 (limit: 5869)
+     Memory: 524.4M (peak: 639.2M)
+        CPU: 1min 2.573s
      CGroup: /system.slice/learnerbot.service
-             ├─2224414 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             ├─2224543 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─2224544 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─2224545 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             └─2224546 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2234723 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             ├─2234858 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2234869 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2234870 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             └─2234871 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 29 11:04:16 mint.yesgoodwill.com python[2224414]: [gemini-telegram] long-poll-mode=true webhook-cleared=false pending-preserved=true
-Aug 29 11:04:17 mint.yesgoodwill.com python[2224414]: [scan:bsc] 115386763..115386772 tx=752
-Aug 29 11:04:21 mint.yesgoodwill.com python[2224414]: [daily-botbuc-backup] backup failed: RuntimeError: backup preflight refused: insufficient disk headroom free_bytes=1169567744 required_bytes=4294967296; no temporary ZIP was started
-Aug 29 11:04:21 mint.yesgoodwill.com python[2224414]: [daily-botbuc-backup] retrying backup/upload in 1 hour
-Aug 29 11:04:25 mint.yesgoodwill.com python[2224543]: [full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
-Aug 29 11:04:25 mint.yesgoodwill.com python[2224543]: [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
-Aug 29 11:04:25 mint.yesgoodwill.com python[2224543]: [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
-Aug 29 11:04:25 mint.yesgoodwill.com python[2224543]: [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
-Aug 29 11:04:25 mint.yesgoodwill.com python[2224543]: [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
-Aug 29 11:04:27 mint.yesgoodwill.com python[2224414]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
+Aug 29 12:04:59 mint.yesgoodwill.com python[2234723]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
+Aug 29 12:05:06 mint.yesgoodwill.com python[2234723]: [gemini-telegram] poll RuntimeError
+Aug 29 12:05:06 mint.yesgoodwill.com python[2234723]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
+Aug 29 12:05:08 mint.yesgoodwill.com python[2234723]: [base-hot-market] routes=0 checks=4 pressure=0 seconds=14.067 next=7s
+Aug 29 12:05:14 mint.yesgoodwill.com python[2234723]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
+Aug 29 12:05:21 mint.yesgoodwill.com python[2234723]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
+Aug 29 12:05:22 mint.yesgoodwill.com python[2234723]: [base-hot-market] routes=0 checks=4 pressure=0 seconds=12.858 next=7s
+Aug 29 12:05:29 mint.yesgoodwill.com python[2234723]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
+Aug 29 12:05:30 mint.yesgoodwill.com python[2234723]: [base-hot-market] routes=0 checks=4 pressure=0 seconds=6.708 next=7s
+Aug 29 12:05:31 mint.yesgoodwill.com python[2234723]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=30.565
