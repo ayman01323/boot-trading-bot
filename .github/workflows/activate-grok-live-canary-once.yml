@@ -29,7 +29,7 @@ jobs:
           .venv/bin/pip install -q -e '.[live]'
           .venv/bin/python -m pytest -q tests/test_live_canary.py tests/test_live_canary_exit_balance.py tests/test_live_canary_post715_hardening.py
 
-      - name: Bind Grok to isolated encrypted Solana signer
+      - name: Bind Grok to authorised MASTER encrypted Solana signer
         shell: bash
         run: |
           set -euo pipefail
@@ -45,6 +45,7 @@ jobs:
           data_dir = Path('/home/ayman01323/BOOT/testingbots/learn/data')
           wallet_csv = csv_dir / 'auto' / 'solana_user_wallets.csv'
           wallet_root = data_dir / 'user_solana_wallets'
+          main_users_csv = Path('/home/ayman01323/BOOT/CSVbot/users.csv')
 
           def parse(path):
               out = {}
@@ -62,15 +63,26 @@ jobs:
           candidates=[]
           for r in rows:
               tid=str(r.get('telegram_id') or '').strip(); wid=str(r.get('wallet_id') or '').strip()
-              if not re.fullmatch(r'-?\d{1,24}',tid): continue
+              if not re.fullmatch(r'\d{1,24}',tid) or int(tid) <= 0: continue
               if str(r.get('enabled','true')).lower() not in {'1','true','yes','on'}: continue
               if str(r.get('active','')).lower()!='true' or str(r.get('signing','')).lower()!='true': continue
               if not str(r.get('address') or '').strip(): continue
               if wid and (wallet_root/tid/f'{wid}.enc.json').exists(): candidates.append(tid)
           candidates=sorted(set(candidates))
-          if len(candidates)!=1:
-              raise SystemExit(f'BLOCKED: expected exactly one isolated active encrypted signer, found {len(candidates)}')
-          tid=candidates[0]
+
+          master_ids=[]
+          if main_users_csv.exists():
+              for r in csv.DictReader(main_users_csv.open('r',encoding='utf-8-sig',newline='')):
+                  tid=str(r.get('telegram_id') or '').strip()
+                  if not re.fullmatch(r'\d{1,24}',tid) or int(tid) <= 0: continue
+                  if str(r.get('role') or '').upper()!='MASTER': continue
+                  if str(r.get('status') or '').upper()!='ACTIVE': continue
+                  master_ids.append(tid)
+          master_ids=sorted(set(master_ids))
+          authorised=[tid for tid in candidates if tid in master_ids]
+          if len(authorised)!=1:
+              raise SystemExit(f'BLOCKED: expected exactly one active MASTER encrypted signer; candidates={len(candidates)} masters={len(master_ids)} matches={len(authorised)}')
+          tid=authorised[0]
 
           existing=parse(canary); tg=parse(telegram)
           sources=[existing,tg]
@@ -107,7 +119,7 @@ jobs:
           telegram.write_text('\n'.join(f'{k}={v}' for k,v in sorted(tg.items()) if str(v).strip())+'\n',encoding='utf-8')
           os.chmod(config_dir,0o700); os.chown(config_dir,owner.pw_uid,owner.pw_gid)
           for p in (canary,telegram): os.chmod(p,0o600); os.chown(p,owner.pw_uid,owner.pw_gid)
-          print('isolated_encrypted_signer=BOUND_REDACTED')
+          print('authorised_master_signer=BOUND_REDACTED')
           print('telegram_approval_identity=BOUND_REDACTED')
           print('private_rpc_config=READY_REDACTED')
           PY
@@ -152,7 +164,7 @@ jobs:
           cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
           .venv/bin/python - <<'PY'
           from grok_known_assets_bot.control import load_state,save_state
-          s=load_state(); save_state(armed=bool(s.get('armed')),live_readiness_enabled=True,live_canary_enabled=False,updated_by='github-isolated-signer-prestart')
+          s=load_state(); save_state(armed=bool(s.get('armed')),live_readiness_enabled=True,live_canary_enabled=False,updated_by='github-master-signer-prestart')
           print('live_money_enabled=false')
           PY
           sudo install -m 0644 systemd/grok-known-assets-canary.service.example /etc/systemd/system/grok-known-assets-canary.service
