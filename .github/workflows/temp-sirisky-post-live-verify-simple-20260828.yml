@@ -13,21 +13,54 @@ permissions:
 jobs:
   verify:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Verify SiRisky live state independently
+      - name: Trace exact CjFL mint in SiRisky read-only
         shell: bash
         run: |
-          set -Eeuo pipefail
+          set -u
           test "$(hostname)" = botgoogle
-          sudo -n test "$(sudo -n systemctl is-active sirisky.service)" = active
-          sudo -n grep -q '^trading_mode,LIVE,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^live_enabled,1,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^broadcast_enabled,1,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^manual_approval_enabled,0,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^auto_evaluate_candidate_limit,1,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^auto_probe_sol,0.009,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^auto_entry_min_sol,0.009,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^auto_entry_max_sol,0.009,' /root/SiRisky/CSV/runtime.csv
-          sudo -n grep -q '^max_open_positions,1,' /root/SiRisky/CSV/stage3_risk.csv
-          sudo -n bash -lc "cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -c 'from decimal import Decimal; from sirisky.config import Settings; from sirisky.safety_v2 import entry_sol; s=Settings.load(); x=Decimal(str(entry_sol(s))); print(\"effective_entry_sol=%.9f\" % x); assert x==Decimal(\"0.009\"); print(\"service_active=true\"); print(\"trading_mode=LIVE\"); print(\"broadcast_enabled=1\")'"
+          MINT='CjFLUpDhQ4TZp7azvKo3FDAJv1cxeDR2nNv3rGs1pump'
+          export MINT
+          echo "REPORT_BST=$(TZ=Europe/London date +%Y-%m-%dT%H:%M:%S%z)"
+          echo "SERVICE=$(sudo -n systemctl is-active sirisky.service 2>/dev/null || true)"
+          echo '=== SIRISKY_SQLITE ==='
+          sudo -n env MINT="$MINT" python3 - <<'PY'
+          import os, sqlite3, json
+          from pathlib import Path
+          root=Path('/root/SiRisky'); mint=os.environ['MINT']; total=0
+          for p in root.rglob('*'):
+              if not p.is_file() or p.suffix.lower() not in {'.db','.sqlite','.sqlite3'}: continue
+              try:
+                  con=sqlite3.connect(f'file:{p}?mode=ro',uri=True); con.row_factory=sqlite3.Row; cur=con.cursor()
+                  tables=[r[0] for r in cur.execute("select name from sqlite_master where type='table'")]
+              except Exception: continue
+              for t in tables:
+                  try: cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+                  except Exception: continue
+                  search=[c for c in cols if any(k in c.lower() for k in ('mint','token','asset','address','symbol'))]
+                  if not search: continue
+                  ors=[]; params=[]
+                  for c in search:
+                      ors.append(f'CAST("{c}" AS TEXT)=?'); params.append(mint)
+                  try: rows=list(cur.execute(f'SELECT * FROM "{t}" WHERE '+' OR '.join(ors)+' ORDER BY rowid DESC LIMIT 100',params))
+                  except Exception: continue
+                  if rows:
+                      print(f'DB={p} TABLE={t} ROWS={len(rows)}')
+                      for r in rows:
+                          d=dict(r)
+                          for k in list(d):
+                              if any(s in k.lower() for s in ('secret','private','credential','api_key','mnemonic','seed')): d.pop(k,None)
+                          print('ROW='+json.dumps(d,default=str,sort_keys=True)[:12000]); total+=1
+              con.close()
+          print('SQLITE_MATCH_TOTAL='+str(total))
+          PY
+          echo '=== SIRISKY_JOURNAL ==='
+          sudo -n journalctl -u sirisky.service --since '2026-08-28 00:00:00 UTC' --no-pager 2>/dev/null \
+            | grep -F "$MINT" \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
+            | tail -400 || true
+          echo '=== SIRISKY_FILES ==='
+          sudo -n grep -RFn --binary-files=without-match --exclude='.env' --exclude='*.key' --exclude='*secret*' --exclude='*credential*' \
+            "$MINT" /root/SiRisky/CSV /root/SiRisky/data /root/SiRisky/logs 2>/dev/null | tail -300 || true
+          echo 'TRACE_COMPLETE=true'
