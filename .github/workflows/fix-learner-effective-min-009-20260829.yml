@@ -1,0 +1,96 @@
+name: Fix Learner Effective Minimum 009 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/fix-learner-effective-min-009-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Enforce actual 0.009 SOL execution floor
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n bash <<'ROOT'
+          set -Eeuo pipefail
+          LROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          FILE="$LROOT/learnerbot/solana_live_patch.py"
+          test -f "$FILE"
+          # Do not restart around a live open position.
+          LROOT="$LROOT" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          p=Path(os.environ['LROOT'])/'data'/'solana_sibot.sqlite3'
+          n=0
+          if p.exists():
+              c=sqlite3.connect(f'file:{p}?mode=ro',uri=True)
+              try:
+                  n=c.execute("select count(*) from positions where status='OPEN' and mode='LIVE'").fetchone()[0]
+              finally:c.close()
+          print('open_live_positions='+str(n))
+          if n: raise SystemExit('Refuse restart while LIVE position open')
+          PY
+          stamp=$(date -u +%Y%m%dT%H%M%SZ)
+          backup="$LROOT/private/pre-effective-009-$stamp"
+          mkdir -p "$backup"
+          cp -a "$FILE" "$backup/solana_live_patch.py"
+          cp -a "$LROOT/CSVbot/solana_settings.csv" "$backup/solana_settings.csv"
+          cp -a "$LROOT/CSVbot/user_trading_settings.csv" "$backup/user_trading_settings.csv"
+          changed=0
+          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_live_patch.py" "$FILE"; systemctl restart "$SERVICE" || true; fi; exit $rc; }
+          trap rollback EXIT
+          python3 - <<PY
+          from pathlib import Path
+          p=Path('$FILE')
+          s=p.read_text()
+          old='trade = min(Decimal("0.005"), max(Decimal("0.0005"), requested_trade))'
+          new='trade = max(Decimal("0.009"), requested_trade)'
+          if old not in s and new not in s:
+              raise SystemExit('Expected live trade bound not found')
+          s=s.replace(old,new)
+          s=s.replace('Trade size remains bounded to 0.0005-0.005 SOL.','Trade size has a hard economic floor of 0.009 SOL; configured values may be higher.')
+          p.write_text(s)
+          PY
+          changed=1
+          py="$LROOT/.venv/bin/python"; [[ -x "$py" ]] || py=python3
+          PYTHONPATH="$LROOT" "$py" -m py_compile "$FILE"
+          systemctl restart "$SERVICE"
+          sleep 15
+          test "$(systemctl is-active "$SERVICE")" = active
+          r1=$(systemctl show "$SERVICE" -p NRestarts --value)
+          sleep 8
+          test "$(systemctl is-active "$SERVICE")" = active
+          r2=$(systemctl show "$SERVICE" -p NRestarts --value)
+          test "$r1" = "$r2"
+          LROOT="$LROOT" "$py" - <<'PY'
+          import csv,os
+          from pathlib import Path
+          root=Path(os.environ['LROOT'])
+          # Static proof of the runtime floor plus configured values.
+          text=(root/'learnerbot/solana_live_patch.py').read_text()
+          assert 'trade = max(Decimal("0.009"), requested_trade)' in text
+          with (root/'CSVbot/solana_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              d={r['setting']:r['value'] for r in csv.DictReader(f)}
+          assert d.get('live_trade_sol')=='0.009'
+          assert d.get('live_min_economic_trade_sol')=='0.009'
+          with (root/'CSVbot/user_trading_settings.csv').open(encoding='utf-8-sig',newline='') as f:
+              vals=[r['value'] for r in csv.DictReader(f) if r.get('setting')=='solana_live_trade_sol']
+          assert vals and all(v=='0.009' for v in vals)
+          print('effective_trade_floor=0.009_SOL')
+          print('configured_trade=0.009_SOL')
+          print('economic_gate=0.009_SOL')
+          print('service_active=true')
+          print('trade_placed_by_fix=NO')
+          PY
+          trap - EXIT
+          ROOT
