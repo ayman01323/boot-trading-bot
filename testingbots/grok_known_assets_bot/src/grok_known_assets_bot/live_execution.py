@@ -165,7 +165,13 @@ def execute_swap(
     Sequence: pre-broadcast gate (safe) -> mark BROADCAST_SUBMITTED -> real swap.
     Returns ``{"signature", "out_raw", "wallet_delta_lamports"}``.
     """
-    executor = executor or build_executor()
+    if executor is None:
+        try:
+            executor = build_executor()
+        except ExecConfigError as exc:
+            # No signer/executor existed yet, therefore no transaction could have
+            # been submitted. Keep this in the clean pre-broadcast failure class.
+            raise ExecPreBroadcastError(str(exc)) from exc
     amount_raw = int(amount_raw)
     if amount_raw <= 0:
         raise ExecPreBroadcastError("swap amount must be positive")
