@@ -1,4 +1,4 @@
-name: SiLearn targeted deploy diagnosis
+name: SiLearn v4 targeted stamped deploy
 
 on:
   push:
@@ -6,21 +6,312 @@ on:
       - 'ops/SiLearn-2026-08-29T122354BST-deploy-v2'
 
 jobs:
-  diagnose-google-learner:
+  deploy-google-learner:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
-      - name: Read targeted failed deployment and rollback journal
+      - name: Deploy five approved modules and preserve isolated main
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           test "$(id -un)" = ayman01323
+
+          DEPLOY_SHA='29da3cf2e138338b1da4aa67ae63dbb2c9d16937'
+          LROOT='/home/ayman01323/BOOT/testingbots/learn'
           SERVICE='learnerbot-learn.service'
-          echo "service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
-          echo "service_pid=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || true)"
-          echo "service_restarts=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || true)"
-          echo '=== TARGETED FAILED DEPLOY WINDOW ==='
-          sudo -n journalctl -u "$SERVICE" --since '2026-08-29 11:44:35 UTC' --until '2026-08-29 11:45:25 UTC' --no-pager || true
-          echo '=== CURRENT SERVICE TAIL ==='
-          sudo -n journalctl -u "$SERVICE" -n 80 --no-pager || true
+          STAMP='20260829T122354BST-one-time-rejections-lp-revalidation-v4'
+          BACKUP="$LROOT/private/change-control/$STAMP/pre-deploy"
+          TMPROOT="$RUNNER_TEMP/silearn-$STAMP"
+          MODULES=(
+            'learnerbot/solana_leader_quality_restore_patch.py'
+            'learnerbot/solana_owner_changeset_4_patch.py'
+            'learnerbot/solana_owner_changeset_4_exit_safety_patch.py'
+            'learnerbot/solana_owner_changeset_4_integrity_patch.py'
+            'learnerbot/solana_reject_once_reporting_patch.py'
+          )
+
+          rm -rf "$TMPROOT" && mkdir -p "$TMPROOT/extract"
+          curl -fL --retry 3 --retry-delay 2 \
+            "https://github.com/ayman01323/boot-trading-bot/archive/${DEPLOY_SHA}.tar.gz" \
+            -o "$TMPROOT/repo.tar.gz"
+          tar -xzf "$TMPROOT/repo.tar.gz" -C "$TMPROOT/extract"
+          SRCROOT="$(find "$TMPROOT/extract" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          test -d "$SRCROOT/learnerbot"
+          for rel in "${MODULES[@]}"; do test -f "$SRCROOT/$rel"; done
+
+          grep -q 'OWNER_LIVE_TRADE_SOL = Decimal("0.005")' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'OWNER_MAX_LIVE_POSITIONS = 10' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'def settings_owner_changeset_4' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'LP_REVALIDATION_REQUIRED' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'once_per_account_mint_leader_reason' "$SRCROOT/learnerbot/solana_reject_once_reporting_patch.py"
+          grep -q 'persistent=true signature_in_key=false' "$SRCROOT/learnerbot/solana_reject_once_reporting_patch.py"
+
+          SRCROOT="$SRCROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['SRCROOT']) / 'learnerbot'
+          names = [
+              'solana_leader_quality_restore_patch.py',
+              'solana_owner_changeset_4_patch.py',
+              'solana_owner_changeset_4_exit_safety_patch.py',
+              'solana_owner_changeset_4_integrity_patch.py',
+              'solana_reject_once_reporting_patch.py',
+          ]
+          for name in names:
+              p = root / name
+              compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+          print('source_compile=PASS files=5')
+          PY
+
+          sudo -n env LROOT="$LROOT" SERVICE="$SERVICE" BACKUP="$BACKUP" SRCROOT="$SRCROOT" DEPLOY_SHA="$DEPLOY_SHA" STAMP="$STAMP" bash <<'ROOT'
+          set -Eeuo pipefail
+          changed=0
+          start_epoch=$(date +%s)
+          MODULES=(
+            'learnerbot/solana_leader_quality_restore_patch.py'
+            'learnerbot/solana_owner_changeset_4_patch.py'
+            'learnerbot/solana_owner_changeset_4_exit_safety_patch.py'
+            'learnerbot/solana_owner_changeset_4_integrity_patch.py'
+            'learnerbot/solana_reject_once_reporting_patch.py'
+          )
+          MAIN_REL='learnerbot/__main__.py'
+          MAIN="$LROOT/$MAIN_REL"
+          test -f "$MAIN"
+          mkdir -p "$BACKUP/files"
+          systemctl status "$SERVICE" --no-pager -l > "$BACKUP/service-before.txt" 2>&1 || true
+          journalctl -u "$SERVICE" -n 200 --no-pager > "$BACKUP/journal-before.txt" 2>&1 || true
+
+          # Refuse code changes while any LIVE position is open.
+          LROOT="$LROOT" python3 - <<'PY'
+          import os, sqlite3, sys
+          from pathlib import Path
+          root = Path(os.environ['LROOT'])
+          total = 0
+          checked = []
+          seen = set()
+          for pat in ('*.db', '*.sqlite', '*.sqlite3'):
+              for p in root.rglob(pat):
+                  if not p.is_file():
+                      continue
+                  key = str(p.resolve())
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  try:
+                      con = sqlite3.connect(f'file:{p}?mode=ro', uri=True, timeout=1)
+                      has = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'").fetchone()
+                      if has:
+                          n = int(con.execute("SELECT COUNT(*) FROM positions WHERE UPPER(COALESCE(status,''))='OPEN'").fetchone()[0] or 0)
+                          checked.append((str(p), n))
+                          total += n
+                      con.close()
+                  except Exception:
+                      pass
+          print('position_databases=' + repr(checked))
+          print(f'open_positions={total}')
+          if total:
+              print('DEPLOY_REFUSED_OPEN_POSITION=true')
+              sys.exit(44)
+          PY
+
+          # Back up exactly what this deployment can touch.
+          cp -a "$MAIN" "$BACKUP/files/learnerbot____main__.py"
+          echo "$MAIN_REL|EXISTED|learnerbot____main__.py" > "$BACKUP/file-manifest.txt"
+          sha256sum "$MAIN" > "$BACKUP/before.sha256"
+          for rel in "${MODULES[@]}"; do
+            dst="$LROOT/$rel"
+            safe="${rel//\//__}"
+            if [[ -f "$dst" ]]; then
+              cp -a "$dst" "$BACKUP/files/$safe"
+              echo "$rel|EXISTED|$safe" >> "$BACKUP/file-manifest.txt"
+              sha256sum "$dst" >> "$BACKUP/before.sha256"
+            else
+              echo "$rel|ABSENT|$safe" >> "$BACKUP/file-manifest.txt"
+            fi
+          done
+
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo SILEARN_V4_ROLLBACK=START
+              while IFS='|' read -r rel state safe; do
+                dst="$LROOT/$rel"
+                if [[ "$state" = EXISTED ]]; then
+                  cp -a "$BACKUP/files/$safe" "$dst"
+                else
+                  rm -f "$dst"
+                fi
+              done < "$BACKUP/file-manifest.txt"
+              chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" || true
+              systemctl restart "$SERVICE" || true
+              sleep 10
+              echo "rollback_service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+              echo SILEARN_V4_ROLLBACK=COMPLETE
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          # Deploy only the five policy/reporting modules.
+          for rel in "${MODULES[@]}"; do
+            install -m 0644 -o ayman01323 -g $(id -gn ayman01323) "$SRCROOT/$rel" "$LROOT/$rel"
+          done
+
+          # Preserve the isolated server's customised __main__.py. Remove only any
+          # stale Change Set 4 import lines, then insert the approved final imports
+          # immediately before its existing CLI import. No other import is changed.
+          MAIN="$MAIN" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path(os.environ['MAIN'])
+          original = p.read_text(encoding='utf-8')
+          lines = original.splitlines()
+          remove_terms = (
+              'from . import solana_owner_changeset_4_patch',
+              'from . import solana_owner_changeset_4_integrity_patch',
+          )
+          kept = [line for line in lines if not any(term in line for term in remove_terms)]
+          try:
+              idx = next(i for i, line in enumerate(kept) if line.strip() == 'from .cli import main')
+          except StopIteration:
+              raise SystemExit('CLI_IMPORT_NOT_FOUND')
+          block = [
+              '# SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts + activate LP-unlocked LIVE revalidation',
+              '# Final owner policy only; preserve isolated Google Learner imports above unchanged.',
+              'from . import solana_owner_changeset_4_patch  # noqa: F401',
+              'from . import solana_owner_changeset_4_integrity_patch  # noqa: F401',
+          ]
+          updated_lines = kept[:idx] + block + kept[idx:]
+          updated = '\n'.join(updated_lines) + ('\n' if original.endswith('\n') else '')
+          if 'telegram_google_learner_launcher_patch' in updated and 'telegram_google_learner_launcher_patch' not in original:
+              raise SystemExit('UNAPPROVED_IMPORT_INJECTION')
+          # Prove the only logical main-file additions are the two owner imports and comments.
+          if updated.count('from . import solana_owner_changeset_4_patch') != 1:
+              raise SystemExit('OWNER_IMPORT_COUNT_BAD')
+          if updated.count('from . import solana_owner_changeset_4_integrity_patch') != 1:
+              raise SystemExit('INTEGRITY_IMPORT_COUNT_BAD')
+          compile(updated, str(p), 'exec')
+          p.write_text(updated, encoding='utf-8')
+          print('isolated_main_preserved=true')
+          print('owner_imports_inserted=2')
+          PY
+          chown ayman01323:$(id -gn ayman01323) "$MAIN"
+          changed=1
+
+          echo 'targeted_modules_written=5'
+          echo 'isolated_main_replaced=NO'
+          echo 'polygon_live_enable_migration_touched=NO'
+          echo 'CSVbot_touched=NO'
+          echo 'data_touched=NO'
+
+          # Compile every touched runtime file in memory.
+          LROOT="$LROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['LROOT']) / 'learnerbot'
+          names = [
+              '__main__.py',
+              'solana_leader_quality_restore_patch.py',
+              'solana_owner_changeset_4_patch.py',
+              'solana_owner_changeset_4_exit_safety_patch.py',
+              'solana_owner_changeset_4_integrity_patch.py',
+              'solana_reject_once_reporting_patch.py',
+          ]
+          for name in names:
+              p = root / name
+              compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+          print('runtime_compile=PASS files=6')
+          PY
+
+          systemctl restart "$SERVICE"
+          sleep 12
+          state1=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid1=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts1=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state1" = active && "$pid1" != 0 ]] || exit 91
+          sleep 15
+          state2=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid2=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts2=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state2" = active && "$pid2" != 0 && "$restarts1" = "$restarts2" ]] || exit 92
+
+          LOG="$BACKUP/journal-after.txt"
+          journalctl -u "$SERVICE" --since "@${start_epoch}" --no-pager > "$LOG"
+          if grep -q 'Traceback (most recent call last)' "$LOG"; then
+            tail -n 220 "$LOG" >&2
+            exit 93
+          fi
+          grep -q '\[trading-runtime-invariant\] OK' "$LOG" || exit 94
+          grep -q '\[final-runtime-integrity\] OK' "$LOG" || exit 95
+          grep -q '\[owner-changeset-4\] approved=2026-08-29T10:38:58Z' "$LOG" || exit 96
+          grep -q 'profile=historical-1230' "$LOG" || exit 97
+          grep -q 'trade=0.005SOL max_positions=10' "$LOG" || exit 98
+          grep -q 'tp=15% normal_hold=30m force_full_exit=33m' "$LOG" || exit 99
+          grep -q 'lp_unlocked=revalidate' "$LOG" || exit 100
+          grep -q '\[owner-changeset-4-exit-safety\]' "$LOG" || exit 101
+          grep -q '\[owner-changeset-4-integrity\] OK approved=2026-08-29T10:38:58Z' "$LOG" || exit 102
+          grep -q 'staged_profile=true' "$LOG" || exit 103
+          grep -q '\[learner-reject-once\] bot=SiLearn approved=2026-08-29T11:23:54Z' "$LOG" || exit 104
+          grep -q 'policy=once_per_account_mint_leader_reason' "$LOG" || exit 105
+          grep -q 'persistent=true signature_in_key=false' "$LOG" || exit 106
+
+          # Verify the actual files still contain the intended exact owner values.
+          grep -q 'OWNER_LIVE_TRADE_SOL = Decimal("0.005")' "$LROOT/learnerbot/solana_owner_changeset_4_patch.py" || exit 107
+          grep -q 'OWNER_MAX_LIVE_POSITIONS = 10' "$LROOT/learnerbot/solana_owner_changeset_4_patch.py" || exit 108
+          grep -q 'once_per_account_mint_leader_reason' "$LROOT/learnerbot/solana_reject_once_reporting_patch.py" || exit 109
+
+          cat > "$LROOT/private/change-control/$STAMP/deployment-attestation.txt" <<EOF
+          bot_name=SiLearn
+          title=SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts + activate LP-unlocked LIVE revalidation
+          deployed_sha=$DEPLOY_SHA
+          deployment_mode=targeted_five_modules_plus_preserved_main_import_insertion
+          isolated_main_replaced=NO
+          owner_imports_inserted=2
+          targeted_modules=5
+          polygon_live_enable_migration_touched=NO
+          CSVbot_touched=NO
+          data_touched=NO
+          deployed_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          service_state=$state2
+          service_pid=$pid2
+          service_restarts=$restarts2
+          runtime_invariant=PASS
+          final_integrity=PASS
+          changeset4_integrity=PASS
+          owner_profile=historical-1230
+          reject_policy=once_per_account_mint_leader_reason
+          reject_dedup_persistent=true
+          reject_signature_in_key=false
+          lp_unlocked_policy=conditional_revalidation
+          trade_size_sol=0.005
+          max_live_positions=10
+          take_profit_pct=15
+          max_hold_minutes=30
+          forced_full_exit_minutes=33
+          test_trade_broadcast=NO
+          EOF
+          chown -R ayman01323:$(id -gn ayman01323) "$LROOT/private/change-control/$STAMP"
+
+          echo SILEARN_V4_DEPLOY=PASS
+          echo "deployed_sha=$DEPLOY_SHA"
+          echo "service_state=$state2"
+          echo "service_pid=$pid2"
+          echo "service_restarts=$restarts2"
+          echo runtime_invariant=PASS
+          echo final_integrity=PASS
+          echo changeset4_integrity=PASS
+          echo owner_profile=historical-1230
+          echo reject_policy=once_per_account_mint_leader_reason
+          echo reject_dedup_persistent=true
+          echo reject_signature_in_key=false
+          echo lp_unlocked_policy=conditional_revalidation
+          echo trade_size_sol=0.005
+          echo max_live_positions=10
+          echo take_profit_pct=15
+          echo max_hold_minutes=30
+          echo forced_full_exit_minutes=33
+          echo test_trade_broadcast=NO
+          grep -E '\[trading-runtime-invariant\]|\[final-runtime-integrity\]|\[owner-changeset-4\]|\[owner-changeset-4-exit-safety\]|\[owner-changeset-4-integrity\]|\[learner-reject-once\]' "$LOG" | tail -n 40
+          trap - EXIT
+          ROOT
