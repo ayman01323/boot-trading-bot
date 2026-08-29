@@ -1,0 +1,199 @@
+name: 2026-08-29 11:05:51Z Change Set 5 Hotfix Google Learner Reject Reporting v2
+
+on:
+  push:
+    branches:
+      - 'ops/2026-08-29T110551Z-hotfix-learner-reject-reporting'
+    paths:
+      - '.github/workflows/changeset5-hotfix-google-learner-reject-reporting-v2-20260829.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: changeset5-hotfix-google-learner-reject-reporting-v2-20260829
+  cancel-in-progress: false
+
+jobs:
+  hotfix:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: Apply exact tested reporting section only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+
+          SOURCE_SHA='98f570a47d9521d527f00ba543c09c235f120ab5'
+          SOURCE_FILE='/tmp/changeset5-solana-leader-cursor.py'
+          curl -fsSL "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${SOURCE_SHA}/learnerbot/solana_leader_cursor_reliability_patch.py" -o "$SOURCE_FILE"
+          test -s "$SOURCE_FILE"
+          grep -q '_REJECT_REPORT_SUPPRESS_SECONDS = 15 \* 60' "$SOURCE_FILE"
+          grep -q 'def _telegram_reject_dedup_key' "$SOURCE_FILE"
+          grep -q 'https://solscan.io/account/' "$SOURCE_FILE"
+          grep -q 'https://solscan.io/tx/' "$SOURCE_FILE"
+          python3 -m py_compile "$SOURCE_FILE"
+
+          sudo -n env LROOT=/home/ayman01323/BOOT/testingbots/learn SOURCE_FILE="$SOURCE_FILE" SOURCE_SHA="$SOURCE_SHA" bash <<'ROOT'
+          set -Eeuo pipefail
+          SERVICE='learnerbot-learn.service'
+          TARGET="$LROOT/learnerbot/solana_leader_cursor_reliability_patch.py"
+          STAMP='20260829T110551Z'
+          BACKUP="$LROOT/private/change-control/$STAMP-change-set-5/pre-hotfix-v2"
+          APPROVED_UTC='2026-08-29T11:05:51Z'
+          APPROVED_BST='2026-08-29T12:05:51+01:00'
+          SUBJECT='Learner Telegram reject dedupe + full clickable Solana IDs'
+
+          test -f "$TARGET"
+          mkdir -p "$BACKUP"
+          cp -a "$TARGET" "$BACKUP/solana_leader_cursor_reliability_patch.py"
+          sha256sum "$TARGET" > "$BACKUP/target-before.sha256"
+          systemctl status "$SERVICE" --no-pager -l > "$BACKUP/service-status-before.txt" 2>&1 || true
+          journalctl -u "$SERVICE" -n 120 --no-pager > "$BACKUP/journal-before.txt" 2>&1 || true
+
+          changed=0
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo 'CHANGESET5_V2_ROLLBACK=START'
+              cp -a "$BACKUP/solana_leader_cursor_reliability_patch.py" "$TARGET"
+              chown ayman01323:$(id -gn ayman01323) "$TARGET" || true
+              systemctl restart "$SERVICE" || true
+              sleep 4
+              echo "rollback_service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+              echo 'CHANGESET5_V2_ROLLBACK=COMPLETE'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          TARGET="$TARGET" SOURCE_FILE="$SOURCE_FILE" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          target = Path(os.environ['TARGET'])
+          source = Path(os.environ['SOURCE_FILE'])
+          old = target.read_text(encoding='utf-8')
+          tested = source.read_text(encoding='utf-8')
+
+          required_imports = (
+              'import html',
+              'from .rejected_opportunity_publisher import publish_rejection',
+              'from .solana_live_patch import live_enabled',
+              'from .telegram import send_message',
+              'from .user_registry import all_users',
+          )
+          missing = [x for x in required_imports if x not in old]
+          if missing:
+              raise SystemExit('REFUSE_CHANGESET5_V2: current runtime lacks reporting imports: ' + ','.join(missing))
+
+          src_start = tested.find('_REJECT_REPORT_SUPPRESS_SECONDS = 15 * 60')
+          src_end = tested.find('\ndef _leader_signatures', src_start)
+          if src_start < 0 or src_end < 0:
+              raise SystemExit('REFUSE_CHANGESET5_V2: tested source reporting anchors missing')
+          reporting = tested[src_start:src_end]
+          reporting += (
+              '\nprint("[learner-reject-changeset5] approved=2026-08-29T11:05:51Z '
+              'dedup_seconds=900 full_clickable_ids=true reporting_only=true")\n'
+          )
+
+          if '_REJECT_REPORT_SUPPRESS_SECONDS = 15 * 60' in old:
+              old_start = old.find('_REJECT_REPORT_SUPPRESS_SECONDS = 15 * 60')
+          else:
+              old_start = old.find('_REJECT_REPORT_DEDUP: dict[tuple[str, str, str], float] = {}')
+          old_end = old.find('\ndef _leader_signatures', old_start)
+          if old_start < 0 or old_end < 0:
+              raise SystemExit('REFUSE_CHANGESET5_V2: current runtime reporting anchors missing')
+
+          prefix = old[:old_start]
+          suffix = old[old_end:]
+          new = prefix + reporting + suffix
+
+          # Audit guarantee: everything outside the reporting section remains exact.
+          assert new[:len(prefix)] == prefix
+          assert new[-len(suffix):] == suffix
+          target.write_text(new, encoding='utf-8')
+          print('changeset5_v2_reporting_section_replaced=true')
+          print('changeset5_v2_non_reporting_prefix_unchanged=true')
+          print('changeset5_v2_non_reporting_suffix_unchanged=true')
+          PY
+          changed=1
+
+          py="$LROOT/.venv/bin/python"
+          [[ -x "$py" ]] || py=python3
+          PYTHONPATH="$LROOT" "$py" -m py_compile "$TARGET"
+          grep -q '_REJECT_REPORT_SUPPRESS_SECONDS = 15 \* 60' "$TARGET"
+          grep -q 'def _telegram_reject_dedup_key' "$TARGET"
+          grep -q 'https://solscan.io/token/' "$TARGET"
+          grep -q 'https://solscan.io/account/' "$TARGET"
+          grep -q 'https://solscan.io/tx/' "$TARGET"
+          grep -q 'https://www.dexview.com/solana/' "$TARGET"
+          if grep -q '_short(wallet)' "$TARGET" || grep -q '_short(signature)' "$TARGET"; then
+            echo 'REFUSE_CHANGESET5_V2: truncated Leader/Signal formatter remains' >&2
+            exit 81
+          fi
+          sha256sum "$TARGET" > "$BACKUP/target-after.sha256"
+          chown ayman01323:$(id -gn ayman01323) "$TARGET"
+
+          systemctl restart "$SERVICE"
+          sleep 8
+          state1=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid1=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts1=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state1" = active && "$pid1" != 0 ]] || exit 82
+          sleep 6
+          state2=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid2=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts2=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state2" = active && "$pid2" != 0 && "$restarts1" = "$restarts2" ]] || exit 83
+
+          journalctl -u "$SERVICE" --since '25 seconds ago' --no-pager > /tmp/changeset5-v2-journal.txt
+          if grep -q 'Traceback (most recent call last)' /tmp/changeset5-v2-journal.txt; then
+            tail -n 160 /tmp/changeset5-v2-journal.txt >&2
+            exit 84
+          fi
+          grep -q '\[learner-reject-changeset5\] approved=2026-08-29T11:05:51Z' /tmp/changeset5-v2-journal.txt || exit 85
+
+          cat > "$LROOT/private/change-control/$STAMP-change-set-5/deployment-attestation-v2.txt" <<EOF
+          changeset_id=CHANGE_SET_5
+          approval_utc=$APPROVED_UTC
+          approval_bst=$APPROVED_BST
+          subject=$SUBJECT
+          tested_source_sha=$SOURCE_SHA
+          server_backup=$BACKUP
+          deployed_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          target=$TARGET
+          service=$SERVICE
+          service_state=$state2
+          service_pid=$pid2
+          service_restarts=$restarts2
+          telegram_dedup_seconds=900
+          telegram_dedup_key=account+mint+leader+reason
+          full_clickable_asset=true
+          full_clickable_leader=true
+          full_clickable_signal=true
+          non_reporting_prefix_unchanged=true
+          non_reporting_suffix_unchanged=true
+          trading_logic_changed=NO
+          test_trade_broadcast=NO
+          synthetic_telegram_test_sent=NO
+          EOF
+          chown -R ayman01323:$(id -gn ayman01323) "$LROOT/private/change-control/$STAMP-change-set-5"
+
+          echo 'CHANGESET5_GOOGLE_LEARNER_REPORTING_HOTFIX_V2=PASS'
+          echo "learner_service_state=$state2"
+          echo "learner_service_pid=$pid2"
+          echo "learner_service_restarts=$restarts2"
+          echo 'telegram_reject_dedup_seconds=900'
+          echo 'telegram_reject_dedup_key=account+mint+leader+reason'
+          echo 'telegram_full_clickable_ids=true'
+          echo 'non_reporting_code_unchanged=true'
+          echo 'trading_logic_changed=NO'
+          echo 'test_trade_broadcast=NO'
+          echo "rollback_backup=$BACKUP"
+          grep -E '\[learner-reject-changeset5\]' /tmp/changeset5-v2-journal.txt | tail -n 5
+
+          trap - EXIT
+          ROOT
