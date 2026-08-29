@@ -1,0 +1,77 @@
+name: SiLearn open LIVE position inspect
+
+on:
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T1726BST-master-676-alerts'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Read-only open LIVE position report
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          ROOT="$ROOT" python3 - <<'PY'
+          import os, sqlite3, time, json
+          from pathlib import Path
+          root=Path(os.environ['ROOT'])
+          db=root/'data'/'solana_sibot.sqlite3'
+          conn=sqlite3.connect(f'file:{db}?mode=ro', uri=True, timeout=3)
+          conn.row_factory=sqlite3.Row
+          now=int(time.time())
+          try:
+              rows=conn.execute("SELECT * FROM positions WHERE upper(coalesce(status,''))='OPEN' AND upper(coalesce(mode,''))='LIVE' ORDER BY entry_ts").fetchall()
+              print(f'open_live_count={len(rows)}')
+              for i,row in enumerate(rows,1):
+                  d=dict(row)
+                  tid=str(d.get('telegram_id') or '')
+                  mint=str(d.get('mint') or '')
+                  entry_ts=int(d.get('entry_ts') or 0)
+                  age=max(0,now-entry_ts) if entry_ts else 0
+                  tx=''
+                  try:
+                      tables={r[0] for r in conn.execute("select name from sqlite_master where type='table'")}
+                      if 'live_execution_attempts' in tables:
+                          hit=conn.execute("SELECT tx_signature,total_input_amount,total_output_amount,input_raw,output_raw,created_at FROM live_execution_attempts WHERE telegram_id=? AND mint=? AND upper(action)='BUY' AND status='EXECUTED' ORDER BY created_at DESC LIMIT 1",(tid,mint)).fetchone()
+                          if hit:
+                              tx=str(hit['tx_signature'] or '')
+                  except Exception as e:
+                      # tolerate schema variations; fall back to tx_signature-only query
+                      try:
+                          hit=conn.execute("SELECT tx_signature,created_at FROM live_execution_attempts WHERE telegram_id=? AND mint=? AND upper(action)='BUY' AND status='EXECUTED' ORDER BY created_at DESC LIMIT 1",(tid,mint)).fetchone()
+                          if hit: tx=str(hit['tx_signature'] or '')
+                      except Exception:
+                          pass
+                  out={
+                      'n':i,
+                      'position_id':str(d.get('position_id') or ''),
+                      'telegram_id':tid,
+                      'leader_wallet':str(d.get('leader_wallet') or ''),
+                      'mint':mint,
+                      'token_amount_raw':str(d.get('token_amount_raw') or ''),
+                      'entry_cost_sol':str(d.get('entry_cost_sol') or ''),
+                      'entry_ts':entry_ts,
+                      'age_seconds':age,
+                      'age_minutes':round(age/60,2),
+                      'current_exit_sol':str(d.get('current_exit_sol') or ''),
+                      'unrealised_net_sol':str(d.get('unrealised_net_sol') or ''),
+                      'unrealised_pct':d.get('unrealised_pct'),
+                      'peak_unrealised_pct':d.get('peak_unrealised_pct'),
+                      'leader_exit_pending':d.get('leader_exit_pending'),
+                      'realised_net_sol':str(d.get('realised_net_sol') or ''),
+                      'entry_tx':tx,
+                      'leader_buy_signature':str(d.get('leader_buy_signature') or ''),
+                  }
+                  print('POSITION_JSON='+json.dumps(out,separators=(',',':')))
+          finally:
+              conn.close()
+          print('read_only=true')
+          PY
