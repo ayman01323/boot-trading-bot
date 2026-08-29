@@ -1,0 +1,40 @@
+name: 2026-08-29 11:20:28Z Diagnose Learner Reject Silence
+
+on:
+  push:
+    branches:
+      - 'ops/2026-08-29T112028Z-diagnose-learner-reject-silence'
+    paths:
+      - '.github/workflows/diagnose-learner-reject-silence-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Read Learner service rejection activity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          SERVICE=learnerbot-learn.service
+          echo "service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          echo "service_pid=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || true)"
+          echo '=== REJECT ACTIVITY SINCE CHANGE SET 5 START ==='
+          sudo -n journalctl -u "$SERVICE" --since '2026-08-29 11:15:50 UTC' --no-pager | \
+            grep -E '\[learner-reject-report\]|LEARNER REJECTED|REJECT|POOL|RugCheck|LP_CONCENTRATION|changeset5' | tail -n 300 || true
+          echo '=== COUNTS SINCE CHANGE SET 5 START ==='
+          LOG=$(mktemp)
+          sudo -n journalctl -u "$SERVICE" --since '2026-08-29 11:15:50 UTC' --no-pager > "$LOG"
+          printf 'reject_report_lines='; grep -c '\[learner-reject-report\]' "$LOG" || true
+          printf 'sent_nonzero_lines='; grep '\[learner-reject-report\]' "$LOG" | grep -Ec 'sent=[1-9][0-9]*' || true
+          printf 'suppressed_nonzero_lines='; grep '\[learner-reject-report\]' "$LOG" | grep -Ec 'suppressed=[1-9][0-9]*' || true
+          printf 'pool_risk_mentions='; grep -Eic 'LP_CONCENTRATION|Large Amount of LP Unlocked|RugCheck|POOL_' "$LOG" || true
+          printf 'tracebacks='; grep -c 'Traceback (most recent call last)' "$LOG" || true
+          echo '=== LAST 120 SERVICE LINES ==='
+          tail -n 120 "$LOG"
+          rm -f "$LOG"
