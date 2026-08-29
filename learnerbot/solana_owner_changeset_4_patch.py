@@ -7,19 +7,23 @@ Subject: restore historical 12:30 BUY profile; 0.005 SOL / 10 LIVE positions;
 30+3 minute, +15% full-exit policy; LP-unlocked requires revalidation instead
 of being an automatic LIVE refusal.
 
-This layer is intentionally late-bound.  It changes strategy/capacity policy only
-and keeps the already-audited signer, simulation, reserve, quote, slippage,
-transaction-validation, wallet-binding, kill-switch and protected close paths.
+This layer is intentionally late-bound. It is imported only after the pre-existing
+audited runtime invariants have succeeded. The historical strategy profile is
+therefore applied here, rather than in the earlier leader-quality restore layer.
+Signer, simulation, reserve, quote, slippage, transaction-validation,
+wallet-binding, kill-switch and protected close paths remain unchanged.
 """
 
 import time
 from contextlib import closing
 from decimal import Decimal
 
+from . import solana_first_day_strategy_restore_patch as _first_day
 from . import solana_liquidity_stuck_nonblocking_patch as _stuck
 from . import solana_live_patch as _live
 from . import solana_pool_risk_gate as _pool
 from . import solana_positive_edge_entry_gate_patch as _edge
+from . import solana_profit_guard_patch as _guard
 from . import solana_sibot as _sol
 
 CHANGESET_ID = "CHANGE_SET_4"
@@ -33,10 +37,66 @@ OWNER_LIVE_TRADE_SOL = Decimal("0.005")
 OWNER_MAX_LIVE_POSITIONS = 10
 OWNER_FORCE_EXIT_SECONDS = 33 * 60
 
+_OWNER_PROFILE_OVERRIDES = {
+    "leaders_per_user": "5",
+    "min_closed_trades": "5",
+    "min_win_rate_pct": "50",
+    "require_complete_history": "false",
+    "min_profit_factor": "1.20",
+    "recent_trade_window": "10",
+    "min_recent_win_rate_pct": "50",
+    "min_recent_profit_factor": "1.00",
+    "max_leader_drawdown_pct": "30",
+    "min_copied_trades_for_guard": "5",
+    "min_copied_win_rate_pct": "40",
+    "min_copied_profit_factor": "1.0",
+    "max_consecutive_copied_losses": "3",
+    "leader_suspend_minutes": "180",
+    "max_signal_age_seconds": "30",
+    "max_roundtrip_loss_pct": "3",
+    "max_entry_deterioration_pct": "2",
+    "discovery_blocks_per_cycle": "6",
+    "discovery_interval_seconds": "15",
+    "candidate_limit": "150",
+    "history_max_signatures": "400",
+    "history_refresh_hours": "8",
+    "rpc_delay_seconds": "0.50",
+    "leader_poll_seconds": "2",
+    "position_poll_seconds": "10",
+    "stop_loss_pct": "10",
+    "take_profit_pct": "15",
+    "leader_exit_loss_cap_pct": "2",
+    "break_even_trigger_pct": "5",
+    "break_even_floor_pct": "0.25",
+    "trailing_trigger_pct": "10",
+    "trailing_gap_pct": "4",
+    "max_hold_hours": "0.5",
+    "max_hold_force_exit_grace_minutes": "3",
+    "mirror_partial_sells": "false",
+    "live_min_leader_median_return_pct": "5.0",
+    "live_min_leader_recent_median_return_pct": "4.0",
+    "live_edge_recent_trade_window": "10",
+    # Change Set 2 exceptions to the historical profile.
+    "live_trade_sol": "0.005",
+    "live_max_positions": "10",
+}
+
+_PREV_SETTINGS = _sol.settings
 _PREV_LIVE_LIMITS = _live.live_limits
 _PREV_RUGCHECK = _pool.evaluate_rugcheck
 _BASE_LIVE_PROCESS = _pool._PREV_PROCESS
 _PREV_MONITOR = _sol.monitor_positions
+
+
+def settings_owner_changeset_4(app) -> dict:
+    """Apply the owner profile only after the audited pre-change invariants pass."""
+    cfg = dict(_PREV_SETTINGS(app))
+    cfg.update(_OWNER_PROFILE_OVERRIDES)
+    cfg["solana_strategy_profile"] = (
+        str(cfg.get("solana_strategy_profile") or "")
+        + "+OWNER_20260829_HISTORICAL_1230_WITH_EXIT_OVERRIDES"
+    )
+    return cfg
 
 
 def live_limits_owner_changeset_4(app, telegram_id, cfg=None):
@@ -48,7 +108,7 @@ def live_limits_owner_changeset_4(app, telegram_id, cfg=None):
 def evaluate_rugcheck_lp_revalidation(summary: dict, cfg: dict) -> dict:
     """LP-unlocked/low-lock is a revalidation trigger, not a standalone refusal.
 
-    Structural RugCheck failures remain HARD_BLOCK.  Only the former
+    Structural RugCheck failures remain HARD_BLOCK. Only the former
     LP_CONCENTRATION_RISK result is changed to PASS-with-revalidation, which means
     the existing DexScreener checks and fresh Jupiter reverse-depth probe still
     have to pass before LIVE can proceed.
@@ -87,12 +147,7 @@ def eligible_live_users_owner_changeset_4(app, event: dict, cfg: dict):
 
 
 def process_leader_event_owner_changeset_4(app, event: dict):
-    """Canonical LIVE process with only the hard position ceiling raised 5 -> 10.
-
-    SELL handling is delegated unchanged to the pre-PoolCheck LIVE implementation;
-    the approved no-routine-partial policy is supplied through settings and the
-    33-minute full-exit fallback is supplied by the monitor wrapper below.
-    """
+    """Canonical LIVE process with the approved 10-position ceiling."""
     if str((event or {}).get("action") or "").upper() != "BUY":
         return _BASE_LIVE_PROCESS(app, event)
 
@@ -191,14 +246,7 @@ def process_leader_event_owner_changeset_4(app, event: dict):
 
 
 def monitor_positions_owner_changeset_4(app):
-    """Run all existing exits, then force a protected full-exit attempt at 33m.
-
-    The current monitor already implements the configured +15% take-profit and
-    30-minute profitable max-hold.  Any position still OPEN at 33 minutes is sent
-    through the existing protected 100% close path without a profit requirement.
-    The close path may still refuse/deflect an unsafe transaction or use its
-    emergency liquidity protections; this patch never bypasses them.
-    """
+    """Run all existing exits, then force a protected full-exit attempt at 33m."""
     result = _PREV_MONITOR(app)
     now = int(time.time())
     try:
@@ -247,6 +295,10 @@ def install() -> None:
     if getattr(_sol, "_owner_changeset_4_installed", False):
         return
 
+    # Apply the historical strategy only after the audited pre-change invariant.
+    _sol.settings = settings_owner_changeset_4
+    _guard._copied_ok = _first_day.copied_ok_first_day
+
     # Trade size and LP classification.
     _live.live_limits = live_limits_owner_changeset_4
     _pool.evaluate_rugcheck = evaluate_rugcheck_lp_revalidation
@@ -268,6 +320,8 @@ def install() -> None:
     _sol._owner_changeset_4_installed = True
     print(
         "[owner-changeset-4] approved=2026-08-29T10:38:58Z "
+        "profile=historical-1230 leaders=5 pf=1.20 recent_wr=50 recent_pf=1.00 "
+        "copied_guard=5 copied_wr=40 copied_pf=1.0 loss_streak=3 suspend=180m "
         "trade=0.005SOL max_positions=10 tp=15% normal_hold=30m force_full_exit=33m "
         "routine_partial_sells=false lp_unlocked=revalidate execution_safety=preserved"
     )
