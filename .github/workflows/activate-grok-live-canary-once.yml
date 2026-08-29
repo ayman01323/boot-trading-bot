@@ -43,6 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo python3 - <<'PY'
+          import csv
           import os
           import pwd
           import re
@@ -52,6 +53,8 @@ jobs:
           config_dir = Path('/home/ayman01323/.config/grok-known-assets-bot')
           canary = config_dir / 'canary.env'
           telegram = config_dir / 'telegram.env'
+          wallet_csv = Path('/home/ayman01323/BOOT/CSVbot/auto/solana_user_wallets.csv')
+          wallet_root = Path('/home/ayman01323/BOOT/data/user_solana_wallets')
           sources = [
               canary,
               telegram,
@@ -77,6 +80,7 @@ jobs:
 
           parsed = [parse(p) for p in sources]
           existing = dict(parsed[0])
+          telegram_values = dict(parsed[1])
 
           def first(key):
               for vals in parsed:
@@ -85,21 +89,63 @@ jobs:
                       return value
               return ''
 
-          signer_id = str(existing.get('GROK_LIVE_CANARY_TELEGRAM_ID') or '').strip()
-          if not signer_id:
-              approvers = str(existing.get('GROK_LIVE_CANARY_APPROVER_USER_IDS') or '').strip()
-              ids = [x for x in re.split(r'[,;\s]+', approvers) if x]
-              if len(ids) == 1 and ids[0].isdigit() and int(ids[0]) > 0:
-                  signer_id = ids[0]
-          if not signer_id:
-              chat_ids = first('GROK_TELEGRAM_CHAT_IDS')
-              ids = [x for x in re.split(r'[,;\s]+', chat_ids) if x]
-              if len(ids) == 1 and ids[0].isdigit() and int(ids[0]) > 0:
-                  signer_id = ids[0]
-          if not signer_id:
-              raise SystemExit('GROK LIVE activation blocked: no unambiguous positive Telegram signer id')
+          def split_ids(raw):
+              return [x for x in re.split(r'[,;\s]+', str(raw or '').strip()) if x]
 
-          approver_ids = str(existing.get('GROK_LIVE_CANARY_APPROVER_USER_IDS') or '').strip() or signer_id
+          def signing_wallet_candidates():
+              if not wallet_csv.exists():
+                  return []
+              out = []
+              with wallet_csv.open('r', encoding='utf-8-sig', newline='') as f:
+                  for row in csv.DictReader(f):
+                      tid = str(row.get('telegram_id') or '').strip()
+                      wid = str(row.get('wallet_id') or '').strip()
+                      if not tid.isdigit() or int(tid) <= 0:
+                          continue
+                      if str(row.get('enabled') or 'true').lower() not in {'1','true','yes','on'}:
+                          continue
+                      if str(row.get('active') or '').lower() != 'true':
+                          continue
+                      if str(row.get('signing') or '').lower() != 'true':
+                          continue
+                      if not wid or not (wallet_root / tid / f'{wid}.enc.json').exists():
+                          continue
+                      if not str(row.get('address') or '').strip():
+                          continue
+                      out.append(tid)
+              return sorted(set(out))
+
+          signer_id = str(existing.get('GROK_LIVE_CANARY_TELEGRAM_ID') or '').strip()
+          if signer_id and (not signer_id.isdigit() or int(signer_id) <= 0):
+              raise SystemExit('GROK LIVE activation blocked: configured signer id is invalid')
+
+          existing_approvers = split_ids(
+              existing.get('GROK_LIVE_CANARY_APPROVER_USER_IDS')
+              or telegram_values.get('GROK_LIVE_CANARY_APPROVER_USER_IDS')
+          )
+          if not signer_id and len(existing_approvers) == 1 and existing_approvers[0].isdigit() and int(existing_approvers[0]) > 0:
+              signer_id = existing_approvers[0]
+
+          allowed_positive = {
+              x for x in split_ids(telegram_values.get('GROK_TELEGRAM_CHAT_IDS') or first('GROK_TELEGRAM_CHAT_IDS'))
+              if x.isdigit() and int(x) > 0
+          }
+          candidates = signing_wallet_candidates()
+          if not signer_id:
+              matched = [x for x in candidates if x in allowed_positive]
+              if len(matched) == 1:
+                  signer_id = matched[0]
+              elif len(candidates) == 1:
+                  signer_id = candidates[0]
+              elif len(matched) > 1:
+                  raise SystemExit('GROK LIVE activation blocked: multiple allowed active signing wallets')
+              elif len(candidates) > 1:
+                  raise SystemExit('GROK LIVE activation blocked: multiple active signing wallets; configure signer explicitly')
+              else:
+                  raise SystemExit('GROK LIVE activation blocked: no active encrypted Solana signing wallet found')
+
+          if candidates and signer_id not in candidates:
+              raise SystemExit('GROK LIVE activation blocked: selected signer is not the active encrypted signing wallet')
 
           rpc_keys = ('SOLANA_RPC_URLS', 'SOLANA_RPC_FALLBACK_URLS', 'SOLANA_RPC_URL', 'HELIUS_RPC_URL', 'HELIUS_API_KEY')
           rpc_values = {k: first(k) for k in rpc_keys}
@@ -108,22 +154,36 @@ jobs:
 
           values = dict(existing)
           values['GROK_LIVE_CANARY_TELEGRAM_ID'] = signer_id
-          values['GROK_LIVE_CANARY_APPROVER_USER_IDS'] = approver_ids
           values.setdefault('GROK_LIVE_CANARY_APPROVAL_TTL_SECONDS', '90')
           for k, v in rpc_values.items():
               if v and not str(values.get(k) or '').strip():
                   values[k] = v
 
+          # Approval is bound to the same immutable Telegram identity that owns
+          # the encrypted signer. Ensure the dedicated receiver accepts that
+          # private chat without exposing either the ID or bot token in logs.
+          telegram_values['GROK_LIVE_CANARY_APPROVER_USER_IDS'] = signer_id
+          chat_ids = split_ids(telegram_values.get('GROK_TELEGRAM_CHAT_IDS') or first('GROK_TELEGRAM_CHAT_IDS'))
+          if signer_id not in chat_ids:
+              chat_ids.append(signer_id)
+          telegram_values['GROK_TELEGRAM_CHAT_IDS'] = ','.join(dict.fromkeys(chat_ids))
+          if not str(telegram_values.get('GROK_TELEGRAM_BOT_TOKEN') or first('GROK_TELEGRAM_BOT_TOKEN')).strip():
+              raise SystemExit('GROK LIVE activation blocked: dedicated Grok Telegram token is missing')
+          if not str(telegram_values.get('GROK_TELEGRAM_BOT_TOKEN') or '').strip():
+              telegram_values['GROK_TELEGRAM_BOT_TOKEN'] = first('GROK_TELEGRAM_BOT_TOKEN')
+
           config_dir.mkdir(parents=True, exist_ok=True)
-          lines = [f'{k}={v}' for k, v in sorted(values.items()) if str(v).strip()]
-          canary.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          canary.write_text('\n'.join(f'{k}={v}' for k, v in sorted(values.items()) if str(v).strip()) + '\n', encoding='utf-8')
+          telegram.write_text('\n'.join(f'{k}={v}' for k, v in sorted(telegram_values.items()) if str(v).strip()) + '\n', encoding='utf-8')
           os.chmod(config_dir, 0o700)
           os.chmod(canary, 0o600)
+          os.chmod(telegram, 0o600)
           os.chown(config_dir, owner.pw_uid, owner.pw_gid)
           os.chown(canary, owner.pw_uid, owner.pw_gid)
+          os.chown(telegram, owner.pw_uid, owner.pw_gid)
           print('canary_env=READY')
-          print('signer_id=CONFIGURED_REDACTED')
-          print('approver_ids=CONFIGURED_REDACTED')
+          print('telegram_approval_binding=READY_REDACTED')
+          print('signer_wallet=ACTIVE_ENCRYPTED_REDACTED')
           print('rpc_config=READY_REDACTED')
           PY
 
@@ -179,12 +239,12 @@ jobs:
           print('required_entry_micro_usdc=' + str(need))
           PY
 
-      - name: Install and start canary service while money path is OFF
+      - name: Install services while money path is OFF
         shell: bash
         run: |
           set -euo pipefail
-          SRC=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example
-          sudo install -m 0644 "$SRC" /etc/systemd/system/grok-known-assets-canary.service
+          sudo install -m 0644 /home/ayman01323/BOOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example /etc/systemd/system/grok-known-assets-canary.service
+          sudo install -m 0644 /home/ayman01323/BOOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-telegram.service.example /etc/systemd/system/grok-known-assets-telegram.service
           cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
           .venv/bin/python - <<'PY'
           from grok_known_assets_bot.control import load_state, save_state
@@ -198,9 +258,11 @@ jobs:
           print('prestart_live_canary=false')
           PY
           sudo systemctl daemon-reload
-          sudo systemctl enable grok-known-assets-canary.service
+          sudo systemctl enable grok-known-assets-telegram.service grok-known-assets-canary.service
+          sudo systemctl restart grok-known-assets-telegram.service
           sudo systemctl restart grok-known-assets-canary.service
           sleep 4
+          sudo systemctl is-active --quiet grok-known-assets-telegram.service
           sudo systemctl is-active --quiet grok-known-assets-canary.service
 
       - name: Arm LIVE readiness and LIVE canary
