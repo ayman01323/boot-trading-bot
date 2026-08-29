@@ -1,8 +1,9 @@
-name: Temporary SiRisky Five-Trade Inspect
+name: SiLearn v4 guarded Google deploy
 
 on:
   push:
-    branches: [main]
+    branches:
+      - 'ops/SiLearn-2026-08-29T122354BST-deploy-v2'
     paths:
       - '.github/workflows/temp-sirisky-five-trades-inspect.yml'
   workflow_dispatch:
@@ -11,82 +12,242 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  deploy:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
-      - name: Inspect SiRisky only
+      - name: SiLearn guarded targeted deploy
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          sudo -n bash -lc '
-            set -Eeuo pipefail
-            cd /root/SiRisky
-            echo "=== SIRISKY SERVICE ==="
-            date -u +"utc=%Y-%m-%dT%H:%M:%SZ"
-            echo "service=$(systemctl is-active sirisky.service || true)"
-            echo "=== CURRENT SETTINGS ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-from sirisky.config import Settings
-from sirisky.safety_v2 import entry_sol
-s=Settings.load(); rt=s.runtime(); rk=s.risk()
-for k in sorted(rt):
-    if any(x in k.lower() for x in ("secret","key","token","wallet","rpc_url")): continue
-    print(f"runtime.{k}={rt.get(k)}")
-for k in sorted(rk):
-    if any(x in k.lower() for x in ("secret","key","token","wallet")): continue
-    print(f"risk.{k}={rk.get(k)}")
-print(f"effective.entry_sol={entry_sol(s):.9f}")
-PY
-            echo "=== TRADE CSV FILES ==="
-            find CSV -maxdepth 2 -type f -name "*.csv" -printf "%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n" | sort
-            echo "=== POSITION / TRADE SUMMARY ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv, json
-from pathlib import Path
-for p in sorted(Path("CSV").glob("*.csv")):
-    try:
-        with p.open(encoding="utf-8-sig",newline="") as f:
-            rows=list(csv.DictReader(f))
-    except Exception:
-        continue
-    if not rows: continue
-    fields=set(rows[0])
-    interesting=fields & {"status","mode","position_id","candidate_id","opened_at","closed_at","entry_time","exit_time","buy_signature","sell_signature","tx_signature","entry_sol","amount_sol","pnl_sol","net_pnl_sol","profit_sol","realized_pnl_sol","token","mint","symbol"}
-    if interesting:
-        print(f"FILE {p} rows={len(rows)} fields={','.join(sorted(interesting))}")
-        for r in rows[-20:]:
-            safe={k:r.get(k) for k in sorted(interesting)}
-            print(json.dumps(safe,sort_keys=True))
-PY
-            echo "=== RECENT TRADE JOURNAL ==="
-            journalctl -u sirisky.service --since "2026-08-28 00:00:00" --no-pager -o short-iso 2>/dev/null \
-              | grep -Ei "OPENED|CLOSED|BUY|SELL|EXECUT|broadcast|signature|position" \
-              | tail -n 800 || true
-            echo "=== SETTINGS BACKUPS ==="
-            find CSV -maxdepth 1 -type f \( -name "runtime.csv*" -o -name "risk.csv*" \) -printf "%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n" | sort | tail -n 100
-            echo "=== BACKUP RELEVANT VALUES ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv
-from pathlib import Path
-keys={
- "auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol","auto_evaluate_candidate_limit",
- "max_buy_network_fee_pct","max_sell_network_fee_pct","max_emergency_sell_network_fee_pct",
- "max_priority_fee_lamports","max_open_positions","max_round_trip_cost_pct",
- "fast_take_profit_floor_pct","fast_take_profit_cap_pct","fast_target_net_pct","fast_target_net_cap_pct",
- "min_pool_position_depth_multiple","trading_mode","live_enabled","broadcast_enabled","manual_approval_enabled"
-}
-for p in sorted(list(Path("CSV").glob("runtime.csv*"))+list(Path("CSV").glob("risk.csv*")), key=lambda x:x.stat().st_mtime):
-    try:
-        with p.open(encoding="utf-8-sig",newline="") as f:
-            rd=csv.DictReader(f); rows=list(rd); fields=list(rd.fieldnames or [])
-        if len(fields)<2: continue
-        k="key" if "key" in fields else fields[0]; v="value" if "value" in fields else fields[1]
-        vals={str(r.get(k) or ""):str(r.get(v) or "") for r in rows if str(r.get(k) or "") in keys}
-        print("PROFILE",p.name,"mtime",int(p.stat().st_mtime)," ".join(f"{a}={vals[a]}" for a in sorted(vals)))
-    except Exception as e:
-        print("PROFILE_READ_ERROR",p.name,type(e).__name__)
-PY
-          '
-# Manual read-only trigger: verify whether SiRisky executed any LIVE trade on 2026-08-29.
+          test "$(id -un)" = ayman01323
+
+          DEPLOY_SHA='29da3cf2e138338b1da4aa67ae63dbb2c9d16937'
+          LROOT='/home/ayman01323/BOOT/testingbots/learn'
+          SERVICE='learnerbot-learn.service'
+          STAMP='20260829T122354BST-one-time-rejections-lp-revalidation-v4'
+          BACKUP="$LROOT/private/change-control/$STAMP/pre-deploy"
+          TMP="$RUNNER_TEMP/silearn-v4"
+          NAMES=(
+            solana_leader_quality_restore_patch.py
+            solana_owner_changeset_4_patch.py
+            solana_owner_changeset_4_exit_safety_patch.py
+            solana_owner_changeset_4_integrity_patch.py
+            solana_reject_once_reporting_patch.py
+          )
+
+          rm -rf "$TMP" && mkdir -p "$TMP"
+          for name in "${NAMES[@]}"; do
+            curl -fsSL --retry 3 --retry-delay 2 \
+              "https://raw.githubusercontent.com/ayman01323/boot-trading-bot/${DEPLOY_SHA}/learnerbot/${name}" \
+              -o "$TMP/$name"
+            test -s "$TMP/$name"
+          done
+          grep -q 'OWNER_LIVE_TRADE_SOL = Decimal("0.005")' "$TMP/solana_owner_changeset_4_patch.py"
+          grep -q 'OWNER_MAX_LIVE_POSITIONS = 10' "$TMP/solana_owner_changeset_4_patch.py"
+          grep -q 'LP_REVALIDATION_REQUIRED' "$TMP/solana_owner_changeset_4_patch.py"
+          grep -q 'once_per_account_mint_leader_reason' "$TMP/solana_reject_once_reporting_patch.py"
+          grep -q 'persistent=true signature_in_key=false' "$TMP/solana_reject_once_reporting_patch.py"
+          TMP="$TMP" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root=Path(os.environ['TMP'])
+          files=list(root.glob('*.py'))
+          for p in files: compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+          print(f'source_compile=PASS files={len(files)}')
+          PY
+
+          sudo -n env LROOT="$LROOT" SERVICE="$SERVICE" BACKUP="$BACKUP" TMP="$TMP" DEPLOY_SHA="$DEPLOY_SHA" STAMP="$STAMP" bash <<'ROOT'
+          set -Eeuo pipefail
+          changed=0
+          start_epoch=$(date +%s)
+          MAIN="$LROOT/learnerbot/__main__.py"
+          NAMES=(
+            solana_leader_quality_restore_patch.py
+            solana_owner_changeset_4_patch.py
+            solana_owner_changeset_4_exit_safety_patch.py
+            solana_owner_changeset_4_integrity_patch.py
+            solana_reject_once_reporting_patch.py
+          )
+          test -f "$MAIN"
+          mkdir -p "$BACKUP/files"
+          systemctl status "$SERVICE" --no-pager -l > "$BACKUP/service-before.txt" 2>&1 || true
+          journalctl -u "$SERVICE" -n 200 --no-pager > "$BACKUP/journal-before.txt" 2>&1 || true
+
+          LROOT="$LROOT" python3 - <<'PY'
+          import os, sqlite3, sys
+          from pathlib import Path
+          root=Path(os.environ['LROOT']); total=0; checked=[]; seen=set()
+          for pat in ('*.db','*.sqlite','*.sqlite3'):
+              for p in root.rglob(pat):
+                  if not p.is_file(): continue
+                  key=str(p.resolve())
+                  if key in seen: continue
+                  seen.add(key)
+                  try:
+                      c=sqlite3.connect(f'file:{p}?mode=ro', uri=True, timeout=1)
+                      has=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'").fetchone()
+                      if has:
+                          n=int(c.execute("SELECT COUNT(*) FROM positions WHERE UPPER(COALESCE(status,''))='OPEN'").fetchone()[0] or 0)
+                          checked.append((str(p),n)); total+=n
+                      c.close()
+                  except Exception: pass
+          print('position_databases='+repr(checked)); print(f'open_positions={total}')
+          if total: print('DEPLOY_REFUSED_OPEN_POSITION=true'); sys.exit(44)
+          PY
+
+          cp -a "$MAIN" "$BACKUP/files/__main__.py"
+          echo '__main__.py|EXISTED|__main__.py' > "$BACKUP/manifest.txt"
+          sha256sum "$MAIN" > "$BACKUP/before.sha256"
+          for name in "${NAMES[@]}"; do
+            dst="$LROOT/learnerbot/$name"
+            if [[ -f "$dst" ]]; then
+              cp -a "$dst" "$BACKUP/files/$name"
+              echo "$name|EXISTED|$name" >> "$BACKUP/manifest.txt"
+              sha256sum "$dst" >> "$BACKUP/before.sha256"
+            else
+              echo "$name|ABSENT|$name" >> "$BACKUP/manifest.txt"
+            fi
+          done
+
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo SILEARN_V4_ROLLBACK=START
+              while IFS='|' read -r name state saved; do
+                if [[ "$name" = '__main__.py' ]]; then dst="$MAIN"; else dst="$LROOT/learnerbot/$name"; fi
+                if [[ "$state" = EXISTED ]]; then cp -a "$BACKUP/files/$saved" "$dst"; else rm -f "$dst"; fi
+              done < "$BACKUP/manifest.txt"
+              chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" || true
+              systemctl restart "$SERVICE" || true
+              sleep 10
+              echo "rollback_service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+              echo SILEARN_V4_ROLLBACK=COMPLETE
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          for name in "${NAMES[@]}"; do
+            install -m 0644 -o ayman01323 -g $(id -gn ayman01323) "$TMP/$name" "$LROOT/learnerbot/$name"
+          done
+
+          MAIN="$MAIN" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['MAIN'])
+          original=p.read_text(encoding='utf-8')
+          lines=original.splitlines()
+          terms=('from . import solana_owner_changeset_4_patch','from . import solana_owner_changeset_4_integrity_patch')
+          kept=[line for line in lines if not any(t in line for t in terms)]
+          try: idx=next(i for i,line in enumerate(kept) if line.strip()=='from .cli import main')
+          except StopIteration: raise SystemExit('CLI_IMPORT_NOT_FOUND')
+          block=[
+            '# SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts + activate LP-unlocked LIVE revalidation',
+            '# Preserve isolated Google Learner imports; final owner policy begins here.',
+            'from . import solana_owner_changeset_4_patch  # noqa: F401',
+            'from . import solana_owner_changeset_4_integrity_patch  # noqa: F401',
+          ]
+          updated='\n'.join(kept[:idx]+block+kept[idx:])+('\n' if original.endswith('\n') else '')
+          if 'telegram_google_learner_launcher_patch' in updated and 'telegram_google_learner_launcher_patch' not in original:
+              raise SystemExit('UNAPPROVED_IMPORT_INJECTION')
+          if updated.count('from . import solana_owner_changeset_4_patch')!=1: raise SystemExit('OWNER_IMPORT_COUNT_BAD')
+          if updated.count('from . import solana_owner_changeset_4_integrity_patch')!=1: raise SystemExit('INTEGRITY_IMPORT_COUNT_BAD')
+          compile(updated,str(p),'exec')
+          p.write_text(updated,encoding='utf-8')
+          print('isolated_main_preserved=true')
+          print('owner_imports_inserted=2')
+          PY
+          chown ayman01323:$(id -gn ayman01323) "$MAIN"
+          changed=1
+
+          echo targeted_modules_written=5
+          echo isolated_main_replaced=NO
+          echo polygon_live_enable_migration_touched=NO
+          echo CSVbot_touched=NO
+          echo data_touched=NO
+
+          LROOT="$LROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root=Path(os.environ['LROOT'])/'learnerbot'
+          names=['__main__.py','solana_leader_quality_restore_patch.py','solana_owner_changeset_4_patch.py','solana_owner_changeset_4_exit_safety_patch.py','solana_owner_changeset_4_integrity_patch.py','solana_reject_once_reporting_patch.py']
+          for name in names:
+              p=root/name; compile(p.read_text(encoding='utf-8'),str(p),'exec')
+          print('runtime_compile=PASS files=6')
+          PY
+
+          systemctl restart "$SERVICE"
+          sleep 12
+          state1=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid1=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts1=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state1" = active && "$pid1" != 0 ]] || exit 91
+          sleep 15
+          state2=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid2=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts2=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state2" = active && "$pid2" != 0 && "$restarts1" = "$restarts2" ]] || exit 92
+
+          LOG="$BACKUP/journal-after.txt"
+          journalctl -u "$SERVICE" --since "@${start_epoch}" --no-pager > "$LOG"
+          if grep -q 'Traceback (most recent call last)' "$LOG"; then tail -n 220 "$LOG" >&2; exit 93; fi
+          grep -q '\[trading-runtime-invariant\] OK' "$LOG" || exit 94
+          grep -q '\[final-runtime-integrity\] OK' "$LOG" || exit 95
+          grep -q '\[owner-changeset-4\] approved=2026-08-29T10:38:58Z' "$LOG" || exit 96
+          grep -q 'profile=historical-1230' "$LOG" || exit 97
+          grep -q 'trade=0.005SOL max_positions=10' "$LOG" || exit 98
+          grep -q 'tp=15% normal_hold=30m force_full_exit=33m' "$LOG" || exit 99
+          grep -q 'lp_unlocked=revalidate' "$LOG" || exit 100
+          grep -q '\[owner-changeset-4-exit-safety\]' "$LOG" || exit 101
+          grep -q '\[owner-changeset-4-integrity\] OK approved=2026-08-29T10:38:58Z' "$LOG" || exit 102
+          grep -q 'staged_profile=true' "$LOG" || exit 103
+          grep -q '\[learner-reject-once\] bot=SiLearn approved=2026-08-29T11:23:54Z' "$LOG" || exit 104
+          grep -q 'policy=once_per_account_mint_leader_reason' "$LOG" || exit 105
+          grep -q 'persistent=true signature_in_key=false' "$LOG" || exit 106
+
+          cat > "$LROOT/private/change-control/$STAMP/deployment-attestation.txt" <<EOF
+          bot_name=SiLearn
+          title=SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts + activate LP-unlocked LIVE revalidation
+          deployed_sha=$DEPLOY_SHA
+          deployment_mode=five_modules_plus_preserved_server_main
+          service_state=$state2
+          service_pid=$pid2
+          service_restarts=$restarts2
+          runtime_invariant=PASS
+          final_integrity=PASS
+          changeset4_integrity=PASS
+          owner_profile=historical-1230
+          reject_policy=once_per_account_mint_leader_reason
+          reject_dedup_persistent=true
+          reject_signature_in_key=false
+          lp_unlocked_policy=conditional_revalidation
+          trade_size_sol=0.005
+          max_live_positions=10
+          take_profit_pct=15
+          max_hold_minutes=30
+          forced_full_exit_minutes=33
+          test_trade_broadcast=NO
+          EOF
+          chown -R ayman01323:$(id -gn ayman01323) "$LROOT/private/change-control/$STAMP"
+
+          echo SILEARN_V4_DEPLOY=PASS
+          echo "deployed_sha=$DEPLOY_SHA"
+          echo "service_state=$state2"
+          echo "service_pid=$pid2"
+          echo "service_restarts=$restarts2"
+          echo owner_profile=historical-1230
+          echo reject_policy=once_per_account_mint_leader_reason
+          echo reject_dedup_persistent=true
+          echo reject_signature_in_key=false
+          echo lp_unlocked_policy=conditional_revalidation
+          echo trade_size_sol=0.005
+          echo max_live_positions=10
+          echo take_profit_pct=15
+          echo max_hold_minutes=30
+          echo forced_full_exit_minutes=33
+          echo test_trade_broadcast=NO
+          grep -E '\[trading-runtime-invariant\]|\[final-runtime-integrity\]|\[owner-changeset-4\]|\[owner-changeset-4-exit-safety\]|\[owner-changeset-4-integrity\]|\[learner-reject-once\]' "$LOG" | tail -n 40
+          trap - EXIT
+          ROOT
