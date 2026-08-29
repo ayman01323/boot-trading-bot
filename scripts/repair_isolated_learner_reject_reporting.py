@@ -37,6 +37,67 @@ def install_publisher(repo: Path, root: Path) -> bool:
     return before != dst.read_bytes()
 
 
+def _upgrade_existing_sender(path: Path) -> bool:
+    """Upgrade older injected sender code without touching trading logic."""
+    text = path.read_text(encoding="utf-8")
+    changed = False
+
+    sender_signature = (
+        "def _send_reject_report(app, tid: str, event: dict, action: dict, *, test_only: bool = False) -> bool:\n"
+    )
+    error_helper = r'''def _telegram_error_text(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    description = ""
+    if response is not None:
+        try:
+            data = response.json()
+            description = str(data.get("description") or "")[:180]
+        except Exception:
+            description = ""
+    if description:
+        return f"status={status or 'unknown'} description={description}"
+    return f"status={status or 'unknown'} type={type(exc).__name__}"
+
+
+'''
+    if sender_signature in text and "def _telegram_error_text(exc: Exception)" not in text:
+        text = text.replace(sender_signature, error_helper + sender_signature, 1)
+        changed = True
+
+    old_send = r'''    response = send_message(
+        app.telegram_bot_token,
+        str(tid),
+        "\n".join(lines),
+        parse_mode="HTML",
+        protect_content=True,
+    )
+    return bool((response or {}).get("message_id"))
+'''
+    new_send = r'''    try:
+        sent_count = send_message(
+            app.telegram_bot_token,
+            str(tid),
+            "\n".join(lines),
+            parse_mode="HTML",
+            protect_content=True,
+        )
+    except Exception as exc:
+        raise RuntimeError("telegram_send_failed " + _telegram_error_text(exc)) from None
+    return int(sent_count or 0) > 0
+'''
+    if old_send in text:
+        text = text.replace(old_send, new_send, 1)
+        changed = True
+
+    if sender_signature in text and "return bool((response or {}).get(\"message_id\"))" in text:
+        raise RuntimeError("legacy Learner reject sender remains after upgrade")
+
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return changed
+
+
 def patch_final_reject_consumer(root: Path) -> bool:
     path = root / "learnerbot" / "solana_leader_cursor_reliability_patch.py"
     changed = False
@@ -192,6 +253,10 @@ def _report_reject_actions(app, event: dict, actions: list[dict]) -> None:
     action_anchor = """                    actions = _sol.process_leader_event(app, payload) or []\n                    if any(\n"""
     action_replacement = """                    actions = _sol.process_leader_event(app, payload) or []\n                    _report_reject_actions(app, payload, actions)\n                    if any(\n"""
     changed |= replace_once(path, action_anchor, action_replacement, "_report_reject_actions(app, payload, actions)")
+
+    # This is deliberately last: older deployments already contain the markers above,
+    # so they must still be migrated from the obsolete message-object return contract.
+    changed |= _upgrade_existing_sender(path)
     return changed
 
 
