@@ -14,9 +14,13 @@ on:
       - 'docs/change-control/2026-08-29T103858Z-change-set-4.md'
       - 'docs/change-control/SiLearn-2026-08-29T122354BST-one-time-rejections-lp-revalidation.md'
       - '.github/workflows/changeset-4-ci.yml'
+  push:
+    branches:
+      - 'ops/SiLearn-2026-08-29T122354BST-deploy'
 
 jobs:
   changeset4:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -42,3 +46,190 @@ jobs:
           pytest -q \
             tests/test_solana_owner_changeset_4.py \
             tests/test_silearn_reject_once_lp_revalidation.py
+
+  deploy-google-learner:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 15
+    steps:
+      - name: SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts + activate LP-unlocked LIVE revalidation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+
+          DEPLOY_SHA='b3f4aa9c5f3d1c3fb5889c8d63f0adca859354ac'
+          LROOT='/home/ayman01323/BOOT/testingbots/learn'
+          SERVICE='learnerbot-learn.service'
+          STAMP='20260829T122354BST-one-time-rejections-lp-revalidation'
+          BACKUP="$LROOT/private/change-control/$STAMP/pre-deploy"
+          TMPROOT="$RUNNER_TEMP/silearn-$STAMP"
+          ARCHIVE="$TMPROOT/repo.tar.gz"
+          EXTRACT="$TMPROOT/extract"
+
+          rm -rf "$TMPROOT"
+          mkdir -p "$EXTRACT"
+          curl -fL --retry 3 --retry-delay 2 \
+            "https://github.com/ayman01323/boot-trading-bot/archive/${DEPLOY_SHA}.tar.gz" \
+            -o "$ARCHIVE"
+          tar -xzf "$ARCHIVE" -C "$EXTRACT"
+          SRCROOT="$(find "$EXTRACT" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          test -d "$SRCROOT/learnerbot"
+
+          grep -q 'OWNER_LIVE_TRADE_SOL = Decimal("0.005")' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'OWNER_MAX_LIVE_POSITIONS = 10' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'LP_REVALIDATION_REQUIRED' "$SRCROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          grep -q 'once_per_account_mint_leader_reason' "$SRCROOT/learnerbot/solana_reject_once_reporting_patch.py"
+          grep -q 'persistent=true signature_in_key=false' "$SRCROOT/learnerbot/solana_reject_once_reporting_patch.py"
+
+          SRCROOT="$SRCROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['SRCROOT']) / 'learnerbot'
+          count = 0
+          for p in root.rglob('*.py'):
+              compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+              count += 1
+          print(f'source_python_compile=PASS files={count}')
+          PY
+
+          sudo -n env \
+            LROOT="$LROOT" SERVICE="$SERVICE" BACKUP="$BACKUP" SRCROOT="$SRCROOT" \
+            DEPLOY_SHA="$DEPLOY_SHA" STAMP="$STAMP" bash <<'ROOT'
+          set -Eeuo pipefail
+          changed=0
+          start_epoch=$(date +%s)
+
+          mkdir -p "$BACKUP"
+          systemctl status "$SERVICE" --no-pager -l > "$BACKUP/service-before.txt" 2>&1 || true
+          journalctl -u "$SERVICE" -n 160 --no-pager > "$BACKUP/journal-before.txt" 2>&1 || true
+
+          LROOT="$LROOT" python3 - <<'PY'
+          import os, sqlite3, sys
+          from pathlib import Path
+          root = Path(os.environ['LROOT'])
+          seen = set()
+          total_open = 0
+          checked = []
+          for pattern in ('*.db', '*.sqlite', '*.sqlite3'):
+              for p in root.rglob(pattern):
+                  try:
+                      rp = p.resolve()
+                  except Exception:
+                      rp = p
+                  if rp in seen or not p.is_file():
+                      continue
+                  seen.add(rp)
+                  try:
+                      con = sqlite3.connect(f'file:{p}?mode=ro', uri=True, timeout=1)
+                      try:
+                          has = con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='positions'").fetchone()
+                          if not has:
+                              continue
+                          row = con.execute("SELECT COUNT(*) FROM positions WHERE UPPER(COALESCE(status,''))='OPEN'").fetchone()
+                          n = int(row[0] or 0)
+                          checked.append((str(p), n))
+                          total_open += n
+                      finally:
+                          con.close()
+                  except Exception:
+                      continue
+          print('position_databases=' + repr(checked))
+          print(f'open_positions={total_open}')
+          if total_open:
+              print('DEPLOY_REFUSED_OPEN_POSITION=true')
+              sys.exit(44)
+          PY
+
+          tar -C "$LROOT" -czf "$BACKUP/learnerbot-predeploy.tar.gz" learnerbot
+          sha256sum "$BACKUP/learnerbot-predeploy.tar.gz" > "$BACKUP/learnerbot-predeploy.sha256"
+
+          rollback() {
+            rc=$?
+            if [[ "$rc" -ne 0 && "$changed" -eq 1 ]]; then
+              echo 'SILEARN_DEPLOY_ROLLBACK=START'
+              rm -rf "$LROOT/learnerbot"
+              tar -C "$LROOT" -xzf "$BACKUP/learnerbot-predeploy.tar.gz"
+              chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot" || true
+              systemctl restart "$SERVICE" || true
+              sleep 8
+              echo "rollback_service_state=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+              echo 'SILEARN_DEPLOY_ROLLBACK=COMPLETE'
+            fi
+            exit "$rc"
+          }
+          trap rollback EXIT
+
+          rsync -a "$SRCROOT/learnerbot/" "$LROOT/learnerbot/"
+          chown -R ayman01323:$(id -gn ayman01323) "$LROOT/learnerbot"
+          changed=1
+
+          LROOT="$LROOT" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['LROOT']) / 'learnerbot'
+          count = 0
+          for p in root.rglob('*.py'):
+              compile(p.read_text(encoding='utf-8'), str(p), 'exec')
+              count += 1
+          print(f'runtime_python_compile=PASS files={count}')
+          PY
+
+          systemctl restart "$SERVICE"
+          sleep 10
+          state1=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid1=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts1=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state1" = active && "$pid1" != 0 ]] || exit 91
+          sleep 8
+          state2=$(systemctl is-active "$SERVICE" 2>/dev/null || true)
+          pid2=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || echo 0)
+          restarts2=$(systemctl show "$SERVICE" -p NRestarts --value 2>/dev/null || echo unknown)
+          [[ "$state2" = active && "$pid2" != 0 && "$restarts1" = "$restarts2" ]] || exit 92
+
+          LOG="$BACKUP/journal-after.txt"
+          journalctl -u "$SERVICE" --since "@${start_epoch}" --no-pager > "$LOG"
+          if grep -q 'Traceback (most recent call last)' "$LOG"; then
+            tail -n 180 "$LOG" >&2
+            exit 93
+          fi
+          grep -q '\[owner-changeset-4\] approved=2026-08-29T10:38:58Z' "$LOG" || exit 94
+          grep -q '\[owner-changeset-4-exit-safety\]' "$LOG" || exit 95
+          grep -q '\[owner-changeset-4-integrity\] OK approved=2026-08-29T10:38:58Z' "$LOG" || exit 96
+          grep -q '\[learner-reject-once\] bot=SiLearn approved=2026-08-29T11:23:54Z' "$LOG" || exit 97
+
+          cat > "$LROOT/private/change-control/$STAMP/deployment-attestation.txt" <<EOF
+          bot_name=SiLearn
+          audit_title=SiLearn — 2026-08-29 12:23:54 BST — Subject: One-time rejection alerts + activate LP-unlocked LIVE revalidation
+          deployed_sha=$DEPLOY_SHA
+          deployed_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          service=$SERVICE
+          service_state=$state2
+          service_pid=$pid2
+          service_restarts=$restarts2
+          reject_policy=once_per_account_mint_leader_reason
+          reject_dedup_persistent=true
+          reject_signature_in_key=false
+          lp_unlocked_policy=conditional_revalidation
+          trade_size_sol=0.005
+          max_live_positions=10
+          test_trade_broadcast=NO
+          EOF
+          chown -R ayman01323:$(id -gn ayman01323) "$LROOT/private/change-control/$STAMP"
+
+          echo 'SILEARN_DEPLOY=PASS'
+          echo "deployed_sha=$DEPLOY_SHA"
+          echo "service_state=$state2"
+          echo "service_pid=$pid2"
+          echo "service_restarts=$restarts2"
+          echo 'reject_policy=once_per_account_mint_leader_reason'
+          echo 'reject_dedup_persistent=true'
+          echo 'lp_unlocked_policy=conditional_revalidation'
+          echo 'trade_size_sol=0.005'
+          echo 'max_live_positions=10'
+          echo 'test_trade_broadcast=NO'
+          grep -E '\[owner-changeset-4\]|\[owner-changeset-4-exit-safety\]|\[owner-changeset-4-integrity\]|\[learner-reject-once\]' "$LOG" | tail -n 20
+
+          trap - EXIT
+          ROOT
