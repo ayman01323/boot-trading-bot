@@ -1,0 +1,99 @@
+name: SiLearn Reply Path Fix 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/silearn-reply-path-fix-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 7
+    steps:
+      - name: Probe reply path safely
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          test "$(hostname)" = botgoogle
+          test "$(systemctl is-active "$service")" = active
+          test "$(grep -c '^LEARNER_TELEGRAM_OUTBOUND_ONLY=false$' "$target/.env")" -eq 1
+          py="$target/.venv/bin/python"
+          test -x "$py" || py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          cd "$target"
+          TARGET="$target" PYTHONPATH="$target" sudo -n -E "$py" - <<'PY'
+          import csv, html, importlib, json, os, re, urllib.error, urllib.request
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          vals={}
+          for raw in (root/'.env').read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=raw.strip()
+              if not s or s.startswith('#') or '=' not in s: continue
+              k,v=s.split('=',1); vals[k.strip()]=v.strip().strip('"').strip("'")
+          token=vals.get('TELEGRAM_BOT_TOKEN','')
+          if not token: raise SystemExit('token_missing')
+          env_ids=[]
+          for x in (vals.get('TELEGRAM_CHAT_IDS','') or vals.get('TELEGRAM_CHAT_ID','')).split(','):
+              x=x.strip()
+              if x and x.lstrip('-').isdigit() and x not in env_ids: env_ids.append(x)
+          masters=[]
+          with (root/'CSVbot'/'users.csv').open(encoding='utf-8-sig',newline='') as f:
+              for row in csv.DictReader(f):
+                  tid=str(row.get('telegram_id') or '').strip()
+                  if str(row.get('status') or '').upper()=='ACTIVE' and str(row.get('role') or '').upper()=='MASTER' and tid.lstrip('-').isdigit() and tid not in masters:
+                      masters.append(tid)
+          print('env_recipient_present='+str(bool(env_ids)).lower())
+          print('master_present='+str(bool(masters)).lower())
+          print('env_matches_first_master='+str(bool(env_ids and masters and env_ids[0]==masters[0])).lower())
+          def call(method,payload,label):
+              req=urllib.request.Request('https://api.telegram.org/bot'+token+'/'+method,data=json.dumps(payload).encode(),headers={'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=15) as r: body=json.loads(r.read().decode())
+                  ok=bool(body.get('ok')); print(label+'_ok='+str(ok).lower())
+                  if not ok: print(label+'_description='+str(body.get('description') or '<none>')[:240])
+                  return ok,body
+              except urllib.error.HTTPError as e:
+                  try: body=json.loads(e.read().decode(errors='ignore'))
+                  except Exception: body={}
+                  print(label+'_ok=false'); print(label+'_http='+str(e.code)); print(label+'_description='+str(body.get('description') or '<unavailable>')[:240])
+                  return False,body
+          ok,me=call('getMe',{},'getme')
+          if not ok: raise SystemExit(2)
+          print('bot_is_silearn='+str(str((me.get('result') or {}).get('username') or '').lower()=='silearn_bot').lower())
+          candidates=[]
+          if env_ids: candidates.append(('env',env_ids[0]))
+          if masters and masters[0] not in [x[1] for x in candidates]: candidates.append(('master',masters[0]))
+          working=[]
+          for label,tid in candidates:
+              ok,_=call('sendMessage',{'chat_id':tid,'text':'SiLearn reply-path test: plain message OK.'},label+'_plain')
+              if ok: working.append((label,tid))
+          if not working:
+              print('diagnosis=recipient_or_chat_access_failure'); raise SystemExit(3)
+          label,tid=working[0]
+          p=importlib.import_module('learnerbot.telegram_google_learner_launcher_patch')
+          page=p.learner_page(str(tid)); kb=p.learner_keyboard(str(tid))
+          ok_html,_=call('sendMessage',{'chat_id':tid,'text':page,'parse_mode':'HTML'},'page_html')
+          if not ok_html:
+              plain=html.unescape(re.sub(r'<[^>]*>','',page))
+              ok_plain,_=call('sendMessage',{'chat_id':tid,'text':plain},'page_plain')
+              print('diagnosis='+('invalid_generated_html' if ok_plain else 'generated_page_rejected')); raise SystemExit(4)
+          ok_kb,_=call('sendMessage',{'chat_id':tid,'text':'SiLearn keyboard test','reply_markup':kb},'keyboard')
+          if not ok_kb:
+              print('diagnosis=invalid_keyboard'); raise SystemExit(5)
+          ok_full,_=call('sendMessage',{'chat_id':tid,'text':page,'parse_mode':'HTML','reply_markup':kb},'full_payload')
+          print('diagnosis='+('full_payload_valid' if ok_full else 'full_payload_combination_rejected'))
+          if not ok_full: raise SystemExit(6)
+          print('reply_path_proven=true')
+          PY
+
+          conflicts="$(sudo -n journalctl -u "$service" --since '5 minutes ago' --no-pager -o cat 2>/dev/null | grep -Eic 'getUpdates.*409|HTTP 409|Conflict: terminated by other getUpdates request' || true)"
+          test "$conflicts" -eq 0
+          echo service_active=true
+          echo inbound_enabled=true
+          echo telegram_409_conflicts=0
