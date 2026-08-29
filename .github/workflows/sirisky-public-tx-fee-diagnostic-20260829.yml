@@ -1,4 +1,4 @@
-name: SiRisky public transaction fee diagnostic 2026-08-29
+name: SiRisky full public wallet audit 2026-08-29
 
 on:
   push:
@@ -9,68 +9,178 @@ permissions:
   contents: read
 
 jobs:
-  inspect-public-solana-transactions:
+  audit-public-wallet:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Query public Solana transaction fees and account movements only
+      - name: Pull complete public wallet history and calculate percentages
         shell: bash
         run: |
           python - <<'PY'
-          import json, urllib.request
-          MINT="6DNiANPmV14rGRqDYLcoM9s9sHmNo8uFCDv9m6wR6R18"
-          SIGS=[
-          "616fKDGipKNgBAb8KXPMBaF1frCQEPQ81vEcuPkqwH43TBxtqLaNyZFTvsteDErPoyHdHwcR1TDL4ypPcRhA4keJ",
-          "2yvCmzTGMe9hZoppFiSCjxcuwTu8qT5gFRAyKZvtGPVTNDwwaaLaYV3xwwjfof7X4pT7S4xVn5MpZxzM9YixXY1r",
-          "fnsoigD18eQEfbR5xJXQQQby3TRv6nTZXs2jSGL5YXiTvznTB6roMzVNo2fh1oAmCLZBraHgK6KcqjLBFiy4KQk",
-          "3tekSRc6y9nYw5z3wixb8QEbWLcAVSWG86mHNbsJCQH5dg3NDDuGXKqPb19aENGuJeG4XyQRPUrR4W7jV7nYL9ZU",
-          "4kubdTzJwEw7dns3cqgo4yLxGPxUCHx8L1k9uzEMVZuXuCwP4ivSfRz9ZzfXFoL7QJKuij4v7buWweeV7ti737Eo",
-          "4N4L4xgT8MTBPrJ6jpLeGFhenDnnhAVdCYj72JbL9vMU2C28hxHDgqLJWeLDNXmDLkXiPiPYzoVrnSdUFfkYhmQF"]
-          RPCS=["https://api.mainnet-beta.solana.com","https://solana-rpc.publicnode.com","https://1rpc.io/solana"]
-          def rpc(method,params):
-              data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+          import csv, json, time, urllib.request
+          from datetime import datetime, timezone
+
+          WALLET="6LspdeZhf6HX7YdMuaz3gVUdXW9ifs15cyRTdo3aS3Xr"
+          WSOL="So11111111111111111111111111111111111111112"
+          RPCS=["https://solana-rpc.publicnode.com","https://api.mainnet-beta.solana.com","https://1rpc.io/solana"]
+
+          def rpc(method,params,retries=3):
+              payload=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
               last=None
-              for u in RPCS:
-                  try:
-                      req=urllib.request.Request(u,data=data,headers={"Content-Type":"application/json","User-Agent":"SiRisky-public-readonly-diagnostic"})
-                      with urllib.request.urlopen(req,timeout=20) as r: obj=json.loads(r.read().decode())
-                      if not obj.get("error"): return obj.get("result")
-                  except Exception as e: last=e
+              for attempt in range(retries):
+                  for url in RPCS:
+                      try:
+                          req=urllib.request.Request(url,data=payload,headers={"Content-Type":"application/json","User-Agent":"SiRisky-full-wallet-readonly-audit"})
+                          with urllib.request.urlopen(req,timeout=25) as r: obj=json.loads(r.read().decode())
+                          if not obj.get("error"): return obj.get("result")
+                          last=RuntimeError(str(obj.get("error")))
+                      except Exception as exc: last=exc
+                  time.sleep(0.5*(attempt+1))
               raise RuntimeError(type(last).__name__)
-          def tx(sig): return rpc("getTransaction",[sig,{"encoding":"jsonParsed","commitment":"confirmed","maxSupportedTransactionVersion":0}])
-          first=tx(SIGS[0]); keys=first["transaction"]["message"]["accountKeys"]
-          signer=next(k["pubkey"] for k in keys if isinstance(k,dict) and k.get("signer"))
-          total_fee=0
-          for n,sig in enumerate(SIGS,1):
-              t=tx(sig); m=t["meta"]; keys=t["transaction"]["message"]["accountKeys"]
+
+          def get_tx(sig):
+              return rpc("getTransaction",[sig,{"encoding":"jsonParsed","commitment":"confirmed","maxSupportedTransactionVersion":0}])
+
+          # Exhaustively paginate signature history.
+          sigs=[]; before=None
+          for page in range(100):
+              opts={"limit":1000}
+              if before: opts["before"]=before
+              rows=rpc("getSignaturesForAddress",[WALLET,opts]) or []
+              if not rows: break
+              sigs.extend(rows)
+              if len(rows)<1000: break
+              before=rows[-1]["signature"]
+          print(f"AUDIT_SIGNATURES={len(sigs)}")
+
+          rows_out=[]
+          for n,srow in enumerate(reversed(sigs),1):
+              sig=srow["signature"]
+              try: t=get_tx(sig)
+              except Exception as exc:
+                  rows_out.append({"n":n,"signature":sig,"blockTime":srow.get("blockTime"),"status":"RPC_ERROR","error":type(exc).__name__})
+                  continue
+              if not t or not t.get("meta"):
+                  rows_out.append({"n":n,"signature":sig,"blockTime":srow.get("blockTime"),"status":"NO_META"})
+                  continue
+              m=t["meta"]; msg=t["transaction"]["message"]; keys=msg.get("accountKeys") or []
               pubs=[k.get("pubkey") if isinstance(k,dict) else k for k in keys]
-              si=pubs.index(signer); pre=m["preBalances"]; post=m["postBalances"]
-              fee=int(m.get("fee") or 0); total_fee+=fee
-              # signer-owned token accounts visible in pre/post token balance metadata
-              owned={}
-              for phase,rows in (("pre",m.get("preTokenBalances") or []),("post",m.get("postTokenBalances") or [])):
-                  for row in rows:
-                      if str(row.get("owner") or "")!=signer: continue
-                      i=int(row["accountIndex"]); rec=owned.setdefault(i,{"account":pubs[i],"mint":row.get("mint"),"pre_lamports":pre[i],"post_lamports":post[i]})
-                      rec[phase+"_raw"]=int((row.get("uiTokenAmount") or {}).get("amount") or 0)
-              relevant=[]
-              for rec in owned.values():
-                  if rec.get("mint")==MINT or rec.get("mint")=="So11111111111111111111111111111111111111112":
-                      rec["lamport_delta"]=rec["post_lamports"]-rec["pre_lamports"]
-                      relevant.append(rec)
-              # Parsed instructions mentioning signer, limited to system/associated-token/token programs.
-              mentions=[]
-              groups=[t["transaction"]["message"].get("instructions") or []]
-              groups += [g.get("instructions") or [] for g in (m.get("innerInstructions") or [])]
-              for insns in groups:
-                  for ins in insns:
-                      p=ins.get("parsed") if isinstance(ins,dict) else None
-                      if not isinstance(p,dict): continue
-                      program=str(ins.get("program") or "")
-                      if program not in {"system","spl-associated-token-account","spl-token","spl-token-2022"}: continue
-                      info=(p.get("info") or {})
-                      if signer not in json.dumps(info,sort_keys=True): continue
-                      mentions.append({"program":program,"type":p.get("type"),"info":info})
-              print(f"TX{n}="+json.dumps({"blockTime":t.get("blockTime"),"signature":sig,"fee_lamports":fee,"fee_sol":fee/1e9,"signer_native_delta_sol":(post[si]-pre[si])/1e9,"owned_token_accounts":relevant,"parsed_signer_instructions":mentions},sort_keys=True))
-          print("TOTAL_NETWORK_FEE_SOL="+f"{total_fee/1e9:.9f}")
+              if WALLET not in pubs: continue
+              wi=pubs.index(WALLET); pre=int(m.get("preBalances",[])[wi]); post=int(m.get("postBalances",[])[wi]); fee=int(m.get("fee") or 0)
+              delta=post-pre
+
+              # Owner token deltas by mint.
+              td={}
+              for phase,trs in (("pre",m.get("preTokenBalances") or []),("post",m.get("postTokenBalances") or [])):
+                  for x in trs:
+                      if str(x.get("owner") or "")!=WALLET: continue
+                      mint=str(x.get("mint") or "")
+                      rec=td.setdefault(mint,{"pre":0,"post":0,"decimals":int((x.get("uiTokenAmount") or {}).get("decimals") or 0)})
+                      rec[phase]+=int((x.get("uiTokenAmount") or {}).get("amount") or 0)
+              token_changes=[]
+              for mint,rec in td.items():
+                  d=rec["post"]-rec["pre"]
+                  if d: token_changes.append({"mint":mint,"delta_raw":d,"decimals":rec["decimals"]})
+
+              # Flatten parsed instructions.
+              ins=[]
+              ins.extend(msg.get("instructions") or [])
+              for g in m.get("innerInstructions") or []: ins.extend(g.get("instructions") or [])
+
+              # Find WSOL accounts owned/created for wallet in this transaction.
+              owned_wsol=set()
+              for x in (m.get("preTokenBalances") or [])+(m.get("postTokenBalances") or []):
+                  if str(x.get("owner") or "")==WALLET and str(x.get("mint") or "")==WSOL:
+                      idx=int(x.get("accountIndex"));
+                      if 0<=idx<len(pubs): owned_wsol.add(pubs[idx])
+              for x in ins:
+                  p=x.get("parsed") if isinstance(x,dict) else None
+                  if not isinstance(p,dict): continue
+                  info=p.get("info") or {}
+                  if str(p.get("type") or "")=="initializeAccount3" and str(info.get("mint") or "")==WSOL and str(info.get("owner") or "")==WALLET:
+                      if info.get("account"): owned_wsol.add(str(info["account"]))
+
+              system_out=0; self_account_funding=0; external_system_out=0; wsol_in=0; wsol_out=0
+              account_creations=0; close_accounts=0
+              for x in ins:
+                  p=x.get("parsed") if isinstance(x,dict) else None
+                  if not isinstance(p,dict): continue
+                  typ=str(p.get("type") or ""); info=p.get("info") or {}; program=str(x.get("program") or "")
+                  if program=="system":
+                      source=str(info.get("source") or ""); dest=str(info.get("destination") or info.get("newAccount") or "")
+                      lam=int(info.get("lamports") or 0)
+                      if source==WALLET and lam>0:
+                          system_out+=lam
+                          if dest in owned_wsol: self_account_funding+=lam
+                          else: external_system_out+=lam
+                      if typ in {"createAccount","createAccountWithSeed"} and source==WALLET: account_creations+=lam
+                  if program.startswith("spl-token"):
+                      if typ=="closeAccount" and str(info.get("destination") or "")==WALLET: close_accounts+=1
+                      source=str(info.get("source") or ""); dest=str(info.get("destination") or "")
+                      amount=0
+                      if isinstance(info.get("tokenAmount"),dict): amount=int((info.get("tokenAmount") or {}).get("amount") or 0)
+                      else:
+                          try: amount=int(info.get("amount") or 0)
+                          except Exception: amount=0
+                      if amount>0:
+                          if dest in owned_wsol and source not in owned_wsol: wsol_in+=amount
+                          if source in owned_wsol and dest not in owned_wsol: wsol_out+=amount
+
+              non_wsol=[x for x in token_changes if x["mint"]!=WSOL]
+              pos=sum(1 for x in non_wsol if x["delta_raw"]>0); neg=sum(1 for x in non_wsol if x["delta_raw"]<0)
+              if pos and not neg: kind="BUY"
+              elif neg and not pos: kind="SELL"
+              elif non_wsol: kind="TOKEN_MIXED"
+              elif delta>0: kind="SOL_IN"
+              elif delta<0: kind="SOL_OUT"
+              else: kind="OTHER"
+
+              trade_base=0
+              if kind=="BUY": trade_base=max(self_account_funding,wsol_out)
+              elif kind=="SELL": trade_base=max(wsol_in,abs(delta))
+              fee_pct=(fee/trade_base*100.0) if trade_base else ((fee/pre*100.0) if pre else 0.0)
+              delta_pct=(delta/pre*100.0) if pre else 0.0
+              rent_like=max(0, system_out-self_account_funding)
+              rent_pct=(rent_like/trade_base*100.0) if trade_base else ((rent_like/pre*100.0) if pre else 0.0)
+
+              dt=datetime.fromtimestamp(int(t.get("blockTime") or 0),timezone.utc).isoformat() if t.get("blockTime") else ""
+              rows_out.append({
+                  "n":n,"blockTime":t.get("blockTime"),"utc":dt,"signature":sig,"status":"OK" if m.get("err") is None else "FAILED",
+                  "type":kind,"pre_sol":pre/1e9,"post_sol":post/1e9,"wallet_delta_sol":delta/1e9,"wallet_delta_pct_pre":delta_pct,
+                  "network_fee_sol":fee/1e9,"network_fee_pct":fee_pct,"system_out_sol":system_out/1e9,
+                  "wsol_self_funding_sol":self_account_funding/1e9,"external_or_account_funding_sol":rent_like/1e9,"external_or_account_funding_pct":rent_pct,
+                  "wsol_in_sol":wsol_in/1e9,"wsol_out_sol":wsol_out/1e9,"trade_base_sol":trade_base/1e9,
+                  "account_creation_lamports":account_creations,"close_accounts":close_accounts,
+                  "token_changes":json.dumps(token_changes,separators=(",",":")),
+              })
+              time.sleep(0.04)
+
+          fields=["n","blockTime","utc","signature","status","type","pre_sol","post_sol","wallet_delta_sol","wallet_delta_pct_pre","network_fee_sol","network_fee_pct","system_out_sol","wsol_self_funding_sol","external_or_account_funding_sol","external_or_account_funding_pct","wsol_in_sol","wsol_out_sol","trade_base_sol","account_creation_lamports","close_accounts","token_changes"]
+          with open("wallet_audit.csv","w",newline="",encoding="utf-8") as f:
+              w=csv.DictWriter(f,fieldnames=fields,extrasaction="ignore"); w.writeheader(); w.writerows(rows_out)
+          with open("wallet_audit.json","w",encoding="utf-8") as f: json.dump(rows_out,f,indent=2)
+
+          ok=[r for r in rows_out if r.get("status") in {"OK","FAILED"}]
+          total_fee=sum(float(r.get("network_fee_sol") or 0) for r in ok)
+          total_delta=sum(float(r.get("wallet_delta_sol") or 0) for r in ok)
+          total_rent=sum(float(r.get("external_or_account_funding_sol") or 0) for r in ok)
+          print("AUDIT_SUMMARY="+json.dumps({
+              "wallet":WALLET,"transactions":len(rows_out),"ok_or_chain_failed":len(ok),
+              "buys":sum(r.get("type")=="BUY" for r in ok),"sells":sum(r.get("type")=="SELL" for r in ok),
+              "sol_in":sum(r.get("type")=="SOL_IN" for r in ok),"sol_out":sum(r.get("type")=="SOL_OUT" for r in ok),
+              "network_fee_sol":round(total_fee,9),"wallet_native_delta_sol":round(total_delta,9),
+              "external_or_account_funding_sol":round(total_rent,9),
+              "first_block_time":min((r.get("blockTime") for r in ok if r.get("blockTime")),default=None),
+              "last_block_time":max((r.get("blockTime") for r in ok if r.get("blockTime")),default=None)
+          },sort_keys=True))
+          for r in ok:
+              print("AUDIT_TX="+json.dumps(r,sort_keys=True))
           PY
+      - name: Upload audit files
+        uses: actions/upload-artifact@v4
+        with:
+          name: sirisky-full-wallet-audit
+          path: |
+            wallet_audit.csv
+            wallet_audit.json
+          if-no-files-found: error
