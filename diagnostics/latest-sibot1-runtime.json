@@ -11,21 +11,23 @@
   "base_fast_market_health": {
     "available": true,
     "checks_budget": 4,
-    "duration_seconds": "15.661",
+    "duration_seconds": "22.950",
     "note_class": "output_file",
-    "provider_pressure": 0,
+    "provider_pressure": 1,
     "redacted": true,
     "routes": 0,
     "routes_budget": 2,
     "status": "OK",
-    "updated_epoch": 1787990517
+    "updated_epoch": 1787990620
   },
   "engine_nomination_health": {
     "available": true,
     "engines": {
       "gemini": {
-        "events": 0,
-        "prefilter_rejections": {},
+        "events": 10,
+        "prefilter_rejections": {
+          "volume_liquidity_ratio_high": 10
+        },
         "signals": 0
       },
       "gpt": {
@@ -33,20 +35,23 @@
         "developer_flow_known_safe": 0,
         "developer_flow_selling": 0,
         "developer_flow_unknown": 0,
-        "events": 4,
+        "events": 10,
         "prefilter_rejections": {
-          "leader_age_floor": 4
+          "leader_age_floor": 10
         },
         "signals": 0,
         "spread_signals": 0
       },
       "grok": {
-        "developer_flow_known_safe": 0,
+        "developer_flow_known_safe": 5,
         "developer_flow_selling": 0,
-        "developer_flow_unknown": 0,
-        "events": 0,
-        "prefilter_rejections": {},
-        "signals": 0
+        "developer_flow_unknown": 5,
+        "events": 10,
+        "prefilter_rejections": {
+          "developer_flow_unknown": 5,
+          "volume_velocity_floor": 4
+        },
+        "signals": 1
       }
     },
     "redacted": true
@@ -54,25 +59,25 @@
   "evm_fast_market_health": {
     "auto_events": 0,
     "available": true,
-    "duration_seconds": "53.156",
+    "duration_seconds": "39.480",
     "eligible": 0,
     "merged_routes": 0,
     "note_class": "output_file",
     "redacted": true,
     "routes": 0,
     "status": "OK",
-    "updated_epoch": 1787990432
+    "updated_epoch": 1787990617
   },
   "evm_pool_registry_health": {
     "pool_registry.csv": {
       "exists": true,
       "rows": 30000,
       "rows_by_chain": {
-        "1": 6530,
+        "1": 6529,
         "137": 5525,
         "42161": 839,
         "56": 14199,
-        "8453": 2907
+        "8453": 2908
       }
     },
     "v3_pool_registry.csv": {
@@ -91,14 +96,16 @@
       "exists": true,
       "raw_reasons_exported": false,
       "reason_class_counts": {
-        "edge_floor": 2
+        "edge_floor": 1,
+        "provider_rpc": 1
       },
       "rows_by_chain": {
         "8453": 2
       },
       "rows_tail": 2,
       "stage_counts": {
-        "edge": 2
+        "edge": 1,
+        "quote": 1
       }
     },
     "full_power_rejections.csv": {
@@ -175,30 +182,6 @@
   },
   "last_attempts": [],
   "last_engine_audit": [
-    {
-      "chain": "solana",
-      "engine_id": "gpt",
-      "epoch_ms": 1787989968436,
-      "event_type": "PAPER_ENTRY",
-      "lot_id": "056be9483a6d4000b7b7c30a13f00988"
-    },
-    {
-      "chain": "solana",
-      "engine_id": "gpt",
-      "epoch_ms": 1787989982386,
-      "event_type": "SIGNAL",
-      "intent_id": "gpt-sol-9c3cc939ef3f42cead6f319c82818b18"
-    },
-    {
-      "chain": "solana",
-      "engine_id": "gpt",
-      "epoch_ms": 1787989982387,
-      "event_type": "POOLCHECK",
-      "reasons": [
-        "RugCheck liquidity risk requires SHADOW/LIVE revalidation: Large Amount of LP Unlocked"
-      ],
-      "verdict": "SHADOW_ONLY"
-    },
     {
       "chain": "solana",
       "engine_id": "gpt",
@@ -409,18 +392,33 @@
       "epoch_ms": 1787990436304,
       "event_type": "PAPER_ENTRY",
       "lot_id": "cb9144c290644c2f931d62585950d20f"
+    },
+    {
+      "chain": "solana",
+      "engine_id": "grok",
+      "epoch_ms": 1787990591715,
+      "event_type": "SIGNAL",
+      "intent_id": "grok-5bd4440bc9894806802b76003c57c6f0"
+    },
+    {
+      "chain": "solana",
+      "engine_id": "grok",
+      "epoch_ms": 1787990591719,
+      "event_type": "POOLCHECK",
+      "reasons": [
+        "RugCheck liquidity risk requires SHADOW/LIVE revalidation: Large Amount of LP Unlocked"
+      ],
+      "verdict": "SHADOW_ONLY"
+    },
+    {
+      "chain": "solana",
+      "engine_id": "grok",
+      "epoch_ms": 1787990591721,
+      "event_type": "PAPER_ENTRY",
+      "lot_id": "e17e4b2739714bab810f31ab59be0370"
     }
   ],
   "last_live_candidates": [
-    {
-      "candidate_id": "gpt-sol-exit-94cca582543c4faeae7666480403717e",
-      "chain": "solana",
-      "engine_id": "gpt",
-      "engine_version": "1.3.0",
-      "intent_created_at_ms": 1787990130000,
-      "kind": "EXIT",
-      "strategy_id": "gpt-leader-quality-v1"
-    },
     {
       "candidate_id": "gpt-sol-exit-f87222723e164a00a2e57b52c73fb5de",
       "chain": "solana",
@@ -509,6 +507,16 @@
       "kind": "ENTRY",
       "poolcheck_verdict": "SHADOW_ONLY",
       "strategy_id": "gpt-leader-quality-v1"
+    },
+    {
+      "candidate_id": "grok-5bd4440bc9894806802b76003c57c6f0",
+      "chain": "solana",
+      "engine_id": "grok",
+      "engine_version": "1.0.1",
+      "intent_created_at_ms": 1787990581000,
+      "kind": "ENTRY",
+      "poolcheck_verdict": "SHADOW_ONLY",
+      "strategy_id": "CompactFlow-v1"
     }
   ],
   "live_candidate_engines": {
@@ -532,9 +540,9 @@
     "available": true,
     "events_by_chain_last_poll": {
       "base": 0,
-      "solana": 2
+      "solana": 0
     },
-    "events_emitted_last_poll": 2,
+    "events_emitted_last_poll": 0,
     "evm": [
       {
         "exists": true,
@@ -579,10 +587,10 @@
       "db_exists": true,
       "leader_buys_15m": 22,
       "leader_buys_6h": 129,
-      "newest_leader_buy_age_seconds": 243,
+      "newest_leader_buy_age_seconds": 347,
       "profitable_trade_seeds_24h": 0
     },
-    "updated_epoch": 1787990514,
+    "updated_epoch": 1787990618,
     "windows_seconds": {
       "fallback_leader": 21600,
       "primary_leader": 900,
@@ -614,7 +622,7 @@
       "usable_native": "0.047201616",
       "wallet_count": 1
     },
-    "updated_epoch": 1787990499
+    "updated_epoch": 1787990643
   },
   "poolcheck_reason_counts_tail": {
     "RugCheck liquidity risk requires SHADOW/LIVE revalidation: Large Amount of LP Unlocked": 245,
@@ -622,7 +630,22 @@
   },
   "redacted": true,
   "schema_version": 9,
-  "scoreboard": [],
+  "scoreboard": [
+    {
+      "chain": "solana",
+      "engine_id": "grok",
+      "errors": 0,
+      "last_event_epoch": 1787990591,
+      "paper_entries": 1,
+      "paper_exits": 0,
+      "paper_losses": 0,
+      "paper_wins": 0,
+      "poolcheck_blocks": 0,
+      "poolcheck_shadow": 1,
+      "realised_pnl_quote": "0",
+      "signals": 1
+    }
+  ],
   "server_sha": "adcc876c910a7e7a3a4198e8a4be138b2f180c0c",
   "service_process_alive": true,
   "sibot1_status": {
@@ -631,7 +654,7 @@
     "mode": "SHADOW",
     "signer_attached": false,
     "state": "ACTIVE",
-    "updated_epoch": 1787990522,
+    "updated_epoch": 1787990631,
     "wallet_private_key_access": false
   },
   "solana_live_attempt_health": {
@@ -663,25 +686,25 @@
     },
     "latest_by_engine": {
       "gemini": {
-        "age_seconds": 10499,
+        "age_seconds": 10618,
         "error_class": "live_market_safety",
         "kind": "ENTRY",
         "status": "BLOCKED_POOLCHECK",
         "updated_at": 1787980027
       },
       "gpt": {
-        "age_seconds": 86,
+        "age_seconds": 205,
         "error_class": "live_market_safety",
         "kind": "ENTRY",
         "status": "BLOCKED_POOLCHECK",
         "updated_at": 1787990440
       },
       "grok": {
-        "age_seconds": 266,
+        "age_seconds": 50,
         "error_class": "live_market_safety",
         "kind": "ENTRY",
         "status": "BLOCKED_POOLCHECK",
-        "updated_at": 1787990260
+        "updated_at": 1787990595
       }
     },
     "positions_by_engine": {},
@@ -699,38 +722,40 @@
       }
     },
     "transactions_exported": false,
-    "updated_epoch": 1787990526
+    "updated_epoch": 1787990645
   },
-  "utc_epoch": 1787990524,
+  "utc_epoch": 1787990643,
   "workers": [
     {
-      "alive": true,
+      "alive": false,
       "engine_id": "gemini",
-      "events": 0,
+      "events": 10,
       "pid": 2199404,
       "signals": 0,
-      "state": "READY",
+      "state": "HEALTH",
+      "updated_epoch": 1787990613,
       "version": "1.1.0"
     },
     {
-      "alive": true,
+      "alive": false,
       "cycle_signals": 0,
       "engine_id": "gpt",
-      "events": 4,
+      "events": 10,
       "pid": 2199403,
       "signals": 0,
       "spread_signals": 0,
       "state": "HEALTH",
-      "updated_epoch": 1787990522,
+      "updated_epoch": 1787990613,
       "version": "1.3.0"
     },
     {
-      "alive": true,
+      "alive": false,
       "engine_id": "grok",
-      "events": 0,
+      "events": 10,
       "pid": 2199405,
-      "signals": 0,
-      "state": "READY",
+      "signals": 1,
+      "state": "HEALTH",
+      "updated_epoch": 1787990615,
       "version": "1.0.1"
     }
   ]
