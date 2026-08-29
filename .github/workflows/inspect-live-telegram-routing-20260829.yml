@@ -1,0 +1,78 @@
+name: Inspect Live Telegram Routing 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/inspect-live-telegram-routing-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read live Telegram identities only
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n python3 - <<'PY'
+          import json, pathlib, urllib.request
+
+          def parse_env(path):
+              out={}
+              p=pathlib.Path(path)
+              if not p.exists(): return out
+              for raw in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+                  s=raw.strip()
+                  if not s or s.startswith('#') or '=' not in s: continue
+                  k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              return out
+
+          def get_me(token):
+              req=urllib.request.Request(f'https://api.telegram.org/bot{token}/getMe',headers={'User-Agent':'routing-inspector/1'})
+              with urllib.request.urlopen(req,timeout=10) as r:
+                  d=json.load(r)
+              if not d.get('ok'): raise RuntimeError('getMe failed')
+              return d.get('result') or {}
+
+          learner=parse_env('/home/ayman01323/BOOT/testingbots/learn/.env')
+          ltoken=learner.get('TELEGRAM_BOT_TOKEN','')
+          if not ltoken: raise SystemExit('learner token missing')
+          lm=get_me(ltoken)
+          lch=[]
+          for k in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              v=learner.get(k,'')
+              if v: lch += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+          print('LEARNER_BOT_USERNAME=@'+str(lm.get('username') or ''))
+          print('LEARNER_BOT_NAME='+str(lm.get('first_name') or ''))
+          print('LEARNER_CHAT_DESTINATIONS='+str(len(set(lch))))
+          print('LEARNER_OUTBOUND_ONLY='+str(learner.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','')).lower())
+
+          candidates=[]
+          for p in [pathlib.Path('/root/SiRisky/.env'), pathlib.Path('/root/SiRisky/telegram.env'), pathlib.Path('/root/SiRisky/config.env')]:
+              if p.exists(): candidates.append(p)
+          for p in pathlib.Path('/root/SiRisky').glob('*.env*'):
+              if p.is_file() and p not in candidates: candidates.append(p)
+          senv={}; source=''
+          for p in candidates:
+              e=parse_env(p)
+              if e.get('TELEGRAM_BOT_TOKEN'):
+                  senv=e; source=str(p); break
+          if not senv: raise SystemExit('sirisky telegram token source not found')
+          sm=get_me(senv['TELEGRAM_BOT_TOKEN'])
+          sch=[]
+          for k in ('TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              v=senv.get(k,'')
+              if v: sch += [x.strip() for x in v.replace(';',',').split(',') if x.strip()]
+          print('SIRISKY_BOT_USERNAME=@'+str(sm.get('username') or ''))
+          print('SIRISKY_BOT_NAME='+str(sm.get('first_name') or ''))
+          print('SIRISKY_CHAT_DESTINATIONS='+str(len(set(sch))))
+          print('SAME_TELEGRAM_BOT='+str(lm.get('id')==sm.get('id')).lower())
+          print('SAME_DESTINATION_SET='+str(set(lch)==set(sch) and bool(lch or sch)).lower())
+          print('NO_MESSAGE_SENT=true')
+          PY
