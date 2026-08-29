@@ -26,18 +26,15 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
 
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          clean: false
-
-      - name: Deploy current Grok code and LIVE dependencies
+      - name: Verify deployed Grok tree and LIVE dependencies
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x testingbots/grok_known_assets_bot/scripts/install.sh
-          testingbots/grok_known_assets_bot/scripts/install.sh "$GITHUB_WORKSPACE/testingbots/grok_known_assets_bot"
           cd /home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          test -f pyproject.toml
+          test -f src/grok_known_assets_bot/live_execution.py
+          test -f src/grok_known_assets_bot/live_canary_runner.py
+          test -x .venv/bin/python
           .venv/bin/pip install -q -e '.[live]'
           .venv/bin/python -m pytest -q tests/test_live_canary.py tests/test_live_canary_exit_balance.py tests/test_live_canary_post715_hardening.py
 
@@ -214,7 +211,7 @@ jobs:
           .venv/bin/python - <<'PY'
           import sqlite3
           from grok_known_assets_bot import live_canary as lc
-          from grok_known_assets_bot.control import load_state, save_state
+          from grok_known_assets_bot.control import save_state
 
           db = sqlite3.connect('state.sqlite3', timeout=8)
           lc.ensure_schema(db)
