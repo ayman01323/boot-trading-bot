@@ -1,0 +1,98 @@
+name: SiLearn Runtime Token Source 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/silearn-runtime-token-source-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Trace isolated runtime configuration without printing secrets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          root=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          test -f "$root/.env"
+          echo "state=$(systemctl is-active "$service" 2>/dev/null || true)"
+          echo "fragment=$(systemctl show "$service" -p FragmentPath --value 2>/dev/null || true)"
+          echo "dropins=$(systemctl show "$service" -p DropInPaths --value 2>/dev/null || true)"
+          echo "working_directory=$(systemctl show "$service" -p WorkingDirectory --value 2>/dev/null || true)"
+          echo "service_user=$(systemctl show "$service" -p User --value 2>/dev/null || true)"
+          echo "environment_files=$(systemctl show "$service" -p EnvironmentFiles --value 2>/dev/null | sed -E 's/\([^)]*\)//g' || true)"
+          systemctl show "$service" -p ExecStart --value 2>/dev/null \
+            | sed -E 's#(TELEGRAM_BOT_TOKEN=)[^ ;}]+#\1<redacted>#g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' \
+            | sed 's/^/exec_start=/'
+
+          ROOT="$root" SERVICE="$service" sudo -n -E python3 - <<'PY'
+          import json, os, subprocess, urllib.request
+          from pathlib import Path
+          root=Path(os.environ['ROOT']); service=os.environ['SERVICE']
+
+          def read_env(path):
+              out={}
+              try:
+                  for raw in Path(path).read_text(encoding='utf-8',errors='ignore').splitlines():
+                      s=raw.strip()
+                      if not s or s.startswith('#') or '=' not in s: continue
+                      k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              except Exception: pass
+              return out
+          def botname(token):
+              if not token: return '<missing>'
+              try:
+                  with urllib.request.urlopen(f'https://api.telegram.org/bot{token}/getMe',timeout=8) as r:
+                      d=json.loads(r.read().decode())
+                  return str((d.get('result') or {}).get('username') or '<unknown>') if d.get('ok') else '<invalid>'
+              except Exception as exc:
+                  return '<'+type(exc).__name__+'>'
+          file_env=read_env(root/'.env')
+          file_token=file_env.get('TELEGRAM_BOT_TOKEN','')
+          print('env_outbound_only='+str(file_env.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','<unset>')))
+          print('env_bot_username='+botname(file_token))
+          pid=int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
+          proc={}
+          if pid:
+              try:
+                  for item in Path(f'/proc/{pid}/environ').read_bytes().split(b'\0'):
+                      if b'=' in item:
+                          k,v=item.split(b'=',1); proc[k.decode(errors='ignore')]=v.decode(errors='ignore')
+              except Exception: pass
+          proc_token=proc.get('TELEGRAM_BOT_TOKEN','')
+          print('process_token_present='+str(bool(proc_token)).lower())
+          print('process_token_matches_env='+str(bool(proc_token and file_token and proc_token==file_token)).lower())
+          print('process_bot_username='+botname(proc_token))
+          print('process_outbound_only='+str(proc.get('LEARNER_TELEGRAM_OUTBOUND_ONLY','<unset>')))
+
+          # Show which configured environment-file paths exist and whether each contains
+          # a Telegram token matching the process or isolated file, without showing it.
+          raw=subprocess.check_output(['systemctl','show',service,'-p','EnvironmentFiles','--value'],text=True).strip()
+          paths=[]
+          for part in raw.split():
+              p=part.lstrip('-').split('(',1)[0].strip()
+              if p.startswith('/') and p not in paths: paths.append(p)
+          for i,p in enumerate(paths,1):
+              vals=read_env(p); tok=vals.get('TELEGRAM_BOT_TOKEN','')
+              print(f'envfile_{i}_path={p}')
+              print(f'envfile_{i}_exists={str(Path(p).exists()).lower()}')
+              print(f'envfile_{i}_token_present={str(bool(tok)).lower()}')
+              print(f'envfile_{i}_bot_username={botname(tok)}')
+              print(f'envfile_{i}_matches_process={str(bool(tok and proc_token and tok==proc_token)).lower()}')
+              print(f'envfile_{i}_matches_isolated={str(bool(tok and file_token and tok==file_token)).lower()}')
+              print(f'envfile_{i}_outbound_only={vals.get("LEARNER_TELEGRAM_OUTBOUND_ONLY","<unset>")}')
+          PY
+
+          echo '--- recent Telegram state ---'
+          sudo -n journalctl -u "$service" --since '20 minutes ago' --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'telegram-menu|409|outbound-only|interactive multi-chain' \
+            | tail -80 \
+            | sed -E 's/[0-9]{7,}/<id>/g; s#bot[0-9]+:[A-Za-z0-9_-]+#bot<TOKEN>#g' || true
