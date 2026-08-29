@@ -23,8 +23,7 @@ jobs:
           sudo -n bash <<'ROOT'
           set -Eeuo pipefail
           LROOT=/home/ayman01323/BOOT/testingbots/learn
-          FILE="$LROOT/learnerbot/solana_live_patch.py"
-          grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$FILE"
+          grep -q 'reason = "SOLANA_MAX_HOLD_100PCT"' "$LROOT/learnerbot/solana_live_patch.py"
           grep -q '^max_hold_hours,0.5,' "$LROOT/CSVbot/solana_settings.csv"
           ROOT
 
@@ -38,7 +37,6 @@ jobs:
           LROOT=/home/ayman01323/BOOT/testingbots/learn
           SERVICE=learnerbot-learn.service
           FILE="$LROOT/learnerbot/solana_sibot.py"
-          test -f "$FILE"
 
           LROOT="$LROOT" python3 - <<'PY'
           import os,sqlite3
@@ -57,12 +55,13 @@ jobs:
           mkdir -p "$backup"
           cp -a "$FILE" "$backup/solana_sibot.py"
           changed=0
-          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_sibot.py" "$FILE"; systemctl restart "$SERVICE" || true; fi; exit $rc; }
+          rollback(){ rc=$?; if [[ $rc -ne 0 && $changed -eq 1 ]]; then cp -a "$backup/solana_sibot.py" "$FILE"; systemctl restart "$SERVICE" || true; echo ROLLBACK_COMPLETE=true; fi; exit $rc; }
           trap rollback EXIT
 
-          python3 - <<PY
+          python3 - <<'PY'
           from pathlib import Path
-          p=Path('$FILE'); s=p.read_text()
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/learnerbot/solana_sibot.py')
+          s=p.read_text()
           if 'from .telegram import send_message' not in s:
               anchor='from __future__ import annotations\n'
               if anchor not in s: raise SystemExit('future import anchor not found')
@@ -70,13 +69,60 @@ jobs:
           elif 'from html import escape' not in s:
               s=s.replace('from .telegram import send_message\n','from html import escape\nfrom .telegram import send_message\n',1)
 
-          helper='''\n\ndef _push_rejected_actions(app, event: dict, actions) -> None:\n    token = str(getattr(app, \"telegram_bot_token\", \"\") or \"\").strip()\n    if not token:\n        return\n    now = int(time.time())\n    try:\n        signal_ts = int((event or {}).get(\"event_ts\") or now)\n    except Exception:\n        signal_ts = now\n    age = max(0, now - signal_ts)\n    mint = str((event or {}).get(\"mint\") or \"unknown\")\n    leader = str((event or {}).get(\"leader_wallet\") or \"unknown\")\n    signature = str((event or {}).get(\"signature\") or \"\")\n    for row in (actions or []):\n        if str((row or {}).get(\"action\") or \"\").upper() != \"REJECT\":\n            continue\n        tid = str((row or {}).get(\"telegram_id\") or \"\").strip()\n        targets=[tid] if tid else []\n        if not targets:\n            try:\n                for u in all_users(app.csv_dir, enabled_only=True):\n                    uid=str(u.get(\"telegram_id\") or \"\").strip()\n                    if uid and _leader_rank(app, uid, leader) is not None:\n                        targets.append(uid)\n            except Exception:\n                pass\n        reason = str((row or {}).get(\"reason\") or \"unspecified rejection\")[:900]\n        text=(\n            \"⛔ <b>REJECTED OPPORTUNITY</b>\\n\"\n            f\"Asset: <code>{escape(mint)}</code>\\n\"\n            f\"Leader: <code>{escape(leader)}</code>\\n\"\n            f\"Reason: <code>{escape(reason)}</code>\\n\"\n            f\"Signal age: <b>{age}s</b>\\n\"\n            f\"Signature: <code>{escape(signature[:120])}</code>\\n\"\n            \"Decision: <b>NO TRADE</b>\"\n        )\n        for target in dict.fromkeys(x for x in targets if x):\n            send_message(token, target, text, parse_mode=\"HTML\", protect_content=True)\n\n'''
+          helper='''
+
+def _push_rejected_actions(app, event: dict, actions) -> None:
+    token = str(getattr(app, "telegram_bot_token", "") or "").strip()
+    if not token:
+        return
+    now = int(time.time())
+    try:
+        signal_ts = int((event or {}).get("event_ts") or now)
+    except Exception:
+        signal_ts = now
+    age = max(0, now - signal_ts)
+    mint = str((event or {}).get("mint") or "unknown")
+    leader = str((event or {}).get("leader_wallet") or "unknown")
+    signature = str((event or {}).get("signature") or "")
+    for row in (actions or []):
+        if str((row or {}).get("action") or "").upper() != "REJECT":
+            continue
+        tid = str((row or {}).get("telegram_id") or "").strip()
+        targets = [tid] if tid else []
+        if not targets:
+            try:
+                for u in all_users(app.csv_dir, enabled_only=True):
+                    uid = str(u.get("telegram_id") or "").strip()
+                    if uid and _leader_rank(app, uid, leader) is not None:
+                        targets.append(uid)
+            except Exception:
+                pass
+        reason = str((row or {}).get("reason") or "unspecified rejection")[:900]
+        text = chr(10).join([
+            "⛔ <b>REJECTED OPPORTUNITY</b>",
+            f"Asset: <code>{escape(mint)}</code>",
+            f"Leader: <code>{escape(leader)}</code>",
+            f"Reason: <code>{escape(reason)}</code>",
+            f"Signal age: <b>{age}s</b>",
+            f"Signature: <code>{escape(signature[:120])}</code>",
+            "Decision: <b>NO TRADE</b>",
+        ])
+        for target in dict.fromkeys(x for x in targets if x):
+            send_message(token, target, text, parse_mode="HTML", protect_content=True)
+
+'''
           if 'def _push_rejected_actions(app, event: dict, actions)' not in s:
               marker='\ndef monitor_leaders(app):\n'
               if marker not in s: raise SystemExit('monitor_leaders marker not found')
               s=s.replace(marker,helper+marker,1)
-          old='''                    if saved:\n                        events.append(saved)\n                        process_leader_event(app, saved)'''
-          new='''                    if saved:\n                        events.append(saved)\n                        actions = process_leader_event(app, saved)\n                        _push_rejected_actions(app, saved, actions)'''
+
+          old='''                    if saved:
+                        events.append(saved)
+                        process_leader_event(app, saved)'''
+          new='''                    if saved:
+                        events.append(saved)
+                        actions = process_leader_event(app, saved)
+                        _push_rejected_actions(app, saved, actions)'''
           if new not in s:
               if old not in s: raise SystemExit('leader action-discard block not found')
               s=s.replace(old,new,1)
