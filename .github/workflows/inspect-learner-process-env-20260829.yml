@@ -1,0 +1,59 @@
+name: Inspect Learner Process Env 20260829
+
+on:
+  push:
+    branches:
+      - diagnostics/telegram-routing-20260829
+    paths:
+      - '.github/workflows/inspect-learner-process-env-20260829.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect process environment without secret values
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          sudo -n python3 - <<'PY'
+          import os, pathlib, subprocess
+          service='learnerbot-learn.service'
+          pid=int(subprocess.check_output(['systemctl','show',service,'-p','MainPID','--value'],text=True).strip() or 0)
+          if not pid: raise SystemExit('Learner PID missing')
+          raw=pathlib.Path(f'/proc/{pid}/environ').read_bytes().split(b'\0')
+          env={}
+          for item in raw:
+              if b'=' in item:
+                  k,v=item.split(b'=',1); env[k.decode(errors='replace')]=v
+          for key in ('TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS','LEARNER_TELEGRAM_OUTBOUND_ONLY'):
+              present=key in env
+              length=len(env.get(key,b'')) if present else -1
+              print(f'PROCESS_{key}_PRESENT={str(present).lower()}')
+              print(f'PROCESS_{key}_LENGTH={length}')
+          unit=subprocess.check_output(['systemctl','show',service,'-p','Environment','-p','EnvironmentFiles','-p','ExecStart','-p','WorkingDirectory'],text=True,errors='replace')
+          for line in unit.splitlines():
+              if line.startswith('Environment='):
+                  names=[]
+                  payload=line.split('=',1)[1]
+                  for part in payload.split():
+                      if '=' in part: names.append(part.split('=',1)[0])
+                  print('UNIT_ENVIRONMENT_KEYS='+','.join(sorted(names)))
+              else:
+                  print(line)
+          # Confirm .env has the values independently, again without printing values.
+          file_env={}
+          p=pathlib.Path('/home/ayman01323/BOOT/testingbots/learn/.env')
+          for line in p.read_text(encoding='utf-8',errors='ignore').splitlines():
+              s=line.strip()
+              if s and not s.startswith('#') and '=' in s:
+                  k,v=s.split('=',1); file_env[k.strip()]=v.strip().strip('"').strip("'")
+          for key in ('TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','TELEGRAM_CHAT_IDS'):
+              print(f'FILE_{key}_PRESENT={str(bool(file_env.get(key,""))).lower()}')
+              print(f'FILE_{key}_LENGTH={len(file_env.get(key,""))}')
+          print('NO_SECRET_VALUE_PRINTED=true')
+          PY
