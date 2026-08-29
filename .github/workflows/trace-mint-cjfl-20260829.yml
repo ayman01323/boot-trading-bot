@@ -1,0 +1,86 @@
+name: Trace mint CjFL 20260829
+on:
+  push:
+    paths:
+      - '.github/workflows/trace-mint-cjfl-20260829.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: [self-hosted, botgoogle]
+    timeout-minutes: 8
+    steps:
+      - name: Trace exact mint read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          MINT='CjFLUpDhQ4TZp7azvKo3FDAJv1cxeDR2nNv3rGs1pump'
+          export MINT
+          echo "HOST=$(hostname)"
+          echo "NOW_BST=$(TZ=Europe/London date +%Y-%m-%dT%H:%M:%S%z)"
+          echo '=== SQLITE_MATCHES ==='
+          python3 - <<'PY'
+          import os, sqlite3, json
+          from pathlib import Path
+          mint=os.environ['MINT']
+          roots=[Path('/home/ayman01323/BOOT/testingbots'),Path('/home/ayman01323/BOOT')]
+          seen=set(); total=0
+          useful=('id','position','telegram','wallet','leader','mint','input_mint','output_mint','action','status','mode','strategy','engine','signature','tx','amount','cost','sol','pnl','profit','loss','created','updated','closed','reason','source','router')
+          for root in roots:
+            if not root.exists(): continue
+            for p in root.rglob('*'):
+              if not p.is_file() or p.suffix.lower() not in {'.db','.sqlite','.sqlite3'}: continue
+              rp=str(p.resolve())
+              if rp in seen: continue
+              seen.add(rp)
+              try:
+                con=sqlite3.connect(f'file:{p}?mode=ro',uri=True); con.row_factory=sqlite3.Row; cur=con.cursor()
+                tables=[r[0] for r in cur.execute("select name from sqlite_master where type='table'")]
+              except Exception:
+                continue
+              for t in tables:
+                try: cols=[r[1] for r in cur.execute(f'pragma table_info("{t}")')]
+                except Exception: continue
+                search=[c for c in cols if any(k in c.lower() for k in ('mint','token','asset','address'))]
+                if not search: continue
+                ors=[]; params=[]
+                for c in search:
+                  ors.append(f'CAST("{c}" AS TEXT)=?'); params.append(mint)
+                try: rows=list(cur.execute(f'SELECT * FROM "{t}" WHERE '+' OR '.join(ors)+' ORDER BY rowid DESC LIMIT 30',params))
+                except Exception: continue
+                for r in rows:
+                  d={k:r[k] for k in r.keys() if any(u in k.lower() for u in useful)}
+                  print('DB='+str(p))
+                  print('TABLE='+t)
+                  print('ROW='+json.dumps(d,default=str,sort_keys=True)[:10000])
+                  total+=1
+              con.close()
+          print('SQLITE_MATCH_TOTAL='+str(total))
+          PY
+          echo '=== JOURNAL_MATCHES ==='
+          sudo -n journalctl --since '2026-08-28 00:00:00 UTC' --no-pager 2>/dev/null \
+            | grep -F "$MINT" \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g; s#([A-Za-z0-9_]*(SECRET|PRIVATE|API_KEY|CREDENTIAL|MNEMONIC|SEED)[A-Za-z0-9_]*)=[^[:space:]]+#\1=<REDACTED>#Ig' \
+            | tail -300 || true
+          echo '=== TEXT_FILE_MATCHES ==='
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          mint=os.environ['MINT']; root=Path('/home/ayman01323/BOOT/testingbots'); shown=0
+          if root.exists():
+            for p in root.rglob('*'):
+              if not p.is_file() or p.suffix.lower() not in {'.csv','.json','.jsonl','.log','.txt'}: continue
+              if p.stat().st_size > 50_000_000: continue
+              try:
+                with p.open(errors='replace') as f:
+                  for i,line in enumerate(f,1):
+                    if mint in line:
+                      print(f'FILE={p} LINE={i} TEXT={line[:2500].rstrip()}')
+                      shown+=1
+                      if shown>=100: raise SystemExit
+              except SystemExit: raise
+              except Exception: pass
+          print('TEXT_MATCH_TOTAL='+str(shown))
+          PY
+          echo 'TRACE_COMPLETE=true'
