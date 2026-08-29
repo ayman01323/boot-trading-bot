@@ -1,0 +1,106 @@
+name: Read SiLearn Live Mark 20260829
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/read-silearn-live-mark-20260829.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Reconcile current SiLearn position read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          python3 - <<'PY'
+          import json, urllib.request, urllib.parse, time
+          RPC='https://api.mainnet-beta.solana.com'
+          WALLET='8zTnKUPW648NZZ285mz7ijFBpsbGu8AziRoZsH9JBfA3'
+          TOKEN_ACCOUNT='2TJUuxpbH3ammPMHaxv7BJyo1jWfSkGAvsgPYe9pTojy'
+          MINT='FJgfUuzEr8JMsbxhHwkTQMEcCkSgEnnUtmZf9qiSBs7t'
+          WSOL='So11111111111111111111111111111111111111112'
+          BUY='5dpdZ7TnJFJkZd5ad8CuaFMxhdjcPuhcZyaSWQvoPRiiYPGUbSCdNq4aULp39h1RSn6tJ9ULgTA6C9WNsb14TGAT'
+          EXIT='oBNu6p3ynF5zD7ZNCzQTVe6pgGWDpzZM7pmdCmCcnUK1gV7BQtimqFSTE1vt9SnhLRkjRT8t2Vwd7aTsTXK7cX4'
+          def rpc(method, params):
+              body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+              req=urllib.request.Request(RPC,data=body,headers={'Content-Type':'application/json','User-Agent':'silearn-readonly-reconcile'})
+              try:
+                  with urllib.request.urlopen(req,timeout=12) as r: return json.load(r)
+              except Exception as e:
+                  return {'_error':f'{type(e).__name__}:{e}'}
+          print('REPORT_EPOCH='+str(int(time.time())))
+          bal=rpc('getBalance',[WALLET,{'commitment':'confirmed'}])
+          print('WALLET_BALANCE_LAMPORTS='+str((bal.get('result') or {}).get('value','UNKNOWN')))
+          acct=rpc('getTokenAccountBalance',[TOKEN_ACCOUNT,{'commitment':'confirmed'}])
+          av=(acct.get('result') or {}).get('value') if isinstance(acct,dict) else None
+          if av:
+              print('TOKEN_ACCOUNT_EXISTS=true')
+              print('TOKEN_RAW='+str(av.get('amount')))
+              print('TOKEN_DECIMALS='+str(av.get('decimals')))
+              print('TOKEN_UI='+str(av.get('uiAmountString')))
+          else:
+              print('TOKEN_ACCOUNT_EXISTS=false')
+              print('TOKEN_ACCOUNT_QUERY='+json.dumps(acct,separators=(',',':'))[:600])
+          sts=rpc('getSignatureStatuses',[[BUY,EXIT],{'searchTransactionHistory':True}])
+          vals=((sts.get('result') or {}).get('value') or [None,None])
+          for label,v in zip(('BUY_STATUS','EXIT_STATUS'),vals):
+              if v is None: print(label+'=NOT_FOUND')
+              else: print(label+'='+json.dumps({'slot':v.get('slot'),'confirmations':v.get('confirmations'),'confirmationStatus':v.get('confirmationStatus'),'err':v.get('err')},separators=(',',':')))
+          tx=rpc('getTransaction',[EXIT,{'encoding':'jsonParsed','commitment':'confirmed','maxSupportedTransactionVersion':0}])
+          res=tx.get('result') if isinstance(tx,dict) else None
+          if res:
+              meta=res.get('meta') or {}
+              print('EXIT_TX_FOUND=true')
+              print('EXIT_TX_SLOT='+str(res.get('slot')))
+              print('EXIT_TX_ERR='+json.dumps(meta.get('err'),separators=(',',':')))
+              print('EXIT_TX_FEE_LAMPORTS='+str(meta.get('fee')))
+              msg=((res.get('transaction') or {}).get('message') or {})
+              keys=msg.get('accountKeys') or []
+              keyvals=[k.get('pubkey') if isinstance(k,dict) else k for k in keys]
+              if WALLET in keyvals:
+                  i=keyvals.index(WALLET); pre=(meta.get('preBalances') or []); post=(meta.get('postBalances') or [])
+                  if i<len(pre) and i<len(post): print('EXIT_WALLET_DELTA_LAMPORTS='+str(post[i]-pre[i]))
+              pretk=meta.get('preTokenBalances') or []; posttk=meta.get('postTokenBalances') or []
+              def mint_rows(rows):
+                  out=[]
+                  for x in rows:
+                      if x.get('mint')==MINT:
+                          u=x.get('uiTokenAmount') or {}; out.append({'accountIndex':x.get('accountIndex'),'owner':x.get('owner'),'amount':u.get('amount'),'decimals':u.get('decimals')})
+                  return out
+              print('EXIT_PRE_MINT='+json.dumps(mint_rows(pretk),separators=(',',':')))
+              print('EXIT_POST_MINT='+json.dumps(mint_rows(posttk),separators=(',',':')))
+          else:
+              print('EXIT_TX_FOUND=false')
+              print('EXIT_TX_QUERY='+json.dumps(tx,separators=(',',':'))[:800])
+          # Fresh quote only if token account balance remains positive.
+          raw=None
+          if av:
+              try: raw=int(av.get('amount') or 0)
+              except: raw=0
+          if raw and raw>0:
+              q={'inputMint':MINT,'outputMint':WSOL,'amount':str(raw),'slippageBps':'50','restrictIntermediateTokens':'true'}
+              url='https://lite-api.jup.ag/swap/v1/quote?'+urllib.parse.urlencode(q)
+              try:
+                  req=urllib.request.Request(url,headers={'User-Agent':'silearn-readonly-mark'})
+                  with urllib.request.urlopen(req,timeout=15) as r: data=json.load(r)
+                  print('JUPITER_QUOTE_OK=true')
+                  print('JUPITER_IN_AMOUNT='+str(data.get('inAmount')))
+                  print('JUPITER_OUT_LAMPORTS='+str(data.get('outAmount')))
+                  print('JUPITER_OTHER_THRESHOLD='+str(data.get('otherAmountThreshold')))
+                  print('JUPITER_PRICE_IMPACT_PCT='+str(data.get('priceImpactPct')))
+                  print('JUPITER_ROUTE_COUNT='+str(len(data.get('routePlan') or [])))
+              except Exception as e:
+                  print('JUPITER_QUOTE_OK=false')
+                  print('JUPITER_QUOTE_ERROR='+type(e).__name__+':'+str(e)[:300])
+          else:
+              print('JUPITER_QUOTE_SKIPPED=no_positive_token_balance')
+          print('RECONCILE_COMPLETE=true')
+          PY
