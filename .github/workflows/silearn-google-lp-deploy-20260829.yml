@@ -18,6 +18,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
+          sudo -n true
           ROOT=/home/ayman01323/BOOT/testingbots/learn
           TARGET_SHA=cd55e1f470e36c6966ff9a71e51cab5e985952dc
           STAMP=20260829T1632BST
@@ -51,17 +52,17 @@ jobs:
               sys.exit(42)
           PY
 
-          mkdir -p "$BACKUP"
-          cp -a "$ROOT/learnerbot/__main__.py" "$BACKUP/__main__.py.pre"
+          sudo -n mkdir -p "$BACKUP"
+          sudo -n cp -a "$ROOT/learnerbot/__main__.py" "$BACKUP/__main__.py.pre"
           for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
             if test -f "$ROOT/learnerbot/$f"; then
-              cp -a "$ROOT/learnerbot/$f" "$BACKUP/$f.pre"
+              sudo -n cp -a "$ROOT/learnerbot/$f" "$BACKUP/$f.pre"
             else
-              : > "$BACKUP/$f.was_absent"
+              sudo -n touch "$BACKUP/$f.was_absent"
             fi
           done
-          printf '%s\n' "$TARGET_SHA" > "$BACKUP/source_sha.txt"
-          printf '%s\n' 'SiLearn — 2026-08-29 16:32 BST — Subject: Deploy LP warning-only and once-only reporting to Google Learner' > "$BACKUP/subject.txt"
+          printf '%s\n' "$TARGET_SHA" | sudo -n tee "$BACKUP/source_sha.txt" >/dev/null
+          printf '%s\n' 'SiLearn — 2026-08-29 16:32 BST — Subject: Deploy LP warning-only and once-only reporting to Google Learner' | sudo -n tee "$BACKUP/subject.txt" >/dev/null
 
           BASE="https://raw.githubusercontent.com/ayman01323/boot-trading-bot/$TARGET_SHA/learnerbot"
           curl -fsSL "$BASE/solana_reject_once_reporting_patch.py" -o "$TMP/solana_reject_once_reporting_patch.py"
@@ -69,7 +70,6 @@ jobs:
           grep -q 'once_per_account_mint_leader_reason' "$TMP/solana_reject_once_reporting_patch.py"
           grep -q 'lp_lock=WARNING_ONLY' "$TMP/solana_lp_warning_only_patch.py"
 
-          # Compile downloaded source in memory: no __pycache__ writes.
           TMP="$TMP" python3 - <<'PY'
           import os
           from pathlib import Path
@@ -81,29 +81,29 @@ jobs:
 
           rollback() {
             echo 'ROLLBACK_START'
-            cp -a "$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
+            sudo -n cp -a "$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
             for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
               if test -f "$BACKUP/$f.pre"; then
-                cp -a "$BACKUP/$f.pre" "$ROOT/learnerbot/$f"
+                sudo -n cp -a "$BACKUP/$f.pre" "$ROOT/learnerbot/$f"
               else
-                rm -f "$ROOT/learnerbot/$f"
+                sudo -n rm -f "$ROOT/learnerbot/$f"
               fi
             done
-            systemctl restart learnerbot-learn.service || true
+            sudo -n systemctl restart learnerbot-learn.service || true
             sleep 5
             echo "rollback_service=$(systemctl is-active learnerbot-learn.service 2>/dev/null || true)"
           }
           trap 'rc=$?; if test $rc -ne 0; then rollback; fi; rm -rf "$TMP"; exit $rc' EXIT
 
           # Install only the two approved late-layer modules.
+          MODE="$(stat -c %a "$ROOT/learnerbot/__main__.py")"
           for f in solana_reject_once_reporting_patch.py solana_lp_warning_only_patch.py; do
-            install -m "$(stat -c %a "$ROOT/learnerbot/__main__.py")" "$TMP/$f" "$ROOT/learnerbot/$f"
-            chown --reference="$ROOT/learnerbot/__main__.py" "$ROOT/learnerbot/$f"
+            sudo -n install -m "$MODE" "$TMP/$f" "$ROOT/learnerbot/$f"
+            sudo -n chown --reference="$ROOT/learnerbot/__main__.py" "$ROOT/learnerbot/$f"
           done
 
-          # Preserve the customised Google __main__.py; insert only two imports
-          # immediately before its existing CLI entry point.
-          ROOT="$ROOT" python3 - <<'PY'
+          # Preserve customised __main__.py; insert only the two late imports.
+          sudo -n env ROOT="$ROOT" python3 - <<'PY'
           import os
           from pathlib import Path
           root=Path(os.environ['ROOT'])
@@ -132,11 +132,11 @@ jobs:
           compile(p.read_text(encoding='utf-8'), str(p), 'exec')
           print('custom_main_compile_ok=true')
           PY
-          chown --reference="$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
+          sudo -n chown --reference="$BACKUP/__main__.py.pre" "$ROOT/learnerbot/__main__.py"
 
           SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
           BEFORE_RESTARTS="$(systemctl show learnerbot-learn.service -p NRestarts --value 2>/dev/null || echo 0)"
-          systemctl restart learnerbot-learn.service
+          sudo -n systemctl restart learnerbot-learn.service
           sleep 6
           test "$(systemctl is-active learnerbot-learn.service)" = active
           PID1="$(systemctl show learnerbot-learn.service -p MainPID --value)"
