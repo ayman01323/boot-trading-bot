@@ -2,194 +2,244 @@
   "findings": [
     {
       "category": "execution/concurrency/EVM",
-      "confidence": 0.98,
-      "corrective_action": "Atomically transition each position from OPEN to EXIT_CLAIMED before external calls, use a unique durable attempt record, serialize nonce allocation per chain and wallet, and reconcile the claimed transaction before allowing another exit.",
-      "deterministic_evidence": "The source contains no pre-broadcast state transition in close_position; _DB_LOCK first appears after fee handling and after the SELL receipt.",
+      "confidence": 0.99,
+      "corrective_action": "Atomically transition OPEN to EXIT_CLAIMED before external calls, create a unique durable attempt, serialize nonce allocation per chain and wallet, and reconcile before permitting another exit.",
+      "deterministic_evidence": "No pre-broadcast state transition exists in close_position; state is changed only after the external transaction path.",
       "evidence": [
         {
-          "detail": "close_position reads an OPEN position at lines 1128-1133, broadcasts the SELL at 1141, and only acquires _DB_LOCK to mark it closed at 1170. There is no durable pre-broadcast claim or compare-and-set transition.",
+          "detail": "close_position reads an OPEN position, broadcasts and waits for the SELL, and only afterward acquires _DB_LOCK to mark the position closed; no durable pre-broadcast compare-and-set claim exists.",
           "file": "learnerbot/sibot.py"
         },
         {
-          "detail": "The independent intelligence worker calls close_position at line 540 while the SiBot live worker also invokes close_position from monitoring and leader-event paths.",
+          "detail": "An independent intelligence worker invokes close_position while SiBot monitoring and leader-event paths can invoke the same operation.",
           "file": "learnerbot/sibot_intelligence_patch.py"
         },
         {
-          "detail": "_base_tx obtains the pending nonce independently at line 304; no wallet-scoped nonce lock or durable nonce reservation surrounds signing and broadcast.",
+          "detail": "_base_tx independently obtains the pending nonce without a wallet-scoped nonce reservation.",
           "file": "learnerbot/live_executor.py"
         }
       ],
-      "id": "GPT-FULL-001",
-      "impact": "Concurrent monitor/event paths can both observe OPEN, build transactions from the same balance, and broadcast competing or sequential SELLs. Shared-wallet operations can also reuse a nonce, causing replacement, failure, or unintended ordering.",
-      "root_cause": "The database lock protects only the final accounting update, not the complete claim-build-broadcast-reconcile state machine.",
+      "id": "GPT-AUDIT-001",
+      "impact": "Two workers can sell the same OPEN position or submit transactions with colliding nonces, causing replacement, failure, unintended ordering, or excess disposal.",
+      "root_cause": "The lock protects the final accounting update rather than the claim-build-broadcast-reconcile lifecycle.",
       "severity": "P1",
       "tests_required": [
         "Race two close_position callers and assert exactly one broadcast.",
-        "Crash after broadcast but before position update and verify restart reconciliation.",
-        "Run concurrent operations for one EVM wallet and verify unique monotonic nonces."
+        "Crash after broadcast and verify restart reconciliation.",
+        "Verify concurrent same-wallet operations receive unique monotonic nonces."
       ],
-      "title": "EVM position exits can be submitted more than once"
+      "title": "Concurrent EVM exits can broadcast more than one sell"
     },
     {
-      "category": "execution/reconciliation/accounting",
+      "category": "execution/reconciliation/EVM",
       "confidence": 0.99,
-      "corrective_action": "Persist BROADCAST/RECONCILING plus transaction hash before waiting for a receipt. Resolve receipts and balance deltas asynchronously, prohibit retries while outcome is unknown, and distinguish failed-before-send from unknown-after-send.",
-      "deterministic_evidence": "The exception row literal sets tx_hash to an empty string even when txh was assigned before wait_for_transaction_receipt.",
+      "corrective_action": "Persist BROADCAST or RECONCILING and the transaction hash immediately after submission; resolve asynchronously and prohibit retries while the outcome is unknown.",
+      "deterministic_evidence": "The exception record explicitly discards the hash even when submission completed before receipt polling failed.",
       "evidence": [
         {
-          "detail": "After execute_cycle returns a transaction hash, receipt timeout raises at lines 217-219. The broad handler at 241-243 then writes status REJECTED with an empty tx_hash.",
+          "detail": "A transaction hash is returned before wait_for_transaction_receipt, but a receipt timeout reaches the broad exception handler, which records REJECTED with an empty tx_hash.",
           "file": "learnerbot/auto_trader.py"
         },
         {
-          "detail": "close_position broadcasts at line 1141 and waits at 1142, but a timeout leaves the position OPEN without persisting the transaction hash or a reconciling state.",
+          "detail": "close_position broadcasts and synchronously waits; timeout leaves the position OPEN without durably retaining the submitted hash or an unresolved state.",
           "file": "learnerbot/sibot.py"
-        },
-        {
-          "detail": "Eligibility/cooldown accounting counts broadcast-like statuses, but not REJECTED, so the ambiguous attempt does not prevent a later cycle from submitting again.",
-          "file": "learnerbot/auto_trader.py"
         }
       ],
-      "id": "GPT-FULL-002",
-      "impact": "A transaction accepted by the node but not confirmed within the local timeout can execute on-chain while local state says REJECTED or OPEN. Subsequent cycles can repeat the trade, and realised P&L, exposure, fees, and notifications become incorrect.",
-      "root_cause": "Broadcast and confirmation are treated as one operation; the transaction identity is not durably recorded immediately after send.",
+      "id": "GPT-AUDIT-002",
+      "impact": "A transaction may later confirm on-chain while local state says rejected or open, allowing duplicate execution and corrupting exposure, fees, P&L, and notifications.",
+      "root_cause": "Broadcast and confirmation are treated as one operation, with no durable intermediate lifecycle.",
       "severity": "P1",
       "tests_required": [
-        "Simulate send success followed by receipt timeout and assert durable RECONCILING state with the hash.",
-        "Restart and reconcile both successful and reverted transactions.",
-        "Assert no second execution occurs while an attempt is unresolved."
+        "Simulate successful send followed by receipt timeout and assert the hash is retained.",
+        "Reconcile successful, reverted, replaced, and dropped transactions after restart.",
+        "Assert unresolved attempts block resubmission."
       ],
-      "title": "Ambiguous EVM broadcasts are recorded as rejected and may be retried"
+      "title": "Ambiguous broadcasts lose their transaction hash and can be retried"
     },
     {
       "category": "security/Telegram/concurrency",
-      "confidence": 0.97,
-      "corrective_action": "Move authorization and activation state to SQLite with BEGIN IMMEDIATE and a conditional uses < max_uses update, or introduce a process-wide plus OS-level file lock and re-read under that lock.",
-      "deterministic_evidence": "Unlike operator_control.py, user_registry.py declares no lock and performs every authorization mutation as an unlocked CSV read/replace sequence.",
+      "confidence": 0.98,
+      "corrective_action": "Store authorization state transactionally in SQLite using BEGIN IMMEDIATE and conditional updates, or use process-wide and OS-level locking with an in-lock re-read.",
+      "deterministic_evidence": "user_registry.py contains no lock covering activation-code validation and persistence.",
       "evidence": [
         {
-          "detail": "redeem_activation_code reads the CSV, checks uses, increments it in memory, and replaces the file at lines 179-206 without any lock, file lock, transaction, or atomic compare-and-set.",
+          "detail": "redeem_activation_code reads CSV state, checks and increments uses, then replaces the file without a thread/process lock or conditional transaction.",
           "file": "learnerbot/user_registry.py"
         },
         {
-          "detail": "join_user, update_user, set_user_setting, and activation writes use the same unlocked read-modify-replace pattern.",
+          "detail": "User creation, updates, and per-user trading-setting writes use the same unlocked read-modify-replace pattern.",
           "file": "learnerbot/user_registry.py"
         },
         {
-          "detail": "Telegram handling is extended by multiple worker threads and callbacks, making concurrent redemptions and settings writes feasible.",
+          "detail": "Telegram functionality uses multiple callbacks and worker threads, making concurrent mutations feasible.",
           "file": "learnerbot/telegram_ui.py"
         }
       ],
-      "id": "GPT-FULL-003",
-      "impact": "Two users can redeem a nominally single-use activation code concurrently and both become active. Concurrent user or trading-setting writes can also silently overwrite one another.",
-      "root_cause": "CSV replacement provides atomic file visibility but not atomic read-modify-write semantics.",
+      "id": "GPT-AUDIT-003",
+      "impact": "Concurrent callers can both redeem a single-use code or silently overwrite authorization and trading settings.",
+      "root_cause": "Atomic file replacement guarantees file visibility, not atomicity of the preceding read, validation, and mutation.",
       "severity": "P1",
       "tests_required": [
-        "Synchronize two concurrent redemptions of a one-use code and assert exactly one succeeds.",
-        "Exercise concurrent creation and settings updates without lost rows.",
-        "Add a multi-process locking test, not only a thread test."
+        "Race two redemptions of a one-use code and assert exactly one succeeds.",
+        "Test concurrent user creation and setting changes for lost updates.",
+        "Include a multi-process locking test."
       ],
-      "title": "Activation-code use limits are not atomic"
+      "title": "Activation-code limits and user settings use unlocked read-modify-write operations"
     },
     {
-      "category": "accounting/P&L/fees",
+      "category": "accounting/P&L/concurrency",
       "confidence": 0.96,
-      "corrective_action": "Separate accrued_fee from paid_fee, store the transaction hash and nonce durably, confirm the receipt and balance transfer before marking PAID, and implement idempotent retry/reconciliation for PENDING or ambiguous fees.",
-      "deterministic_evidence": "No code path updates fee-ledger BROADCAST/PENDING rows to confirmed or failed, while P&L immediately subtracts the proposed fee.",
+      "corrective_action": "Derive token/native changes from transaction receipt logs and chain-specific metadata, retaining snapshots only as reconciliation checks.",
+      "deterministic_evidence": "Both execution paths compute economic results from balances sampled at different times.",
       "evidence": [
         {
-          "detail": "A fee transfer is considered BROADCAST immediately at lines 1157-1163. user_net and cumulative profit_fee are reduced by the fee at 1165-1172 whether the transfer confirms or remains PENDING.",
+          "detail": "Solana wallet_delta_lamports is calculated from time-separated pre/post RPC wallet balances around order, simulation, and execution.",
+          "file": "learnerbot/solana_live_executor.py"
+        },
+        {
+          "detail": "EVM realised value is derived from before/after wrapped-token balances rather than transaction-specific receipt deltas.",
+          "file": "learnerbot/auto_trader.py"
+        }
+      ],
+      "id": "GPT-AUDIT-004",
+      "impact": "Concurrent trades, transfers, rent changes, or other wallet activity can be misattributed to one trade, corrupting realised P&L, performance controls, and profit-share calculations.",
+      "root_cause": "Accounting uses wallet-level snapshots rather than transaction-scoped on-chain evidence.",
+      "severity": "P1",
+      "tests_required": [
+        "Parse EVM receipt logs and Solana transaction metadata into transaction-scoped deltas.",
+        "Inject unrelated balance movement between snapshots and prove it is excluded.",
+        "Cover fees, rent, wrapped-native movements, partial fills, and account closure."
+      ],
+      "title": "Trade P&L attributes unrelated wallet balance changes to executions"
+    },
+    {
+      "category": "accounting/fees/reconciliation",
+      "confidence": 0.97,
+      "corrective_action": "Separate accrued and paid fees, persist transaction identity and nonce, confirm settlement, and implement idempotent retry/reconciliation.",
+      "deterministic_evidence": "No code path reconciles BROADCAST/PENDING fee-ledger rows to a confirmed on-chain outcome.",
+      "evidence": [
+        {
+          "detail": "Fee transfer submission immediately reduces user net and increases cumulative profit fee while the fee ledger records BROADCAST or PENDING.",
           "file": "learnerbot/sibot.py"
         },
         {
-          "detail": "The fee transfer at lines 228-239 is never receipt-confirmed; the trade is labelled SUCCESS whenever send_raw_transaction returns, and no settlement worker is present.",
+          "detail": "A fee transfer is treated as successful when send_raw_transaction returns; its receipt is not confirmed.",
           "file": "learnerbot/auto_trader.py"
         },
         {
-          "detail": "fee_ledger.csv only appends BROADCAST/PENDING records; repository search found no fee reconciliation or retry implementation.",
+          "detail": "The ledger appends fee states but provides no durable settlement worker that resolves pending, reverted, replaced, or dropped transfers.",
           "file": "learnerbot/fee_engine.py"
         }
       ],
-      "id": "GPT-FULL-004",
-      "impact": "Reported user net, master fee revenue, and fee liabilities diverge from on-chain balances when a fee transaction is replaced, reverted, dropped, or never sent. Pending fees can remain permanently unsettled.",
-      "root_cause": "Accounting recognizes fee settlement at submission time and lacks a durable receivable/reconciliation lifecycle.",
+      "id": "GPT-AUDIT-005",
+      "impact": "Reported user net, master revenue, and outstanding liabilities can diverge from on-chain balances indefinitely.",
+      "root_cause": "Fee accrual and confirmed payment are represented as the same accounting event.",
       "severity": "P2",
       "tests_required": [
-        "Cover confirmed, reverted, dropped, timed-out, and failed-before-send fee transfers.",
-        "Verify gross P&L, user-net P&L, accrued fees, and paid fees reconcile independently.",
-        "Verify restart recovery cannot charge a fee twice."
+        "Cover confirmed, reverted, dropped, replaced, timed-out, and pre-send failures.",
+        "Reconcile gross P&L, user net, accrued fees, and paid fees independently.",
+        "Verify restart recovery cannot double-charge."
       ],
-      "title": "Profit-share liabilities are booked as paid without confirmation or recovery"
+      "title": "Profit-share submissions are accounted as paid without confirmation"
     },
     {
-      "category": "Strategy Lab/database/operational regression",
+      "category": "Strategy Lab/database",
       "confidence": 0.99,
-      "corrective_action": "Make portfolio/report evaluation pure; persist decisions only on an explicit scheduled evaluation when inputs changed. Split get_or_create from register_new_version and never reset an existing lifecycle status during lookup.",
-      "deterministic_evidence": "The nominal report call deterministically executes UPDATE and INSERT statements for every strategy.",
+      "corrective_action": "Make report evaluation pure, persist only explicit material-change evaluations, and separate get-or-create lookup from new-version registration.",
+      "deterministic_evidence": "The report call deterministically reaches UPDATE and INSERT statements for registered strategies.",
       "evidence": [
         {
-          "detail": "The master-only report calls portfolio_report at line 31 and describes itself as recording-only/read-only.",
+          "detail": "The master report calls portfolio_report while presenting the command as read-only.",
           "file": "learnerbot/telegram_strategy_lab_report_patch.py"
         },
         {
-          "detail": "portfolio_report calls evaluate_strategy for every registered strategy at lines 472-479. evaluate_strategy updates registry status and inserts a new decision row on every call at 458-468.",
+          "detail": "portfolio_report evaluates every strategy; evaluation updates registry status and inserts a decision row on each call.",
           "file": "learnerbot/strategy_lab.py"
         },
         {
-          "detail": "Cache-cold strategy lookup invokes register_strategy at lines 50-65; register_strategy increments version and resets existing status to SHADOW in strategy_lab.py lines 194-220.",
+          "detail": "A cache-cold lookup can call register_strategy, increment the version, and reset an existing lifecycle status to SHADOW.",
           "file": "learnerbot/strategy_lab_live_recording_patch.py"
         }
       ],
-      "id": "GPT-FULL-005",
-      "impact": "Opening a report changes strategy lifecycle state and adds duplicate decisions. Process restarts or first events can increment versions and erase REPLACE/REWORK/PROMOTION_CANDIDATE status back to SHADOW, undermining the live sizing throttle and growing SQLite indefinitely.",
-      "root_cause": "Queries, evaluation persistence, and idempotent strategy lookup are conflated.",
+      "id": "GPT-AUDIT-006",
+      "impact": "Viewing a report changes control state, restarts can erase REWORK/REPLACE status and weaken the sizing throttle, and duplicate decisions grow SQLite storage.",
+      "root_cause": "Read queries, evaluation persistence, and idempotent lookup are conflated.",
       "severity": "P2",
       "tests_required": [
-        "Assert repeated report rendering produces no database writes.",
-        "Assert restart/cache loss does not change version or status.",
-        "Assert a new version is created only when the canonical strategy specification changes.",
-        "Add bounded retention or deduplication for decision history."
+        "Assert repeated report rendering performs no writes.",
+        "Assert cache loss or restart preserves version and status.",
+        "Create a new version only when canonical strategy specification changes.",
+        "Deduplicate or safely bound decision history."
       ],
-      "title": "Read-only Strategy Lab reports mutate lifecycle state and grow the database"
+      "title": "Read-only Strategy Lab reports mutate lifecycle state and grow decision history"
     },
     {
-      "category": "workflows/cost/bandwidth/disk",
+      "category": "workflows/cost/bandwidth",
       "confidence": 0.99,
-      "corrective_action": "Use a minimal preflight job to read control and report signatures first, dispatch adjudication only on material change, use shallow/API-only retrieval where possible, pin and cache provider CLIs, and bound cache/worktree/artifact retention without deleting databases, wallets, or audit evidence.",
-      "deterministic_evidence": "Workflow step ordering unconditionally places installation before both the lane gate and the unchanged-report gate.",
+      "corrective_action": "Use an event-driven minimal preflight, gate disabled/unchanged work before checkout and installation, use shallow/API retrieval, and pin/cache provider tools.",
+      "deterministic_evidence": "Workflow step ordering places expensive setup ahead of both lane and unchanged-content gates.",
       "evidence": [
         {
-          "detail": "The workflow runs every five minutes with a two-lane matrix. Each job performs full-history checkout and installs requirements plus four @latest AI CLIs at lines 44-70 before reading lane controls or checking the unchanged-report signature at lines 72-229.",
+          "detail": "The five-minute, two-lane matrix performs full-history checkout and installs requirements plus four @latest provider CLIs before checking lane controls and unchanged-report signatures.",
           "file": ".github/workflows/selected-ai-master.yml"
         },
         {
-          "detail": "Deterministic inventory at this commit reports 36 scheduled workflows, 11 scheduled self-hosted workflows, 22 full-history checkouts, 38 latest CLI installs, 23 npm installs, 58 pip installs, and 47 paid-AI-signalling workflows.",
+          "detail": "Deterministic inventory reports 36 scheduled workflows, 11 scheduled self-hosted workflows, 22 full-history checkouts, 46 git fetches, 38 latest CLI installs, 23 npm installs, 58 pip installs, and 47 paid-AI workflows.",
           "file": "scripts/weekly_bug_audit_baseline.py"
         },
         {
-          "detail": "Root filesystem is 84.54% used with 2,157,146,112 bytes free. Host-wide network delta was approximately 968.92 MB/hour; attribution to this bot alone is not available.",
-          "file": "engineering/ops/latest.json on origin/ai-reviews"
+          "detail": "Host-wide sampled network rate is 180.566 MB/hour; telemetry explicitly does not attribute this solely to the bot.",
+          "file": "origin/ai-reviews:engineering/ops/latest.json"
         }
       ],
-      "id": "GPT-FULL-006",
-      "impact": "The selected-master schedule can create up to 576 matrix jobs per day that download dependencies and full history even when disabled or already adjudicated. This wastes GitHub/network resources and increases cache/worktree pressure on an already constrained VPS ecosystem.",
-      "root_cause": "Cheap control/material-change gates occur after checkout, setup, and tool installation; provider CLIs are installed unpinned on every run.",
+      "id": "GPT-AUDIT-007",
+      "impact": "Disabled or unchanged lanes repeatedly consume API/model budget, bandwidth, runner time, package caches, and workspace disk.",
+      "root_cause": "Cheap control and material-change checks occur after checkout and dependency/tool installation.",
       "severity": "P2",
       "tests_required": [
-        "Workflow test proving unchanged reports skip checkout and all package installs.",
-        "Workflow test proving disabled lanes create no matrix worker.",
-        "Measure per-run downloaded bytes, cache growth, and retained worktrees.",
-        "Verify optimization preserves all trading and safety controls."
+        "Prove unchanged reports skip provider calls, checkout, and package installation.",
+        "Prove disabled lanes create no matrix worker.",
+        "Measure per-run downloads, provider calls, cache growth, and retained worktrees.",
+        "Verify optimisation preserves all trading safety controls."
       ],
-      "title": "High-frequency adjudication installs every provider CLI before determining that no work is needed"
+      "title": "Scheduled AI adjudication performs expensive setup before material-change gates"
+    },
+    {
+      "category": "operations/disk/deployment",
+      "confidence": 0.98,
+      "corrective_action": "Measure all major paths and growth rates, then apply bounded, recoverable retention to disposable workspaces, caches, logs, and artifacts; never automatically remove wallets, databases, or audit evidence.",
+      "deterministic_evidence": "The sanitised snapshot directly measures only 573820928 free bytes and labels disk status CRITICAL.",
+      "evidence": [
+        {
+          "detail": "Root filesystem is 92.08% used with 573820928 bytes free; disk status is CRITICAL and the runner workspace consumes 319075967 bytes.",
+          "file": "origin/ai-reviews:engineering/ops/latest.json"
+        },
+        {
+          "detail": "The size-only attribution snapshot identifies actions-runner and /usr/local usage but reports several production, cache, log, and temporary locations as null, leaving the dominant growth source unresolved.",
+          "file": "origin/ai-reviews:engineering/ops/disk-attribution.json"
+        }
+      ],
+      "id": "GPT-AUDIT-008",
+      "impact": "Package installation, checkout, SQLite WAL growth, backups, or deployment can exhaust the filesystem, causing database write failures, partial deployments, missing audit records, and service interruption.",
+      "root_cause": "Numerous scheduled self-hosted jobs generate workspaces and caches while retention and complete disk-growth attribution are insufficient.",
+      "severity": "P1",
+      "tests_required": [
+        "Alert and fail safely before SQLite or deployment space is exhausted.",
+        "Measure workspace/cache/log growth across scheduled workflow cycles.",
+        "Verify cleanup allowlists exclude wallet material, databases, and audit evidence.",
+        "Confirm interrupted writes and deployments recover safely under ENOSPC."
+      ],
+      "title": "Root filesystem has critically low free space without complete growth attribution"
     }
   ],
   "no_live_changes": true,
   "provider": "gpt",
   "refusals_or_limits": [
-    "Report-only audit: no repository files were edited, and no trade, deployment, wallet/signing operation, secret access, or LIVE/capital change was performed.",
-    "The full pytest suite could not run in the supplied interpreter because PyYAML and solders were absent. Python compileall passed; pytest stopped during collection with 43 dependency-related errors.",
-    "No seven-day trades or high-resolution execution samples were present in the sanitized snapshot, so trade-latency baselines and latency-to-P&L effects are INSUFFICIENT DATA.",
-    "Infrastructure provider, region, current monthly cost, candidate cost, and same-workload candidate performance were UNKNOWN; no server migration is recommended."
+    "Report-only review: no repository files were edited and no trade, deployment, LIVE/ARMED, capital, wallet, signing, or secret operation was performed.",
+    "The supplied interpreter lacked PyYAML and solders. Compileall passed, but full pytest stopped during collection with 43 dependency-related errors; test execution is therefore incomplete.",
+    "The sanitised latency snapshot contains zero observed seven-day trades and zero high-resolution LIVE execution samples. Per-trade latency, chain trade share, same-server normal latency, and latency effects on execution success, slippage, or realised P&L are INSUFFICIENT DATA.",
+    "Infrastructure provider, region, current monthly cost, candidate prices, and measured same-workload candidate benefit are UNKNOWN. The supported conclusion is BENCHMARK, not MOVE.",
+    "Host network counters cover all non-loopback host interfaces and were not attributed to this bot alone."
   ],
   "report_only": true,
   "schema_version": 1,
@@ -197,30 +247,41 @@
   "source_commit": "79fda32c32c6c8d782745831a296b9b98e8dca14",
   "status": "ISSUES_FOUND",
   "summary": {
-    "highest_risk": "EVM execution lacks durable transaction claiming and ambiguous-broadcast reconciliation, permitting duplicate submissions and incorrect accounting.",
-    "operational_efficiency": {
-      "api_model_cost": "OPTIMISE",
-      "disk_usage": "WATCH: root filesystem 84.54% used, 2,157,146,112 bytes free; runner workspace 215,867,914 bytes.",
-      "host_network": "Host-wide only: approximately 968.92 MB/hour in the latest interval; it cannot be attributed solely to the bot.",
-      "server_bandwidth": "OPTIMISE"
+    "highest_risk": "EVM execution lacks atomic exit claiming, wallet-scoped nonce allocation, and durable ambiguous-broadcast reconciliation, permitting duplicate submissions and accounting divergence.",
+    "operational_efficiency_audit": {
+      "api_model_cost": "OPTIMISE: 47 paid-AI workflows, 38 @latest CLI installs, and expensive setup before material-change gates.",
+      "disk_usage": "CRITICAL: sanitised snapshot reports 92.08% root usage and 573820928 free bytes; runner workspace is 319075967 bytes.",
+      "host_network": "Host-wide, not bot-attributed: 180.566 MB/hour during the sampled interval. Bandwidth-plan limit is UNKNOWN.",
+      "server_bandwidth": "OPTIMISE: 36 scheduled workflows, 11 scheduled self-hosted workflows, 22 full-history checkouts, 46 git fetches, 58 pip installs, and 23 npm installs."
     },
-    "result": "Six concrete defects or operational regressions were identified.",
+    "result": "Eight concrete defects and operational regressions were identified.",
     "trade_latency": {
-      "current_24h": "INSUFFICIENT DATA: 0 samples",
-      "execution_outcome_relationship": "UNKNOWN: no observed trades support a latency relationship with success, slippage, or realised P&L.",
-      "high_resolution_execution_stages": "INSUFFICIENT DATA: zero samples for coarse receive delay, strategy/preflight, Jupiter order, transaction construction/signing, simulation, execute, post-balance, local total, and event-to-result total.",
+      "coverage": "0 of 0 seven-day trades; no per-trade evidence and no seven-day trade share.",
+      "current_24h": "INSUFFICIENT DATA: count 0; p50 and p95 unavailable.",
+      "execution_success_slippage_pnl_relationship": "UNKNOWN: telemetry contains no observed trades from which to establish a relationship.",
+      "high_resolution_solana_stages": {
+        "coarse_event_receive_delay_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "execute_request_result_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "jupiter_order_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "post_execution_balance_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "simulation_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "strategy_preflight_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "total_event_to_result_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "total_local_execution_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples",
+        "transaction_construction_signing_ms": "INSUFFICIENT DATA: 0 current and 0 baseline samples"
+      },
       "infrastructure_conclusion": "BENCHMARK",
-      "infrastructure_reason": "Current provider, region, monthly cost, candidate prices, measured candidate benefit, and chain-weighted trade share are UNKNOWN. No MOVE case is supported.",
+      "infrastructure_reason": "Current provider, region, monthly cost, alternative provider/region/cost, chain-weighted trade share, and same-workload candidate benefit are UNKNOWN. Zero high-resolution samples preclude MOVE.",
       "observed_chains_with_trades_7d": [],
-      "preceding_six_day_baseline": "INSUFFICIENT DATA: 0 samples",
-      "rpc_round_trip": "3 samples; p50 235.63 ms, p95 568.84 ms, max 605.87 ms",
-      "solana_metric": "leader_signal_to_copy_entry_ms; observed leader-event timestamp to local LIVE copied-position entry, not validator confirmation latency"
+      "preceding_six_day_same_server_baseline": "INSUFFICIENT DATA: count 0; p50 and p95 unavailable.",
+      "rpc_round_trip": "Separate getSlot probe: 3 samples, p50 203.22 ms, p95 222.46 ms, maximum 224.59 ms.",
+      "solana_metric": "leader_signal_to_copy_entry_ms: leader-event timestamp to local LIVE copied-position entry; not validator confirmation latency."
     },
     "verification": {
-      "checkout_exact": true,
-      "pytest": "INCOMPLETE: collection stopped with 43 errors because the supplied environment lacked PyYAML and solders.",
-      "python_compile": "PASS",
-      "worktree_clean_before_audit": true
+      "compileall": "PASS",
+      "exact_commit_verified": true,
+      "pytest": "INCOMPLETE: collection stopped with 43 errors because the supplied Python environment lacked PyYAML and solders.",
+      "worktree_clean": true
     }
   }
 }
