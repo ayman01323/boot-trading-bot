@@ -4,6 +4,7 @@ import sqlite3
 from decimal import Decimal
 from types import SimpleNamespace
 
+from learnerbot import solana_owner_changeset_4_exit_safety_patch as exit_safety
 from learnerbot import solana_owner_changeset_4_patch as owner
 
 
@@ -13,6 +14,11 @@ def test_changeset_stamp_and_limits():
     assert owner.OWNER_LIVE_TRADE_SOL == Decimal("0.005")
     assert owner.OWNER_MAX_LIVE_POSITIONS == 10
     assert owner.OWNER_FORCE_EXIT_SECONDS == 33 * 60
+
+
+def test_timed_exit_uses_existing_safe_slice_backoff():
+    assert exit_safety.CHANGESET4_TIMED_EXIT_REASON == "SOLANA_OWNER_CHANGESET4_33M_FULL_EXIT"
+    assert exit_safety.CHANGESET4_TIMED_EXIT_REASON in exit_safety._emergency._LOSS_EXIT_REASONS
 
 
 def test_live_limits_pin_trade_but_preserve_reserve(monkeypatch):
