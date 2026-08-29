@@ -1,0 +1,31 @@
+name: Change Set 5 Learner Telegram Reject CI
+
+on:
+  pull_request:
+    paths:
+      - 'learnerbot/solana_leader_cursor_reliability_patch.py'
+      - 'tests/test_solana_reject_telegram_changeset5.py'
+      - 'docs/change-control/2026-08-29T110551Z-change-set-5.md'
+      - '.github/workflows/changeset-5-telegram-reject-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  changeset5:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+      - name: Compile reporting code
+        run: |
+          python -m py_compile learnerbot/solana_leader_cursor_reliability_patch.py tests/test_solana_reject_telegram_changeset5.py
+      - name: Run Change Set 5 tests
+        run: pytest -q tests/test_solana_reject_telegram_changeset5.py
