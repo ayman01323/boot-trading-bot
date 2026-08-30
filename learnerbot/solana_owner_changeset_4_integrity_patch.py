@@ -97,3 +97,9 @@ from . import solana_lp_warning_only_patch as _lp_warning_only  # noqa: E402,F40
 # duplicate-SELL guard verified above. Reverting the change removes this import
 # and the isolated patch without altering any pre-existing exit implementation.
 from . import solana_manual_force_exit_reconcile_patch as _manual_force_reconcile  # noqa: E402,F401
+
+# SiLearn — 2026-08-30 — executable NET P/L economics tuning.
+# Loaded only after the stamped Change Set 4 integrity proof and all existing
+# post-integrity safety/recovery layers. This changes settings only: no trading
+# hook, signer, simulation, reserve, PoolCheck or protected-close function.
+from . import solana_net_profit_settings_patch as _net_profit_settings  # noqa: E402,F401
