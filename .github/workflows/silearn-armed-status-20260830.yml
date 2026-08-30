@@ -1,0 +1,98 @@
+name: SiLearn Armed Status 20260830
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/silearn-armed-status-20260830.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read SiLearn armed state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+
+          ACTIVE="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          SUBSTATE="$(systemctl show -p SubState --value "$SERVICE" 2>/dev/null || true)"
+          echo "service_active=${ACTIVE:-unknown}"
+          echo "service_substate=${SUBSTATE:-unknown}"
+
+          TID="$(cat "$ROOT/private/.verified_morning_rearm_tid" 2>/dev/null || true)"
+          if [[ -z "$TID" ]]; then
+            TID="$(python3 - <<'PY'
+import csv
+from pathlib import Path
+p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/users.csv')
+try:
+    rows=list(csv.DictReader(p.open(encoding='utf-8-sig')))
+except Exception:
+    rows=[]
+print(next((str(r.get('telegram_id') or '').strip() for r in rows if str(r.get('status') or '').upper()=='ACTIVE' and str(r.get('role') or '').upper()=='MASTER'),''))
+PY
+)"
+          fi
+
+          export ROOT TID
+          python3 - <<'PY'
+import csv, os, sqlite3
+from pathlib import Path
+root=Path(os.environ['ROOT'])
+tid=os.environ.get('TID','').strip()
+settings=root/'CSVbot'/'user_trading_settings.csv'
+rows=[]
+try:
+    rows=list(csv.DictReader(settings.open(encoding='utf-8-sig', newline='')))
+except Exception:
+    pass
+
+def val(name, chain=None):
+    found=''
+    for r in rows:
+        if str(r.get('telegram_id') or '').strip()!=tid:
+            continue
+        if str(r.get('setting') or '').strip()!=name:
+            continue
+        if chain is not None and str(r.get('chain_id') or '').strip()!=str(chain):
+            continue
+        found=str(r.get('value') or '').strip()
+    return found
+
+live=val('solana_live_enabled','-101').lower()
+entries=val('learner_new_entries_enabled','-101').lower()
+sibot=val('sibot_enabled','*').lower() or val('sibot_enabled','0').lower()
+auto=val('sibot_auto_trade_enabled','*').lower() or val('sibot_auto_trade_enabled','0').lower()
+print('solana_live_enabled='+ (live or 'missing'))
+print('learner_new_entries_enabled='+ (entries or 'missing'))
+print('sibot_enabled='+ (sibot or 'missing'))
+print('sibot_auto_trade_enabled='+ (auto or 'missing'))
+
+open_live='unknown'
+db=root/'data'/'solana_sibot.sqlite3'
+try:
+    con=sqlite3.connect(db)
+    open_live=str(con.execute("select count(*) from positions where mode='LIVE' and status='OPEN'").fetchone()[0])
+    con.close()
+except Exception:
+    pass
+print('open_live_positions='+open_live)
+
+flags_ok=(live=='true' and entries=='true' and sibot=='true' and auto=='true')
+print('trading_flags_armed='+('true' if flags_ok else 'false'))
+PY
+
+          if [[ "$ACTIVE" == "active" ]]; then
+            echo "runtime_ok=true"
+          else
+            echo "runtime_ok=false"
+          fi
