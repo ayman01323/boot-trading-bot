@@ -70,28 +70,28 @@ FILES=(
   "SiRisky/overrides/sirisky/stage1_data.py"
   "SiRisky/overrides/sirisky/stage3_risk.py"
   "SiRisky/overrides/sirisky/stage5_trade.py"
+  "SiRisky/overrides/sirisky/position_telegram.py"
 )
 for f in "${FILES[@]}"; do
   [[ -f "$SRC/$f" ]] || { echo "REFUSED: missing source $f" >&2; exit 4; }
 done
 
-# Refuse any source revision that removes the hard SHADOW/broadcast locks from
-# the deployment workflow inputs we rely on.
 grep -q 'broadcast_enabled' "$SRC/SiRisky/overrides/run.py"
 grep -q 'mode=="SHADOW"' "$SRC/SiRisky/overrides/sirisky/stage5_trade.py"
+grep -q 'PENDING SETTLEMENT' "$SRC/SiRisky/overrides/sirisky/position_telegram.py"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP="$DST/data/deploy_backups/$stamp"
 mkdir -p "$BACKUP/sirisky"
 cp -a "$DST/run.py" "$BACKUP/run.py"
-for f in engine.py stage1_data.py stage3_risk.py stage5_trade.py; do
+for f in engine.py stage1_data.py stage3_risk.py stage5_trade.py position_telegram.py; do
   cp -a "$DST/sirisky/$f" "$BACKUP/sirisky/$f"
 done
 
 rollback() {
   echo "ROLLBACK: restoring $BACKUP" >&2
   cp -a "$BACKUP/run.py" "$DST/run.py" || true
-  for f in engine.py stage1_data.py stage3_risk.py stage5_trade.py; do
+  for f in engine.py stage1_data.py stage3_risk.py stage5_trade.py position_telegram.py; do
     cp -a "$BACKUP/sirisky/$f" "$DST/sirisky/$f" || true
   done
   systemctl restart "$SERVICE" || true
@@ -103,6 +103,7 @@ install -m 0644 "$SRC/SiRisky/overrides/sirisky/engine.py" "$DST/sirisky/engine.
 install -m 0644 "$SRC/SiRisky/overrides/sirisky/stage1_data.py" "$DST/sirisky/stage1_data.py"
 install -m 0644 "$SRC/SiRisky/overrides/sirisky/stage3_risk.py" "$DST/sirisky/stage3_risk.py"
 install -m 0644 "$SRC/SiRisky/overrides/sirisky/stage5_trade.py" "$DST/sirisky/stage5_trade.py"
+install -m 0644 "$SRC/SiRisky/overrides/sirisky/position_telegram.py" "$DST/sirisky/position_telegram.py"
 
 python3 - "$DST/CSV/runtime.csv" <<'PY'
 import csv, sys
@@ -118,6 +119,9 @@ updates={
   'auto_promote_to_selected':('1','Feed ranked Stage-1 candidates automatically'),
   'auto_evaluate_candidate_limit':('5','Evaluate up to five distinct ranked candidates per cycle'),
   'failed_mint_cooldown_seconds':('180','Skip failed SHADOW BUY mint for three minutes'),
+  'same_mint_reentry_cooldown_seconds':('60','Block immediate successful-LIVE same-mint re-entry'),
+  'persistent_wsol_enabled':('0','Issue #726 feature flag; remains OFF until builder/preflight simulation is proven'),
+  'persistent_wsol_min_balance_sol':('0','Minimum retained WSOL balance when persistent mode is later explicitly enabled'),
   'manual_approval_enabled':('1','Retained for any non-SHADOW/live-money path'),
   'manual_approval_require_external_signature':('1','Retained for any non-SHADOW/live-money path'),
   'broadcast_enabled':('0','Hard lock: no real transaction broadcast'),
@@ -140,6 +144,8 @@ runtime_value() {
 [[ "$(runtime_value paper_auto_trade_enabled)" == "1" ]]
 [[ "$(runtime_value broadcast_enabled)" == "0" ]]
 [[ "$(runtime_value manual_approval_require_external_signature)" == "1" ]]
+[[ "$(runtime_value same_mint_reentry_cooldown_seconds)" == "60" ]]
+[[ "$(runtime_value persistent_wsol_enabled)" == "0" ]]
 
 cd "$DST"
 PYTHONPATH=. .venv/bin/python -m compileall -q sirisky run.py tests
@@ -150,12 +156,11 @@ systemctl restart "$SERVICE"
 sleep 3
 systemctl is-active --quiet "$SERVICE"
 
-# A single validation cycle is safe because the wrapper has forced SHADOW and
-# broadcast=0 immediately beforehand.
 PYTHONPATH=. .venv/bin/python run.py once
 
 [[ "$(runtime_value trading_mode)" == "SHADOW" ]]
 [[ "$(runtime_value broadcast_enabled)" == "0" ]]
+[[ "$(runtime_value persistent_wsol_enabled)" == "0" ]]
 
 trap - EXIT
 
@@ -164,7 +169,8 @@ echo "sha=$TARGET_SHA"
 echo "service=$(systemctl is-active "$SERVICE")"
 echo "trading_mode=$(runtime_value trading_mode)"
 echo "broadcast_enabled=$(runtime_value broadcast_enabled)"
-echo "failed_mint_cooldown_seconds=$(runtime_value failed_mint_cooldown_seconds)"
+echo "same_mint_reentry_cooldown_seconds=$(runtime_value same_mint_reentry_cooldown_seconds)"
+echo "persistent_wsol_enabled=$(runtime_value persistent_wsol_enabled)"
 echo "discovery_state=$(cat "$DST/data/stage1_discovery_state.json" 2>/dev/null || echo '{}')"
 echo "latest_executions:"
 tail -n 8 "$DST/CSV/executions.csv" 2>/dev/null || true
@@ -180,7 +186,6 @@ chmod 0440 "$SUDOERS"
 chown root:root "$SUDOERS"
 visudo -cf "$SUDOERS" >/dev/null
 
-# Prove the exact runner identity can invoke the wrapper without a password.
 sudo -u "$RUNNER_USER" sudo -n -l "$WRAPPER" >/dev/null
 
 echo "SiRisky GitHub operations installed."
