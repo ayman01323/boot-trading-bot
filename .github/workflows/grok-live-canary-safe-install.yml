@@ -7,6 +7,7 @@ on:
       - 'testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example'
       - 'testingbots/grok_known_assets_bot/src/grok_known_assets_bot/live_canary.py'
       - 'testingbots/grok_known_assets_bot/src/grok_known_assets_bot/live_canary_runner.py'
+      - 'testingbots/grok_known_assets_bot/src/grok_known_assets_bot/auto_canary_runner.py'
       - 'testingbots/grok_known_assets_bot/src/grok_known_assets_bot/live_execution.py'
       - 'testingbots/grok_known_assets_bot/src/grok_known_assets_bot/live_readiness.py'
       - '.github/workflows/grok-live-canary-safe-install.yml'
@@ -15,8 +16,6 @@ on:
 permissions:
   contents: read
 
-# Share the existing Grok deployment lock so file installation and service-state
-# enforcement cannot race the PAPER/Telegram deployment workflow.
 concurrency:
   group: deploy-grok-known-assets-testing-bot
   cancel-in-progress: false
@@ -33,15 +32,26 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
 
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Checkout exact commit into unique source directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_ROOT="${RUNNER_TEMP}/grok-safe-install-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$SRC_ROOT"
+          mkdir -p "$SRC_ROOT"
+          git -C "$SRC_ROOT" init -q
+          git -C "$SRC_ROOT" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$SRC_ROOT" fetch --quiet --depth=1 origin "$GITHUB_SHA"
+          git -C "$SRC_ROOT" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$SRC_ROOT" rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "GROK_SOURCE_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+          echo "isolated_checkout=PASS"
 
       - name: Install canary unit but force it disabled and inactive
         shell: bash
         run: |
           set -euo pipefail
-          SRC="$GITHUB_WORKSPACE/testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example"
+          SRC="$GROK_SOURCE_ROOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example"
           test -s "$SRC"
           sudo install -m 0644 "$SRC" /etc/systemd/system/grok-known-assets-canary.service
           sudo systemctl daemon-reload

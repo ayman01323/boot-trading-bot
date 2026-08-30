@@ -30,16 +30,27 @@ jobs:
           test "$(hostname)" = "botgoogle"
           test "$(id -un)" = "ayman01323"
 
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+      - name: Checkout exact commit into unique source directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_ROOT="${RUNNER_TEMP}/grok-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$SRC_ROOT"
+          mkdir -p "$SRC_ROOT"
+          git -C "$SRC_ROOT" init -q
+          git -C "$SRC_ROOT" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$SRC_ROOT" fetch --quiet --depth=1 origin "$GITHUB_SHA"
+          git -C "$SRC_ROOT" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$SRC_ROOT" rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "GROK_SOURCE_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+          echo "isolated_checkout=PASS"
 
       - name: Deploy isolated bot files and run tests
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x testingbots/grok_known_assets_bot/scripts/install.sh
-          testingbots/grok_known_assets_bot/scripts/install.sh "$GITHUB_WORKSPACE/testingbots/grok_known_assets_bot"
+          chmod +x "$GROK_SOURCE_ROOT/testingbots/grok_known_assets_bot/scripts/install.sh"
+          "$GROK_SOURCE_ROOT/testingbots/grok_known_assets_bot/scripts/install.sh" "$GROK_SOURCE_ROOT/testingbots/grok_known_assets_bot"
 
       - name: Enforce PAPER-only deployed config
         shell: bash
