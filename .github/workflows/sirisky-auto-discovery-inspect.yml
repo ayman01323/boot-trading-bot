@@ -1,4 +1,4 @@
-name: SiRisky Issue 726 Jupiter Builder Inspect
+name: SiRisky Issue 726 Jupiter Structure Inspect
 
 on:
   push:
@@ -13,31 +13,27 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Read-only installed Jupiter builder capability
+      - name: Read-only sanitized Jupiter function structure
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           sudo -n python3 - <<'PY'
-          import ast, hashlib
+          import ast, re
           from pathlib import Path
-
-          p=Path('/root/SiRisky/sirisky/jupiter.py')
-          raw=p.read_bytes()
-          text=raw.decode('utf-8')
+          text=Path('/root/SiRisky/sirisky/jupiter.py').read_text(encoding='utf-8')
           tree=ast.parse(text)
-          print('file_sha256='+hashlib.sha256(raw).hexdigest())
-          for target in ('order','execute_order','quote_only'):
-              fn=next((n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==target),None)
-              if fn is None:
-                  print(f'{target}_present=false')
+          funcs=[n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]
+          print('functions='+','.join(funcs))
+          wanted={'_headers','_request_json','_json_request','quote_only','order','execute_order'}
+          for fn in tree.body:
+              if not isinstance(fn,(ast.FunctionDef,ast.AsyncFunctionDef)) or fn.name not in wanted:
                   continue
-              args=[a.arg for a in fn.args.posonlyargs+fn.args.args+fn.args.kwonlyargs]
-              print(f'{target}_present=true')
-              print(f'{target}_args='+','.join(args))
-              print(f'{target}_var_kw='+(fn.args.kwarg.arg if fn.args.kwarg else 'NONE'))
-          for marker in ('wrapAndUnwrapSol','wrap_and_unwrap_sol','destinationTokenAccount','destination_token_account','sourceTokenAccount','source_token_account'):
-              print(marker+'='+('true' if marker in text else 'false'))
+              src=ast.get_source_segment(text,fn) or ''
+              src=re.sub(r'https?://[^\"\' ]+','<url>',src)
+              src=re.sub(r'(?i)(api[-_]?key|authorization|bearer)[^\n]{0,120}',r'\1=<redacted>',src)
+              print('===FUNCTION '+fn.name+'===')
+              print(src)
           print('runtime_changed=false')
           print('service_restarted=false')
           print('transaction_broadcast=false')
