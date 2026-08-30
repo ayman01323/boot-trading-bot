@@ -1,10 +1,9 @@
-name: SiRisky Auto Discovery Inspect
+name: SiRisky Issue 726 Jupiter Builder Inspect
 
 on:
   push:
     paths:
       - '.github/workflows/sirisky-auto-discovery-inspect.yml'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,21 +11,34 @@ permissions:
 jobs:
   inspect:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Inspect current SiRisky Stage 1 integration
+      - name: Read-only installed Jupiter builder capability
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
-          sudo -n true
-          for f in stage1_data.py stage2_strategy.py stage3_risk.py stage5_trade.py engine.py models.py config.py jupiter.py; do
-            echo "=== $f ==="
-            sudo -n sed -n '1,380p' "/root/SiRisky/sirisky/$f"
-          done
-          echo '=== run.py ==='
-          sudo -n sed -n '1,420p' /root/SiRisky/run.py
-          echo '=== runtime.csv ==='
-          sudo -n cat /root/SiRisky/CSV/runtime.csv
-          echo '=== stage1_selected_pools.csv ==='
-          sudo -n cat /root/SiRisky/CSV/stage1_selected_pools.csv
+          sudo -n python3 - <<'PY'
+          import ast, hashlib
+          from pathlib import Path
+
+          p=Path('/root/SiRisky/sirisky/jupiter.py')
+          raw=p.read_bytes()
+          text=raw.decode('utf-8')
+          tree=ast.parse(text)
+          print('file_sha256='+hashlib.sha256(raw).hexdigest())
+          for target in ('order','execute_order','quote_only'):
+              fn=next((n for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and n.name==target),None)
+              if fn is None:
+                  print(f'{target}_present=false')
+                  continue
+              args=[a.arg for a in fn.args.posonlyargs+fn.args.args+fn.args.kwonlyargs]
+              print(f'{target}_present=true')
+              print(f'{target}_args='+','.join(args))
+              print(f'{target}_var_kw='+(fn.args.kwarg.arg if fn.args.kwarg else 'NONE'))
+          for marker in ('wrapAndUnwrapSol','wrap_and_unwrap_sol','destinationTokenAccount','destination_token_account','sourceTokenAccount','source_token_account'):
+              print(marker+'='+('true' if marker in text else 'false'))
+          print('runtime_changed=false')
+          print('service_restarted=false')
+          print('transaction_broadcast=false')
+          PY
