@@ -26,6 +26,23 @@ def _entry_wording(text: str | None) -> str | None:
     )
 
 
+def _live_ready_activation_wording(text: str | None) -> str | None:
+    """Report the real canary state without weakening the approval boundary."""
+    if text is None:
+        return None
+    state = _base.load_state()
+    if not bool(state.get("live_money_enabled")):
+        return text
+    return (
+        str(text)
+        .replace("Signing: DISABLED", "Signing: ENABLED (manual canary)")
+        .replace(
+            "Broadcast: DISABLED",
+            "Broadcast path: ENABLED — APPROVAL-GATED; no transaction sent yet",
+        )
+    )
+
+
 def _status_text() -> str:
     return str(_entry_wording(_ORIG_STATUS_TEXT()) or "")
 
@@ -58,7 +75,10 @@ def _event_alert_text(kind: str, asset: str, payload: dict[str, Any]) -> str | N
             f"/grokapprove {approval_id} CONFIRM\n\n"
             "Expires fast. The runner revalidates, simulates and checks funding before broadcast."
         )
-    return _entry_wording(_ORIG_EVENT_ALERT_TEXT(kind, asset, payload))
+    text = _entry_wording(_ORIG_EVENT_ALERT_TEXT(kind, asset, payload))
+    if kind == "LIVE_READY":
+        text = _live_ready_activation_wording(text)
+    return text
 
 
 def run() -> int:
