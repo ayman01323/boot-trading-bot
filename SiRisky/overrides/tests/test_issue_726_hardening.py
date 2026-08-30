@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sirisky.stage5_trade import Stage5Trade, WSOL_MINT, reconcile_transaction, realised_cycle_pnl_lamports
+from sirisky.stage5_trade import Stage5Trade, WSOL_MINT, reconcile_transaction, realised_cycle_pnl_lamports, account_funding_delta_lamports
 
 
 TAKER="Wallet111111111111111111111111111111111111"
@@ -55,6 +55,15 @@ class SettlementMathTests(unittest.TestCase):
         self.assertEqual(s["wsol_delta_raw"],10_073_057)
         self.assertEqual(s["account_funding_delta_lamports"],-2_074_080)
         self.assertEqual(realised_cycle_pnl_lamports(b,s),1_060_252)
+
+    def test_persistent_wsol_account_funding_excludes_trade_cashflow(self):
+        settlement={
+            "native_delta_lamports":-10_000,
+            "network_fee_lamports":5_000,
+            "wsol_delta_raw":-9_000_000,
+        }
+        self.assertEqual(account_funding_delta_lamports(settlement,persistent_wsol=True),-5_000)
+        self.assertEqual(account_funding_delta_lamports(settlement,persistent_wsol=False),8_995_000)
 
     def test_three_deal_total_matches_audit(self):
         settlements=[
