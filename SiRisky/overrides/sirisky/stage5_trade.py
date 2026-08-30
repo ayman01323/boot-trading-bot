@@ -224,6 +224,22 @@ def realised_cycle_pnl_lamports(buy_settlement: dict, sell_settlement: dict) -> 
     return int(buy_settlement.get("wsol_delta_raw") or 0)+int(sell_settlement.get("wsol_delta_raw") or 0)-int(buy_settlement.get("network_fee_lamports") or 0)-int(sell_settlement.get("network_fee_lamports") or 0)
 
 
+def account_funding_delta_lamports(settlement: dict, persistent_wsol: bool=False) -> int:
+    """Return native SOL movement excluding trade cashflow and network fee.
+
+    Legacy mode wraps/unwraps native SOL inside each transaction, so WSOL flow
+    must be removed from native balance movement. Persistent-WSOL mode keeps
+    trade cashflow entirely in the token account, so only native delta + fee
+    represents account funding/refunds.
+    """
+    native=int(settlement.get("native_delta_lamports") or 0)
+    fee=int(settlement.get("network_fee_lamports") or 0)
+    if persistent_wsol:
+        return native+fee
+    wsol=int(settlement.get("wsol_delta_raw") or 0)
+    return native-wsol+fee
+
+
 class Stage5Trade:
     """Execution only. It never makes the strategy/risk decision."""
     def __init__(self, settings): self.settings=settings
@@ -442,6 +458,7 @@ class Stage5Trade:
                 if tx:
                     try:
                         settlement=reconcile_transaction(tx,taker,str(order.mint or ""))
+                        settlement["account_funding_delta_lamports"]=account_funding_delta_lamports(settlement,bool(persistent_account))
                         settled_out=max(0,int(settlement["target_delta_raw"] if order.action=="BUY" else settlement["wsol_delta_raw"]))
                         settlement["output_raw"]=settled_out
                         if settled_out<=0:
