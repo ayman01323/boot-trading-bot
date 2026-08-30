@@ -1,0 +1,242 @@
+name: Grok Manual LIVE Canary Activate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/grok-live-canary-manual-activate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-grok-known-assets-testing-bot
+  cancel-in-progress: false
+
+jobs:
+  activate-manual-canary:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 12
+    steps:
+      - name: Verify Google runner identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+      - name: Checkout exact commit into unique source directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_ROOT="${RUNNER_TEMP}/grok-live-activate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          rm -rf "$SRC_ROOT"
+          mkdir -p "$SRC_ROOT"
+          git -C "$SRC_ROOT" init -q
+          git -C "$SRC_ROOT" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$SRC_ROOT" fetch --quiet --depth=1 origin "$GITHUB_SHA"
+          git -C "$SRC_ROOT" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$SRC_ROOT" rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "GROK_SOURCE_ROOT=$SRC_ROOT" >> "$GITHUB_ENV"
+          echo "isolated_checkout=PASS"
+
+      - name: Verify deployed Grok code matches activation commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOY=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          for rel in \
+            src/grok_known_assets_bot/live_canary.py \
+            src/grok_known_assets_bot/live_canary_runner.py \
+            src/grok_known_assets_bot/auto_canary_runner.py \
+            src/grok_known_assets_bot/live_execution.py \
+            src/grok_known_assets_bot/telegram_control_runtime.py \
+            systemd/grok-known-assets-canary.service.example; do
+            cmp --silent "$GROK_SOURCE_ROOT/testingbots/grok_known_assets_bot/$rel" "$DEPLOY/$rel" || {
+              echo "ERROR: deployed Grok file is not current: $rel"
+              exit 1
+            }
+          done
+          echo "deployed_code_match=PASS"
+
+      - name: Preflight signer RPC Telegram and stale-ticket safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          ENV_FILE=/home/ayman01323/.config/grok-known-assets-bot/canary.env
+          TG_ENV=/home/ayman01323/.config/grok-known-assets-bot/telegram.env
+          test -s "$ENV_FILE"
+          test -s "$TG_ENV"
+          test "$(stat -c '%a' "$ENV_FILE")" = "600"
+          sudo systemctl is-active --quiet grok-known-assets-bot.service
+          sudo systemctl is-active --quiet grok-known-assets-telegram.service
+          "$ROOT/.venv/bin/python" - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+          from grok_known_assets_bot import live_canary as lc
+          from grok_known_assets_bot import live_execution as lx
+
+          root = Path('/home/ayman01323/BOOT/testingbots/grok_known_assets_bot')
+          env_file = Path('/home/ayman01323/.config/grok-known-assets-bot/canary.env')
+          tg_env = Path('/home/ayman01323/.config/grok-known-assets-bot/telegram.env')
+
+          def load_env(path: Path) -> dict[str, str]:
+              out = {}
+              for raw in path.read_text(encoding='utf-8', errors='replace').splitlines():
+                  line = raw.strip()
+                  if not line or line.startswith('#') or '=' not in line:
+                      continue
+                  k, v = line.split('=', 1)
+                  out[k.strip()] = v.strip().strip('"').strip("'")
+              return out
+
+          for k, v in load_env(env_file).items():
+              os.environ[k] = v
+          tg = load_env(tg_env)
+          if not tg.get('GROK_TELEGRAM_BOT_TOKEN') or not tg.get('GROK_TELEGRAM_CHAT_IDS'):
+              raise SystemExit('dedicated Grok Telegram credentials are incomplete')
+          os.environ.setdefault('GROK_BOOT_REPO_ROOT', '/home/ayman01323/BOOT')
+          os.environ.setdefault('GROK_LEARNERBOT_CSV_DIR', '/home/ayman01323/BOOT/CSVbot')
+          os.environ.setdefault('GROK_LEARNERBOT_DATA_DIR', '/home/ayman01323/BOOT/data')
+
+          db = sqlite3.connect(str(root / 'state.sqlite3'), timeout=8.0)
+          db.execute('PRAGMA busy_timeout=8000')
+          lc.ensure_schema(db)
+          if lc.needs_reconciliation(db):
+              raise SystemExit('LIVE canary reconciliation is already required; refusing activation')
+          dangerous = db.execute(
+              "SELECT COUNT(*) FROM live_canary_approvals WHERE status IN ('EXECUTING','BROADCAST_SUBMITTED')"
+          ).fetchone()[0]
+          if int(dangerous or 0):
+              raise SystemExit('in-flight LIVE canary ticket exists; refusing activation')
+          cancelled = lc.cancel_unclaimed(db, reason='manual-live-activation-preclean')
+          remaining = db.execute(
+              "SELECT COUNT(*) FROM live_canary_approvals WHERE status IN ('PENDING_APPROVAL','APPROVED','EXECUTING','BROADCAST_SUBMITTED')"
+          ).fetchone()[0]
+          if int(remaining or 0):
+              raise SystemExit('non-terminal LIVE canary ticket remains after preclean')
+          db.close()
+
+          ok, reason = lx.signer_status()
+          if not ok:
+              raise SystemExit('canary signer not ready: ' + reason)
+          executor = lx.build_executor()
+          int(executor.native_balance_lamports())
+          int(executor.token_balance_raw(lx.USDC_MINT))
+          print('stale_approvals_cancelled=' + str(int(cancelled)))
+          print('signer_status=READY')
+          print('rpc_balance_reads=PASS')
+          print('telegram_approval_path=READY_PRIVATE_ALLOWLIST_FALLBACK')
+          PY
+
+      - name: Snapshot control state and install rollback script
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          CONTROL="$ROOT/grok_control.json"
+          RDIR=/home/ayman01323/.config/grok-known-assets-bot/rollback
+          mkdir -p "$RDIR"
+          chmod 700 "$RDIR"
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP="$RDIR/grok_control.before-manual-live.$STAMP.json"
+          if [[ -f "$CONTROL" ]]; then
+            cp -p "$CONTROL" "$BACKUP"
+          else
+            printf '%s\n' '{"armed":false,"mode":"PAPER_ONLY","live_readiness_enabled":false,"live_canary_enabled":false,"live_money_enabled":false,"updated_epoch":0,"updated_by":"rollback-default"}' > "$BACKUP"
+            chmod 600 "$BACKUP"
+          fi
+          ROLLBACK="$RDIR/rollback-grok-manual-live.$STAMP.sh"
+          cat > "$ROLLBACK" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          sudo systemctl disable --now grok-known-assets-canary.service 2>/dev/null || true
+          install -m 600 '$BACKUP' '$CONTROL'
+          echo 'Grok manual LIVE canary rolled back; control state restored and canary service stopped.'
+          EOF
+          chmod 700 "$ROLLBACK"
+          ln -sfn "$ROLLBACK" "$RDIR/rollback-grok-manual-live.latest.sh"
+          echo "GROK_ROLLBACK_SCRIPT=$ROLLBACK" >> "$GITHUB_ENV"
+          echo "GROK_CONTROL_BACKUP=$BACKUP" >> "$GITHUB_ENV"
+          echo "rollback_snapshot=READY"
+
+      - name: Start canary service while control remains OFF
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$GROK_SOURCE_ROOT/testingbots/grok_known_assets_bot/systemd/grok-known-assets-canary.service.example"
+          sudo install -m 0644 "$SRC" /etc/systemd/system/grok-known-assets-canary.service
+          sudo systemctl daemon-reload
+          sudo systemctl enable grok-known-assets-canary.service
+          sudo systemctl restart grok-known-assets-canary.service
+          sleep 5
+          sudo systemctl is-active --quiet grok-known-assets-canary.service
+          echo "canary_service_prearm=ACTIVE"
+
+      - name: Enable manual-confirmation LIVE canary control state
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          ACTIVATED_EPOCH="$(date +%s)"
+          echo "GROK_ACTIVATED_EPOCH=$ACTIVATED_EPOCH" >> "$GITHUB_ENV"
+          "$ROOT/.venv/bin/python" - <<'PY'
+          from grok_known_assets_bot.control import load_state, save_state
+          state = save_state(
+              armed=True,
+              live_readiness_enabled=True,
+              live_canary_enabled=True,
+              updated_by='github-manual-live-activation',
+          )
+          if not state.get('live_money_enabled'):
+              raise SystemExit('failed to enable manual LIVE canary state')
+          check = load_state()
+          if not check.get('live_money_enabled'):
+              raise SystemExit('manual LIVE canary state did not persist')
+          print('armed=true')
+          print('live_readiness_enabled=true')
+          print('live_canary_enabled=true')
+          print('live_money_enabled=true')
+          print('broadcast_policy=EXPLICIT_SINGLE_USE_APPROVAL_REQUIRED')
+          PY
+
+      - name: Final no-auto-broadcast attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot
+          sleep 8
+          sudo systemctl is-active --quiet grok-known-assets-canary.service
+          "$ROOT/.venv/bin/python" - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+          from grok_known_assets_bot.control import load_state
+
+          root = Path('/home/ayman01323/BOOT/testingbots/grok_known_assets_bot')
+          state = load_state()
+          if not state.get('live_money_enabled'):
+              raise SystemExit('manual LIVE canary unexpectedly disabled')
+          since = float(os.environ.get('GROK_ACTIVATED_EPOCH', '0') or 0)
+          db = sqlite3.connect(str(root / 'state.sqlite3'), timeout=8.0)
+          sent = db.execute(
+              "SELECT COUNT(*) FROM events WHERE ts>=? AND kind IN ('CANARY_BROADCAST_SUBMITTED','CANARY_EXECUTED')",
+              (since,),
+          ).fetchone()[0]
+          pending = db.execute(
+              "SELECT COUNT(*) FROM live_canary_approvals WHERE status='PENDING_APPROVAL'",
+          ).fetchone()[0]
+          db.close()
+          if int(sent or 0) != 0:
+              raise SystemExit('unexpected broadcast event occurred during activation')
+          print('canary_service=ACTIVE')
+          print('real_money_signing_path=ENABLED_MANUAL_CANARY')
+          print('broadcast_path=ENABLED_APPROVAL_GATED')
+          print('broadcasts_during_activation=0')
+          print('pending_approval_count=' + str(int(pending or 0)))
+          print('rollback_script=' + os.environ.get('GROK_ROLLBACK_SCRIPT', ''))
+          print('control_backup=' + os.environ.get('GROK_CONTROL_BACKUP', ''))
+          PY
