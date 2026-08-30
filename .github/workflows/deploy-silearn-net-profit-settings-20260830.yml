@@ -1,0 +1,114 @@
+name: Deploy SiLearn Net Profit Settings 20260830
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'learnerbot/solana_net_profit_settings_patch.py'
+      - 'learnerbot/solana_owner_changeset_4_integrity_patch.py'
+      - '.github/workflows/deploy-silearn-net-profit-settings-20260830.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-silearn-net-profit-settings-20260830
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install settings-only SiLearn net-profit tuning
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+
+          ROOT=/home/ayman01323/BOOT/testingbots/learn
+          SERVICE=learnerbot-learn.service
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+
+          test -d "$ROOT/learnerbot"
+          test -f "$ROOT/learnerbot/solana_owner_changeset_4_patch.py"
+          test -f "$ROOT/learnerbot/solana_owner_changeset_4_integrity_patch.py"
+
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/solana_net_profit_settings_patch.py \
+            -o "$TMP/solana_net_profit_settings_patch.py"
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/ayman01323/boot-trading-bot/main/learnerbot/solana_owner_changeset_4_integrity_patch.py \
+            -o "$TMP/solana_owner_changeset_4_integrity_patch.py"
+
+          python3 -m py_compile \
+            "$TMP/solana_net_profit_settings_patch.py" \
+            "$TMP/solana_owner_changeset_4_integrity_patch.py"
+
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a \
+            "$ROOT/learnerbot/solana_owner_changeset_4_integrity_patch.py" \
+            "$ROOT/private/solana_owner_changeset_4_integrity_patch.py.$STAMP.bak"
+          if [[ -f "$ROOT/learnerbot/solana_net_profit_settings_patch.py" ]]; then
+            sudo -n cp -a \
+              "$ROOT/learnerbot/solana_net_profit_settings_patch.py" \
+              "$ROOT/private/solana_net_profit_settings_patch.py.$STAMP.bak"
+          fi
+
+          sudo -n install -o ayman01323 -g ayman01323 -m 0644 \
+            "$TMP/solana_net_profit_settings_patch.py" \
+            "$ROOT/learnerbot/solana_net_profit_settings_patch.py"
+          sudo -n install -o ayman01323 -g ayman01323 -m 0644 \
+            "$TMP/solana_owner_changeset_4_integrity_patch.py" \
+            "$ROOT/learnerbot/solana_owner_changeset_4_integrity_patch.py"
+
+          PYBIN="$ROOT/.venv/bin/python"
+          [[ -x "$PYBIN" ]] || PYBIN=/usr/bin/python3
+          PYTHONPATH="$ROOT" "$PYBIN" -m py_compile \
+            "$ROOT/learnerbot/solana_net_profit_settings_patch.py" \
+            "$ROOT/learnerbot/solana_owner_changeset_4_integrity_patch.py"
+
+          sudo -n systemctl restart "$SERVICE"
+          sleep 8
+          test "$(systemctl is-active "$SERVICE")" = active
+
+          cd "$ROOT"
+          PYTHONPATH=. "$PYBIN" - <<'PY'
+          from learnerbot.config import AppSettings
+          from learnerbot import solana_sibot as sol
+          from learnerbot import solana_owner_changeset_4_patch as owner
+          from learnerbot import solana_net_profit_settings_patch as net
+
+          app = AppSettings.load()
+          cfg = sol.settings(app)
+          expected = {
+              'estimated_entry_fee_sol': '0.0000062',
+              'estimated_exit_fee_sol': '0.0000062',
+              'max_roundtrip_loss_pct': '3',
+              'break_even_trigger_pct': '5',
+              'break_even_floor_pct': '3',
+              'trailing_trigger_pct': '10',
+              'trailing_gap_pct': '4',
+              'take_profit_pct': '15',
+              'max_hold_hours': '0.5',
+          }
+          bad = {k: (cfg.get(k), v) for k, v in expected.items() if str(cfg.get(k)) != v}
+          if bad:
+              raise SystemExit('REFUSE_VERIFY: effective SiLearn settings mismatch: ' + repr(bad))
+          if net._PREV_SETTINGS is not owner.settings_owner_changeset_4:
+              raise SystemExit('REFUSE_VERIFY: net-profit wrapper is not immediately outside Change Set 4')
+          if sol.settings is not net.settings_silearn_net_profit:
+              raise SystemExit('REFUSE_VERIFY: net-profit settings wrapper is not active')
+
+          print('silearn_net_profit_settings=PASS')
+          for k in expected:
+              print(f'{k}={cfg[k]}')
+          print('pnl_basis=fresh_executable_jupiter_exit_minus_exit_fee_vs_entry_cost')
+          print('settings_only=true')
+          PY
+
+          echo learner_service=active
+          echo deployment=PASS
