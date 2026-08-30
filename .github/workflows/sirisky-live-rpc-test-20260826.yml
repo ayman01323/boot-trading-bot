@@ -9,10 +9,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: sirisky-live-activation
-  cancel-in-progress: false
-
 jobs:
   activate-live:
     runs-on: [self-hosted, linux, x64, boot-google]
@@ -23,49 +19,29 @@ jobs:
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          test "$(id -un)" = ayman01323
           cd "$GITHUB_WORKSPACE"
-          if [[ ! -d .git ]]; then
-            git init
-            git remote add origin https://github.com/ayman01323/boot-trading-bot.git
-          else
-            git remote set-url origin https://github.com/ayman01323/boot-trading-bot.git
-          fi
+          if [[ ! -d .git ]]; then git init; git remote add origin https://github.com/ayman01323/boot-trading-bot.git; fi
           git fetch --force --no-tags --depth=50 origin main
-          git cat-file -e "$GITHUB_SHA^{commit}"
           git reset --hard "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          echo "runner_checkout_sha=$(git rev-parse HEAD)"
 
-      - name: Arm governed LIVE automatic execution
+      - name: Inspect SiRisky trades since LIVE activation
         shell: bash
         run: |
           set -Eeuo pipefail
-          WRAPPER=/root/SiRisky/ops/sirisky-governed-live-arm
-          sudo -n -l "$WRAPPER" >/dev/null
-          output="$(sudo -n "$WRAPPER" "$GITHUB_SHA")"
-          printf '%s\n' "$output"
-          grep -qx 'service=active' <<<"$output"
-          grep -qx 'trading_mode=LIVE' <<<"$output"
-          grep -qx 'live_enabled=1' <<<"$output"
-          grep -qx 'broadcast_enabled=1' <<<"$output"
-          grep -qx 'manual_approval_enabled=0' <<<"$output"
-          grep -qx 'manual_approval_require_external_signature=0' <<<"$output"
-          grep -qx 'telegram_manual_run_enabled=0' <<<"$output"
-
-      - name: Verify effective server state
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "$(systemctl is-active sirisky.service)" = active
-          echo '=== SIRISKY EFFECTIVE LIVE STATE ==='
-          sudo -n awk -F, 'NR==1 || $1 ~ /^(trading_mode|live_enabled|broadcast_enabled|auto_discovery_enabled|auto_promote_to_selected|manual_approval_enabled|manual_approval_require_external_signature|telegram_manual_run_enabled)$/' /root/SiRisky/CSV/runtime.csv
-          test "$(sudo -n awk -F, '$1=="trading_mode"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = LIVE
-          test "$(sudo -n awk -F, '$1=="live_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 1
-          test "$(sudo -n awk -F, '$1=="broadcast_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 1
-          test "$(sudo -n awk -F, '$1=="manual_approval_enabled"{print $2}' /root/SiRisky/CSV/runtime.csv | tr -d '\r')" = 0
-          echo 'sirisky_live_activation=PASS'
-          echo 'real_transaction_broadcast=ENABLED_AFTER_EXISTING_STRATEGY_AND_RISK_GATES'
+          SINCE='2026-08-29 17:22:00 UTC'
+          echo '=== SIRISKY TRADE AUDIT ==='
+          echo "since=$SINCE"
+          echo "service=$(systemctl is-active sirisky.service || true)"
+          echo '--- candidate trade files ---'
+          sudo -n find /root/SiRisky -type f \( -iname '*.csv' -o -iname '*.json' -o -iname '*.jsonl' -o -iname '*.log' \) -newermt "$SINCE" -printf '%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n' 2>/dev/null | sort | tail -100 || true
+          echo '--- transaction/trade evidence in changed files ---'
+          while IFS= read -r f; do
+            echo "### $f"
+            sudo -n grep -Eai 'signature|txid|transaction|broadcast|executed|filled|BUY|SELL|position|entry|exit' "$f" 2>/dev/null | tail -80 || true
+          done < <(sudo -n find /root/SiRisky -type f \( -iname '*.csv' -o -iname '*.json' -o -iname '*.jsonl' -o -iname '*.log' \) -newermt "$SINCE" 2>/dev/null | head -200)
+          echo '--- service journal since activation ---'
+          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso 2>/dev/null | grep -Eai 'signature|txid|transaction|broadcast|executed|filled|BUY|SELL|position|entry|exit|reject|error' | tail -300 || true
+          echo '=== END SIRISKY TRADE AUDIT ==='
 
 # Owner-requested activation: 2026-08-29T17:14:56Z
-# Workspace repair intentionally preserves root-owned untracked runtime caches.
+# Trade audit requested: 2026-08-30T09:25:56Z
