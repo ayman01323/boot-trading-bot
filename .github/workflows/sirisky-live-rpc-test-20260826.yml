@@ -24,25 +24,29 @@ jobs:
           git fetch --force --no-tags --depth=50 origin main
           git reset --hard "$GITHUB_SHA"
 
-      - name: Trace prior SiRisky trade
+      - name: Summarise previous SiRisky position
         shell: bash
         run: |
           set -Eeuo pipefail
           SINCE='2026-08-29 17:22:00 UTC'
-          echo '=== SIRISKY PRIOR TRADE TRACE ==='
-          echo "service=$(systemctl is-active sirisky.service || true)"
-          echo '--- unique position/status lines since activation ---'
-          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso 2>/dev/null \
-            | grep -Eai 'position_id|ENTRY|BUY|SELL|EXIT|EXECUT|BROADCAST|signature|txid|filled|pnl|profit|loss' \
-            | grep -Ev 'pos-e39b933a174b.*EXIT_EXECUTION_RETRY' \
-            | tail -1200 || true
-          echo '--- unique position ids ---'
-          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o cat 2>/dev/null \
-            | grep -Eo 'pos-[a-zA-Z0-9]+' | sort | uniq -c || true
-          echo '--- context around current position first appearance ---'
-          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso 2>/dev/null \
-            | grep -B80 -A20 'pos-e39b933a174b' | head -220 || true
-          echo '=== END PRIOR TRADE TRACE ==='
+          CUR='pos-e39b933a174b'
+          TMP=$(mktemp)
+          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso > "$TMP"
+          echo '=== PRIOR_POSITION_SUMMARY ==='
+          echo "SERVICE=$(systemctl is-active sirisky.service || true)"
+          echo 'POSITIONS_BY_FIRST_APPEARANCE:'
+          awk 'match($0,/pos-[A-Za-z0-9]+/){p=substr($0,RSTART,RLENGTH); if(!seen[p]++){print NR,p,$1}}' "$TMP"
+          PRIOR=$(awk -v cur="$CUR" 'match($0,/pos-[A-Za-z0-9]+/){p=substr($0,RSTART,RLENGTH); if(!seen[p]++){order[++n]=p}} END{for(i=1;i<=n;i++) if(order[i]==cur && i>1){print order[i-1]; exit}}' "$TMP")
+          echo "CURRENT_POSITION=$CUR"
+          echo "PRIOR_POSITION=${PRIOR:-NONE}"
+          if [[ -n "${PRIOR:-}" ]]; then
+            echo 'PRIOR_RELEVANT_LINES:'
+            grep "$PRIOR" "$TMP" | grep -Eai 'ENTRY|BUY|SELL|EXIT|EXECUT|BROADCAST|signature|txid|filled|pnl|profit|loss|status|order_id|mint|token|amount' | head -40 || true
+            echo 'PRIOR_LAST_LINES:'
+            grep "$PRIOR" "$TMP" | tail -20 || true
+          fi
+          echo 'CURRENT_FIRST_LINES:'
+          grep "$CUR" "$TMP" | head -8 || true
+          echo '=== END_PRIOR_POSITION_SUMMARY ==='
 
-# Owner-requested activation: 2026-08-29T17:14:56Z
-# Prior-trade trace requested: 2026-08-30T09:27:38Z
+# Compact prior-position audit requested 2026-08-30T09:27:38Z
