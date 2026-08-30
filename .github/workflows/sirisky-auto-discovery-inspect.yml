@@ -1,4 +1,4 @@
-name: SiRisky Issue 726 Jupiter Structure Inspect
+name: SiRisky Issue 726 Jupiter AST Inspect
 
 on:
   push:
@@ -13,27 +13,20 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 5
     steps:
-      - name: Read-only sanitized Jupiter function structure
+      - name: Read-only Jupiter source AST
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           sudo -n python3 - <<'PY'
-          import ast, re
+          import ast, hashlib
           from pathlib import Path
-          text=Path('/root/SiRisky/sirisky/jupiter.py').read_text(encoding='utf-8')
-          tree=ast.parse(text)
-          funcs=[n.name for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))]
-          print('functions='+','.join(funcs))
-          wanted={'_headers','_request_json','_json_request','quote_only','order','execute_order'}
-          for fn in tree.body:
-              if not isinstance(fn,(ast.FunctionDef,ast.AsyncFunctionDef)) or fn.name not in wanted:
-                  continue
-              src=ast.get_source_segment(text,fn) or ''
-              src=re.sub(r'https?://[^\"\' ]+','<url>',src)
-              src=re.sub(r'(?i)(api[-_]?key|authorization|bearer)[^\n]{0,120}',r'\1=<redacted>',src)
-              print('===FUNCTION '+fn.name+'===')
-              print(src)
+          p=Path('/root/SiRisky/sirisky/jupiter.py')
+          raw=p.read_bytes(); text=raw.decode('utf-8'); tree=ast.parse(text)
+          print('file_sha256='+hashlib.sha256(raw).hexdigest())
+          print('===JUPITER_AST_SOURCE===')
+          print(ast.unparse(tree))
+          print('===END_JUPITER_AST_SOURCE===')
           print('runtime_changed=false')
           print('service_restarted=false')
           print('transaction_broadcast=false')
