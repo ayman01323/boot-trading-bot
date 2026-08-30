@@ -24,24 +24,25 @@ jobs:
           git fetch --force --no-tags --depth=50 origin main
           git reset --hard "$GITHUB_SHA"
 
-      - name: Inspect SiRisky trades since LIVE activation
+      - name: Trace prior SiRisky trade
         shell: bash
         run: |
           set -Eeuo pipefail
           SINCE='2026-08-29 17:22:00 UTC'
-          echo '=== SIRISKY TRADE AUDIT ==='
-          echo "since=$SINCE"
+          echo '=== SIRISKY PRIOR TRADE TRACE ==='
           echo "service=$(systemctl is-active sirisky.service || true)"
-          echo '--- candidate trade files ---'
-          sudo -n find /root/SiRisky -type f \( -iname '*.csv' -o -iname '*.json' -o -iname '*.jsonl' -o -iname '*.log' \) -newermt "$SINCE" -printf '%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n' 2>/dev/null | sort | tail -100 || true
-          echo '--- transaction/trade evidence in changed files ---'
-          while IFS= read -r f; do
-            echo "### $f"
-            sudo -n grep -Eai 'signature|txid|transaction|broadcast|executed|filled|BUY|SELL|position|entry|exit' "$f" 2>/dev/null | tail -80 || true
-          done < <(sudo -n find /root/SiRisky -type f \( -iname '*.csv' -o -iname '*.json' -o -iname '*.jsonl' -o -iname '*.log' \) -newermt "$SINCE" 2>/dev/null | head -200)
-          echo '--- service journal since activation ---'
-          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso 2>/dev/null | grep -Eai 'signature|txid|transaction|broadcast|executed|filled|BUY|SELL|position|entry|exit|reject|error' | tail -300 || true
-          echo '=== END SIRISKY TRADE AUDIT ==='
+          echo '--- unique position/status lines since activation ---'
+          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso 2>/dev/null \
+            | grep -Eai 'position_id|ENTRY|BUY|SELL|EXIT|EXECUT|BROADCAST|signature|txid|filled|pnl|profit|loss' \
+            | grep -Ev 'pos-e39b933a174b.*EXIT_EXECUTION_RETRY' \
+            | tail -1200 || true
+          echo '--- unique position ids ---'
+          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o cat 2>/dev/null \
+            | grep -Eo 'pos-[a-zA-Z0-9]+' | sort | uniq -c || true
+          echo '--- context around current position first appearance ---'
+          sudo -n journalctl -u sirisky.service --since "$SINCE" --no-pager -o short-iso 2>/dev/null \
+            | grep -B80 -A20 'pos-e39b933a174b' | head -220 || true
+          echo '=== END PRIOR TRADE TRACE ==='
 
 # Owner-requested activation: 2026-08-29T17:14:56Z
-# Trade audit requested: 2026-08-30T09:25:56Z
+# Prior-trade trace requested: 2026-08-30T09:27:38Z
