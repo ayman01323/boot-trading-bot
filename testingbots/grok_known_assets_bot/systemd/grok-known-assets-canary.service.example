@@ -3,14 +3,22 @@
 # Real money. Deployment installs this unit disabled/inactive. Do not enable or
 # start it until the owner has reviewed signer/RPC readiness and explicitly
 # chooses to operate the manual-confirmation canary.
-# Even when running, nothing broadcasts without /grokapprove <id> CONFIRM.
+#
+# BUY candidates are prepared automatically from LIVE_READY events.
+# SELL conditions are monitored automatically and produce an approval prompt.
+# Nothing broadcasts without explicit per-trade confirmation:
+#   /grokapprove <entry_id> CONFIRM
+#   /grokexit <position_id> CONFIRM
+#
+# Rollback: change ExecStart back to grok_known_assets_bot.live_canary_runner.
+# No database migration is required for this wrapper.
 #
 # Secret/runtime values belong in:
 #   /home/ayman01323/.config/grok-known-assets-bot/canary.env
 # with mode 0600. Never put keys, wallet secrets or RPC credentials in this unit.
 
 [Unit]
-Description=Grok Known Assets Bot - LIVE canary orchestrator (manual approval)
+Description=Grok Known Assets Bot - LIVE canary auto-prep/manual-approval orchestrator
 After=network-online.target grok-known-assets-bot.service
 Wants=network-online.target
 ConditionPathExists=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/config.json
@@ -24,7 +32,7 @@ Environment=GROK_BOOT_REPO_ROOT=/home/ayman01323/BOOT
 Environment=GROK_LEARNERBOT_CSV_DIR=/home/ayman01323/BOOT/CSVbot
 Environment=GROK_LEARNERBOT_DATA_DIR=/home/ayman01323/BOOT/data
 EnvironmentFile=-/home/ayman01323/.config/grok-known-assets-bot/canary.env
-ExecStart=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/python -m grok_known_assets_bot.live_canary_runner --config config.json --db state.sqlite3 --enable-live-canary
+ExecStart=/home/ayman01323/BOOT/testingbots/grok_known_assets_bot/.venv/bin/python -m grok_known_assets_bot.auto_canary_runner --config config.json --db state.sqlite3 --enable-live-canary
 Restart=always
 RestartSec=15
 TimeoutStopSec=25
