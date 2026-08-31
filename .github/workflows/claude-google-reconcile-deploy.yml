@@ -32,6 +32,7 @@ jobs:
           ref: main
           fetch-depth: 1
           persist-credentials: false
+          clean: false
 
       - name: Verify trusted fixes are present
         shell: bash
@@ -164,18 +165,9 @@ jobs:
           rm -rf "$testdeps"
           python3 -m pip install --disable-pip-version-check --no-input --target "$testdeps" 'pytest>=8,<9'
           test_pythonpath="$testdeps:$MANAGED_REPO"
-
-          # Unit suites that do not depend on the final learnerbot wrapper chain.
           PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q tests/test_solana_rpc_failover.py
           PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q claude-trading-bot/tests/test_claude_risk_and_state.py
-
-          # The Claude runtime-health gate intentionally requires the complete
-          # learnerbot final wrapper composition. Use the repository's dedicated
-          # full-bootstrap proof rather than pretending the old isolated unit
-          # fixture is a final runtime. This script explicitly constructs/signs/
-          # broadcasts no transaction and asserts quarantine/no-auto-ARM behavior.
           set -a
-          # shellcheck disable=SC1090
           . "$RUNTIME_ENV_FILE"
           set +a
           : "${CSV_DIR:=$MANAGED_ROOT/runtime/CSVbot}"
@@ -187,7 +179,6 @@ jobs:
           test -n "${CLAUDE_CAPITAL_BASIS_USD:-}"
           test -n "${CLAUDE_BOT_WALLET_OWNER_ID:-}"
           PYTHONPATH="$MANAGED_REPO" .venv/bin/python claude-trading-bot/verify_bootstrap_composition.py
-
           .venv/bin/python -m py_compile \
             learnerbot/solana_rpc_failover_patch.py \
             learnerbot/ai_agent_health_4h_patch.py \
@@ -258,12 +249,11 @@ jobs:
           echo "post_restart_rpc_401_count=$rpc401"
           echo "post_restart_auth_failover_events=$auth_failover"
           echo "post_restart_rpc_429_count=$rpc429"
-          echo "post_restart_jupiter_issue_lines=$jupiter"
-          if (( rpc401 > 10 )); then
-            echo "Persistent RPC 401 storm remains after deployment: $rpc401 in observation window" >&2
+          echo "post_restart_jupiter_issue_count=$jupiter"
+          if (( rpc401 > 6 )); then
+            echo 'RPC 401 pressure remains unexpectedly high after failover fix' >&2
             exit 5
           fi
-          echo 'rpc_401_storm=CLEARED_OR_BOUNDED'
 
       - name: Boundary summary
         if: always()
