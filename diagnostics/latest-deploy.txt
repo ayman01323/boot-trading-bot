@@ -1,134 +1,19 @@
-requested_sha=da714bb19a1760f60d7a2746dfef4417eaec238e
+requested_sha=89b495d54213c7c2b3fe9c9fcac68dc7c09f77e6
 deploy_outcome=failure
-deploy_exit=10
-run_id=33368989630
-utc=2026-08-31T07:37:44Z
+deploy_exit=6
+run_id=33371852933
+utc=2026-08-31T08:15:15Z
 
 === DEPLOY OUTPUT (tail) ===
-_____________ test_lp_concentration_is_shadow_only_not_fraud_claim _____________
-
-    def test_lp_concentration_is_shadow_only_not_fraud_claim():
-        result = pool.evaluate_rugcheck(
-            {
-                "score_normalised": 20,
-                "lpLockedPct": 25,
-                "risks": [{"name": "Low amount of LP Providers", "level": "warn"}],
-            },
-            _cfg(),
-        )
->       assert result["decision"] == "SHADOW_ONLY"
-E       AssertionError: assert 'PASS' == 'SHADOW_ONLY'
-E         
-E         - SHADOW_ONLY
-E         + PASS
-
-tests/test_solana_pool_risk_check_patch.py:108: AssertionError
-______ test_same_condition_different_signal_sends_once_within_15_minutes _______
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7feb8bf75a50>
-
-    def test_same_condition_different_signal_sends_once_within_15_minutes(monkeypatch):
-        mod._REJECT_REPORT_DEDUP.clear()
-        sent = []
-        published = []
-        clock = {"now": 1_000.0}
-    
-        monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
-        monkeypatch.setattr(mod, "_reject_targets", lambda app, event, action: ["123"])
-        monkeypatch.setattr(mod, "_send_reject_report", lambda app, tid, event, action: sent.append(event["signature"]) or True)
-        monkeypatch.setattr(mod, "publish_rejection", lambda **kwargs: published.append(kwargs))
-    
-        app = SimpleNamespace(csv_dir="unused", telegram_bot_token="token")
->       mod._report_reject_actions(app, _event(SIG_A), [_action()])
-
-tests/test_solana_reject_telegram_changeset5.py:65: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-learnerbot/solana_reject_once_reporting_patch.py:88: in report_reject_actions_once
-    if _already_sent(app, key):
-       ^^^^^^^^^^^^^^^^^^^^^^^
-learnerbot/solana_reject_once_reporting_patch.py:41: in _already_sent
-    with closing(_sol.connect(app)) as conn:
-                 ^^^^^^^^^^^^^^^^^
-learnerbot/trade_strategy_provenance_patch.py:164: in _sol_connect_with_provenance
-    conn = _ORIG_SOL_CONNECT(app)
-           ^^^^^^^^^^^^^^^^^^^^^^
-learnerbot/solana_sibot.py:258: in connect
-    p = db_path(app)
-        ^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-app = namespace(csv_dir='unused', telegram_bot_token='token')
-
-    def db_path(app) -> Path:
->       return Path(app.data_dir) / "solana_sibot.sqlite3"
-                    ^^^^^^^^^^^^
-E       AttributeError: 'types.SimpleNamespace' object has no attribute 'data_dir'
-
-learnerbot/solana_sibot.py:131: AttributeError
-_____________ test_same_condition_can_alert_again_after_15_minutes _____________
-
-monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7feb8bff0a90>
-
-    def test_same_condition_can_alert_again_after_15_minutes(monkeypatch):
-        mod._REJECT_REPORT_DEDUP.clear()
-        sent = []
-        clock = {"now": 2_000.0}
-    
-        monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
-        monkeypatch.setattr(mod, "_reject_targets", lambda app, event, action: ["123"])
-        monkeypatch.setattr(mod, "_send_reject_report", lambda app, tid, event, action: sent.append(event["signature"]) or True)
-        monkeypatch.setattr(mod, "publish_rejection", lambda **kwargs: None)
-    
-        app = SimpleNamespace(csv_dir="unused", telegram_bot_token="token")
->       mod._report_reject_actions(app, _event(SIG_A), [_action()])
-
-tests/test_solana_reject_telegram_changeset5.py:85: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-learnerbot/solana_reject_once_reporting_patch.py:88: in report_reject_actions_once
-    if _already_sent(app, key):
-       ^^^^^^^^^^^^^^^^^^^^^^^
-learnerbot/solana_reject_once_reporting_patch.py:41: in _already_sent
-    with closing(_sol.connect(app)) as conn:
-                 ^^^^^^^^^^^^^^^^^
-learnerbot/trade_strategy_provenance_patch.py:164: in _sol_connect_with_provenance
-    conn = _ORIG_SOL_CONNECT(app)
-           ^^^^^^^^^^^^^^^^^^^^^^
-learnerbot/solana_sibot.py:258: in connect
-    p = db_path(app)
-        ^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
-
-app = namespace(csv_dir='unused', telegram_bot_token='token')
-
-    def db_path(app) -> Path:
->       return Path(app.data_dir) / "solana_sibot.sqlite3"
-                    ^^^^^^^^^^^^
-E       AttributeError: 'types.SimpleNamespace' object has no attribute 'data_dir'
-
-learnerbot/solana_sibot.py:131: AttributeError
-=============================== warnings summary ===============================
-.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6
-  /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/lib64/python3.11/site-packages/websockets/legacy/__init__.py:6: DeprecationWarning: websockets.legacy is deprecated; see https://websockets.readthedocs.io/en/stable/howto/upgrade.html for upgrade instructions
-    warnings.warn(  # deprecated in 14.0 - 2024-11-09
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-=========================== short test summary info ============================
-SKIPPED [1] tests/test_runtime_rpc_health_probe.py:26: runtime RPC/WSS network probe runs only when explicitly targeted
-FAILED tests/test_imports.py::test_all_learnerbot_modules_import - AssertionE...
-FAILED tests/test_sibot_settings_source.py::test_main_master_source_undoes_stale_solana_size_reserve_without_inheriting_live_enable
-FAILED tests/test_solana_low_capital_limits.py::test_default_user_keeps_platform_reserve
-FAILED tests/test_solana_low_capital_limits.py::test_user_specific_low_capital_reserve_is_allowed_but_not_below_floor
-FAILED tests/test_solana_pool_risk_check_patch.py::test_lp_concentration_is_shadow_only_not_fraud_claim
-FAILED tests/test_solana_reject_telegram_changeset5.py::test_same_condition_different_signal_sends_once_within_15_minutes
-FAILED tests/test_solana_reject_telegram_changeset5.py::test_same_condition_can_alert_again_after_15_minutes
-7 failed, 1252 passed, 1 skipped, 1 warning in 76.48s (0:01:16)
-[gemini-telegram] poll RuntimeError
-2026-08-31T07:37:11Z TESTS FAILED; service remains on old running process
-HEAD is now at a3ad128 Fix emergency backup to run without checkout
+2026-08-31T08:14:58Z BEGIN current=a3ad128c99bdaf28e24a034586026be63043df6a requested=89b495d54213c7c2b3fe9c9fcac68dc7c09f77e6
+From ssh://ssh.github.com:443/ayman01323/boot-trading-bot
+ * branch            main       -> FETCH_HEAD
+   89b495d..d4b4edf  main       -> origin/main
+2026-08-31T08:14:59Z REFUSED requested SHA is not current origin/main (origin/main=d4b4edfcf21cc57efb046c6ac5e0011462bc9a46)
 
 === SERVER STATUS ===
 === BOOT SERVER STATUS ===
-UTC: 2026-08-31T07:37:37Z
+UTC: 2026-08-31T08:15:11Z
 branch: main
 sha:    a3ad128c99bdaf28e24a034586026be63043df6a
 origin: ssh://git@ssh.github.com:443/ayman01323/boot-trading-bot.git
@@ -144,25 +29,25 @@ tracked changes:
 service:
 ● learnerbot.service - Multi-Chain Learning Bot v2.2 Multi-User + Fast Graph-First Direct Market Scanner
      Loaded: loaded (/etc/systemd/system/learnerbot.service; disabled; preset: disabled)
-     Active: active (running) since Mon 2026-08-31 07:09:28 BST; 1h 28min ago
-   Main PID: 2425685 (python)
-      Tasks: 43 (limit: 5869)
-     Memory: 606.1M (peak: 803.3M)
-        CPU: 1h 50.041s
+     Active: active (running) since Mon 2026-08-31 09:14:43 BST; 30s ago
+   Main PID: 2439070 (python)
+      Tasks: 40 (limit: 5869)
+     Memory: 577.6M (peak: 617.3M)
+        CPU: 19.523s
      CGroup: /system.slice/learnerbot.service
-             ├─2425685 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
-             ├─2430422 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─2430423 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             ├─2430424 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
-             └─2430425 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2439070 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python -m learnerbot run
+             ├─2439217 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2439243 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             ├─2439244 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
+             └─2439245 /root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python /root/multichain-learning-bot-v2.2-fast-direct-market/scripts/sibot1_shadow_runtime.py --root /root/multichain-learning-bot-v2.2-fast-direct-market
 
-Aug 31 08:36:27 mint.yesgoodwill.com python[2425685]: [base-hot-market] routes=0 checks=4 pressure=1 seconds=25.134 next=28s
-Aug 31 08:36:35 mint.yesgoodwill.com python[2425685]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
-Aug 31 08:36:43 mint.yesgoodwill.com python[2425685]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
-Aug 31 08:36:52 mint.yesgoodwill.com python[2425685]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
-Aug 31 08:36:56 mint.yesgoodwill.com python[2425685]: [base-hot-market] routes=0 checks=4 pressure=1 seconds=26.410 next=56s
-Aug 31 08:37:01 mint.yesgoodwill.com python[2425685]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
-Aug 31 08:37:06 mint.yesgoodwill.com python[2425685]: [gemini-telegram] poll RuntimeError
-Aug 31 08:37:10 mint.yesgoodwill.com python[2425685]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
-Aug 31 08:37:10 mint.yesgoodwill.com python[2425685]: [fast-market-scan] direct=0 merged=0 eligible=0 auto-events=0 seconds=54.306
-Aug 31 08:37:19 mint.yesgoodwill.com python[2425685]: [telegram-menu] poll error: RuntimeError Telegram API getUpdates failed (HTTP 409)
+Aug 31 09:14:58 mint.yesgoodwill.com python[2439070]: [gemini-telegram] long-poll-mode=true webhook-cleared=false pending-preserved=true
+Aug 31 09:15:00 mint.yesgoodwill.com python[2439070]: [scan:bsc] 115387263..115387272 tx=705
+Aug 31 09:15:03 mint.yesgoodwill.com python[2439070]: [daily-botbuc-backup] backup failed: RuntimeError: backup preflight refused: insufficient disk headroom free_bytes=673452032 required_bytes=4294967296; no temporary ZIP was started
+Aug 31 09:15:03 mint.yesgoodwill.com python[2439070]: [daily-botbuc-backup] retrying backup/upload in 1 hour
+Aug 31 09:15:10 mint.yesgoodwill.com python[2439070]: [telegram-ai-ops-commands] verified=true masters=2 expected=aiaudit,aichange,aicost,aidecision,aistrategy,aiupdates missing=none
+Aug 31 09:15:11 mint.yesgoodwill.com python[2439217]: [full-power-candidate-rotation] installed=true rotating=true base_dedicated_feed=true base_budget_weighted=true base_cross_dex_budget=0 base_double_quote=false base_hot_checks_default=4 freshness_unchanged=true safety_unchanged=true
+Aug 31 09:15:11 mint.yesgoodwill.com python[2439217]: [full-power-scanner-rpc-failover] installed=true scope=read-only max_endpoints=3 signer_unchanged=true execution_provider_unchanged=true quote_budget_unchanged=true freshness_unchanged=true safety_unchanged=true
+Aug 31 09:15:11 mint.yesgoodwill.com python[2439217]: [sibot-alchemy-context-rate] installed=true swap_relevant_hashes_only=true batch_size=20 paced=true history_semantics=unchanged execution_safety=unchanged
+Aug 31 09:15:11 mint.yesgoodwill.com python[2439217]: [sibot-wrapped-base-history] native_plus_wrapped=true chains=1,56,137,42161,8453 thresholds=unchanged
+Aug 31 09:15:11 mint.yesgoodwill.com python[2439217]: [evm-history-router-learning] installed=true promotion=2-wallets+3-closed history_only=true execution_registry_unchanged=true live_safety_unchanged=true
