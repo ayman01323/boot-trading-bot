@@ -1,1 +1,1 @@
-2026-08-31T07:27:28Z reconcile Claude Google crash loop: deploy current main, verify isolated runtime, restart service, keep Claude OFF until owner arms via Telegram; no transaction broadcast by deployment
+2026-08-31T08:17:00Z deploy Claude restart-loop fix 89b495d54213c7c2b3fe9c9fcac68dc7c09f77e6; preserve private hotfix backup; keep Claude OFF; no ARM; no signing; no transaction broadcast; rollback baseline da714bb19a1760f60d7a2746dfef4417eaec238e
