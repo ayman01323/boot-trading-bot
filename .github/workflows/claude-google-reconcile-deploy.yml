@@ -25,19 +25,29 @@ jobs:
       RUNTIME_ENV_FILE: /home/ayman01323/ClaudeServer/runtime/claude-trading-bot.env
       STATE_FILE: /home/ayman01323/ClaudeServer/runtime/data/claude_bot_state.json
       SERVICE: claude-trading-bot.service
+      TRUSTED_CHECKOUT: ${{ runner.temp }}/claude-google-trusted-${{ github.run_id }}
     steps:
-      - name: Check out trusted current main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-          clean: false
+      - name: 'Claude — 31 Aug 2026 09:23 BST — Subject: prepare disposable trusted checkout'
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          rm -rf "$TRUSTED_CHECKOUT"
+          mkdir -p "$TRUSTED_CHECKOUT"
+          git -C "$TRUSTED_CHECKOUT" init -q
+          git -C "$TRUSTED_CHECKOUT" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$TRUSTED_CHECKOUT" fetch --depth=1 origin "$GITHUB_SHA"
+          git -C "$TRUSTED_CHECKOUT" checkout --detach -q FETCH_HEAD
+          actual="$(git -C "$TRUSTED_CHECKOUT" rev-parse HEAD)"
+          test "$actual" = "$GITHUB_SHA"
+          echo "trusted_checkout_sha=$actual"
+          echo 'actions_workspace_git_state_ignored=true'
 
       - name: Verify trusted fixes are present
         shell: bash
         run: |
           set -euo pipefail
+          cd "$TRUSTED_CHECKOUT"
           grep -q 'SOLANA_RPC_AUTH_COOLDOWN_SECONDS' learnerbot/solana_rpc_failover_patch.py
           grep -q 'endpoint_local_failover' learnerbot/solana_rpc_failover_patch.py
           grep -q 'HTTP 401' tests/test_solana_rpc_failover.py
@@ -46,10 +56,12 @@ jobs:
           test -f claude-trading-bot/claude_runtime_health_patch.py
           test -f claude-trading-bot/verify_bootstrap_composition.py
           test -f learnerbot/rejected_opportunity_publisher.py
+          grep -q 'startup-export-degraded' learnerbot/sibot1_runtime_diag_export_patch.py
+          grep -q '_fallback_out' learnerbot/sibot1_runtime_diag_export_patch.py
           echo 'trusted_main_fix_set=PASS'
           echo "trusted_main_sha=$(git rev-parse HEAD)"
 
-      - name: Verify Google runner, service, origin and OFF state
+      - name: Verify Google runner, service unit, origin and OFF state
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +69,11 @@ jobs:
           test "$(id -un)" = ayman01323
           test -d "$MANAGED_REPO/.git"
           test -r "$RUNTIME_ENV_FILE"
-          test "$(systemctl is-active "$SERVICE")" = active
+          systemctl show "$SERVICE" -p LoadState -p ActiveState -p SubState -p MainPID
+          load_state="$(systemctl show "$SERVICE" -p LoadState --value)"
+          test "$load_state" = loaded
+          echo "pre_reconcile_service_active=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          echo "pre_reconcile_service_substate=$(systemctl show "$SERVICE" -p SubState --value 2>/dev/null || true)"
           origin="$(git -C "$MANAGED_REPO" remote get-url origin)"
           case "$origin" in
             "https://github.com/${GITHUB_REPOSITORY}"|"https://github.com/${GITHUB_REPOSITORY}.git") ;;
@@ -110,6 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           old_sha="$(git -C "$MANAGED_REPO" rev-parse HEAD)"
+          trusted_sha="$(git -C "$TRUSTED_CHECKOUT" rev-parse HEAD)"
           stamp="$(date -u +%Y%m%dT%H%M%SZ)-${old_sha:0:12}"
           backup="$MANAGED_ROOT/hotfix-backups/$stamp"
           mkdir -p "$backup/files"
@@ -134,7 +151,7 @@ jobs:
               cp -p "$src" "$backup/files/$rel"
             fi
           done
-          printf 'server_sha=%s\ntrusted_main_sha=%s\n' "$old_sha" "$(git rev-parse HEAD)" > "$backup/metadata.txt"
+          printf 'server_sha=%s\ntrusted_main_sha=%s\n' "$old_sha" "$trusted_sha" > "$backup/metadata.txt"
           find "$backup" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$backup/SHA256SUMS"
           echo "backup_path=$backup" >> "$GITHUB_OUTPUT"
           echo "private_backup_path=$backup"
@@ -144,7 +161,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          trusted_sha="$(git rev-parse HEAD)"
+          trusted_sha="$(git -C "$TRUSTED_CHECKOUT" rev-parse HEAD)"
           git -C "$MANAGED_REPO" fetch --prune origin main
           git -C "$MANAGED_REPO" checkout main
           git -C "$MANAGED_REPO" reset --hard "$trusted_sha"
@@ -167,6 +184,7 @@ jobs:
           test_pythonpath="$testdeps:$MANAGED_REPO"
           PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q tests/test_solana_rpc_failover.py
           PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q claude-trading-bot/tests/test_claude_risk_and_state.py
+          PYTHONPATH="$test_pythonpath" .venv/bin/python -m pytest -q tests/test_sibot1_runtime_diag_export_nonfatal.py
           set -a
           . "$RUNTIME_ENV_FILE"
           set +a
@@ -180,11 +198,13 @@ jobs:
           test -n "${CLAUDE_BOT_WALLET_OWNER_ID:-}"
           PYTHONPATH="$MANAGED_REPO" .venv/bin/python claude-trading-bot/verify_bootstrap_composition.py
           .venv/bin/python -m py_compile \
+            learnerbot/sibot1_runtime_diag_export_patch.py \
             learnerbot/solana_rpc_failover_patch.py \
             learnerbot/ai_agent_health_4h_patch.py \
             claude-trading-bot/claude_runtime_health_patch.py
           echo 'rpc_unit_regression=PASS'
           echo 'claude_risk_state_regression=PASS'
+          echo 'runtime_diag_restart_regression=PASS'
           echo 'claude_full_bootstrap_proof=PASS'
           echo 'runtime_venv_modified=false'
           echo 'validation_transaction_broadcast=false'
@@ -201,7 +221,7 @@ jobs:
           test "$(systemctl is-active "$SERVICE")" = active
           systemctl show "$SERVICE" -p MainPID -p NRestarts -p ExecMainStatus -p ActiveState -p SubState
 
-      - name: Verify runtime, report stop and OFF safety state
+      - name: Verify runtime, restart-loop stop and OFF safety state
         shell: bash
         env:
           RESTART_EPOCH: ${{ steps.restart.outputs.restart_epoch }}
@@ -229,6 +249,13 @@ jobs:
             printf '%s\n' "$log" | tail -120
             exit 4
           fi
+          n1="$(systemctl show "$SERVICE" -p NRestarts --value)"
+          sleep 5
+          n2="$(systemctl show "$SERVICE" -p NRestarts --value)"
+          echo "post_restart_nrestarts_before=$n1"
+          echo "post_restart_nrestarts_after_5s=$n2"
+          test "$n1" = "$n2"
+          echo 'restart_loop_stopped=true'
           echo 'runtime_integrity=PASS'
           echo 'automatic_ai_health_report=DISABLED'
           echo 'ARM_LIVE_NOT_PERFORMED=true'
@@ -260,12 +287,15 @@ jobs:
         shell: bash
         run: |
           echo 'Claude Google reconcile boundary:'
+          echo '- disposable trusted checkout ignores damaged Actions workspace metadata'
+          echo '- Claude may begin active or safely stopped, but persisted state must be OFF'
           echo '- allowlisted server code is backed up before any replacement'
-          echo '- managed repo reconciles only to the exact trusted checkout SHA'
-          echo '- RPC/risk unit tests plus full non-broadcast bootstrap proof are required before restart'
+          echo '- managed repo reconciles only to the exact trusted workflow SHA'
+          echo '- RPC/risk/runtime-diagnostic tests plus full non-broadcast bootstrap proof are required before restart'
           echo '- runtime venv is not modified'
           echo '- restarted only claude-trading-bot.service when validation passes'
           echo '- Claude remains OFF after restart by design'
+          echo '- restart counter must remain stable over 5 seconds'
           echo '- no ARM command issued'
           echo '- no wallet/signing material modified'
           echo '- no transaction signed or broadcast'
