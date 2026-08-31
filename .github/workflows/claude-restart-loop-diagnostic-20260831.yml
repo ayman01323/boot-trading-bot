@@ -1,0 +1,57 @@
+name: Claude — 31 Aug 2026 09:05 BST — Restart Loop Diagnostic
+
+on:
+  push:
+    branches:
+      - 'claude/20260831-restart-loop-diagnostic'
+    paths:
+      - '.github/workflows/claude-restart-loop-diagnostic-20260831.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Claude — 31 Aug 2026 09:05 BST — Subject: read-only service evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          SERVICE='claude-trading-bot.service'
+          echo 'change_scope=read_only'
+          echo 'main_modified=false'
+          echo 'service_mutated=false'
+          echo 'trading_state_mutated=false'
+          echo 'transaction_broadcast=false'
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          echo "generated_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          echo '--- systemd state ---'
+          systemctl is-active "$SERVICE" || true
+          systemctl show "$SERVICE" \
+            -p ActiveState -p SubState -p Result -p MainPID \
+            -p NRestarts -p ExecMainCode -p ExecMainStatus \
+            -p Restart -p RestartUSec -p FragmentPath -p WorkingDirectory \
+            -p ActiveEnterTimestamp -p InactiveExitTimestamp || true
+
+          before="$(systemctl show "$SERVICE" -p NRestarts --value || echo UNKNOWN)"
+          sleep 5
+          after="$(systemctl show "$SERVICE" -p NRestarts --value || echo UNKNOWN)"
+          echo "nrestarts_before=$before"
+          echo "nrestarts_after_5s=$after"
+
+          echo '--- recent restart/error evidence (sanitised) ---'
+          sudo -n journalctl -u "$SERVICE" --since '10 minutes ago' --no-pager -o short-iso 2>/dev/null \
+            | grep -Ei 'Traceback|Error|Exception|Main process exited|Failed with result|Scheduled restart|restart counter|status=[0-9]+|ModuleNotFoundError|ImportError|FileNotFoundError|TypeError|ValueError|AttributeError|KeyError|PermissionError|RuntimeError|SystemExit|Started|Stopped|Startup' \
+            | tail -160 \
+            | python3 -c "import re,sys; s=sys.stdin.read(); s=re.sub(r'https?://\\S+','<URL_REDACTED>',s); s=re.sub(r'(?i)(api[_-]?key|token|secret|password)(\\s*[=:]\\s*)\\S+',r'\\1\\2<REDACTED>',s); print(s,end='')" \
+            || true
+
+          echo '--- unit execution metadata ---'
+          systemctl show "$SERVICE" -p ExecStart -p ExecStartPre -p ExecStartPost || true
+
+          echo 'diagnostic_complete=true'
