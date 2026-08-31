@@ -1,0 +1,87 @@
+name: Claude Force Stop 20260831
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-force-stop-20260831.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-force-stop
+  cancel-in-progress: false
+
+jobs:
+  stop:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    env:
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      DATA_DIR: /home/ayman01323/ClaudeServer/runtime/data
+      SERVICE: claude-trading-bot.service
+    steps:
+      - name: Force Claude OFF and stop service
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test -d "$MANAGED_REPO/claude-trading-bot"
+
+          # First persist the authoritative Claude operating state as OFF so a
+          # later manual service start cannot restore ARMED state.
+          MANAGED_REPO="$MANAGED_REPO" DATA_DIR="$DATA_DIR" python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          root = Path(os.environ['MANAGED_REPO'])
+          sys.path.insert(0, str(root / 'claude-trading-bot'))
+          import claude_state
+          class App:
+              data_dir = os.environ['DATA_DIR']
+          state = claude_state.stop(App())
+          print('claude_operating_state=' + claude_state.effective_state(state))
+          if claude_state.effective_state(state) not in {'OFF', 'HALTED_DRAWDOWN'}:
+              raise SystemExit('REFUSE_STOP: Claude state did not become OFF/safety-halted')
+          PY
+
+          # Stop normally first; if anything remains active, kill the entire
+          # systemd service cgroup. Do not disable/mask the unit.
+          sudo -n systemctl stop "$SERVICE" || true
+          sleep 2
+          if systemctl is-active --quiet "$SERVICE"; then
+            sudo -n systemctl kill --kill-who=all --signal=SIGKILL "$SERVICE" || true
+            sudo -n systemctl stop "$SERVICE" || true
+            sleep 2
+          fi
+
+          ACTIVE="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          SUBSTATE="$(systemctl show -p SubState --value "$SERVICE" 2>/dev/null || true)"
+          PID="$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)"
+          echo "claude_service_active=${ACTIVE:-unknown}"
+          echo "claude_service_substate=${SUBSTATE:-unknown}"
+          echo "claude_main_pid=${PID:-unknown}"
+
+          if [[ "$ACTIVE" == "active" || "${PID:-0}" != "0" ]]; then
+            echo 'FORCE_STOP_FAILED=true' >&2
+            exit 1
+          fi
+
+          DATA_DIR="$DATA_DIR" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['DATA_DIR'])/'claude_bot_state.json'
+          raw=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+          state=str(raw.get('operating_state') or 'OFF')
+          halted=bool(raw.get('halted_drawdown'))
+          effective='HALTED_DRAWDOWN' if halted else state
+          print('claude_persisted_effective_state='+effective)
+          if effective not in {'OFF','HALTED_DRAWDOWN'}:
+              raise SystemExit('FORCE_STOP_FAILED: persisted Claude state is not OFF')
+          PY
+
+          echo 'CLAUDE_FORCE_STOP=PASS'
+          echo 'service_disabled=false'
+          echo 'transaction_broadcast=false'
