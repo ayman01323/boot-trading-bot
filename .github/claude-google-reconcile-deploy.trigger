@@ -1,1 +1,1 @@
-2026-08-28T17:22:00Z deploy isolated Grok PAPER Telegram controls; no Claude ARM or transaction broadcast
+2026-08-31T07:27:28Z reconcile Claude Google crash loop: deploy current main, verify isolated runtime, restart service, keep Claude OFF until owner arms via Telegram; no transaction broadcast by deployment
