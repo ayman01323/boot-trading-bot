@@ -16,6 +16,7 @@ _PREV_APP = _cli._app
 _STARTED = False
 _LOCK = threading.Lock()
 OUT = Path('/var/tmp/sibot1-runtime-diag.json')
+_ACTIVE_OUT = OUT
 
 
 def _bool(value) -> bool:
@@ -216,13 +217,45 @@ def snapshot(app) -> dict:
     return out
 
 
-def _write(app) -> None:
+def _fallback_out(app) -> Path:
+    return Path(app.data_dir) / 'sibot1' / 'runtime_diag.json'
+
+
+def _atomic_write(path: Path, data: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f'.{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
+    try:
+        tmp.write_text(data + '\n', encoding='utf-8')
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+        os.chmod(path, 0o644)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _write(app) -> Path:
+    global _ACTIVE_OUT
     data = json.dumps(snapshot(app), indent=2, sort_keys=True)
-    tmp = OUT.with_suffix('.json.tmp')
-    tmp.write_text(data + '\n', encoding='utf-8')
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, OUT)
-    os.chmod(OUT, 0o644)
+    target = _ACTIVE_OUT
+    try:
+        _atomic_write(target, data)
+        return target
+    except PermissionError as exc:
+        fallback = _fallback_out(app)
+        if target == fallback:
+            raise
+        print(
+            '[sibot1-runtime-diag] primary-output-unwritable',
+            type(exc).__name__,
+            _redact_text(exc)[:180],
+            f'fallback={fallback}',
+        )
+        _atomic_write(fallback, data)
+        _ACTIVE_OUT = fallback
+        return fallback
 
 
 def _worker(app) -> None:
@@ -239,10 +272,17 @@ def _start(app) -> None:
     with _LOCK:
         if _STARTED:
             return
-        _write(app)
+        active_out = _ACTIVE_OUT
+        try:
+            active_out = _write(app)
+        except Exception as exc:
+            # Runtime diagnostics are observability only. A diagnostic export
+            # failure must never terminate learnerbot/Claude or create a
+            # systemd restart loop. The background worker will keep retrying.
+            print('[sibot1-runtime-diag] startup-export-degraded', type(exc).__name__, _redact_text(exc)[:240])
         threading.Thread(target=_worker, args=(app,), daemon=True, name='sibot1-redacted-runtime-diag').start()
         _STARTED = True
-        print(f'[sibot1-runtime-diag] redacted-export={OUT} interval=10s')
+        print(f'[sibot1-runtime-diag] redacted-export={active_out} interval=10s startup-nonfatal=true')
 
 
 def _app_with_diag():
