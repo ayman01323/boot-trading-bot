@@ -1,1 +1,1 @@
-2026-08-31T08:17:00Z deploy Claude restart-loop fix 89b495d54213c7c2b3fe9c9fcac68dc7c09f77e6; preserve private hotfix backup; keep Claude OFF; no ARM; no signing; no transaction broadcast; rollback baseline da714bb19a1760f60d7a2746dfef4417eaec238e
+2026-08-31T08:25:00Z deploy repaired Claude restart-loop fix from current main; start only after private hotfix backup and non-broadcast validation; persisted state must remain OFF; no ARM; no AUTO; no signing; no transaction broadcast; workflow rollback baseline afbfecbfe48376eb58184250696f40d8a046d594
