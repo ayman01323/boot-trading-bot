@@ -1,0 +1,152 @@
+name: 'Claude — 31 Aug 2026 09:26 BST — Narrow Runtime Repair'
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/claude-narrow-runtime-repair-20260831.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-narrow-runtime-repair-20260831
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    env:
+      MANAGED_ROOT: /home/ayman01323/ClaudeServer
+      MANAGED_REPO: /home/ayman01323/ClaudeServer/boot-trading-bot
+      DATA_DIR: /home/ayman01323/ClaudeServer/runtime/data
+      STATE_FILE: /home/ayman01323/ClaudeServer/runtime/data/claude_bot_state.json
+      SERVICE: claude-trading-bot.service
+      TARGET_FILE: learnerbot/sibot1_runtime_diag_export_patch.py
+      TRUSTED_CHECKOUT: ${{ runner.temp }}/claude-narrow-repair-${{ github.run_id }}
+    steps:
+      - name: 'Claude — 31 Aug 2026 09:26 BST — Subject: install tested diagnostics fix with automatic rollback'
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -Eeuo pipefail
+          backup=''
+          installed=false
+
+          rollback() {
+            rc=$?
+            set +e
+            echo "repair_error_exit_code=$rc"
+            sudo -n systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+            if [[ "$installed" == true && -n "$backup" && -f "$backup/$TARGET_FILE" ]]; then
+              cp -p "$backup/$TARGET_FILE" "$MANAGED_REPO/$TARGET_FILE" || true
+              echo 'runtime_file_rollback=RESTORED'
+            fi
+            echo 'claude_left_stopped=true'
+            echo 'transaction_broadcast=false'
+            exit "$rc"
+          }
+          trap rollback ERR
+
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          test -d "$MANAGED_REPO/.git"
+          test -f "$MANAGED_REPO/$TARGET_FILE"
+          test "$(systemctl show "$SERVICE" -p LoadState --value)" = loaded
+
+          # Authoritative safety gate: the bot must be OFF before any runtime file changes.
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['STATE_FILE'])
+          raw = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print('pre_repair_effective_state=' + effective)
+          if effective != 'OFF':
+              raise SystemExit('REFUSE_REPAIR: Claude effective state is not OFF')
+          PY
+
+          echo "pre_repair_service_active=$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+          echo "pre_repair_main_pid=$(systemctl show "$SERVICE" -p MainPID --value 2>/dev/null || true)"
+
+          # Build a disposable exact-SHA source checkout, independent of the damaged Actions workspace.
+          rm -rf "$TRUSTED_CHECKOUT"
+          mkdir -p "$TRUSTED_CHECKOUT"
+          git -C "$TRUSTED_CHECKOUT" init -q
+          git -C "$TRUSTED_CHECKOUT" remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$TRUSTED_CHECKOUT" fetch --depth=1 origin "$GITHUB_SHA"
+          git -C "$TRUSTED_CHECKOUT" checkout --detach -q FETCH_HEAD
+          test "$(git -C "$TRUSTED_CHECKOUT" rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -q 'startup-export-degraded' "$TRUSTED_CHECKOUT/$TARGET_FILE"
+          grep -q '_fallback_out' "$TRUSTED_CHECKOUT/$TARGET_FILE"
+          python3 -m py_compile "$TRUSTED_CHECKOUT/$TARGET_FILE"
+          echo "trusted_source_sha=$GITHUB_SHA"
+
+          # Preserve the exact server file before replacement.
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          backup="$MANAGED_ROOT/hotfix-backups/claude-runtime-diag-$stamp"
+          mkdir -p "$backup/$(dirname "$TARGET_FILE")"
+          chmod 700 "$MANAGED_ROOT/hotfix-backups" "$backup"
+          cp -p "$MANAGED_REPO/$TARGET_FILE" "$backup/$TARGET_FILE"
+          sha256sum "$backup/$TARGET_FILE" > "$backup/original.sha256"
+          printf 'github_sha=%s\nserver_repo_sha=%s\n' "$GITHUB_SHA" "$(git -C "$MANAGED_REPO" rev-parse HEAD)" > "$backup/metadata.txt"
+          echo "rollback_backup=$backup"
+
+          # Replace only the crashing observability module. No strategy/risk/wallet files are touched.
+          cp -p "$TRUSTED_CHECKOUT/$TARGET_FILE" "$MANAGED_REPO/$TARGET_FILE"
+          installed=true
+          python3 -m py_compile "$MANAGED_REPO/$TARGET_FILE"
+          grep -q 'startup-export-degraded' "$MANAGED_REPO/$TARGET_FILE"
+          grep -q '_fallback_out' "$MANAGED_REPO/$TARGET_FILE"
+          echo 'runtime_diag_fix_installed=true'
+
+          # Start only Claude. It remains OFF by persisted state. One normal Startup banner is expected.
+          epoch="$(date +%s)"
+          sudo -n systemctl start "$SERVICE"
+          sleep 20
+          test "$(systemctl is-active "$SERVICE")" = active
+
+          n1="$(systemctl show "$SERVICE" -p NRestarts --value)"
+          sleep 10
+          n2="$(systemctl show "$SERVICE" -p NRestarts --value)"
+          echo "nrestarts_before_10s=$n1"
+          echo "nrestarts_after_10s=$n2"
+          test "$n1" = "$n2"
+
+          log="$(sudo -n journalctl -u "$SERVICE" --since "@$epoch" --no-pager || true)"
+          if printf '%s\n' "$log" | grep -Fq "Operation not permitted: '/var/tmp/sibot1-runtime-diag.json.tmp'"; then
+            echo 'original_permission_crash_recurred=true' >&2
+            false
+          fi
+          if printf '%s\n' "$log" | grep -Eq 'Traceback|Main process exited|Failed with result'; then
+            echo 'fatal_runtime_error_after_repair=true' >&2
+            printf '%s\n' "$log" | tail -100
+            false
+          fi
+
+          STATE_FILE="$STATE_FILE" python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p = Path(os.environ['STATE_FILE'])
+          raw = json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+          operating = str(raw.get('operating_state') or 'OFF')
+          halted = bool(raw.get('halted_drawdown'))
+          effective = 'HALTED_DRAWDOWN' if halted else operating
+          print('post_repair_effective_state=' + effective)
+          if effective != 'OFF':
+              raise SystemExit('POST_REPAIR_UNSAFE: Claude effective state is not OFF')
+          PY
+
+          trap - ERR
+          echo 'CLAUDE_NARROW_RUNTIME_REPAIR=PASS'
+          echo 'restart_loop_stopped=true'
+          echo 'claude_service_active=true'
+          echo 'claude_effective_state=OFF'
+          echo 'ARM_LIVE_NOT_PERFORMED=true'
+          echo 'AUTO_NOT_ENABLED=true'
+          echo 'wallet_or_signer_material_modified=false'
+          echo 'transaction_broadcast=false'
