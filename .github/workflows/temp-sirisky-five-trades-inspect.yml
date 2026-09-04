@@ -11,96 +11,110 @@ permissions:
   contents: read
 
 jobs:
-  detect:
-    name: Inspect deployed SiRisky Ultra request
+  stage5_failure_stage:
     runs-on: [self-hosted, linux, x64, boot-google]
-    timeout-minutes: 3
+    timeout-minutes: 5
     outputs:
       state: ${{ steps.classify.outputs.state }}
-      urls: ${{ steps.classify.outputs.urls }}
-      orderparams: ${{ steps.classify.outputs.orderparams }}
-      signshape: ${{ steps.classify.outputs.signshape }}
-      execbody: ${{ steps.classify.outputs.execbody }}
-      responseguard: ${{ steps.classify.outputs.responseguard }}
+      failure_stage: ${{ steps.classify.outputs.failure_stage }}
     steps:
-      - id: classify
-        name: Classify deployed request schema without exposing addresses or keys
+      - name: Guard runtime and save configuration checksum
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           sudo -n true
-          out="$(sudo -n python3 - <<'PY'
-          import ast,csv,re
-          from pathlib import Path
+          sudo -n test -f /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n test -f /root/SiRisky/CSV/runtime.csv
+          sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}' > "$RUNNER_TEMP/runtime_before.sha"
 
+      - name: Add safe Stage 5 order/execute failure labels
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/stage5_trade.py "/root/SiRisky/sirisky/stage5_trade.py.${stamp}.bak"
+          sudo -n python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/root/SiRisky/sirisky/stage5_trade.py')
+          s=p.read_text()
+          old='''            else:\n                q=jup_order(self.settings,taker,input_mint,output_mint,order.amount_raw)\n'''
+          new='''            else:\n                try:\n                    q=jup_order(self.settings,taker,input_mint,output_mint,order.amount_raw)\n                except Exception as exc:\n                    raise RuntimeError("JUPITER_ORDER | "+safe_execution_error(exc)) from None\n'''
+          if 'JUPITER_ORDER | ' not in s:
+              if old not in s:
+                  raise SystemExit('expected jup_order call not found')
+              s=s.replace(old,new,1)
+          old2='''                res=execute_order(self.settings,q,wallet.keypair_bytes()); sig=str(res.get("signature") or ""); status="SUCCESS"\n'''
+          new2='''                try:\n                    res=execute_order(self.settings,q,wallet.keypair_bytes())\n                except Exception as exc:\n                    raise RuntimeError("JUPITER_EXECUTE | "+safe_execution_error(exc)) from None\n                sig=str(res.get("signature") or ""); status="SUCCESS"\n'''
+          if 'JUPITER_EXECUTE | ' not in s:
+              if old2 not in s:
+                  raise SystemExit('expected execute_order call not found')
+              s=s.replace(old2,new2,1)
+          p.write_text(s)
+          PY
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -m py_compile sirisky/stage5_trade.py'
+          before="$(cat "$RUNNER_TEMP/runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Restart with existing live configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          test "$(systemctl is-active sirisky.service)" = active
+          test "$(cat "$RUNNER_TEMP/runtime_before.sha")" = "$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+
+      - name: Wait for normal automatic retry
+        shell: bash
+        run: sleep 35
+
+      - id: classify
+        name: Classify the latest FAST_STOP retry
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          out="$(sudo -n python3 - <<'PY'
+          import csv,re
+          from pathlib import Path
           target='pos-e39b933a174b'
           op=Path('/root/SiRisky/CSV/open_positions.csv')
-          jp=Path('/root/SiRisky/sirisky/jupiter.py')
+          ep=Path('/root/SiRisky/CSV/executions.csv')
           state='UNKNOWN'
           if op.exists():
               with op.open(newline='') as f: rows=list(csv.DictReader(f))
               state='OPEN' if any((r.get('position_id') or '')==target and (r.get('status') or '').upper()=='OPEN' for r in rows) else 'NOT_OPEN'
-
-          src=jp.read_text(errors='replace')
-          tree=ast.parse(src)
-          funcs={n.name:ast.get_source_segment(src,n) or '' for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
-          order=funcs.get('order','')
-          execute=funcs.get('execute_order','')
-
-          # Classify endpoint literals/constants, but never output the literal URLs.
-          lo=src.lower()
-          bits=[]
-          if 'ultra/v1/order' in lo: bits.append('UO')
-          if 'ultra/v1/execute' in lo: bits.append('UE')
-          if 'swap/v1/quote' in lo: bits.append('SQ')
-          if 'swap/v1/swap' in lo: bits.append('SS')
-          if '/swap/v2/' in lo or 'swap/v2' in lo: bits.append('V2')
-          urls='URL_' + ''.join(bits) if bits else 'URL_OTHER'
-
-          params=[]
-          for key,label in [('inputMint','I'),('outputMint','O'),('amount','A'),('taker','T'),('receiver','R'),('payer','P'),('closeAuthority','C'),('referralAccount','F'),('referralFee','E'),('excludeRouters','X'),('excludeDexes','D'),('slippageBps','S'),('swapMode','M'),('platformFeeBps','B')]:
-              if key in order: params.append(label)
-          orderparams='OP_' + ''.join(params) if params else 'OP_NONE'
-
-          # Signing implementation shape only.
-          if 'VersionedTransaction' in execute and re.search(r'\.sign\(',execute): signshape='VERSIONED_SIGN'
-          elif 'VersionedTransaction' in execute: signshape='VERSIONED_OTHER'
-          elif re.search(r'Keypair|keypair|sign',execute): signshape='SIGN_OTHER'
-          else: signshape='SIGN_UNKNOWN'
-
-          eb=[]
-          for key,label in [('signedTransaction','S'),('requestId','R'),('transaction','T'),('signature','G')]:
-              if key in execute: eb.append(label)
-          execbody='EB_' + ''.join(eb) if eb else 'EB_NONE'
-
-          # Does order validate Jupiter's returned transaction/requestId/error fields before Stage 5 proceeds?
-          guards=[]
-          if 'transaction' in order: guards.append('T')
-          if 'requestId' in order: guards.append('R')
-          if 'errorCode' in order or 'errorMessage' in order: guards.append('E')
-          if re.search(r'raise\s+JupiterError',order): guards.append('J')
-          responseguard='RG_' + ''.join(guards) if guards else 'RG_NONE'
-
+          err=''
+          status=''
+          if ep.exists():
+              with ep.open(newline='') as f: rows=list(csv.DictReader(f))
+              rs=[r for r in rows if (r.get('action') or '').upper()=='SELL' and (r.get('reason') or '').upper()=='FAST_STOP']
+              if rs:
+                  status=(rs[-1].get('status') or '').upper()
+                  err=(rs[-1].get('error') or '')
+          if status in {'SUCCESS','CONFIRMED','EXECUTED'}:
+              stage='SELL_SUCCESS'
+          elif 'JUPITER_ORDER |' in err:
+              stage='ORDER_HTTP400' if re.search(r'HTTP\s*400',err,re.I) else 'ORDER_OTHER'
+          elif 'JUPITER_EXECUTE |' in err:
+              stage='EXECUTE_HTTP400' if re.search(r'HTTP\s*400',err,re.I) else 'EXECUTE_OTHER'
+          elif 'HTTP 400' in err:
+              stage='UNLABELLED_HTTP400'
+          else:
+              stage='OTHER'
           print('state='+state)
-          print('urls='+urls)
-          print('orderparams='+orderparams)
-          print('signshape='+signshape)
-          print('execbody='+execbody)
-          print('responseguard='+responseguard)
+          print('failure_stage='+stage)
           PY
           )"
           printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
+          test "$(cat "$RUNNER_TEMP/runtime_before.sha")" = "$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$(systemctl is-active sirisky.service)" = active
 
   report:
-    needs: detect
-    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.urls }} - ${{ needs.detect.outputs.orderparams }} - ${{ needs.detect.outputs.signshape }} - ${{ needs.detect.outputs.execbody }} - ${{ needs.detect.outputs.responseguard }}
+    needs: stage5_failure_stage
+    name: SiRisky ${{ needs.stage5_failure_stage.outputs.state }} - ${{ needs.stage5_failure_stage.outputs.failure_stage }}
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 2
     steps:
-      - name: Confirm service remains active
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          test "$(hostname)" = botgoogle
-          test "$(systemctl is-active sirisky.service)" = active
+      - run: test "$(systemctl is-active sirisky.service)" = active
