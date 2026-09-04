@@ -12,90 +12,98 @@ permissions:
 
 jobs:
   detect:
-    name: Detect SiRisky Jupiter HTTP 400 source
+    name: Inspect deployed SiRisky Jupiter client
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 3
     outputs:
       state: ${{ steps.classify.outputs.state }}
-      category: ${{ steps.classify.outputs.category }}
-      detail: ${{ steps.classify.outputs.detail }}
-      endpoint: ${{ steps.classify.outputs.endpoint }}
+      errshape: ${{ steps.classify.outputs.errshape }}
+      orderflow: ${{ steps.classify.outputs.orderflow }}
+      execflow: ${{ steps.classify.outputs.execflow }}
+      quoteparams: ${{ steps.classify.outputs.quoteparams }}
+      errdetail: ${{ steps.classify.outputs.errdetail }}
     steps:
       - id: classify
-        name: Classify latest FAST_STOP sell without exposing transaction data
+        name: Inspect source semantics without emitting secrets or addresses
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
           sudo -n true
           out="$(sudo -n python3 - <<'PY'
-          import csv,re
+          import ast,csv,re
           from pathlib import Path
 
           target='pos-e39b933a174b'
           open_path=Path('/root/SiRisky/CSV/open_positions.csv')
           exec_path=Path('/root/SiRisky/CSV/executions.csv')
-          jup_path=Path('/root/SiRisky/sirisky/jupiter.py')
+          jp=Path('/root/SiRisky/sirisky/jupiter.py')
 
           state='UNKNOWN'
           if open_path.exists():
-              with open_path.open(newline='') as f: opened=list(csv.DictReader(f))
-              state='OPEN' if any((r.get('position_id') or '')==target and (r.get('status') or '').upper()=='OPEN' for r in opened) else 'NOT_OPEN'
+              with open_path.open(newline='') as f: rows=list(csv.DictReader(f))
+              state='OPEN' if any((r.get('position_id') or '')==target and (r.get('status') or '').upper()=='OPEN' for r in rows) else 'NOT_OPEN'
 
-          err=''; status=''; relevant=[]
+          err=''
           if exec_path.exists():
               with exec_path.open(newline='') as f: rows=list(csv.DictReader(f))
-              relevant=[r for r in rows if (r.get('action') or '').upper()=='SELL' and (r.get('reason') or '').upper()=='FAST_STOP']
-          if relevant:
-              r=relevant[-1]; status=(r.get('status') or '').upper(); err=(r.get('error') or '').strip()
+              rs=[r for r in rows if (r.get('action') or '').upper()=='SELL' and (r.get('reason') or '').upper()=='FAST_STOP']
+              if rs: err=(rs[-1].get('error') or '').strip()
+          if re.fullmatch(r'JupiterError\s*\|\s*HTTP\s*400(?:\s*\|\s*)?',err,re.I): errshape='HTTP400_ONLY'
+          elif re.search(r'HTTP\s*400',err,re.I) and len(err)<=45: errshape='HTTP400_SHORT'
+          elif re.search(r'HTTP\s*400',err,re.I): errshape='HTTP400_WITH_DETAIL'
+          elif err=='JupiterError': errshape='OPAQUE'
+          else: errshape='OTHER'
 
-          if status in {'SUCCESS','CONFIRMED','EXECUTED'}:
-              category='SELL_SUCCESS'
-          elif re.search(r'HTTP\s+400\b|bad request',err,re.I):
-              category='HTTP_400'
-          elif err=='JupiterError': category='OPAQUE_JUPITER_ERROR'
-          elif err.startswith('JupiterError |'): category='JUPITER_DETAILED_ERROR'
-          elif err: category='OTHER_ERROR'
-          else: category='NO_ERROR_TEXT'
+          src=jp.read_text(errors='replace')
+          tree=ast.parse(src)
+          funcs={n.name:ast.get_source_segment(src,n) or '' for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
+          order=funcs.get('order','')
+          execute=funcs.get('execute_order','')
+          quote=funcs.get('quote_only','')
 
-          e=err.lower()
-          detail='HTTP400_OTHER'
-          tests=[
-              ('BAD_AMOUNT', r'amount|amount_raw|inamount|outamount'),
-              ('BAD_TAKER_OR_USER', r'taker|userpublickey|user public key|wallet address'),
-              ('BAD_INPUT_OUTPUT_MINT', r'inputmint|outputmint|input mint|output mint|\bmint\b'),
-              ('BAD_SLIPPAGE', r'slippage|slippagebps'),
-              ('BAD_PRIORITY_FEE', r'priorit|priority fee|compute.?unit'),
-              ('BAD_QUOTE_RESPONSE', r'quoteresponse|quote response|routeplan|route plan'),
-              ('BAD_TRANSACTION_REQUEST', r'transaction|serialized|deserialize|simulation'),
-              ('BAD_JSON_OR_SCHEMA', r'json|schema|parse|unexpected field|missing field|invalid type|required field'),
-              ('INVALID_REQUEST_GENERIC', r'invalid request|bad request|invalid parameter|invalid argument'),
-          ]
-          if category=='HTTP_400':
-              for label,pat in tests:
-                  if re.search(pat,e,re.I): detail=label; break
-          elif category=='SELL_SUCCESS': detail='NONE'
-          else: detail='NOT_HTTP400'
+          if 'quote_only(' in order and not re.search(r'requests\.(?:post|put)|urlopen',order): orderflow='ORDER_WRAP_QUOTE'
+          elif '/ultra/' in order: orderflow='ORDER_ULTRA'
+          elif re.search(r'requests\.post|method=[\"\']POST',order,re.I): orderflow='ORDER_POST'
+          elif re.search(r'requests\.get|method=[\"\']GET|urlopen',order,re.I): orderflow='ORDER_GET'
+          else: orderflow='ORDER_OTHER'
 
-          endpoint='UNKNOWN_ENDPOINT'
-          if jup_path.exists():
-              src=jup_path.read_text(errors='replace')
-              if '/ultra/v1/order' in src or 'api.jup.ag/ultra/v1/order' in src: endpoint='ULTRA_V1_ORDER'
-              elif '/swap/v1/swap' in src: endpoint='SWAP_V1_SWAP'
-              elif '/swap/v1/order' in src: endpoint='SWAP_V1_ORDER'
-              elif '/swap/v1/quote' in src: endpoint='QUOTE_ONLY_UNKNOWN_EXEC'
+          if re.search(r'/ultra/.*/execute|/execute',execute): execflow='EXEC_JUP_EXECUTE'
+          elif '/swap/v1/swap' in execute or re.search(r'[/\"\']swap[/\"\']',execute): execflow='EXEC_JUP_SWAP'
+          elif re.search(r'send_raw_transaction|sendTransaction|send_transaction',execute,re.I): execflow='EXEC_RPC_SEND'
+          elif re.search(r'requests\.post|method=[\"\']POST|urlopen',execute,re.I): execflow='EXEC_HTTP_OTHER'
+          else: execflow='EXEC_OTHER'
+
+          qp=[]
+          for key,label in [('inputMint','I'),('outputMint','O'),('amount','A'),('slippageBps','S'),('swapMode','M'),('platformFeeBps','F'),('maxAccounts','X'),('restrictIntermediateTokens','R'),('onlyDirectRoutes','D')]:
+              if key in quote: qp.append(label)
+          quoteparams='QP_' + ''.join(qp) if qp else 'QP_NONE'
+
+          # Determine whether the Jupiter client itself preserves HTTP response bodies.
+          body_tokens=('response.text','.text','response.json','.json()','resp.text','resp.json','r.text','r.json')
+          raise_segments=[]
+          for n in ast.walk(tree):
+              if isinstance(n,ast.Raise):
+                  seg=ast.get_source_segment(src,n) or ''
+                  if 'JupiterError' in seg: raise_segments.append(seg)
+          joined='\n'.join(raise_segments)
+          if any(t in joined for t in body_tokens): errdetail='CLIENT_BODY_INCLUDED'
+          elif re.search(r'status_code|status|code',joined,re.I): errdetail='CLIENT_STATUS_ONLY'
+          else: errdetail='CLIENT_ERROR_OPAQUE'
 
           print('state='+state)
-          print('category='+category)
-          print('detail='+detail)
-          print('endpoint='+endpoint)
+          print('errshape='+errshape)
+          print('orderflow='+orderflow)
+          print('execflow='+execflow)
+          print('quoteparams='+quoteparams)
+          print('errdetail='+errdetail)
           PY
           )"
           printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 
   report:
     needs: detect
-    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.category }} - ${{ needs.detect.outputs.detail }} - ${{ needs.detect.outputs.endpoint }}
+    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.errshape }} - ${{ needs.detect.outputs.orderflow }} - ${{ needs.detect.outputs.execflow }} - ${{ needs.detect.outputs.quoteparams }} - ${{ needs.detect.outputs.errdetail }}
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 2
     steps:
