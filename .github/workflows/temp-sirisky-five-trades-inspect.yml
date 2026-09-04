@@ -12,15 +12,17 @@ permissions:
 
 jobs:
   detect:
-    name: Detect SiRisky exit state
+    name: Detect SiRisky Jupiter HTTP 400 source
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 3
     outputs:
       state: ${{ steps.classify.outputs.state }}
       category: ${{ steps.classify.outputs.category }}
+      detail: ${{ steps.classify.outputs.detail }}
+      endpoint: ${{ steps.classify.outputs.endpoint }}
     steps:
       - id: classify
-        name: Classify target position and latest FAST_STOP sell
+        name: Classify latest FAST_STOP sell without exposing transaction data
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -33,64 +35,67 @@ jobs:
           target='pos-e39b933a174b'
           open_path=Path('/root/SiRisky/CSV/open_positions.csv')
           exec_path=Path('/root/SiRisky/CSV/executions.csv')
+          jup_path=Path('/root/SiRisky/sirisky/jupiter.py')
 
           state='UNKNOWN'
           if open_path.exists():
-              with open_path.open(newline='') as f:
-                  open_rows=list(csv.DictReader(f))
-              state='OPEN' if any((r.get('position_id') or '')==target and (r.get('status') or '').upper()=='OPEN' for r in open_rows) else 'NOT_OPEN'
+              with open_path.open(newline='') as f: opened=list(csv.DictReader(f))
+              state='OPEN' if any((r.get('position_id') or '')==target and (r.get('status') or '').upper()=='OPEN' for r in opened) else 'NOT_OPEN'
 
-          relevant=[]
+          err=''; status=''; relevant=[]
           if exec_path.exists():
-              with exec_path.open(newline='') as f:
-                  rows=list(csv.DictReader(f))
+              with exec_path.open(newline='') as f: rows=list(csv.DictReader(f))
               relevant=[r for r in rows if (r.get('action') or '').upper()=='SELL' and (r.get('reason') or '').upper()=='FAST_STOP']
-
-          category='NO_FAST_STOP_SELL_RECORD'
           if relevant:
-              r=relevant[-1]
-              status=(r.get('status') or '').upper()
-              err=(r.get('error') or '').strip()
-              if status in {'SUCCESS','CONFIRMED','EXECUTED'}:
-                  category='SELL_SUCCESS'
-              elif err=='JupiterError':
-                  category='OPAQUE_JUPITER_ERROR'
-              elif re.search(r'HTTP\s+(401|403)\b|unauthori[sz]ed|forbidden|api.?key',err,re.I):
-                  category='AUTH_401_403'
-              elif re.search(r'HTTP\s+429\b|rate.?limit|too many requests',err,re.I):
-                  category='RATE_LIMIT_429'
-              elif re.search(r'HTTP\s+5\d\d\b|server error|service unavailable|bad gateway|gateway timeout',err,re.I):
-                  category='JUPITER_SERVER_5XX'
-              elif re.search(r'no.?route|NO_EXECUTABLE_OUTPUT|route.*not.*found|could not find.*route|not tradable',err,re.I):
-                  category='NO_ROUTE'
-              elif re.search(r'slippage|simulation|simulate|price.?impact',err,re.I):
-                  category='SLIPPAGE_OR_SIMULATION'
-              elif re.search(r'insufficient|not enough|balance|funds',err,re.I):
-                  category='INSUFFICIENT_BALANCE_OR_FUNDS'
-              elif re.search(r'blockhash|expired|account.*not found|token account|associated token|invalid account',err,re.I):
-                  category='ACCOUNT_OR_BLOCKHASH'
-              elif re.search(r'TIMEOUT|CONNECTION|URL_ERROR|network|temporar',err,re.I):
-                  category='TRANSPORT'
-              elif re.search(r'signer|signature|private key',err,re.I):
-                  category='SIGNER_OR_SIGNATURE'
-              elif re.search(r'HTTP\s+400\b|bad request|invalid request|invalid.*amount',err,re.I):
-                  category='HTTP_400_BAD_REQUEST'
-              elif err.startswith('JupiterError |'):
-                  category='JUPITER_OTHER_DETAIL'
-              elif err:
-                  category='OTHER_DETAILED_ERROR'
-              else:
-                  category='FAILED_WITHOUT_ERROR_TEXT'
+              r=relevant[-1]; status=(r.get('status') or '').upper(); err=(r.get('error') or '').strip()
+
+          if status in {'SUCCESS','CONFIRMED','EXECUTED'}:
+              category='SELL_SUCCESS'
+          elif re.search(r'HTTP\s+400\b|bad request',err,re.I):
+              category='HTTP_400'
+          elif err=='JupiterError': category='OPAQUE_JUPITER_ERROR'
+          elif err.startswith('JupiterError |'): category='JUPITER_DETAILED_ERROR'
+          elif err: category='OTHER_ERROR'
+          else: category='NO_ERROR_TEXT'
+
+          e=err.lower()
+          detail='HTTP400_OTHER'
+          tests=[
+              ('BAD_AMOUNT', r'amount|amount_raw|inamount|outamount'),
+              ('BAD_TAKER_OR_USER', r'taker|userpublickey|user public key|wallet address'),
+              ('BAD_INPUT_OUTPUT_MINT', r'inputmint|outputmint|input mint|output mint|\bmint\b'),
+              ('BAD_SLIPPAGE', r'slippage|slippagebps'),
+              ('BAD_PRIORITY_FEE', r'priorit|priority fee|compute.?unit'),
+              ('BAD_QUOTE_RESPONSE', r'quoteresponse|quote response|routeplan|route plan'),
+              ('BAD_TRANSACTION_REQUEST', r'transaction|serialized|deserialize|simulation'),
+              ('BAD_JSON_OR_SCHEMA', r'json|schema|parse|unexpected field|missing field|invalid type|required field'),
+              ('INVALID_REQUEST_GENERIC', r'invalid request|bad request|invalid parameter|invalid argument'),
+          ]
+          if category=='HTTP_400':
+              for label,pat in tests:
+                  if re.search(pat,e,re.I): detail=label; break
+          elif category=='SELL_SUCCESS': detail='NONE'
+          else: detail='NOT_HTTP400'
+
+          endpoint='UNKNOWN_ENDPOINT'
+          if jup_path.exists():
+              src=jup_path.read_text(errors='replace')
+              if '/ultra/v1/order' in src or 'api.jup.ag/ultra/v1/order' in src: endpoint='ULTRA_V1_ORDER'
+              elif '/swap/v1/swap' in src: endpoint='SWAP_V1_SWAP'
+              elif '/swap/v1/order' in src: endpoint='SWAP_V1_ORDER'
+              elif '/swap/v1/quote' in src: endpoint='QUOTE_ONLY_UNKNOWN_EXEC'
 
           print('state='+state)
           print('category='+category)
+          print('detail='+detail)
+          print('endpoint='+endpoint)
           PY
           )"
           printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 
   report:
     needs: detect
-    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.category }}
+    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.category }} - ${{ needs.detect.outputs.detail }} - ${{ needs.detect.outputs.endpoint }}
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 2
     steps:
