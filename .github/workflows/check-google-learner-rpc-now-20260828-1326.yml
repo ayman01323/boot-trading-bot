@@ -1,0 +1,77 @@
+name: Check Google Learner RPC Now
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths: ['.github/workflows/check-google-learner-rpc-now-20260828-1326.yml']
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 4
+    steps:
+      - name: Test learner RPCs without restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo "service=$(systemctl is-active "$service")"
+          echo "pid=$(systemctl show -p MainPID --value "$service")"
+          sudo -n TARGET="$target" python3 - <<'PY'
+          import os,re,json,time,urllib.request,urllib.error
+          from pathlib import Path
+          target=Path(os.environ['TARGET'])
+          env={}
+          p=target/'.env'
+          if p.is_file():
+              for line in p.read_text(errors='ignore').splitlines():
+                  line=line.strip()
+                  if not line or line.startswith('#') or '=' not in line: continue
+                  k,v=line.split('=',1); k=k.strip(); v=v.strip()
+                  if len(v)>=2 and v[0]==v[-1] and v[0] in "'\"": v=v[1:-1]
+                  env[k]=v
+          def split(v): return [x.strip() for x in re.split(r'[;,\s]+',v or '') if x.strip()]
+          urls=[]
+          for u in split(env.get('SOLANA_RPC_URLS','')): urls.append((u,'PRIMARY'))
+          for u in split(env.get('SOLANA_RPC_FALLBACK_URLS','')):
+              if all(u!=x[0] for x in urls): urls.append((u,'FALLBACK'))
+          print('env_primary_count=',len(split(env.get('SOLANA_RPC_URLS',''))))
+          print('env_fallback_count=',len(split(env.get('SOLANA_RPC_FALLBACK_URLS',''))))
+          print('rpc_candidates=',len(urls))
+          def call(url,method):
+              payload=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':[]}).encode()
+              req=urllib.request.Request(url,data=payload,headers={'Content-Type':'application/json','User-Agent':'BOOT-RPC-DIAG/1.0'})
+              t=time.monotonic()
+              try:
+                  with urllib.request.urlopen(req,timeout=8) as r: body=r.read(65536)
+              except urllib.error.HTTPError as e:
+                  status='AUTH_FAILURE' if e.code in (401,403) else 'RATE_LIMIT' if e.code==429 else f'HTTP_{e.code}'
+                  return False,status,(time.monotonic()-t)*1000
+              except Exception as e:
+                  status='TIMEOUT' if 'timeout' in str(e).lower() else type(e).__name__
+                  return False,status,(time.monotonic()-t)*1000
+              ms=(time.monotonic()-t)*1000
+              try: obj=json.loads(body.decode('utf-8','replace'))
+              except Exception: return False,'INVALID_JSON',ms
+              if not isinstance(obj,dict): return False,'INVALID_ENVELOPE',ms
+              if obj.get('error'):
+                  text=str(obj['error']).lower()
+                  status='RATE_LIMIT_RPC' if ('rate' in text or '429' in text) else 'RPC_ERROR'
+                  return False,status,ms
+              ok='result' in obj and (method!='getSlot' or isinstance(obj.get('result'),int))
+              return ok,'OK' if ok else 'BAD_RESULT',ms
+          healthy=0
+          for i,(url,role) in enumerate(urls,1):
+              h,hs,hm=call(url,'getHealth'); s,ss,sm=call(url,'getSlot')
+              ok=h and s
+              healthy += int(ok)
+              print(f'RPC-{i} role={role} health={hs} slot={ss} latency_health_ms={hm:.0f} latency_slot_ms={sm:.0f} overall={"PASS" if ok else "FAIL"}')
+          print('healthy_rpc_count=',healthy)
+          print('rpc_pool_status=','HEALTHY' if healthy>=2 else 'DEGRADED' if healthy==1 else 'DOWN')
+          print('urls_or_keys_printed=NO')
+          PY
+          echo 'trading_action=NONE'
+          echo 'service_restart=NO'

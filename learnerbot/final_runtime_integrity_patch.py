@@ -30,6 +30,7 @@ from . import solana_entry_capacity_reconcile_patch as _capacity
 from . import solana_execution_efficiency_patch as _efficiency
 from . import solana_execution_validation_patch as _validation
 from . import solana_exit_circuit_breaker_patch as _exit_circuit
+from . import solana_rpc_exit_priority_patch as _rpc_exit_priority
 from . import solana_first_day_strategy_restore_patch as _first_day
 from . import solana_leader_edge_alignment_patch as _leader_edge
 from . import solana_liquidity_fail_closed_patch as _liquidity
@@ -59,7 +60,11 @@ from . import poolcheck_rug_hardening_patch as _poolcheck_hardening  # noqa: E40
 def composition_checks() -> dict[str, bool]:
     """Return the exact final runtime identities that must remain authoritative."""
     return {
-        "solana_close_circuit": _sol_live._close_live is _exit_circuit.close_live_guarded,
+        # RPC exit priority is the intended final outer close wrapper. The
+        # audited ambiguity/reconciliation exit circuit must remain immediately
+        # inside it; this verifies both layers rather than weakening either one.
+        "solana_close_rpc_priority_outer": _sol_live._close_live is _rpc_exit_priority.close_live_with_rpc_priority,
+        "solana_close_circuit_inner": _rpc_exit_priority._PREV_CLOSE_LIVE is _exit_circuit.close_live_guarded,
         "solana_order_fee_guard": _sol_exec.SolanaLiveExecutor._order is _efficiency.order_with_economic_caps,
         "solana_liquidity_fail_closed": _efficiency._validate_order is _liquidity.validate_order_fail_closed_on_unknown_liquidity,
         "solana_atomic_sell_fallback": _efficiency.sell_with_atomic_account_close is _atomic.sell_with_atomic_or_capped_legacy_fallback,

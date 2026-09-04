@@ -76,8 +76,8 @@ def solana_page(app, tid):
     if minimum_trade > platform_minimum:
         minimum_line += f"  <i>(platform floor {platform_minimum})</i>"
     return "\n".join([
-        "<b>🟣 SiBot — Solana LIVE</b>", DIV,
-        f"{'🟢 <b>LIVE ARMED</b>' if enabled else '🔴 <b>LIVE OFF</b>'}  •  no new SHADOW entries",
+        "<b>🟣 LEARNER — Solana LIVE</b>", DIV,
+        f"{'🟢 <b>LIVE ARMED</b>' if enabled else '🔴 <b>LIVE OFF</b>'}  •  learner runtime only",
         wallet_line,
         balance_line,
         "",
@@ -92,13 +92,13 @@ def solana_page(app, tid):
         f"👀 Candidates  <b>{s['candidates']}</b> • 📈 Top-20  <b>{len(rows)}</b> • 🏆 Leaders  <b>{len(leaders)}</b>",
         f"💼 Open LIVE positions  <b>{len(positions)}</b>",
         "",
-        "<i>When armed, the next qualifying fresh leader BUY can spend real SOL. Existing historical SHADOW rows are not used for new entries.</i>",
+        "<i>This controls only the Google learner's Solana LIVE setting. It does not arm the Claude/SiBot1 bridge.</i>",
     ])
 
 
 def solana_keyboard(app, tid):
     enabled = live_enabled(app, tid)
-    live_button = {"text": "🛑 Disable LIVE", "callback_data": "sibot:solana:live:off"} if enabled else {"text": "🚀 Enable LIVE", "callback_data": "sibot:solana:live:arm"}
+    live_button = {"text": "🛑 Disable LEARNER LIVE", "callback_data": "sibot:solana:live:off"} if enabled else {"text": "🚀 Enable LEARNER LIVE", "callback_data": "sibot:solana:live:arm"}
     return {"inline_keyboard": [
         [live_button],
         [{"text": "📏 Min trade", "callback_data": "sibot:solana:mintrade"}],
@@ -140,9 +140,9 @@ def minimum_trade_keyboard(app, tid):
 
 def solana_positions_page(app, tid):
     rows = [p for p in _sol.position_rows(app, tid, open_only=True) if str(p.get("mode") or "").upper() == "LIVE"]
-    L = ["<b>💼 Solana SiBot LIVE Positions</b>", DIV]
+    L = ["<b>💼 Learner Solana LIVE Positions</b>", DIV]
     if not rows:
-        return "\n".join(L + ["", "✅ No open Solana LIVE positions."])
+        return "\n".join(L + ["", "✅ No open learner Solana LIVE positions."])
     for p in rows[:20]:
         pct = Decimal(str(p.get("unrealised_pct") or 0))
         pnl = Decimal(str(p.get("unrealised_net_sol") or 0))
@@ -159,7 +159,121 @@ def _chat(update):
     return c.get("type") == "private", str(c.get("id") or ""), str(q.get("id") or "")
 
 
+def _message_command(update):
+    m = update.get("message") or {}
+    c = m.get("chat") or {}
+    text = str(m.get("text") or "").strip()
+    return c.get("type") == "private", str(c.get("id") or ""), text
+
+
+def _learner_prerequisites(app, tid):
+    user = require_user(app.csv_dir, tid, active=True, chain_slug="solana")
+    if str(user.get("can_auto_trade") or "false").lower() not in {"1", "true", "yes", "on"}:
+        raise ValueError("This learner account is not permitted to use automatic trading")
+    store = _store(app)
+    meta = store.get_meta(tid)
+    if not store.has_private_key(tid, meta.get("wallet_id")):
+        raise ValueError("Learner active Solana wallet is not SIGNING READY. Import its private key first.")
+    cfg = _sol.settings(app)
+    trade, reserve = live_limits(app, tid, cfg)
+    bal = _balance(app, meta.get("address"))
+    if bal is None:
+        raise ValueError("Learner Solana RPC balance check is unavailable. LIVE remains OFF.")
+    if bal < trade + reserve:
+        raise ValueError(f"Learner needs at least {trade + reserve:.6f} SOL before LIVE can be armed")
+    return trade, reserve, bal
+
+
+def _handle_learnerarm(app, update):
+    private, tid, text = _message_command(update)
+    if not text:
+        return False
+    parts = text.split()
+    command = parts[0].split("@", 1)[0].lower() if parts else ""
+    if command != "/learnerarm":
+        return False
+    if not private or not tid:
+        try:
+            send_message(app.telegram_bot_token, tid, "🚫 <b>/learnerarm</b> can only be used in a private chat.", parse_mode="HTML", protect_content=True)
+        except Exception:
+            pass
+        return True
+
+    args = [p.strip() for p in parts[1:]]
+    action = args[0].lower() if args else "status"
+
+    if action == "status" and len(args) <= 1:
+        enabled = live_enabled(app, tid)
+        send_message(
+            app.telegram_bot_token,
+            tid,
+            ("🟢 <b>LEARNER ARM: ON</b>" if enabled else "🔴 <b>LEARNER ARM: OFF</b>")
+            + "\nScope: <b>Google learner only</b>; Claude/SiBot1 is untouched.\n\n"
+            + solana_page(app, tid),
+            parse_mode="HTML",
+            reply_markup=solana_keyboard(app, tid),
+            protect_content=True,
+        )
+        return True
+
+    if action == "off" and len(args) == 1:
+        set_user_setting(app.csv_dir, tid, "solana_live_enabled", "false", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Learner Solana real-money auto execution")
+        send_message(
+            app.telegram_bot_token,
+            tid,
+            "🛑 <b>LEARNER ARM: OFF</b>\nOnly the Google learner's Solana LIVE setting was disabled. Claude/SiBot1 was not changed.",
+            parse_mode="HTML",
+            protect_content=True,
+        )
+        return True
+
+    if action == "on" and len(args) == 2 and args[1].upper() == "CONFIRM":
+        try:
+            trade, reserve, bal = _learner_prerequisites(app, tid)
+            reset_fault_count(app, tid)
+            set_user_setting(app.csv_dir, tid, "sibot_enabled", "true", chain_id="*", description="Learner SiBot monitoring enabled")
+            set_user_setting(app.csv_dir, tid, "solana_live_enabled", "true", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Learner Solana real-money auto execution")
+            send_message(
+                app.telegram_bot_token,
+                tid,
+                "🚀 <b>LEARNER ARM: ON</b>\n"
+                "Scope: <b>Google learner only</b>. Claude/SiBot1 was not changed.\n"
+                f"Trade size: <b>{trade} SOL</b>\n"
+                f"Reserve: <b>{reserve} SOL</b>\n"
+                f"Wallet balance checked: <b>{bal:.9f} SOL</b>\n"
+                "Existing learner safety, simulation, liquidity and loss-containment gates remain required.",
+                parse_mode="HTML",
+                reply_markup=solana_keyboard(app, tid),
+                protect_content=True,
+            )
+        except Exception as exc:
+            send_message(
+                app.telegram_bot_token,
+                tid,
+                f"🚨 <b>LEARNER ARM NOT ENABLED</b>\n<code>{html.escape(str(exc)[:600])}</code>\nClaude/SiBot1 was not changed.",
+                parse_mode="HTML",
+                protect_content=True,
+            )
+        return True
+
+    send_message(
+        app.telegram_bot_token,
+        tid,
+        "<b>LEARNER-ONLY ARM COMMAND</b>\n"
+        "<code>/learnerarm status</code> — read learner state\n"
+        "<code>/learnerarm off</code> — disable learner LIVE\n"
+        "<code>/learnerarm on CONFIRM</code> — explicitly arm learner LIVE\n\n"
+        "This command never changes Claude/SiBot1 controls.",
+        parse_mode="HTML",
+        protect_content=True,
+    )
+    return True
+
+
 def handle_update(app, update):
+    if _handle_learnerarm(app, update):
+        return True
+
     q = update.get("callback_query") or {}
     data = str(q.get("data") or "")
     private, tid, qid = _chat(update)
@@ -241,31 +355,32 @@ def handle_update(app, update):
         return _PREV_HANDLE(app, update)
     if not private or not tid:
         if qid:
-            answer_callback_query(app.telegram_bot_token, qid, "Solana LIVE can only be changed in a private chat.")
+            answer_callback_query(app.telegram_bot_token, qid, "Learner Solana LIVE can only be changed in a private chat.")
         return True
     try:
         user = require_user(app.csv_dir, tid, active=True, chain_slug="solana")
         if str(user.get("can_auto_trade") or "false").lower() not in {"1", "true", "yes", "on"}:
             raise ValueError("This user is not permitted to use automatic trading")
         if data == "sibot:solana:live:off":
-            set_user_setting(app.csv_dir, tid, "solana_live_enabled", "false", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Solana real-money auto execution")
-            answer_callback_query(app.telegram_bot_token, qid, "Solana LIVE disabled")
+            set_user_setting(app.csv_dir, tid, "solana_live_enabled", "false", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Learner Solana real-money auto execution")
+            answer_callback_query(app.telegram_bot_token, qid, "Learner Solana LIVE disabled")
             send_message(app.telegram_bot_token, tid, solana_page(app, tid), parse_mode="HTML", reply_markup=solana_keyboard(app, tid))
             return True
         store = _store(app)
         meta = store.get_meta(tid)
         if not store.has_private_key(tid, meta.get("wallet_id")):
-            raise ValueError("Active Solana wallet is not SIGNING READY. Import its private key first.")
+            raise ValueError("Active learner Solana wallet is not SIGNING READY. Import its private key first.")
         cfg = _sol.settings(app)
         trade, reserve = live_limits(app, tid, cfg)
         bal = _balance(app, meta.get("address"))
         if bal is None or bal < trade + reserve:
-            raise ValueError(f"Need at least {trade + reserve:.6f} SOL in the active wallet before LIVE can be armed")
+            raise ValueError(f"Need at least {trade + reserve:.6f} SOL in the learner wallet before LIVE can be armed")
         if data == "sibot:solana:live:arm":
-            answer_callback_query(app.telegram_bot_token, qid, "Review and confirm LIVE trading")
+            answer_callback_query(app.telegram_bot_token, qid, "Review and confirm LEARNER LIVE trading")
             text = "\n".join([
-                "<b>⚠️ CONFIRM SOLANA LIVE TRADING</b>", DIV,
-                "This enables real-money automatic swaps from the active Solana signing wallet.",
+                "<b>⚠️ CONFIRM LEARNER SOLANA LIVE TRADING</b>", DIV,
+                "This enables real-money automatic swaps from the Google learner's active Solana signing wallet.",
+                "It does not arm Claude/SiBot1.",
                 f"First-trade cap: <b>{trade} SOL</b>",
                 f"Untouched reserve: <b>{reserve} SOL</b>",
                 f"Minimum wallet funding: <b>{trade + reserve} SOL</b>",
@@ -273,18 +388,16 @@ def handle_update(app, update):
                 "Every transaction must pass signed Solana simulation before Jupiter execution.",
                 "A landed transaction with no valid economic output counts as a safety fault; two faults automatically disable LIVE.",
                 "",
-                "Press <b>CONFIRM LIVE</b> only after investigating any previous automatic safety shutdown.",
+                "Press <b>CONFIRM LEARNER LIVE</b> only after investigating any previous automatic safety shutdown.",
             ])
-            kb = {"inline_keyboard": [[{"text": "🚀 CONFIRM LIVE", "callback_data": "sibot:solana:live:confirm"}], [{"text": "Cancel", "callback_data": "sibot:solana"}]]}
+            kb = {"inline_keyboard": [[{"text": "🚀 CONFIRM LEARNER LIVE", "callback_data": "sibot:solana:live:confirm"}], [{"text": "Cancel", "callback_data": "sibot:solana"}]]}
             send_message(app.telegram_bot_token, tid, text, parse_mode="HTML", reply_markup=kb, protect_content=True)
             return True
-        # Only an explicit private-chat CONFIRM clears the persistent landed-fault
-        # counter. Service restarts and one-shot startup migrations do not clear it.
         reset_fault_count(app, tid)
-        set_user_setting(app.csv_dir, tid, "sibot_enabled", "true", chain_id="*", description="SiBot monitoring enabled")
-        set_user_setting(app.csv_dir, tid, "solana_live_enabled", "true", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Solana real-money auto execution")
-        answer_callback_query(app.telegram_bot_token, qid, "Solana LIVE armed")
-        send_message(app.telegram_bot_token, tid, "🚀 <b>Solana LIVE is ARMED.</b>\nThe landed-execution fault counter has been reset by your explicit confirmation. The next qualifying fresh leader BUY may execute with real SOL under the safety limits.", parse_mode="HTML", reply_markup=solana_keyboard(app, tid), protect_content=True)
+        set_user_setting(app.csv_dir, tid, "sibot_enabled", "true", chain_id="*", description="Learner SiBot monitoring enabled")
+        set_user_setting(app.csv_dir, tid, "solana_live_enabled", "true", chain_id=str(_sol.SOLANA_CHAIN_ID), description="Learner Solana real-money auto execution")
+        answer_callback_query(app.telegram_bot_token, qid, "Learner Solana LIVE armed")
+        send_message(app.telegram_bot_token, tid, "🚀 <b>LEARNER Solana LIVE is ARMED.</b>\nClaude/SiBot1 was not changed. The next qualifying fresh learner BUY may execute with real SOL under the learner safety limits.", parse_mode="HTML", reply_markup=solana_keyboard(app, tid), protect_content=True)
         return True
     except Exception as exc:
         if qid:
@@ -293,7 +406,7 @@ def handle_update(app, update):
             except Exception:
                 pass
         try:
-            send_message(app.telegram_bot_token, tid, f"🚨 <b>Solana LIVE not enabled</b>\n<code>{html.escape(str(exc)[:600])}</code>", parse_mode="HTML", protect_content=True)
+            send_message(app.telegram_bot_token, tid, f"🚨 <b>LEARNER Solana LIVE not enabled</b>\n<code>{html.escape(str(exc)[:600])}</code>\nClaude/SiBot1 was not changed.", parse_mode="HTML", protect_content=True)
         except Exception:
             pass
         return True

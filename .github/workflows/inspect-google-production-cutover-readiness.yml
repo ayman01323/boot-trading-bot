@@ -1,0 +1,51 @@
+name: Inspect Google Production Cutover Readiness
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/inspect-google-production-cutover-readiness.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-google:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect Google production cutover readiness without mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "hostname=$(hostname)"
+          echo "user=$(id -un)"
+          test "$(hostname)" = 'botgoogle'
+          echo '=== production cutover wrappers ==='
+          for p in \
+            /usr/local/sbin/status-google-production-cutover \
+            /usr/local/sbin/inspect-google-production-bot \
+            /usr/local/sbin/refresh-google-production-bot \
+            /usr/local/sbin/verify-google-production-bot \
+            /usr/local/sbin/activate-google-production-bot \
+            /usr/local/sbin/stop-google-production-after-failed-cutover \
+            /usr/local/sbin/deploy-boot-trading-bot \
+            /usr/local/sbin/status-boot-trading-bot; do
+            if [[ -x "$p" ]]; then echo "READY $p"; else echo "MISSING $p"; fi
+          done
+          echo '=== google service identity ==='
+          sudo -n /usr/bin/systemctl show learnerbot.service \
+            -p ActiveState -p SubState -p Result -p NRestarts -p UnitFileState -p FragmentPath -p WorkingDirectory -p ExecStart -p EnvironmentFiles || true
+          echo '=== current google production state ==='
+          sudo -n /usr/local/sbin/status-google-production-cutover || true
+          echo '=== inspect google production ==='
+          sudo -n /usr/local/sbin/inspect-google-production-bot || true
+          echo '=== verify google production ==='
+          sudo -n /usr/local/sbin/verify-google-production-bot || true
+          echo '=== boot deploy status ==='
+          sudo -n /usr/local/sbin/status-boot-trading-bot || true
+          echo '=== recent learnerbot journal, sanitised ==='
+          journalctl -u learnerbot.service -n 120 --no-pager 2>/dev/null \
+            | sed -E 's#(bot[0-9]{6,}:[A-Za-z0-9_-]{20,})#<redacted-telegram-token>#g; s#(sk-[A-Za-z0-9_-]{12,})#<redacted-api-key>#g' \
+            | tail -n 120 || true

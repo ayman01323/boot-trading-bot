@@ -1,0 +1,69 @@
+name: Check BvKg Wallet On-chain
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-wallet-bvkg-onchain.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Query public Solana RPC read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner='8zTnKUPW648NZZ285mz7ijFBpsbGu8AziRoZsH9JBfA3'
+          mint='BvKgVjsUQ8KV22RNKhk3btZHKSDdrRfziGad4ugTCcJS'
+          rpc='https://api.mainnet-beta.solana.com'
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+
+          curl -fsS --max-time 20 -H 'content-type: application/json' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getTokenAccountsByOwner\",\"params\":[\"$owner\",{\"mint\":\"$mint\"},{\"encoding\":\"jsonParsed\",\"commitment\":\"confirmed\"}]}" \
+            "$rpc" > "$tmp/tokens.json"
+
+          curl -fsS --max-time 20 -H 'content-type: application/json' \
+            --data "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"getBalance\",\"params\":[\"$owner\",{\"commitment\":\"confirmed\"}]}" \
+            "$rpc" > "$tmp/sol.json"
+
+          TOKENS="$tmp/tokens.json" SOL="$tmp/sol.json" OWNER="$owner" MINT="$mint" python3 - <<'PY'
+          import json, os
+          owner=os.environ['OWNER']; mint=os.environ['MINT']
+          token_doc=json.load(open(os.environ['TOKENS'],encoding='utf-8'))
+          sol_doc=json.load(open(os.environ['SOL'],encoding='utf-8'))
+          if token_doc.get('error'):
+              print('token_rpc_error='+json.dumps(token_doc['error'],separators=(',',':')))
+              raise SystemExit(2)
+          vals=(token_doc.get('result') or {}).get('value') or []
+          total_raw=0
+          decimals=None
+          accounts=[]
+          for v in vals:
+              info=(((v.get('account') or {}).get('data') or {}).get('parsed') or {}).get('info') or {}
+              amt=((info.get('tokenAmount') or {}))
+              raw=int(amt.get('amount') or 0)
+              dec=int(amt.get('decimals') or 0)
+              total_raw += raw
+              decimals=dec if decimals is None else decimals
+              accounts.append((v.get('pubkey'),raw,dec,amt.get('uiAmountString')))
+          ui=(total_raw/(10**decimals)) if decimals is not None else 0
+          lamports=((sol_doc.get('result') or {}).get('value'))
+          print('owner='+owner)
+          print('mint='+mint)
+          print('token_accounts='+str(len(accounts)))
+          print('bvkg_total_raw='+str(total_raw))
+          print('bvkg_decimals='+str(decimals if decimals is not None else 'UNKNOWN'))
+          print('bvkg_ui_total='+format(ui,'.12f'))
+          for i,(pub,raw,dec,ui_s) in enumerate(accounts,1):
+              print(f'account_{i}={pub} raw={raw} decimals={dec} ui={ui_s}')
+          print('sol_lamports='+str(lamports))
+          if lamports is not None:
+              print('sol_balance='+format(lamports/1_000_000_000,'.9f'))
+          print('bvkg_balance_zero='+('YES' if total_raw == 0 else 'NO'))
+          PY

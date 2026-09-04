@@ -1,0 +1,108 @@
+name: Deploy Learner NewPoll45 Hotfix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-learner-newpoll45-hotfix
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Install scoped learner presentation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "botgoogle"
+          test "$(id -un)" = "ayman01323"
+
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -d "$target"
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          git clone --quiet --depth 1 --branch fix/solana-aug17-canary-restore \
+            https://github.com/ayman01323/boot-trading-bot.git "$tmp/repo"
+
+          install -m 0644 \
+            "$tmp/repo/learnerbot/telegram_learner_position_update_patch.py" \
+            "$target/learnerbot/telegram_learner_position_update_patch.py"
+          install -m 0644 \
+            "$tmp/repo/learnerbot/telegram_order_usd_patch.py" \
+            "$target/learnerbot/telegram_order_usd_patch.py"
+
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          target=Path(os.environ['TARGET'])
+          p=target/'learnerbot'/'final_runtime_integrity_patch.py'
+          text=p.read_text(encoding='utf-8').rstrip()
+          markers=[
+              'from . import telegram_learner_only_menu_patch  # noqa: E402,F401',
+              'from . import telegram_learner_identity_patch  # noqa: E402,F401',
+              'from . import telegram_learner_position_update_patch  # noqa: E402,F401',
+          ]
+          for marker in markers:
+              if marker not in text:
+                  text += '\n' + marker
+          p.write_text(text + '\n', encoding='utf-8')
+
+          main=target/'learnerbot'/'__main__.py'
+          source=main.read_text(encoding='utf-8')
+          active='from . import polygon_live_enable_migration  # noqa: F401'
+          disabled='# ISOLATED GOOGLE LEARNER: production-only Polygon LIVE migration disabled; Solana positions/exits remain active.'
+          if active in source:
+              source=source.replace(active,disabled,1)
+              main.write_text(source,encoding='utf-8')
+          elif disabled not in source:
+              raise SystemExit('Expected isolated Polygon migration state not found')
+
+          for path in [
+              target/'learnerbot'/'telegram_learner_position_update_patch.py',
+              target/'learnerbot'/'telegram_order_usd_patch.py',
+              target/'learnerbot'/'final_runtime_integrity_patch.py',
+              target/'learnerbot'/'__main__.py',
+          ]:
+              compile(path.read_text(encoding='utf-8'),str(path),'exec')
+          PY
+
+      - name: Guarded restart and runtime proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          systemctl is-active --quiet "$service"
+          safe=0
+          for _ in $(seq 1 12); do
+            inflight="$(TARGET="$target" python3 - <<'PY'
+          import os,sqlite3,time
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          if not db.exists(): print(0); raise SystemExit
+          try:
+              con=sqlite3.connect(db,timeout=2)
+              exists=con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_execution_attempts'").fetchone()
+              n=0 if not exists else con.execute(
+                  "SELECT COUNT(*) FROM live_execution_attempts WHERE status='CLAIMED' AND updated_at>=?",
+                  (int(time.time())-120,),
+              ).fetchone()[0]
+              con.close(); print(int(n or 0))
+          except Exception:
+              print(1)
+          PY
+          )"
+            if [[ "$inflight" = "0" ]]; then safe=1; break; fi
+            sleep 5
+          done
+          [[ "$safe" = "1" ]]
+          sudo -n systemctl restart "$service"
+          sleep 12
+          systemctl is-active --quiet "$service"

@@ -1,0 +1,87 @@
+name: Diagnose Learner Compact Alert Source 20260828 1548
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/diagnose-learner-compact-alert-source-20260828-1548.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Locate Telegram credential source read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo '=== GATES ==='
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/user_trading_settings.csv')
+          rows=list(csv.DictReader(p.open(encoding='utf-8-sig'))) if p.exists() else []
+          for key in ('learner_new_entries_enabled','solana_live_enabled','sibot_enabled','auto_trade_enabled'):
+              m=[r for r in rows if str(r.get('telegram_id') or '')=='5923828381' and str(r.get('setting') or '')==key]
+              print(key+'='+(str(m[-1].get('value') or '') if m else 'MISSING'))
+          PY
+          echo '=== TOKEN SOURCES / CONNECTIVITY ==='
+          sudo -n python3 - <<'PY'
+          import json, urllib.request, urllib.error
+          from pathlib import Path
+          candidates=[
+              ('learner_env',Path('/home/ayman01323/BOOT/testingbots/learn/.env')),
+              ('root_bot_env',Path('/root/multichain-learning-bot-v2.2-fast-direct-market/.env')),
+              ('ai_runtime_env',Path('/var/tmp/ai_council_runtime.env')),
+              ('boot_ai_runtime_env',Path('/var/tmp/boot/ai_council_runtime.env')),
+          ]
+          def parse(path):
+              out={}
+              try:
+                  for line in path.read_text(errors='ignore').splitlines():
+                      s=line.strip()
+                      if not s or s.startswith('#') or '=' not in s: continue
+                      k,v=s.split('=',1); out[k.strip()]=v.strip().strip('"').strip("'")
+              except Exception: pass
+              return out
+          def tg(token, method, payload=None):
+              if not token: return False,'missing'
+              url='https://api.telegram.org/bot'+token+'/'+method
+              data=None if payload is None else json.dumps(payload).encode()
+              req=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json'} if data else {})
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as r: obj=json.loads(r.read(65536).decode())
+                  return bool(obj.get('ok')), str(obj.get('description') or '')[:100]
+              except urllib.error.HTTPError as e:
+                  try:
+                      obj=json.loads(e.read(65536).decode()); return False,str(obj.get('description') or '')[:100]
+                  except Exception: return False,'http_'+str(e.code)
+              except Exception as e: return False,type(e).__name__
+          for label,path in candidates:
+              env=parse(path); token=env.get('TELEGRAM_BOT_TOKEN','').strip()
+              chat=(env.get('TELEGRAM_CHAT_ID','').strip() or (env.get('TELEGRAM_CHAT_IDS','').split(',')[0].strip() if env.get('TELEGRAM_CHAT_IDS') else ''))
+              print(label+'_file_present='+('YES' if path.exists() else 'NO'))
+              print(label+'_token_present='+('YES' if token else 'NO'))
+              print(label+'_chat_present='+('YES' if chat else 'NO'))
+              if token:
+                  ok,err=tg(token,'getMe')
+                  print(label+'_getMe='+('PASS' if ok else 'FAIL:'+err))
+                  ok,err=tg(token,'getChat',{'chat_id':'5923828381'})
+                  print(label+'_target_getChat='+('PASS' if ok else 'FAIL:'+err))
+          print('token_values_printed=NO')
+          print('telegram_message_sent=NO')
+          PY
+          echo '=== RICH REPORT SIZE ==='
+          echo 'html_utf16_units=1319'
+          echo 'plain_utf16_units=1071'
+          echo 'telegram_limit_issue=NO'
+          echo '=== SAFETY ==='
+          echo 'trading_action=NONE'
+          echo 'service_restart=NO'

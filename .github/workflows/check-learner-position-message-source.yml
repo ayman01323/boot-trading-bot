@@ -1,0 +1,55 @@
+name: Check Learner Position Message Source
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-learner-position-message-source.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Trace active learner position Telegram sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo '=== TELEGRAM SEND ERROR SOURCE ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -C 6 'Telegram API sendMessage failed' "$target/learnerbot" || true
+          echo '=== SEND MESSAGE PATCHES ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E '(_tg|telegram)\.send_message\s*=|send_message_with|def send_message' "$target/learnerbot" | head -120 || true
+          echo '=== SOURCE CONTRACT ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'NewPoll45 • Open Position|Total open positions|FULL SALE RESULT|Pool change since open|DEX Viewer' \
+            "$target/learnerbot/telegram_learner_position_update_patch.py" \
+            "$target/learnerbot/telegram_learner_pool_context_patch.py" \
+            "$target/learnerbot/telegram_learner_complete_market_context_patch.py" \
+            "$target/learnerbot/telegram_learner_newpoll_full_format_patch.py" || true
+          echo '=== IMPORT CHAIN ==='
+          grep -RIn --exclude='*.pyc' --exclude-dir='__pycache__' -E 'telegram_learner_position_update|telegram_learner_pool_context|telegram_learner_complete_market_context|telegram_learner_newpoll_full_format' \
+            "$target/learnerbot/final_runtime_integrity_patch.py" \
+            "$target/learnerbot/telegram_learner_pool_context_patch.py" || true
+          pid="$(systemctl show -p MainPID --value "$service")"
+          started="$(systemctl show -p ActiveEnterTimestamp --value "$service")"
+          echo "runtime_service=$(systemctl is-active "$service")"
+          echo "runtime_pid=$pid"
+          echo "runtime_started=$started"
+          echo '=== CURRENT INVOCATION MARKERS ==='
+          sudo -n journalctl -u "$service" --since "$started" --no-pager -o cat \
+            | grep -E '\[learner-newpoll45\]|\[learner-pool-context\]|\[learner-complete-market-context\]|\[learner-newpoll-full-format\]' \
+            | tail -40 || true
+          if sudo -n journalctl -u "$service" --since "$started" --no-pager -o cat | grep -q '\[learner-complete-market-context\].*active=true'; then
+            echo 'complete_market_context_runtime=ACTIVE'
+          else
+            echo 'complete_market_context_runtime=NOT_LOADED_IN_CURRENT_PROCESS'
+          fi
+          if sudo -n journalctl -u "$service" --since "$started" --no-pager -o cat | grep -q '\[learner-newpoll-full-format\].*active=true'; then
+            echo 'newpoll_full_format_runtime=ACTIVE'
+          else
+            echo 'newpoll_full_format_runtime=NOT_LOADED_IN_CURRENT_PROCESS'
+          fi

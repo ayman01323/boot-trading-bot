@@ -1,0 +1,36 @@
+name: Deploy Aug17 Canary to Testing Learn
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/deploy-aug17-canary-to-testing-learn.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# This workflow previously performed a broad rsync into the isolated learner.
+# That is unsafe while LIVE Solana positions exist because unrelated production
+# startup modules can be copied into the Solana-only runtime.  NewPoll45 and other
+# presentation changes use narrowly scoped deploy workflows instead.
+concurrency:
+  group: deploy-aug17-canary-testing-learn
+  cancel-in-progress: true
+
+jobs:
+  blocked-broad-deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 2
+    steps:
+      - name: Confirm broad deploy is disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          echo 'broad_rsync_deploy=DISABLED'
+          echo 'reason=isolated learner must not receive unrelated production startup modules'
+          echo 'use_scoped_hotfix_deploy=YES'
+          echo 'runtime_files_changed=NO'
+          echo 'production_service_touched=NO'

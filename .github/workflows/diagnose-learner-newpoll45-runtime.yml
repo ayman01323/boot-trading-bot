@@ -1,0 +1,41 @@
+name: Diagnose Learner NewPoll45 Runtime
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/diagnose-learner-newpoll45-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only learner runtime diagnosis
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          service=learnerbot-learn.service
+          target=/home/ayman01323/BOOT/testingbots/learn
+          echo "service_active=$(systemctl is-active "$service" || true)"
+          echo '--- unit execution identity ---'
+          systemctl show "$service" -p ExecStart -p WorkingDirectory -p MainPID -p ActiveState -p SubState -p Restart
+          echo '--- latest traceback, complete ---'
+          sudo -n journalctl -u "$service" -n 500 --no-pager -o cat \
+            | python3 -c 'import sys,re; lines=sys.stdin.read().splitlines(); starts=[i for i,x in enumerate(lines) if "Traceback (most recent call last):" in x]; s=starts[-1] if starts else max(0,len(lines)-40); out=lines[s:s+100]; text="\n".join(out); text=re.sub(r"https?://\S+","<URL_REDACTED>",text); text=re.sub(r"(?i)(api[-_]?key[=:/ ]+)\S+",r"\1<REDACTED>",text); print(text)' \
+            | head -100
+          echo '--- safe startup markers ---'
+          sudo -n journalctl -u "$service" -n 220 --no-pager \
+            | grep -E '\[learner-newpoll45\]|\[final-runtime-integrity\]|Starting multi-chain learning loop|Main process exited|Failed with result' \
+            | tail -80 || true
+          echo '--- import presence ---'
+          grep -F 'telegram_learner_position_update_patch' "$target/learnerbot/final_runtime_integrity_patch.py" || true
+          echo '--- source timestamp ---'
+          stat -c 'source_mtime=%y source_size=%s' "$target/learnerbot/telegram_learner_position_update_patch.py"
+          echo 'diagnostic_mutation=NO'

@@ -185,3 +185,10 @@ def install() -> None:
 
 
 install()
+
+# These preflight/RPC protections deliberately load after the established
+# emergency/safe-slice stack above. Loss-containment is intentionally NOT loaded
+# here: the audited runtime invariant imports it only after leader-quality,
+# liquidity-health and easy-exit wrappers have captured their intended inners.
+from . import solana_entry_exit_liquidity_preflight_patch as _entry_exit_preflight  # noqa: E402,F401
+from . import solana_rpc_exit_priority_patch as _rpc_exit_priority  # noqa: E402,F401

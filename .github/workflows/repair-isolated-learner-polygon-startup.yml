@@ -1,0 +1,139 @@
+name: Repair Isolated Learner Polygon Startup
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/repair-isolated-learner-polygon-startup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repair-isolated-learner-polygon-startup
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 8
+    steps:
+      - name: Remove production-only Polygon migration from isolated learner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          test -f "$target/KNOWN_GOOD_SNAPSHOT.txt"
+          test -f "$target/learnerbot/__main__.py"
+
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          p=root/'learnerbot'/'__main__.py'
+          text=p.read_text(encoding='utf-8')
+          active='from . import polygon_live_enable_migration  # noqa: F401'
+          disabled='# ISOLATED GOOGLE LEARNER: production-only Polygon LIVE migration disabled; Solana positions/exits remain active.'
+          if active in text:
+              text=text.replace(active, disabled, 1)
+              p.write_text(text, encoding='utf-8')
+              print('polygon_live_enable_migration_disabled=YES')
+          elif disabled in text:
+              print('polygon_live_enable_migration_disabled=ALREADY')
+          else:
+              raise SystemExit('Expected Polygon migration import not found; refusing blind edit')
+          PY
+
+          # Make the NewPoll startup marker immediately journal-visible without
+          # changing reporting or trading behaviour.
+          TARGET="$target" python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['TARGET'])/'learnerbot'/'telegram_learner_position_update_patch.py'
+          text=p.read_text(encoding='utf-8')
+          old='print("[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled")'
+          new='print("[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled", flush=True)'
+          if old in text:
+              p.write_text(text.replace(old,new,1),encoding='utf-8')
+              print('newpoll45_marker_flush=ENABLED')
+          elif new in text:
+              print('newpoll45_marker_flush=ALREADY')
+          else:
+              raise SystemExit('NewPoll45 startup marker not found')
+          PY
+
+          python3 -m py_compile \
+            "$target/learnerbot/__main__.py" \
+            "$target/learnerbot/telegram_learner_position_update_patch.py"
+          echo 'wallet_files_touched=NO'
+          echo 'csv_settings_touched=NO'
+          echo 'position_database_touched=NO'
+          echo 'production_service_touched=NO'
+
+      - name: Restart and prove isolated learner stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+
+          # Do not restart through a fresh claimed transaction.
+          for _ in $(seq 1 12); do
+            inflight="$(TARGET="$target" python3 - <<'PY'
+          import os,sqlite3,time
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          if not db.exists(): print(0); raise SystemExit
+          try:
+              con=sqlite3.connect(db,timeout=2)
+              if not con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_execution_attempts'").fetchone():
+                  print(0)
+              else:
+                  n=con.execute("SELECT COUNT(*) FROM live_execution_attempts WHERE status='CLAIMED' AND updated_at>=?",(int(time.time())-120,)).fetchone()[0]
+                  print(int(n or 0))
+              con.close()
+          except Exception:
+              print(1)
+          PY
+          )"
+            [[ "$inflight" = 0 ]] && break
+            sleep 5
+          done
+          [[ "$inflight" = 0 ]]
+
+          restart_epoch="$(date +%s)"
+          sudo -n systemctl restart "$service"
+          sleep 12
+          test "$(systemctl is-active "$service")" = active
+          first_pid="$(systemctl show "$service" -p MainPID --value)"
+          test -n "$first_pid"; test "$first_pid" != 0
+          sleep 20
+          test "$(systemctl is-active "$service")" = active
+          second_pid="$(systemctl show "$service" -p MainPID --value)"
+          test "$second_pid" = "$first_pid"
+
+          log="$(sudo -n journalctl -u "$service" --since "@${restart_epoch}" --no-pager)"
+          printf '%s\n' "$log" | grep -F '[final-runtime-integrity] OK'
+          printf '%s\n' "$log" | grep -F '[learner-newpoll45] reporting=45s safety_monitor=unchanged pool=dexscreener usd=enabled'
+          if printf '%s\n' "$log" | grep -Eq 'Traceback \(most recent call last\)|Main process exited|Failed with result'; then
+            echo 'fatal_restart_marker=YES' >&2
+            exit 7
+          fi
+
+          TARGET="$target" python3 - <<'PY'
+          import os,sqlite3
+          from pathlib import Path
+          db=Path(os.environ['TARGET'])/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2)
+          rows=con.execute("SELECT position_id,mint,status,mode FROM positions WHERE status='OPEN' AND mode='LIVE' ORDER BY entry_ts,position_id").fetchall()
+          con.close()
+          print('open_live_positions='+str(len(rows)))
+          for i,row in enumerate(rows,1):
+              print(f'open_position_{i}_of_{len(rows)}='+str(row[0])+' mint='+str(row[1]))
+          PY
+          echo "stable_main_pid=$second_pid"
+          echo 'isolated_learner_runtime=HEALTHY'
+          echo 'production_service_touched=NO'

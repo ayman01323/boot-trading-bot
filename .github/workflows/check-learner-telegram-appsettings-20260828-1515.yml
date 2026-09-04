@@ -1,0 +1,62 @@
+name: Check Learner Telegram AppSettings 20260828 1515
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/check-learner-telegram-appsettings-20260828-1515.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 3
+    steps:
+      - name: Read-only Telegram AppSettings check
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          py=/root/multichain-learning-bot-v2.2-fast-direct-market/.venv/bin/python
+          test -x "$py"
+          cd "$target"
+          sudo -n -u ayman01323 env PYTHONPATH="$target" "$py" - <<'PY'
+          import json, urllib.request, urllib.error
+          from learnerbot.config import AppSettings
+          app=AppSettings.load()
+          token=app.telegram_bot_token
+          print('appsettings_telegram_token_present=', 'YES' if token else 'NO')
+          print('appsettings_chat_ids_count=', len(app.telegram_chat_ids))
+          print('target_chat_in_appsettings=', 'YES' if '5923828381' in [str(x) for x in app.telegram_chat_ids] else 'NO')
+          def call(method,payload=None):
+              url='https://api.telegram.org/bot'+token+'/'+method
+              if payload is None:
+                  req=urllib.request.Request(url)
+              else:
+                  data=json.dumps(payload).encode(); req=urllib.request.Request(url,data=data,headers={'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(req,timeout=10) as r:
+                      return json.loads(r.read(131072).decode('utf-8','replace'))
+              except urllib.error.HTTPError as e:
+                  try: return json.loads(e.read(131072).decode('utf-8','replace'))
+                  except: return {'ok':False,'error_code':e.code,'description':'HTTP error'}
+          if token:
+              me=call('getMe')
+              print('getMe=', 'PASS' if me.get('ok') else 'FAIL')
+              if me.get('ok'):
+                  print('bot_username=', (me.get('result') or {}).get('username') or 'UNKNOWN')
+              chat=call('getChat',{'chat_id':'5923828381'})
+              print('getChat=', 'PASS' if chat.get('ok') else 'FAIL')
+              if not chat.get('ok'):
+                  print('getChat_error_code=',chat.get('error_code'))
+                  print('getChat_error=',str(chat.get('description') or '')[:200])
+          print('telegram_message_sent=NO')
+          print('bot_token_printed=NO')
+          print('trading_action=NONE')
+          print('service_restart=NO')
+          PY

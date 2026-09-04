@@ -1,0 +1,101 @@
+name: Verify Learner Easy Exit and Pool Context
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/verify-learner-easy-exit-pool-context.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read-only runtime, policy and exit-gap verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+
+          test "$(systemctl is-active "$service")" = active
+          pid1="$(systemctl show "$service" -p MainPID --value)"
+          test -n "$pid1"; test "$pid1" != 0
+          sleep 3
+          pid2="$(systemctl show "$service" -p MainPID --value)"
+          test "$pid2" = "$pid1"
+
+          log="$(sudo -n journalctl -u "$service" --since '-30 min' --no-pager -o cat)"
+          printf '%s\n' "$log" | grep -F '[solana-easy-exit] active=true' | tail -1
+          printf '%s\n' "$log" | grep -F '[trading-runtime-invariant] OK' | tail -1
+          printf '%s\n' "$log" | grep -F '[final-runtime-integrity] OK' | tail -1
+          printf '%s\n' "$log" | grep -F '[learner-newpoll45] reporting=45s' | tail -1
+          printf '%s\n' "$log" | grep -F '[learner-pool-context] active=true' | tail -1
+
+          TARGET="$target" python3 - <<'PY'
+          import ast,json,os,sqlite3
+          from pathlib import Path
+          root=Path(os.environ['TARGET'])
+          path=root/'learnerbot'/'solana_easy_exit_policy_patch.py'
+          tree=ast.parse(path.read_text(encoding='utf-8'))
+          limits=None
+          for node in tree.body:
+              if isinstance(node,ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target,ast.Name) and target.id=='EASY_EXIT_LIMITS':
+                          limits=ast.literal_eval(node.value)
+          assert limits
+          expected={
+              'stop_loss_pct':'5','take_profit_pct':'10','leader_exit_loss_cap_pct':'0',
+              'break_even_trigger_pct':'3','break_even_floor_pct':'0.25',
+              'trailing_trigger_pct':'5','trailing_gap_pct':'2','position_poll_seconds':'10',
+          }
+          for key,value in expected.items():
+              actual=str(limits.get(key)); print(f'policy_{key}={actual}'); assert actual==value
+          invariant=(root/'learnerbot'/'trading_runtime_invariant_patch.py').read_text(encoding='utf-8')
+          for marker in ('easy_exit_settings_active','leader_full_sell_immediate_inner','leader_partial_sell_profit_guard_inner','solana_monitor_easy_exit_outer'):
+              assert marker in invariant,marker
+          final=(root/'learnerbot'/'final_runtime_integrity_patch.py').read_text(encoding='utf-8')
+          assert 'telegram_learner_pool_context_patch' in final
+          print('source_policy_and_composition=PASS')
+
+          db=root/'data'/'solana_sibot.sqlite3'
+          con=sqlite3.connect(db,timeout=2); con.row_factory=sqlite3.Row
+          tables={r['name'] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+          ids=('e30ca86e1878bd4e5f1648d3fbb7cbf2','714f26073ebc1928896ac985c96371f7')
+          safe_keys=(
+              'position_id','telegram_id','leader_wallet','leader_rank','mint','mode','status',
+              'token_amount_raw','entry_cost_sol','entry_ts','current_exit_sol','unrealised_net_sol',
+              'unrealised_pct','peak_unrealised_pct','leader_exit_pending','realised_net_sol',
+              'exit_signature','exit_reason','closed_at','updated_at'
+          )
+          for pid in ids:
+              row=con.execute('SELECT * FROM positions WHERE position_id=?',(pid,)).fetchone()
+              if row:
+                  d=dict(row); print('position='+json.dumps({k:d.get(k) for k in safe_keys if k in d},separators=(',',':'),default=str))
+          if 'state' in tables:
+              n=con.execute("SELECT COUNT(*) FROM state WHERE key LIKE 'learner_pool_open:%'").fetchone()[0]
+              print('persisted_pool_open_baselines='+str(n))
+          if 'live_exit_circuit' in tables:
+              c=con.execute("SELECT position_id,status,tx_signature,error,fraction,close_reason,sell_raw,opened_at,updated_at FROM live_exit_circuit WHERE position_id=?",('714f26073ebc1928896ac985c96371f7',)).fetchone()
+              if c:
+                  print('bvkg_circuit='+json.dumps(dict(c),separators=(',',':'),default=str))
+          con.close()
+          PY
+
+          echo '--- relevant recent exit journal ---'
+          printf '%s\n' "$log" \
+            | grep -Ei '714f2607|BvKgVjs|exit circuit reconciled|reconciliation|LIVE SELL confirmed|e30ca86|6Mfj9t4|STOP_LOSS|TAKE_PROFIT|LEADER_EXIT|EMERGENCY|LIQUIDITY|Jupiter' \
+            | tail -240 \
+            | sed -E 's#https?://[^[:space:]]+#<URL_REDACTED>#g' || true
+
+          echo "stable_main_pid=$pid2"
+          echo 'verification_refresh=2026-08-28T12:28Z'
+          echo 'verification_mutation=NO'
+          echo 'production_service_touched=NO'

@@ -1,0 +1,70 @@
+name: Diagnose Learner Position PnL Source 20260828 1521
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths: ['.github/workflows/diagnose-learner-position-pnl-source-20260828-1521.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    steps:
+      - name: Inspect PnL source read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          target=/home/ayman01323/BOOT/testingbots/learn
+          service=learnerbot-learn.service
+          echo '=== SERVICE ==='
+          echo "active=$(systemctl is-active "$service")"
+          echo "pid=$(systemctl show -p MainPID --value "$service")"
+          echo "exec=$(systemctl show -p ExecStart --value "$service" | sed -E 's/(TOKEN|KEY|SECRET|PASSWORD)=[^ ;]+/\1=<redacted>/g' | head -c 1000)"
+          echo '=== EXACT MESSAGE SOURCE ==='
+          grep -R -n --include='*.py' -F 'LEARNER POSITION UPDATE' "$target/learnerbot" 2>/dev/null | head -20 || true
+          grep -R -n --include='*.py' -F 'Unrealised P&L' "$target/learnerbot" 2>/dev/null | head -20 || true
+          echo '=== JUPITER QUOTE SOURCE ==='
+          f="$target/learnerbot/solana_sibot.py"
+          n=$(grep -n '^def jupiter_quote' "$f" | head -1 | cut -d: -f1 || true)
+          if [ -n "$n" ]; then sed -n "$((n-8)),$((n+65))p" "$f"; fi
+          echo '=== EVALUATE POSITION SOURCE ==='
+          n=$(grep -n '^def evaluate_position' "$f" | head -1 | cut -d: -f1 || true)
+          if [ -n "$n" ]; then sed -n "$((n-8)),$((n+45))p" "$f"; fi
+          echo '=== POSITION WORKER UPDATE SOURCE ==='
+          grep -n -B12 -A22 'UPDATE positions SET current_exit_sol' "$f" | head -120 || true
+          echo '=== NONSECRET JUPITER SETTINGS ==='
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+          p=Path('/home/ayman01323/BOOT/testingbots/learn/CSVbot/solana_settings.csv')
+          if p.exists():
+              for r in csv.DictReader(p.open(encoding='utf-8-sig')):
+                  k=(r.get('setting') or '').strip(); v=(r.get('value') or '').strip()
+                  if k in {'jupiter_order_url','estimated_exit_fee_sol','position_poll_seconds','slippage_bps','live_slippage_bps'}:
+                      print(f'{k}={v}')
+          ep=Path('/home/ayman01323/BOOT/testingbots/learn/.env')
+          keys=set()
+          if ep.exists():
+              for line in ep.read_text(errors='ignore').splitlines():
+                  if '=' in line and not line.lstrip().startswith('#'):
+                      keys.add(line.split('=',1)[0].strip())
+          print('JUPITER_API_KEY_present=' + ('YES' if 'JUPITER_API_KEY' in keys else 'NO'))
+          print('JUPITER_URL_override_present=' + ('YES' if any(k.startswith('JUPITER') and 'URL' in k for k in keys) else 'NO'))
+          PY
+          echo '=== CURRENT POSITION DB FIELDS ==='
+          python3 - <<'PY'
+          import sqlite3, json
+          db='/home/ayman01323/BOOT/testingbots/learn/data/solana_sibot.sqlite3'
+          c=sqlite3.connect(db); c.row_factory=sqlite3.Row
+          r=c.execute("select position_id,mint,status,mode,token_amount_raw,entry_cost_sol,current_exit_sol,unrealised_net_sol,unrealised_pct,peak_unrealised_pct,updated_at from positions where status='OPEN' and mode='LIVE' order by updated_at desc limit 1").fetchone()
+          print(json.dumps(dict(r) if r else {},sort_keys=True))
+          c.close()
+          PY
+          echo '=== RECENT POSITION/POLL/JUPITER LOGS ==='
+          sudo -n journalctl -u "$service" --since '10 minutes ago' --no-pager -o cat | grep -Ei 'position update|newpoll|jupiter|price impact|unrealised|easy-exit|quote' | tail -220 || true
+          echo '=== SAFETY ==='
+          echo 'trading_action=NONE'
+          echo 'service_restart=NO'
+          echo 'secrets_printed=NO'

@@ -1,0 +1,33 @@
+name: Diagnose Telegram Poller Conflict 20260828 1721
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/diagnose-telegram-poller-conflict-20260828-1721.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - name: Read learner and Telegram status only
+        shell: bash
+        run: |
+          set -u
+          echo '=== LEARNER SERVICE ==='
+          systemctl show learnerbot-learn.service -p ActiveState -p SubState -p MainPID -p NRestarts -p Result -p ExecMainStatus --no-pager 2>/dev/null || true
+          echo '=== RECENT LEARNER JOURNAL ==='
+          sudo -n journalctl -u learnerbot-learn.service --since '10 minutes ago' --no-pager -o cat 2>/dev/null | tail -180 || true
+          echo '=== SIRISKY READ ONLY ==='
+          echo "sirisky_active=$(systemctl is-active sirisky.service 2>/dev/null || true)"
+          echo "sirisky_pid=$(systemctl show -p MainPID --value sirisky.service 2>/dev/null || true)"
+          echo '=== NO CHANGES ==='
+          echo 'service_change=NO'
+          echo 'telegram_send=NO'
+          echo 'trading_action=NONE'
+          echo 'sirisky_change=NO'

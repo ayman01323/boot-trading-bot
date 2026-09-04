@@ -2,7 +2,7 @@ name: Inspect BOOT VPS sudo capabilities
 
 on:
   push:
-    branches: [main]
+    branches: [fix/solana-aug17-canary-restore]
     paths:
       - '.github/workflows/inspect-boot-vps-sudo.yml'
   workflow_dispatch:
@@ -15,21 +15,26 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-vps]
     timeout-minutes: 3
     steps:
-      - name: Show noninteractive bounded sudo permissions
+      - name: Inspect old VPS production state without mutation
         shell: bash
         run: |
           set -euo pipefail
           echo '=== identity ==='
           id
-          echo '=== sudo -n -l ==='
-          sudo -n -l
-          echo '=== known wrappers ==='
+          echo '=== cutover wrappers ==='
           for p in \
-            /usr/local/sbin/deploy-boot-trading-bot \
-            /usr/local/sbin/status-boot-trading-bot \
-            /usr/local/sbin/restart-boot-trading-bot \
-            /usr/local/sbin/run-sibot-leader-gate-report \
-            /usr/local/sbin/prepare-google-production-bot \
-            /usr/local/sbin/verify-google-production-bot; do
-            if [[ -e "$p" ]]; then ls -l "$p"; else echo "MISSING $p"; fi
+            /usr/local/sbin/quiesce-namecheap-for-google-cutover \
+            /usr/local/sbin/final-sync-namecheap-to-google \
+            /usr/local/sbin/verify-namecheap-cutover-stopped \
+            /usr/local/sbin/resume-namecheap-after-cutover-failure \
+            /usr/local/sbin/status-boot-trading-bot; do
+            if [[ -x "$p" ]]; then echo "READY $p"; else echo "MISSING $p"; fi
           done
+          echo '=== current old VPS bot status ==='
+          sudo -n /usr/local/sbin/status-boot-trading-bot || true
+          echo '=== stopped-state verification ==='
+          set +e
+          sudo -n /usr/local/sbin/verify-namecheap-cutover-stopped
+          rc=$?
+          set -e
+          echo "verify_namecheap_stopped_rc=$rc"

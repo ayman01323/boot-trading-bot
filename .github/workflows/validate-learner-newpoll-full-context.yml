@@ -1,0 +1,86 @@
+name: Validate Learner Full NewPoll45 and Sale Formatting
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - 'learnerbot/telegram_learner_pool_context_patch.py'
+      - 'learnerbot/telegram_learner_complete_market_context_patch.py'
+      - 'learnerbot/telegram_learner_newpoll_full_format_patch.py'
+      - '.github/workflows/validate-learner-newpoll-full-context.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/solana-aug17-canary-restore
+      - name: Compile and verify presentation contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          files=[
+              Path('learnerbot/telegram_learner_pool_context_patch.py'),
+              Path('learnerbot/telegram_learner_complete_market_context_patch.py'),
+              Path('learnerbot/telegram_learner_newpoll_full_format_patch.py'),
+          ]
+          for path in files:
+              src=path.read_text(encoding='utf-8')
+              compile(src, str(path), 'exec')
+              print('compile=PASS', path)
+          text='\n'.join(p.read_text(encoding='utf-8') for p in files)
+          required={
+              'newpoll':'LEARNER POSITION UPDATE — NewPoll45',
+              'open_x_of_y':'NewPoll45 • Open Position',
+              'open_total':'Total open positions',
+              'token_name':'Token:',
+              'mint':'Mint:',
+              'position_sol_usd':'Current position',
+              'unrealised_sol_usd':'Unrealised P&L',
+              'realised_sol_usd':'Realised P&L',
+              'pool_dex':'Pool / DEX',
+              'pool_open':'Pool at open',
+              'pool_current':'Pool current',
+              'pool_since_open':'Pool change since open',
+              'poll_delta':'Since previous NewPoll45',
+              'dex_view':'DEX Viewer',
+              'sale_full':'FULL SALE RESULT',
+              'sale_received':'Sale received',
+              'sale_net':'Net on this sale',
+              'sale_total_realised':'Total realised P&L',
+              'sale_open_remaining':'Open positions remaining',
+          }
+          # NewPoll header and previous-poll delta live in the already active base
+          # position module; include it in the contract text without changing it.
+          base=Path('learnerbot/telegram_learner_position_update_patch.py').read_text(encoding='utf-8')
+          contract=text+'\n'+base
+          for label, needle in required.items():
+              if needle not in contract:
+                  raise SystemExit(f'missing {label}: {needle}')
+              print(label+'=PASS')
+          forbidden=[
+              'executor.buy(',
+              'executor.sell(',
+              'send_raw_transaction',
+              'live_trade_sol',
+              'stop_loss_pct',
+              'take_profit_pct',
+          ]
+          # The presentation overlays must not implement execution/risk policy.
+          overlay='\n'.join([
+              Path('learnerbot/telegram_learner_complete_market_context_patch.py').read_text(encoding='utf-8'),
+              Path('learnerbot/telegram_learner_newpoll_full_format_patch.py').read_text(encoding='utf-8'),
+          ])
+          for needle in forbidden:
+              if needle in overlay:
+                  raise SystemExit(f'presentation overlay contains forbidden trading marker: {needle}')
+          print('trading_logic_changed=NO')
+          print('presentation_contract=PASS')
+          PY

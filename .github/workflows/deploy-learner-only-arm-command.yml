@@ -1,0 +1,48 @@
+name: Deploy Learner Only Arm Command
+
+on:
+  push:
+    branches: [fix/solana-aug17-canary-restore]
+    paths:
+      - '.github/workflows/deploy-learner-only-arm-command.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/solana-aug17-canary-restore
+      - name: Compile and stage learner-only command without activation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          test "$(id -un)" = ayman01323
+          service=learnerbot-learn.service
+          target=/home/ayman01323/BOOT/testingbots/learn/learnerbot/telegram_solana_live_patch.py
+
+          active="$(systemctl is-active "$service" || true)"
+          pid="$(systemctl show -p MainPID --value "$service")"
+          echo "before_active=$active"
+          echo "before_pid=$pid"
+          test "$active" != active
+          test "$pid" = 0
+
+          python3 -m py_compile learnerbot/telegram_solana_live_patch.py
+          grep -q '"/learnerarm"' learnerbot/telegram_solana_live_patch.py
+          grep -q 'Claude/SiBot1 was not changed' learnerbot/telegram_solana_live_patch.py
+          install -m 0644 learnerbot/telegram_solana_live_patch.py "$target"
+
+          test "$(systemctl is-active "$service" || true)" != active
+          test "$(systemctl show -p MainPID --value "$service")" = 0
+          echo learner_arm_command_source=STAGED
+          echo learner_service=STOPPED
+          echo learner_live_setting_changed=NO
+          echo claude_sibot1_changed=NO
+          echo transaction_submitted=NO
