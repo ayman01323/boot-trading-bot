@@ -11,83 +11,179 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  stage5_jupiter_fix:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 8
     steps:
-      - name: Inspect SiRisky only
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Guard bot and save runtime checksum
         shell: bash
         run: |
           set -Eeuo pipefail
           test "$(hostname)" = botgoogle
-          sudo -n bash -lc '
-            set -Eeuo pipefail
-            cd /root/SiRisky
-            echo "=== SIRISKY SERVICE ==="
-            date -u +"utc=%Y-%m-%dT%H:%M:%SZ"
-            echo "service=$(systemctl is-active sirisky.service || true)"
-            echo "=== CURRENT SETTINGS ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-from sirisky.config import Settings
-from sirisky.safety_v2 import entry_sol
-s=Settings.load(); rt=s.runtime(); rk=s.risk()
-for k in sorted(rt):
-    if any(x in k.lower() for x in ("secret","key","token","wallet","rpc_url")): continue
-    print(f"runtime.{k}={rt.get(k)}")
-for k in sorted(rk):
-    if any(x in k.lower() for x in ("secret","key","token","wallet")): continue
-    print(f"risk.{k}={rk.get(k)}")
-print(f"effective.entry_sol={entry_sol(s):.9f}")
-PY
-            echo "=== TRADE CSV FILES ==="
-            find CSV -maxdepth 2 -type f -name "*.csv" -printf "%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n" | sort
-            echo "=== POSITION / TRADE SUMMARY ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv, json
-from pathlib import Path
-for p in sorted(Path("CSV").glob("*.csv")):
-    try:
-        with p.open(encoding="utf-8-sig",newline="") as f:
-            rows=list(csv.DictReader(f))
-    except Exception:
-        continue
-    if not rows: continue
-    fields=set(rows[0])
-    interesting=fields & {"status","mode","position_id","candidate_id","opened_at","closed_at","entry_time","exit_time","buy_signature","sell_signature","tx_signature","entry_sol","amount_sol","pnl_sol","net_pnl_sol","profit_sol","realized_pnl_sol","token","mint","symbol"}
-    if interesting:
-        print(f"FILE {p} rows={len(rows)} fields={','.join(sorted(interesting))}")
-        for r in rows[-20:]:
-            safe={k:r.get(k) for k in sorted(interesting)}
-            print(json.dumps(safe,sort_keys=True))
-PY
-            echo "=== RECENT TRADE JOURNAL ==="
-            journalctl -u sirisky.service --since "2026-08-28 00:00:00" --no-pager -o short-iso 2>/dev/null \
-              | grep -Ei "OPENED|CLOSED|BUY|SELL|EXECUT|broadcast|signature|position" \
-              | tail -n 800 || true
-            echo "=== SETTINGS BACKUPS ==="
-            find CSV -maxdepth 1 -type f \( -name "runtime.csv*" -o -name "risk.csv*" \) -printf "%TY-%Tm-%TdT%TH:%TM:%TSZ %p\n" | sort | tail -n 100
-            echo "=== BACKUP RELEVANT VALUES ==="
-            PYTHONPATH=. .venv/bin/python - <<"PY"
-import csv
-from pathlib import Path
-keys={
- "auto_probe_sol","auto_entry_min_sol","auto_entry_max_sol","auto_evaluate_candidate_limit",
- "max_buy_network_fee_pct","max_sell_network_fee_pct","max_emergency_sell_network_fee_pct",
- "max_priority_fee_lamports","max_open_positions","max_round_trip_cost_pct",
- "fast_take_profit_floor_pct","fast_take_profit_cap_pct","fast_target_net_pct","fast_target_net_cap_pct",
- "min_pool_position_depth_multiple","trading_mode","live_enabled","broadcast_enabled","manual_approval_enabled"
-}
-for p in sorted(list(Path("CSV").glob("runtime.csv*"))+list(Path("CSV").glob("risk.csv*")), key=lambda x:x.stat().st_mtime):
-    try:
-        with p.open(encoding="utf-8-sig",newline="") as f:
-            rd=csv.DictReader(f); rows=list(rd); fields=list(rd.fieldnames or [])
-        if len(fields)<2: continue
-        k="key" if "key" in fields else fields[0]; v="value" if "value" in fields else fields[1]
-        vals={str(r.get(k) or ""):str(r.get(v) or "") for r in rows if str(r.get(k) or "") in keys}
-        print("PROFILE",p.name,"mtime",int(p.stat().st_mtime)," ".join(f"{a}={vals[a]}" for a in sorted(vals)))
-    except Exception as e:
-        print("PROFILE_READ_ERROR",p.name,type(e).__name__)
-PY
-          '
-# Manual read-only trigger: verify whether SiRisky executed any LIVE trade on 2026-08-29.
-# Recheck requested 2026-08-29T17:14:56Z before LIVE arming.
+          sudo -n true
+          sudo -n test -f /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n test -f /root/SiRisky/CSV/runtime.csv
+          sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}' > "$RUNNER_TEMP/runtime_before.sha"
+          sudo -n python3 - <<'PY' > "$RUNNER_TEMP/execution_rows_before.txt"
+          import csv
+          from pathlib import Path
+          p=Path('/root/SiRisky/CSV/executions.csv')
+          if not p.exists(): print(0)
+          else:
+              with p.open(newline='') as f: print(sum(1 for _ in csv.DictReader(f)))
+          PY
+
+      - name: Back up and deploy Stage 5 error fix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/stage5_trade.py "/root/SiRisky/sirisky/stage5_trade.py.${stamp}.bak"
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage5_trade.py /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n grep -q 'def _exception_detail' /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -m py_compile sirisky/stage5_trade.py'
+
+      - name: Prove trading configuration is untouched
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          before="$(cat "$RUNNER_TEMP/runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Restart service with unchanged runtime state
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo -n systemctl restart sirisky.service
+          sleep 4
+          test "$(systemctl is-active sirisky.service)" = active
+          before="$(cat "$RUNNER_TEMP/runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Current Jupiter quote endpoint is configured
+        continue-on-error: true
+        shell: bash
+        run: sudo -n grep -q 'https://api.jup.ag/swap/v1/quote' /root/SiRisky/sirisky/jupiter.py
+
+      - name: Deprecated Jupiter lite quote endpoint is absent
+        continue-on-error: true
+        shell: bash
+        run: '! sudo -n grep -q "https://lite-api.jup.ag/swap/v1/quote" /root/SiRisky/sirisky/jupiter.py'
+
+      - name: Jupiter API authentication support is configured
+        continue-on-error: true
+        shell: bash
+        run: sudo -n grep -Eqi 'x-api-key|_headers\(settings\)' /root/SiRisky/sirisky/jupiter.py
+
+      - name: Wait for the normal automatic retry cycle
+        shell: bash
+        run: sleep 45
+
+      - name: A new execution attempt occurred after restart
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          base="$(cat "$RUNNER_TEMP/execution_rows_before.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          rows=[]
+          if p.exists():
+              with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          raise SystemExit(0 if len(rows)>base else 1)
+          PY
+
+      - name: New retry no longer reports bare JupiterError
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          base="$(cat "$RUNNER_TEMP/execution_rows_before.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          new=rows[base:]
+          if not new: raise SystemExit(1)
+          bare=[r for r in new if (r.get('error') or '').strip()=='JupiterError']
+          raise SystemExit(1 if bare else 0)
+          PY
+
+      - name: Root cause category - Jupiter authentication
+        continue-on-error: true
+        shell: bash
+        run: |
+          base="$(cat "$RUNNER_TEMP/execution_rows_before.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          e=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'HTTP\s+(401|403)\b|unauthori[sz]ed|forbidden|api.?key',e,re.I) else 1)
+          PY
+
+      - name: Root cause category - no route or executable output
+        continue-on-error: true
+        shell: bash
+        run: |
+          base="$(cat "$RUNNER_TEMP/execution_rows_before.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          e=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'no.?route|NO_EXECUTABLE_OUTPUT|route.*not.*found|could not find.*route',e,re.I) else 1)
+          PY
+
+      - name: Root cause category - slippage or simulation
+        continue-on-error: true
+        shell: bash
+        run: |
+          base="$(cat "$RUNNER_TEMP/execution_rows_before.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          e=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'slippage|simulation|simulate|price.?impact',e,re.I) else 1)
+          PY
+
+      - name: Root cause category - transport or rate limit
+        continue-on-error: true
+        shell: bash
+        run: |
+          base="$(cat "$RUNNER_TEMP/execution_rows_before.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          e=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'TIMEOUT|CONNECTION|URL_ERROR|HTTP\s+429|rate.?limit',e,re.I) else 1)
+          PY
+
+      - name: Final invariant - service active and settings unchanged
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "$(systemctl is-active sirisky.service)" = active
+          before="$(cat "$RUNNER_TEMP/runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+          echo 'stage5_error_fix=DEPLOYED'
+          echo 'runtime_settings_changed=NO'
