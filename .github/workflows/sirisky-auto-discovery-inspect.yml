@@ -14,7 +14,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect current SiRisky Stage 1 integration
+      - name: Inspect current SiRisky Stage 1 and Stage 5 integration
         shell: bash
         run: |
           set -euo pipefail
@@ -26,7 +26,17 @@ jobs:
           done
           echo '=== run.py ==='
           sudo -n sed -n '1,420p' /root/SiRisky/run.py
-          echo '=== runtime.csv ==='
-          sudo -n cat /root/SiRisky/CSV/runtime.csv
-          echo '=== stage1_selected_pools.csv ==='
-          sudo -n cat /root/SiRisky/CSV/stage1_selected_pools.csv
+          echo '=== runtime flags ==='
+          sudo -n awk -F, '$1 ~ /^(trading_mode|live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|poll_seconds)$/ {gsub(/\r/,"",$2); print $1"="$2}' /root/SiRisky/CSV/runtime.csv
+          echo '=== Stage 5 source hashes ==='
+          sha256sum SiRisky/overrides/sirisky/stage5_trade.py
+          sudo -n sha256sum /root/SiRisky/sirisky/stage5_trade.py
+          echo '=== recent executions ==='
+          sudo -n tail -n 20 /root/SiRisky/CSV/executions.csv 2>/dev/null \
+            | sed -E 's#https?://[^ ,}]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
+          echo '=== recent Stage 5/Jupiter events ==='
+          sudo -n journalctl -u sirisky.service --since '-15 minutes' --no-pager 2>/dev/null \
+            | grep -E 'EXIT retry|EXIT_EXECUTION_RETRY|FAST_STOP|JupiterError|SiRisky:' \
+            | tail -80 \
+            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
+          echo 'read_only=PASS'
