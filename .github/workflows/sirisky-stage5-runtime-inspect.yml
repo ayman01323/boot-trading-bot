@@ -1,0 +1,53 @@
+name: SiRisky Stage 5 Runtime Inspect
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sirisky-stage5-runtime-inspect.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, linux, x64, boot-google]
+    timeout-minutes: 10
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Inspect Stage 5 runtime without changing state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = botgoogle
+          echo "repo_sha=$(git rev-parse HEAD)"
+          echo '=== RUNTIME FLAGS ==='
+          sudo -n awk -F, '$1 ~ /^(trading_mode|live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|poll_seconds)$/ {gsub(/\r/,"",$2); print $1"="$2}' /root/SiRisky/CSV/runtime.csv
+
+          echo '=== STAGE5 HASHES ==='
+          sha256sum SiRisky/overrides/sirisky/stage5_trade.py
+          sudo -n sha256sum /root/SiRisky/sirisky/stage5_trade.py
+
+          echo '=== JUPITER ERROR/EXECUTION SHAPE ==='
+          sudo -n grep -nE 'class .*Error|raise .*Error|def (order|execute_order|quote_only)|swap/v1|x-api-key' /root/SiRisky/sirisky/jupiter.py \
+            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' \
+            | head -120 || true
+
+          echo '=== RECENT EXECUTIONS ==='
+          sudo -n tail -n 16 /root/SiRisky/CSV/executions.csv 2>/dev/null \
+            | sed -E 's#https?://[^ ,}]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
+
+          echo '=== RECENT SERVICE EVENTS ==='
+          sudo -n journalctl -u sirisky.service --since '-10 minutes' --no-pager 2>/dev/null \
+            | grep -E 'EXIT retry|EXIT_EXECUTION_RETRY|FAST_STOP|JupiterError|SiRisky:' \
+            | tail -60 \
+            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
+
+          echo 'read_only=PASS'
