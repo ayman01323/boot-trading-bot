@@ -12,19 +12,19 @@ permissions:
 
 jobs:
   detect:
-    name: Inspect deployed SiRisky Jupiter client
+    name: Inspect deployed SiRisky Ultra request
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 3
     outputs:
       state: ${{ steps.classify.outputs.state }}
-      errshape: ${{ steps.classify.outputs.errshape }}
-      orderflow: ${{ steps.classify.outputs.orderflow }}
-      execflow: ${{ steps.classify.outputs.execflow }}
-      quoteparams: ${{ steps.classify.outputs.quoteparams }}
-      errdetail: ${{ steps.classify.outputs.errdetail }}
+      urls: ${{ steps.classify.outputs.urls }}
+      orderparams: ${{ steps.classify.outputs.orderparams }}
+      signshape: ${{ steps.classify.outputs.signshape }}
+      execbody: ${{ steps.classify.outputs.execbody }}
+      responseguard: ${{ steps.classify.outputs.responseguard }}
     steps:
       - id: classify
-        name: Inspect source semantics without emitting secrets or addresses
+        name: Classify deployed request schema without exposing addresses or keys
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -35,75 +35,66 @@ jobs:
           from pathlib import Path
 
           target='pos-e39b933a174b'
-          open_path=Path('/root/SiRisky/CSV/open_positions.csv')
-          exec_path=Path('/root/SiRisky/CSV/executions.csv')
+          op=Path('/root/SiRisky/CSV/open_positions.csv')
           jp=Path('/root/SiRisky/sirisky/jupiter.py')
-
           state='UNKNOWN'
-          if open_path.exists():
-              with open_path.open(newline='') as f: rows=list(csv.DictReader(f))
+          if op.exists():
+              with op.open(newline='') as f: rows=list(csv.DictReader(f))
               state='OPEN' if any((r.get('position_id') or '')==target and (r.get('status') or '').upper()=='OPEN' for r in rows) else 'NOT_OPEN'
-
-          err=''
-          if exec_path.exists():
-              with exec_path.open(newline='') as f: rows=list(csv.DictReader(f))
-              rs=[r for r in rows if (r.get('action') or '').upper()=='SELL' and (r.get('reason') or '').upper()=='FAST_STOP']
-              if rs: err=(rs[-1].get('error') or '').strip()
-          if re.fullmatch(r'JupiterError\s*\|\s*HTTP\s*400(?:\s*\|\s*)?',err,re.I): errshape='HTTP400_ONLY'
-          elif re.search(r'HTTP\s*400',err,re.I) and len(err)<=45: errshape='HTTP400_SHORT'
-          elif re.search(r'HTTP\s*400',err,re.I): errshape='HTTP400_WITH_DETAIL'
-          elif err=='JupiterError': errshape='OPAQUE'
-          else: errshape='OTHER'
 
           src=jp.read_text(errors='replace')
           tree=ast.parse(src)
           funcs={n.name:ast.get_source_segment(src,n) or '' for n in tree.body if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef))}
           order=funcs.get('order','')
           execute=funcs.get('execute_order','')
-          quote=funcs.get('quote_only','')
 
-          if 'quote_only(' in order and not re.search(r'requests\.(?:post|put)|urlopen',order): orderflow='ORDER_WRAP_QUOTE'
-          elif '/ultra/' in order: orderflow='ORDER_ULTRA'
-          elif re.search(r'requests\.post|method=[\"\']POST',order,re.I): orderflow='ORDER_POST'
-          elif re.search(r'requests\.get|method=[\"\']GET|urlopen',order,re.I): orderflow='ORDER_GET'
-          else: orderflow='ORDER_OTHER'
+          # Classify endpoint literals/constants, but never output the literal URLs.
+          lo=src.lower()
+          bits=[]
+          if 'ultra/v1/order' in lo: bits.append('UO')
+          if 'ultra/v1/execute' in lo: bits.append('UE')
+          if 'swap/v1/quote' in lo: bits.append('SQ')
+          if 'swap/v1/swap' in lo: bits.append('SS')
+          if '/swap/v2/' in lo or 'swap/v2' in lo: bits.append('V2')
+          urls='URL_' + ''.join(bits) if bits else 'URL_OTHER'
 
-          if re.search(r'/ultra/.*/execute|/execute',execute): execflow='EXEC_JUP_EXECUTE'
-          elif '/swap/v1/swap' in execute or re.search(r'[/\"\']swap[/\"\']',execute): execflow='EXEC_JUP_SWAP'
-          elif re.search(r'send_raw_transaction|sendTransaction|send_transaction',execute,re.I): execflow='EXEC_RPC_SEND'
-          elif re.search(r'requests\.post|method=[\"\']POST|urlopen',execute,re.I): execflow='EXEC_HTTP_OTHER'
-          else: execflow='EXEC_OTHER'
+          params=[]
+          for key,label in [('inputMint','I'),('outputMint','O'),('amount','A'),('taker','T'),('receiver','R'),('payer','P'),('closeAuthority','C'),('referralAccount','F'),('referralFee','E'),('excludeRouters','X'),('excludeDexes','D'),('slippageBps','S'),('swapMode','M'),('platformFeeBps','B')]:
+              if key in order: params.append(label)
+          orderparams='OP_' + ''.join(params) if params else 'OP_NONE'
 
-          qp=[]
-          for key,label in [('inputMint','I'),('outputMint','O'),('amount','A'),('slippageBps','S'),('swapMode','M'),('platformFeeBps','F'),('maxAccounts','X'),('restrictIntermediateTokens','R'),('onlyDirectRoutes','D')]:
-              if key in quote: qp.append(label)
-          quoteparams='QP_' + ''.join(qp) if qp else 'QP_NONE'
+          # Signing implementation shape only.
+          if 'VersionedTransaction' in execute and re.search(r'\.sign\(',execute): signshape='VERSIONED_SIGN'
+          elif 'VersionedTransaction' in execute: signshape='VERSIONED_OTHER'
+          elif re.search(r'Keypair|keypair|sign',execute): signshape='SIGN_OTHER'
+          else: signshape='SIGN_UNKNOWN'
 
-          # Determine whether the Jupiter client itself preserves HTTP response bodies.
-          body_tokens=('response.text','.text','response.json','.json()','resp.text','resp.json','r.text','r.json')
-          raise_segments=[]
-          for n in ast.walk(tree):
-              if isinstance(n,ast.Raise):
-                  seg=ast.get_source_segment(src,n) or ''
-                  if 'JupiterError' in seg: raise_segments.append(seg)
-          joined='\n'.join(raise_segments)
-          if any(t in joined for t in body_tokens): errdetail='CLIENT_BODY_INCLUDED'
-          elif re.search(r'status_code|status|code',joined,re.I): errdetail='CLIENT_STATUS_ONLY'
-          else: errdetail='CLIENT_ERROR_OPAQUE'
+          eb=[]
+          for key,label in [('signedTransaction','S'),('requestId','R'),('transaction','T'),('signature','G')]:
+              if key in execute: eb.append(label)
+          execbody='EB_' + ''.join(eb) if eb else 'EB_NONE'
+
+          # Does order validate Jupiter's returned transaction/requestId/error fields before Stage 5 proceeds?
+          guards=[]
+          if 'transaction' in order: guards.append('T')
+          if 'requestId' in order: guards.append('R')
+          if 'errorCode' in order or 'errorMessage' in order: guards.append('E')
+          if re.search(r'raise\s+JupiterError',order): guards.append('J')
+          responseguard='RG_' + ''.join(guards) if guards else 'RG_NONE'
 
           print('state='+state)
-          print('errshape='+errshape)
-          print('orderflow='+orderflow)
-          print('execflow='+execflow)
-          print('quoteparams='+quoteparams)
-          print('errdetail='+errdetail)
+          print('urls='+urls)
+          print('orderparams='+orderparams)
+          print('signshape='+signshape)
+          print('execbody='+execbody)
+          print('responseguard='+responseguard)
           PY
           )"
           printf '%s\n' "$out" >> "$GITHUB_OUTPUT"
 
   report:
     needs: detect
-    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.errshape }} - ${{ needs.detect.outputs.orderflow }} - ${{ needs.detect.outputs.execflow }} - ${{ needs.detect.outputs.quoteparams }} - ${{ needs.detect.outputs.errdetail }}
+    name: SiRisky ${{ needs.detect.outputs.state }} - ${{ needs.detect.outputs.urls }} - ${{ needs.detect.outputs.orderparams }} - ${{ needs.detect.outputs.signshape }} - ${{ needs.detect.outputs.execbody }} - ${{ needs.detect.outputs.responseguard }}
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 2
     steps:
