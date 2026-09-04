@@ -15,14 +15,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 8
     steps:
-      - name: Check out current main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Guard bot and save runtime checksum
+      - name: Guard bot and save runtime state
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -40,13 +33,22 @@ jobs:
               with p.open(newline='') as f: print(sum(1 for _ in csv.DictReader(f)))
           PY
 
+      - name: Fetch exact reviewed Stage 5 patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          url='https://raw.githubusercontent.com/ayman01323/boot-trading-bot/13e37cd289ef2879e88d7103fb686e32a5da14f7/SiRisky/overrides/sirisky/stage5_trade.py'
+          curl --fail --silent --show-error --location "$url" -o "$RUNNER_TEMP/stage5_trade.py"
+          grep -q 'def _exception_detail' "$RUNNER_TEMP/stage5_trade.py"
+          grep -q 'Preserve the sanitised payload from custom exceptions' "$RUNNER_TEMP/stage5_trade.py"
+
       - name: Back up and deploy Stage 5 error fix
         shell: bash
         run: |
           set -Eeuo pipefail
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           sudo -n cp -a /root/SiRisky/sirisky/stage5_trade.py "/root/SiRisky/sirisky/stage5_trade.py.${stamp}.bak"
-          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage5_trade.py /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n install -m 0644 "$RUNNER_TEMP/stage5_trade.py" /root/SiRisky/sirisky/stage5_trade.py
           sudo -n grep -q 'def _exception_detail' /root/SiRisky/sirisky/stage5_trade.py
           sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -m py_compile sirisky/stage5_trade.py'
 
@@ -84,7 +86,7 @@ jobs:
         shell: bash
         run: sudo -n grep -Eqi 'x-api-key|_headers\(settings\)' /root/SiRisky/sirisky/jupiter.py
 
-      - name: Wait for the normal automatic retry cycle
+      - name: Wait for normal automatic exit retry
         shell: bash
         run: sleep 45
 
@@ -117,8 +119,7 @@ jobs:
           with p.open(newline='') as f: rows=list(csv.DictReader(f))
           new=rows[base:]
           if not new: raise SystemExit(1)
-          bare=[r for r in new if (r.get('error') or '').strip()=='JupiterError']
-          raise SystemExit(1 if bare else 0)
+          raise SystemExit(1 if any((r.get('error') or '').strip()=='JupiterError' for r in new) else 0)
           PY
 
       - name: Root cause category - Jupiter authentication
