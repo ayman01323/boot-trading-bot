@@ -18,7 +18,7 @@ def _compact_text(value, limit=220):
     text=" ".join(str(value or "").split())
     # Never persist URLs/query strings or obvious credentials from transport errors.
     text=re.sub(r"https?://\S+", "[url]", text, flags=re.I)
-    text=re.sub(r"(?i)(api[-_]?key|authorization|bearer|token)\s*[:=]\s*\S+", r"\1=[redacted]", text)
+    text=re.sub(r"(?i)(api[-_]?key|x-api-key|authorization|bearer|token)\s*[:=]\s*\S+", r"\1=[redacted]", text)
     return text[:limit]
 
 
@@ -39,6 +39,60 @@ def _json_error_message(raw):
             if body.get(key):
                 return _compact_text(body.get(key))
     return _compact_text(raw)
+
+
+def _exception_detail(exc):
+    """Extract useful detail from custom client exceptions without leaking secrets."""
+    candidates=[]
+    try:
+        text=str(exc).strip()
+        if text:
+            candidates.append(text)
+    except Exception:
+        pass
+
+    # Some Jupiter client exceptions keep the useful response/body on an
+    # attribute while __str__ is empty or only returns the exception class.
+    for attr in ("message","reason","detail","error","status","code","body","response"):
+        try:
+            value=getattr(exc,attr,None)
+        except Exception:
+            value=None
+        if value is None:
+            continue
+        if attr=="response":
+            try:
+                value=getattr(value,"text",None) or getattr(value,"reason",None) or value
+            except Exception:
+                pass
+        if isinstance(value,(dict,list,tuple)):
+            try:
+                value=json.dumps(value,default=str,separators=(",",":"))
+            except Exception:
+                value=str(value)
+        text=_compact_text(value,180)
+        if text:
+            candidates.append(text)
+
+    try:
+        for arg in getattr(exc,"args",()) or ():
+            if isinstance(arg,(dict,list,tuple)):
+                try:
+                    arg=json.dumps(arg,default=str,separators=(",",":"))
+                except Exception:
+                    arg=str(arg)
+            text=_compact_text(arg,180)
+            if text:
+                candidates.append(text)
+    except Exception:
+        pass
+
+    name=type(exc).__name__
+    for text in candidates:
+        compact=_compact_text(text,180)
+        if compact and compact not in {name, repr(name)}:
+            return compact
+    return ""
 
 
 def safe_execution_error(exc):
@@ -75,10 +129,15 @@ def safe_execution_error(exc):
     if isinstance(exc,URLError):
         reason=getattr(exc,"reason",None)
         return "URL_ERROR"+(f" | {type(reason).__name__}" if reason is not None else "")
-    text=_compact_text(str(exc),180)
-    if text and re.fullmatch(r"[A-Z0-9_ .|:-]+",text):
-        return text
-    return type(exc).__name__
+
+    # Preserve the sanitised payload from custom exceptions such as
+    # JupiterError. Previously lower-case/punctuated messages were discarded
+    # and Telegram only showed the unhelpful class name "JupiterError".
+    name=type(exc).__name__
+    detail=_exception_detail(exc)
+    if detail:
+        return _compact_text(f"{name} | {detail}",220)
+    return name
 
 
 class Stage5Trade:
