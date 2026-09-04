@@ -44,3 +44,9 @@ from . import telegram_sibot1_signer_menu_patch as _sibot1_signer_menu  # noqa: 
 # and delete the duplicate Telegram message immediately. Existing encrypted signer
 # material is left unchanged.
 from . import telegram_sibot1_duplicate_secret_scrub_patch as _sibot1_duplicate_secret_scrub  # noqa: E402,F401
+
+# Owner-requested GPT-only real-money Solana test size. This loads after the
+# protected Solana bridge and its state/reporting patches, so only GPT ENTRY sizing
+# changes to exactly 0.005 SOL. Other engines and every safety/execution gate stay
+# unchanged.
+from . import sibot1_gpt_solana_005_live_patch as _sibot1_gpt_solana_005_live  # noqa: E402,F401
