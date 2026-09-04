@@ -10,33 +10,192 @@ permissions:
   contents: read
 
 jobs:
-  inspect:
+  stage5_jupiter_repair:
     runs-on: [self-hosted, linux, x64, boot-google]
     timeout-minutes: 10
     steps:
-      - name: Inspect current SiRisky Stage 1 and Stage 5 integration
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Guard server and record immutable runtime state
         shell: bash
         run: |
           set -euo pipefail
           test "$(hostname)" = 'botgoogle'
           sudo -n true
-          for f in stage1_data.py stage2_strategy.py stage3_risk.py stage5_trade.py engine.py models.py config.py jupiter.py; do
-            echo "=== $f ==="
-            sudo -n sed -n '1,380p' "/root/SiRisky/sirisky/$f"
-          done
-          echo '=== run.py ==='
-          sudo -n sed -n '1,420p' /root/SiRisky/run.py
-          echo '=== runtime flags ==='
-          sudo -n awk -F, '$1 ~ /^(trading_mode|live_enabled|broadcast_enabled|manual_approval_enabled|manual_approval_require_external_signature|poll_seconds)$/ {gsub(/\r/,"",$2); print $1"="$2}' /root/SiRisky/CSV/runtime.csv
-          echo '=== Stage 5 source hashes ==='
-          sha256sum SiRisky/overrides/sirisky/stage5_trade.py
-          sudo -n sha256sum /root/SiRisky/sirisky/stage5_trade.py
-          echo '=== recent executions ==='
-          sudo -n tail -n 20 /root/SiRisky/CSV/executions.csv 2>/dev/null \
-            | sed -E 's#https?://[^ ,}]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
-          echo '=== recent Stage 5/Jupiter events ==='
-          sudo -n journalctl -u sirisky.service --since '-15 minutes' --no-pager 2>/dev/null \
-            | grep -E 'EXIT retry|EXIT_EXECUTION_RETRY|FAST_STOP|JupiterError|SiRisky:' \
-            | tail -80 \
-            | sed -E 's#https?://[^ ]+#<redacted-url>#g; s#(x-api-key|api[_-]?key|authorization)[=: ]+[^ ,}]+#\1=<redacted>#Ig' || true
-          echo 'read_only=PASS'
+          sudo -n test -f /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n test -f /root/SiRisky/CSV/runtime.csv
+          sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}' > "$RUNNER_TEMP/sirisky_runtime_before.sha"
+          sudo -n python3 - <<'PY' > "$RUNNER_TEMP/sirisky_exec_base.txt"
+          import csv
+          from pathlib import Path
+          p=Path('/root/SiRisky/CSV/executions.csv')
+          if not p.exists():
+              print(0)
+          else:
+              with p.open(newline='') as f:
+                  print(sum(1 for _ in csv.DictReader(f)))
+          PY
+
+      - name: Install Stage 5 diagnostic repair only
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          sudo -n cp -a /root/SiRisky/sirisky/stage5_trade.py "/root/SiRisky/sirisky/stage5_trade.py.${stamp}.bak"
+          sudo -n install -m 0644 SiRisky/overrides/sirisky/stage5_trade.py /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n grep -q 'def _exception_detail' /root/SiRisky/sirisky/stage5_trade.py
+          sudo -n grep -q 'JupiterError' /root/SiRisky/sirisky/stage5_trade.py || true
+          sudo -n bash -lc 'cd /root/SiRisky && PYTHONPATH=. .venv/bin/python -m py_compile sirisky/stage5_trade.py'
+
+      - name: Prove no trading settings changed
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(cat "$RUNNER_TEMP/sirisky_runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Restart SiRisky with existing runtime state
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemctl restart sirisky.service
+          sleep 3
+          test "$(systemctl is-active sirisky.service)" = 'active'
+          before="$(cat "$RUNNER_TEMP/sirisky_runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+
+      - name: Verify Jupiter quote endpoint is current
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n grep -q 'https://api.jup.ag/swap/v1/quote' /root/SiRisky/sirisky/jupiter.py
+
+      - name: Verify deprecated lite quote endpoint is absent
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! sudo -n grep -q 'https://lite-api.jup.ag/swap/v1/quote' /root/SiRisky/sirisky/jupiter.py
+
+      - name: Verify Jupiter authentication support exists
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n grep -Eqi 'x-api-key|_headers\(settings\)' /root/SiRisky/sirisky/jupiter.py
+
+      - name: Wait for automatic exit retry
+        shell: bash
+        run: sleep 40
+
+      - name: A new Stage 5 execution was attempted
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat "$RUNNER_TEMP/sirisky_exec_base.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,sys
+          from pathlib import Path
+          base=int(sys.argv[1])
+          p=Path('/root/SiRisky/CSV/executions.csv')
+          rows=[]
+          if p.exists():
+              with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          raise SystemExit(0 if len(rows)>base else 1)
+          PY
+
+      - name: Opaque JupiterError has been eliminated on new attempts
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat "$RUNNER_TEMP/sirisky_exec_base.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          new=rows[base:]
+          bad=[r for r in new if (r.get('error') or '').strip()=='JupiterError']
+          raise SystemExit(1 if bad else 0)
+          PY
+
+      - name: New error category is authentication HTTP 401 or 403
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat "$RUNNER_TEMP/sirisky_exec_base.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          errs=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'HTTP\s+(401|403)\b|unauthori[sz]ed|forbidden|api.?key',errs,re.I) else 1)
+          PY
+
+      - name: New error category is no route or no executable output
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat "$RUNNER_TEMP/sirisky_exec_base.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          errs=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'no.?route|NO_EXECUTABLE_OUTPUT|route.*not.*found|could not find.*route',errs,re.I) else 1)
+          PY
+
+      - name: New error category is slippage or simulation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat "$RUNNER_TEMP/sirisky_exec_base.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          errs=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'slippage|simulation|simulate|price.?impact',errs,re.I) else 1)
+          PY
+
+      - name: New error category is transport timeout or connection
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(cat "$RUNNER_TEMP/sirisky_exec_base.txt")"
+          sudo -n python3 - "$base" <<'PY'
+          import csv,re,sys
+          from pathlib import Path
+          base=int(sys.argv[1]); p=Path('/root/SiRisky/CSV/executions.csv')
+          with p.open(newline='') as f: rows=list(csv.DictReader(f))
+          errs=' '.join((r.get('error') or '') for r in rows[base:])
+          raise SystemExit(0 if re.search(r'TIMEOUT|CONNECTION|URL_ERROR|HTTP\s+429|rate.?limit',errs,re.I) else 1)
+          PY
+
+      - name: Final safety invariant - runtime unchanged and service active
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(systemctl is-active sirisky.service)" = 'active'
+          before="$(cat "$RUNNER_TEMP/sirisky_runtime_before.sha")"
+          after="$(sudo -n sha256sum /root/SiRisky/CSV/runtime.csv | awk '{print $1}')"
+          test "$before" = "$after"
+          echo 'stage5_diagnostic_patch=DEPLOYED'
+          echo 'runtime_settings_changed=NO'
